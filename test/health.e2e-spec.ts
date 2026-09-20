@@ -25,9 +25,14 @@ describe('Health (e2e)', () => {
   it('GET /api/v1/health', async () => {
     const server = app.getHttpServer() as App;
 
-    await request(server)
+    const response = await request(server)
       .get('/api/v1/health')
+      .set('Origin', 'http://localhost:3000')
       .expect(200)
       .expect({ status: 'ok' });
+
+    expect(response.headers['access-control-allow-origin']).toBe(
+      'http://localhost:3000',
+    );
   });
 });
