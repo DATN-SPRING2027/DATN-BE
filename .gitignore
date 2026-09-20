@@ -1,0 +1,19 @@
+# Dependencies and build artifacts
+node_modules/
+dist/
+coverage/
+
+# Runtime configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs, caches and editor files
+*.log
+.eslintcache
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
