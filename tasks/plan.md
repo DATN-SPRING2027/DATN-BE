@@ -292,3 +292,70 @@ NestJS strict scaffold
 8. Handover package and successor learning workflow.
 
 Each slice must receive its own DB/BE/FE branches as applicable.
+
+## Active Follow-up: IAM API Contract v1
+
+### Objective
+
+Define the reviewable OpenAPI contract that allows frontend and backend work on
+authentication, users, projects, project memberships, teams and team
+memberships to proceed independently. This change documents HTTP behavior only;
+it does not add controllers, DTOs, persistence or seed data.
+
+### Contract decisions
+
+- The public base path is `/api/v1`; resource paths use plural nouns.
+- JSON fields and query parameters use `camelCase`.
+- Resource identifiers are opaque strings; timestamps are ISO-8601 UTC strings.
+- List operations use `page` and `pageSize`, defaulting to `1` and `20`, with a
+  maximum `pageSize` of `100`.
+- Successful single-resource responses return the resource directly. Successful
+  list responses return `{ data, pagination }`.
+- Errors always return `code`, `message`, `details` and `requestId`.
+- Protected operations use bearer JWT access tokens. Login and refresh return
+  token pairs to the trusted BFF; browser code must not store tokens in web
+  storage.
+- Membership deletion is idempotent and returns `204`; it removes the active
+  relationship from the API view. Persistence semantics remain an
+  implementation decision as long as the public behavior is preserved.
+
+### Task 13: Add contract conformance tests
+
+**Acceptance criteria:**
+
+- The OpenAPI document is valid JSON and declares OpenAPI 3.1.
+- Tests enforce the base path, pagination bounds, opaque string IDs, UTC
+  timestamps, unique operation IDs and the standard error shape.
+
+**Verification:** `npm test -- --runInBand`
+
+**Dependencies:** Approved task requirements
+
+**Files:** `src/contracts/iam-openapi.spec.ts`
+
+**Scope:** Small
+
+### Task 14: Define IAM OpenAPI document
+
+**Acceptance criteria:**
+
+- Auth, User, Project, Project Membership, Team and Team Membership schemas and
+  operations are documented.
+- Authentication, authorization and `401/403/404/409/422/429` semantics are
+  explicit per operation.
+- The document contains no server URI, credential value or secret.
+
+**Verification:** focused contract tests plus manual OpenAPI review
+
+**Dependencies:** Task 13
+
+**Files:** `docs/openapi/iam-v1.openapi.json`
+
+**Scope:** Medium
+
+### Checkpoint D: Contract review readiness
+
+- `npm run check` passes.
+- Secret scan and final diff review pass.
+- No business endpoint or database behavior has been implemented.
+- The PR targets `main` and remains open for human contract review.

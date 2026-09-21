@@ -1,0 +1,1109 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Continuum AI IAM API",
+    "version": "1.0.0-draft",
+    "description": "Review-first contract for authentication, users, projects, project memberships, teams and team memberships. This document does not imply that the operations are implemented. Protected operations require a bearer access token. Tokens returned by authentication operations are intended for a trusted BFF and must not be stored in browser web storage."
+  },
+  "tags": [
+    { "name": "Auth", "description": "Authentication and session rotation." },
+    { "name": "Users", "description": "Organization user directory." },
+    { "name": "Projects", "description": "Organization projects." },
+    {
+      "name": "Project Memberships",
+      "description": "User access to projects."
+    },
+    { "name": "Teams", "description": "Teams within a project." },
+    { "name": "Team Memberships", "description": "User membership in teams." }
+  ],
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Log in",
+        "description": "Authenticates an active user and returns a short-lived access token plus a rotating refresh token. Invalid credentials always use the same generic response.",
+        "operationId": "login",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication succeeded.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthSession" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Rotate a session token pair",
+        "description": "Consumes the current refresh token exactly once. Reuse of a revoked token invalidates its session family and returns 401.",
+        "operationId": "refreshSession",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RefreshSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token pair rotated.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthSession" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Log out the current session",
+        "description": "Revokes the presented access token and the supplied current refresh session.",
+        "operationId": "logout",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LogoutRequest" }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Session revoked." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/users": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "List users",
+        "description": "Returns users visible in the caller's organization scope.",
+        "operationId": "listUsers",
+        "parameters": [
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/UserStatus" }
+          },
+          {
+            "name": "roleCode",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/RoleCode" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of users.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserList" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/users/{userId}": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Get a user",
+        "operationId": "getUser",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "responses": {
+          "200": {
+            "description": "The requested user.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/User" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "patch": {
+        "tags": ["Users"],
+        "summary": "Update a user",
+        "description": "Updates mutable profile or account-status fields. Only an organization Admin may change status.",
+        "operationId": "updateUser",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateUserRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "User updated.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/User" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects": {
+      "get": {
+        "tags": ["Projects"],
+        "summary": "List projects",
+        "description": "Returns only projects in which the caller has visibility. Organization Admins may list all organization projects.",
+        "operationId": "listProjects",
+        "parameters": [
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/ProjectStatus" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of projects.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectList" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "post": {
+        "tags": ["Projects"],
+        "summary": "Create a project",
+        "description": "Requires organization Admin or an active project.create capability grant.",
+        "operationId": "createProject",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateProjectRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Project created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Project" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}": {
+      "get": {
+        "tags": ["Projects"],
+        "summary": "Get a project",
+        "operationId": "getProject",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "responses": {
+          "200": {
+            "description": "The requested project.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Project" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "patch": {
+        "tags": ["Projects"],
+        "summary": "Update a project",
+        "operationId": "updateProject",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateProjectRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Project updated.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Project" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}/memberships": {
+      "get": {
+        "tags": ["Project Memberships"],
+        "summary": "List project memberships",
+        "operationId": "listProjectMemberships",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectId" },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/MembershipStatus" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of project memberships.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMembershipList"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "post": {
+        "tags": ["Project Memberships"],
+        "summary": "Add a project member",
+        "description": "Creates an active project membership for an organization user.",
+        "operationId": "createProjectMembership",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectMembershipRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Project membership created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectMembership" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}/memberships/{membershipId}": {
+      "patch": {
+        "tags": ["Project Memberships"],
+        "summary": "Update a project membership",
+        "operationId": "updateProjectMembership",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectId" },
+          { "$ref": "#/components/parameters/MembershipId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectMembershipRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Project membership updated.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectMembership" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "delete": {
+        "tags": ["Project Memberships"],
+        "summary": "Remove a project membership",
+        "description": "Idempotently removes the membership from the active project view. The containing project must exist. Active team memberships for the same user cause a conflict and must be removed first.",
+        "operationId": "deleteProjectMembership",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectId" },
+          { "$ref": "#/components/parameters/MembershipId" }
+        ],
+        "responses": {
+          "204": {
+            "description": "Membership is absent from the active project view."
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}/teams": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "List project teams",
+        "operationId": "listTeams",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectId" },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of teams.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TeamList" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "post": {
+        "tags": ["Teams"],
+        "summary": "Create a team",
+        "operationId": "createTeam",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTeamRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Team created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Team" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/teams/{teamId}": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "Get a team",
+        "operationId": "getTeam",
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "responses": {
+          "200": {
+            "description": "The requested team.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Team" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "patch": {
+        "tags": ["Teams"],
+        "summary": "Update a team",
+        "operationId": "updateTeam",
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTeamRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Team updated.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Team" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/teams/{teamId}/memberships": {
+      "get": {
+        "tags": ["Team Memberships"],
+        "summary": "List team memberships",
+        "operationId": "listTeamMemberships",
+        "parameters": [
+          { "$ref": "#/components/parameters/TeamId" },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of team memberships.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TeamMembershipList" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "post": {
+        "tags": ["Team Memberships"],
+        "summary": "Add a team member",
+        "description": "The user must already have an active membership in the team's project.",
+        "operationId": "createTeamMembership",
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTeamMembershipRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Team membership created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TeamMembership" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/teams/{teamId}/memberships/{membershipId}": {
+      "delete": {
+        "tags": ["Team Memberships"],
+        "summary": "Remove a team membership",
+        "description": "Idempotently removes the membership from the team. The containing team must exist.",
+        "operationId": "deleteTeamMembership",
+        "parameters": [
+          { "$ref": "#/components/parameters/TeamId" },
+          { "$ref": "#/components/parameters/MembershipId" }
+        ],
+        "responses": {
+          "204": { "description": "Membership is absent from the team." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Short-lived access token issued by the login or refresh operation."
+      }
+    },
+    "parameters": {
+      "Page": {
+        "name": "page",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "default": 1, "minimum": 1 }
+      },
+      "PageSize": {
+        "name": "pageSize",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "UserId": {
+        "name": "userId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ResourceId" }
+      },
+      "ProjectId": {
+        "name": "projectId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ResourceId" }
+      },
+      "TeamId": {
+        "name": "teamId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ResourceId" }
+      },
+      "MembershipId": {
+        "name": "membershipId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ResourceId" }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Authentication is missing, invalid, expired or revoked.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The authenticated caller lacks permission for the requested scope.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The addressed resource does not exist or is not visible to the caller.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The request conflicts with an existing unique resource or current state.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "ValidationFailed": {
+        "description": "The JSON request is understood but violates field or business validation.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "The request exceeded the applicable rate limit.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds until the caller may retry.",
+            "schema": { "type": "integer", "minimum": 1 }
+          },
+          "X-RateLimit-Limit": {
+            "description": "Maximum requests in the current window.",
+            "schema": { "type": "integer", "minimum": 1 }
+          },
+          "X-RateLimit-Remaining": {
+            "description": "Requests remaining in the current window.",
+            "schema": { "type": "integer", "minimum": 0 }
+          },
+          "X-RateLimit-Reset": {
+            "description": "UTC Unix timestamp when the current window resets.",
+            "schema": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ResourceId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Opaque resource identifier. Clients must not infer its storage format."
+      },
+      "UtcTimestamp": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "Z$",
+        "description": "ISO-8601 timestamp normalized to UTC with a trailing Z."
+      },
+      "RoleCode": {
+        "type": "string",
+        "enum": ["ADMIN", "TEAM_LEADER", "MEMBER"]
+      },
+      "UserStatus": {
+        "type": "string",
+        "enum": ["ACTIVE", "SUSPENDED", "PENDING_INVITE"]
+      },
+      "ProjectStatus": {
+        "type": "string",
+        "enum": ["ACTIVE", "ARCHIVED"]
+      },
+      "MembershipStatus": {
+        "type": "string",
+        "enum": ["ACTIVE", "INACTIVE"]
+      },
+      "Pagination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["page", "pageSize", "totalItems", "totalPages"],
+        "properties": {
+          "page": { "type": "integer", "minimum": 1 },
+          "pageSize": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "totalItems": { "type": "integer", "minimum": 0 },
+          "totalPages": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "details", "requestId"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 },
+          "details": {
+            "type": "object",
+            "description": "Machine-readable context. Use an empty object when no additional context is safe to expose.",
+            "additionalProperties": true
+          },
+          "requestId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "password"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "writeOnly": true
+          }
+        }
+      },
+      "RefreshSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["refreshToken"],
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true
+          }
+        }
+      },
+      "LogoutRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["refreshToken"],
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true
+          }
+        }
+      },
+      "TokenPair": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accessToken", "refreshToken", "tokenType", "expiresIn"],
+        "properties": {
+          "accessToken": { "type": "string", "minLength": 1 },
+          "refreshToken": { "type": "string", "minLength": 1 },
+          "tokenType": { "type": "string", "const": "Bearer" },
+          "expiresIn": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Access-token lifetime in seconds."
+          }
+        }
+      },
+      "AuthSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tokens", "user"],
+        "properties": {
+          "tokens": { "$ref": "#/components/schemas/TokenPair" },
+          "user": { "$ref": "#/components/schemas/User" }
+        }
+      },
+      "User": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "email",
+          "fullName",
+          "status",
+          "roleCodes",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "email": { "type": "string", "format": "email" },
+          "fullName": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "avatarUrl": { "type": ["string", "null"], "format": "uri" },
+          "status": { "$ref": "#/components/schemas/UserStatus" },
+          "roleCodes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RoleCode" },
+            "uniqueItems": true
+          },
+          "lastLoginAt": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/UtcTimestamp" },
+              { "type": "null" }
+            ]
+          },
+          "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "UpdateUserRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "fullName": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "avatarUrl": { "type": ["string", "null"], "format": "uri" },
+          "status": { "$ref": "#/components/schemas/UserStatus" }
+        }
+      },
+      "UserList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/User" }
+          },
+          "pagination": { "$ref": "#/components/schemas/Pagination" }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "organizationId",
+          "name",
+          "code",
+          "status",
+          "createdBy",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
+          "description": { "type": ["string", "null"], "maxLength": 2000 },
+          "status": { "$ref": "#/components/schemas/ProjectStatus" },
+          "createdBy": { "$ref": "#/components/schemas/ResourceId" },
+          "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "CreateProjectRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "code"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
+          "description": { "type": "string", "maxLength": 2000 }
+        }
+      },
+      "UpdateProjectRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "description": { "type": ["string", "null"], "maxLength": 2000 },
+          "status": { "$ref": "#/components/schemas/ProjectStatus" }
+        }
+      },
+      "ProjectList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Project" }
+          },
+          "pagination": { "$ref": "#/components/schemas/Pagination" }
+        }
+      },
+      "ProjectMembership": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "organizationId",
+          "projectId",
+          "userId",
+          "status",
+          "joinedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "projectId": { "$ref": "#/components/schemas/ResourceId" },
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "status": { "$ref": "#/components/schemas/MembershipStatus" },
+          "joinedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "CreateProjectMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" }
+        }
+      },
+      "UpdateProjectMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {
+          "status": { "$ref": "#/components/schemas/MembershipStatus" }
+        }
+      },
+      "ProjectMembershipList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProjectMembership" }
+          },
+          "pagination": { "$ref": "#/components/schemas/Pagination" }
+        }
+      },
+      "Team": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "organizationId",
+          "projectId",
+          "name",
+          "code",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "projectId": { "$ref": "#/components/schemas/ResourceId" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
+          "description": { "type": ["string", "null"], "maxLength": 2000 },
+          "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "CreateTeamRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "code"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
+          "description": { "type": "string", "maxLength": 2000 }
+        }
+      },
+      "UpdateTeamRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "description": { "type": ["string", "null"], "maxLength": 2000 }
+        }
+      },
+      "TeamList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Team" }
+          },
+          "pagination": { "$ref": "#/components/schemas/Pagination" }
+        }
+      },
+      "TeamMembership": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "organizationId",
+          "projectId",
+          "teamId",
+          "userId",
+          "joinedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "projectId": { "$ref": "#/components/schemas/ResourceId" },
+          "teamId": { "$ref": "#/components/schemas/ResourceId" },
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "joinedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "CreateTeamMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" }
+        }
+      },
+      "TeamMembershipList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TeamMembership" }
+          },
+          "pagination": { "$ref": "#/components/schemas/Pagination" }
+        }
+      }
+    }
+  }
+}
