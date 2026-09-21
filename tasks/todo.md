@@ -18,6 +18,15 @@
 - [x] Create a Continuum-owned root commit on `main`.
 - [x] Push the root commit to `origin/main`.
 
+## IAM API contract v1
+
+- [x] Record the contract-first implementation plan and boundaries.
+- [x] Add failing OpenAPI contract conformance tests.
+- [x] Define Auth, User, Project, Project Membership, Team and Team Membership.
+- [x] Verify pagination, error, identifier and UTC timestamp conventions.
+- [x] Run the full quality and secret-scan gates.
+- [x] Review the final diff before committing and opening the PR.
+
 ## Explicitly out of scope
 
 - MongoDB/Mongoose schemas, indexes, migrations and backfills.
