@@ -1,0 +1,103 @@
+services:
+  redis-0:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-0-data:/data
+      - ./deploy/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-1:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-1-data:/data
+      - ./deploy/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-2:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-2-data:/data
+      - ./deploy/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-3:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-3-data:/data
+      - ./deploy/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-4:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-4-data:/data
+      - ./deploy/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-5:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-5-data:/data
+      - ./deploy/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-cluster-init:
+    image: redis:7.2-alpine
+    depends_on:
+      redis-0:
+        condition: service_healthy
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+      redis-3:
+        condition: service_healthy
+      redis-4:
+        condition: service_healthy
+      redis-5:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >-
+        redis-cli --cluster check redis-0:6379 >/dev/null 2>&1 ||
+        redis-cli --cluster create redis-0:6379 redis-1:6379 redis-2:6379
+        redis-3:6379 redis-4:6379 redis-5:6379 --cluster-replicas 1 --cluster-yes
+
+volumes:
+  redis-0-data:
+  redis-1-data:
+  redis-2-data:
+  redis-3-data:
+  redis-4-data:
+  redis-5-data:

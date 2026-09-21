@@ -34,5 +34,23 @@ describe('Health (e2e)', () => {
     expect(response.headers['access-control-allow-origin']).toBe(
       'http://localhost:3000',
     );
+    expect(response.headers['x-request-id']).toBeTruthy();
+  });
+
+  it('returns a structured error with the request id', async () => {
+    const server = app.getHttpServer() as App;
+
+    const response = await request(server)
+      .get('/api/v1/does-not-exist')
+      .set('x-request-id', 'architecture-check-1')
+      .expect(404);
+
+    expect(response.headers['x-request-id']).toBe('architecture-check-1');
+    expect(response.body).toEqual({
+      code: 'HTTP_404',
+      message: 'Cannot GET /api/v1/does-not-exist',
+      details: {},
+      requestId: 'architecture-check-1',
+    });
   });
 });

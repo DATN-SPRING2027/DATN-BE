@@ -1,0 +1,214 @@
+services:
+  redis:
+    image: redis:7.2-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mongo1:
+    image: mongo:7.0
+    command: mongod --bind_ip_all --replSet rs0
+    volumes:
+      - mongo1-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mongo2:
+    image: mongo:7.0
+    command: mongod --bind_ip_all --replSet rs0
+    volumes:
+      - mongo2-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mongo3:
+    image: mongo:7.0
+    command: mongod --bind_ip_all --replSet rs0
+    volumes:
+      - mongo3-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mongo-init:
+    image: mongo:7.0
+    depends_on:
+      mongo1:
+        condition: service_healthy
+      mongo2:
+        condition: service_healthy
+      mongo3:
+        condition: service_healthy
+    volumes:
+      - ./deploy/mongo/replica-init.js:/scripts/replica-init.js:ro
+    command: ["mongosh", "--host", "mongo1:27017", "/scripts/replica-init.js"]
+
+  api-gateway:
+    <<: &backend-service
+      build: .
+      env_file:
+        - .env.example
+      environment:
+        REDIS_HOST: redis
+        GATEWAY_PORT: 3000
+        IAM_SERVICE_URL: http://iam:3001
+        SWAGGER_ENABLED: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+      iam:
+        condition: service_started
+    command: node dist/gateway/main.js
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["edge"]
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${TLS_CERT_DIR:-./deploy/tls}/fullchain.pem:/etc/nginx/tls/fullchain.pem:ro
+      - ${TLS_CERT_DIR:-./deploy/tls}/privkey.pem:/etc/nginx/tls/privkey.pem:ro
+
+  iam:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3001
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_iam
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/iam/main.js
+  capture:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3002
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_capture
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/capture/main.js
+  jira:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3003
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_jira
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/jira/main.js
+  lifecycle:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3004
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_lifecycle
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/lifecycle/main.js
+  chat:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3005
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_chat
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/chat/main.js
+  handover:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3006
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_handover
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/handover/main.js
+  ingestion:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3007
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_ingestion
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/ingestion/main.js
+  notification:
+    <<: *backend-service
+    environment:
+      INFRA_ENABLED: "true"
+      SERVICE_PORT: 3008
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_DATABASE: continuum_notification
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    command: node dist/services/notification/main.js
+
+volumes:
+  redis-data:
+  mongo1-data:
+  mongo2-data:
+  mongo3-data:

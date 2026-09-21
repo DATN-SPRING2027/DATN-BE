@@ -1,0 +1,33 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-gateway
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "continuum-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  endpoints:
+    - port: http
+      path: /api/v1/metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-domain-services
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "continuum-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: domain-service
+  endpoints:
+    - port: http
+      path: /internal/metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

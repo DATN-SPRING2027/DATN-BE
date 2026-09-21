@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-redis-config
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    cluster-enabled yes
+    cluster-config-file nodes.conf
+    cluster-node-timeout 5000
+    appendonly yes
+    maxmemory 512mb
+    maxmemory-policy allkeys-lru
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-redis-headless
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "continuum-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+  ports:
+    - name: redis
+      port: {{ .Values.redis.port }}
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-redis
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ include "continuum-ai.fullname" . }}-redis-headless
+  replicas: {{ .Values.redis.replicas }}
+  selector:
+    matchLabels:
+      {{- include "continuum-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "continuum-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          command: ["redis-server", "/etc/redis/redis.conf"]
+          ports:
+            - name: redis
+              containerPort: {{ .Values.redis.port }}
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/redis
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "continuum-ai.fullname" . }}-redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-redis-init
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 12
+  template:
+    metadata:
+      labels:
+        {{- include "continuum-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: redis-init
+          image: {{ .Values.redis.image }}
+          command: ["sh", "-c"]
+          args:
+            - >-
+              until redis-cli -h {{ include "continuum-ai.fullname" . }}-redis-0.{{ include "continuum-ai.fullname" . }}-redis-headless ping;
+              do sleep 2; done;
+              redis-cli --cluster check {{ include "continuum-ai.fullname" . }}-redis-0.{{ include "continuum-ai.fullname" . }}-redis-headless:{{ .Values.redis.port }} >/dev/null 2>&1 ||
+              redis-cli --cluster create
+              {{- range $index, $_ := until (int .Values.redis.replicas) }} {{ include "continuum-ai.fullname" $ }}-redis-{{ $index }}.{{ include "continuum-ai.fullname" $ }}-redis-headless:{{ $.Values.redis.port }}{{- end }}
+              --cluster-replicas 1 --cluster-yes

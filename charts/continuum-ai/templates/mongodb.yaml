@@ -1,0 +1,94 @@
+{{- if .Values.mongodb.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-mongo-headless
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "continuum-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  ports:
+    - name: mongodb
+      port: {{ .Values.mongodb.port }}
+      targetPort: mongodb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-mongo
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  serviceName: {{ include "continuum-ai.fullname" . }}-mongo-headless
+  replicas: {{ .Values.mongodb.replicas }}
+  selector:
+    matchLabels:
+      {{- include "continuum-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        {{- include "continuum-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: {{ .Values.mongodb.image }}
+          command: ["mongod", "--bind_ip_all", "--replSet", "rs0"]
+          ports:
+            - name: mongodb
+              containerPort: {{ .Values.mongodb.port }}
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "continuum-ai.fullname" . }}-mongo-init
+  labels:
+    {{- include "continuum-ai.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 12
+  template:
+    metadata:
+      labels:
+        {{- include "continuum-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mongo-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mongo-init
+          image: {{ .Values.mongodb.image }}
+          command: ["mongosh", "--host", "{{ include "continuum-ai.fullname" . }}-mongo-0.{{ include "continuum-ai.fullname" . }}-mongo-headless:{{ .Values.mongodb.port }}", "--eval"]
+          args:
+            - >-
+              try { rs.status() } catch (e) {
+              rs.initiate({ _id: "rs0", members: [
+              { _id: 0, host: "{{ include "continuum-ai.fullname" . }}-mongo-0.{{ include "continuum-ai.fullname" . }}-mongo-headless:{{ .Values.mongodb.port }}" },
+              { _id: 1, host: "{{ include "continuum-ai.fullname" . }}-mongo-1.{{ include "continuum-ai.fullname" . }}-mongo-headless:{{ .Values.mongodb.port }}" },
+              { _id: 2, host: "{{ include "continuum-ai.fullname" . }}-mongo-2.{{ include "continuum-ai.fullname" . }}-mongo-headless:{{ .Values.mongodb.port }}" }
+              ] }) }
+{{- end }}

@@ -1,19 +1,17 @@
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
-import { ConfigService } from '@nestjs/config';
+import { Transport } from '@nestjs/microservices';
 import { AppModule } from './app.module';
-import { configureApplication, configureSwagger } from './bootstrap';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  const config = app.get(ConfigService);
-
-  configureApplication(app);
-
-  if (config.getOrThrow<boolean>('SWAGGER_ENABLED')) {
-    configureSwagger(app);
-  }
-
-  await app.listen(config.getOrThrow<number>('PORT'));
+  const app = await NestFactory.createMicroservice(AppModule, {
+    transport: Transport.REDIS,
+    options: {
+      host: process.env.REDIS_HOST ?? '127.0.0.1',
+      port: Number(process.env.REDIS_PORT ?? 6379),
+    },
+  });
+  await app.listen();
 }
 
 void bootstrap();
