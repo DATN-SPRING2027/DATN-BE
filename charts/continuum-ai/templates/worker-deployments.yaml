@@ -1,0 +1,36 @@
+{{- range $name, $worker := .Values.workers }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "continuum-ai.fullname" $ }}-worker-{{ $name }}
+  labels:
+    {{- include "continuum-ai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: worker
+    continuum.ai/worker: {{ $name }}
+spec:
+  replicas: {{ $worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "continuum-ai.selectorLabels" $ | nindent 6 }}
+      continuum.ai/worker: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "continuum-ai.selectorLabels" $ | nindent 8 }}
+        continuum.ai/worker: {{ $name }}
+    spec:
+      containers:
+        - name: worker
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["node", "dist/workers/main.js"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "continuum-ai.fullname" $ }}-config
+          env:
+            - name: WORKER_QUEUE
+              value: {{ $worker.queue | quote }}
+            - name: WORKER_CONCURRENCY
+              value: {{ $worker.concurrency | quote }}
+{{- end }}

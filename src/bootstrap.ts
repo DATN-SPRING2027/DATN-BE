@@ -1,9 +1,12 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import { requestIdMiddleware } from './common/http/request-id.middleware';
+import { StructuredExceptionFilter } from './common/http/structured-exception.filter';
 
 export function configureApplication(app: INestApplication): void {
   app.setGlobalPrefix('api/v1');
+  app.use(requestIdMiddleware);
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -22,6 +25,7 @@ export function configureApplication(app: INestApplication): void {
       whitelist: true,
     }),
   );
+  app.useGlobalFilters(new StructuredExceptionFilter());
 }
 
 export function configureSwagger(app: INestApplication): void {

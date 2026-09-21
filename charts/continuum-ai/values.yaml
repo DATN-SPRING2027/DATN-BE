@@ -1,0 +1,54 @@
+image:
+  repository: continuum-ai/backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+gateway:
+  replicas: 2
+  port: 3000
+  resources: {}
+
+ingress:
+  enabled: false
+  className: nginx
+  host: api.continuum.local
+  tlsSecretName: continuum-api-tls
+
+services:
+  iam: { port: 3001, database: continuum_iam, replicas: 1 }
+  capture: { port: 3002, database: continuum_capture, replicas: 1 }
+  jira: { port: 3003, database: continuum_jira, replicas: 1 }
+  lifecycle: { port: 3004, database: continuum_lifecycle, replicas: 1 }
+  chat: { port: 3005, database: continuum_chat, replicas: 1 }
+  handover: { port: 3006, database: continuum_handover, replicas: 1 }
+  ingestion: { port: 3007, database: continuum_ingestion, replicas: 1 }
+  notification: { port: 3008, database: continuum_notification, replicas: 1 }
+
+workers:
+  ingestion: { queue: ingestion-queue, replicas: 0, concurrency: 2 }
+  jira: { queue: jira-sync-queue, replicas: 0, concurrency: 2 }
+  mail: { queue: mail-queue, replicas: 0, concurrency: 2 }
+  handover: { queue: handover-queue, replicas: 0, concurrency: 2 }
+  universe: { queue: universe-projection, replicas: 0, concurrency: 2 }
+
+redis:
+  image: redis:7.2-alpine
+  replicas: 6
+  port: 6379
+
+mongodb:
+  enabled: true
+  uri: ""
+  image: mongo:7.0
+  replicas: 3
+  port: 27017
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+serviceMonitor:
+  enabled: false
+  interval: 15s

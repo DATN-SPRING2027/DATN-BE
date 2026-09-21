@@ -1,0 +1,65 @@
+{{- range $name, $service := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "continuum-ai.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "continuum-ai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: domain-service
+    continuum.ai/service: {{ $name }}
+spec:
+  replicas: {{ $service.replicas }}
+  selector:
+    matchLabels:
+      {{- include "continuum-ai.selectorLabels" $ | nindent 6 }}
+      continuum.ai/service: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "continuum-ai.selectorLabels" $ | nindent 8 }}
+        continuum.ai/service: {{ $name }}
+    spec:
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["node", "dist/services/{{ $name }}/main.js"]
+          ports:
+            - name: http
+              containerPort: {{ $service.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "continuum-ai.fullname" $ }}-config
+          env:
+            - name: SERVICE_PORT
+              value: {{ $service.port | quote }}
+            - name: MONGODB_URI
+              value: {{ $.Values.mongodb.uri | default (printf "mongodb://%s-mongo-0.%s-mongo-headless:27017,%s-mongo-1.%s-mongo-headless:27017,%s-mongo-2.%s-mongo-headless:27017/?replicaSet=rs0" (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $)) | quote }}
+            - name: MONGODB_DATABASE
+              value: {{ $service.database | quote }}
+          readinessProbe:
+            httpGet: { path: /internal/health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /internal/health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "continuum-ai.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "continuum-ai.labels" $ | nindent 4 }}
+    continuum.ai/service: {{ $name }}
+spec:
+  selector:
+    {{- include "continuum-ai.selectorLabels" $ | nindent 4 }}
+    continuum.ai/service: {{ $name }}
+  ports:
+    - name: http
+      port: {{ $service.port }}
+      targetPort: http
+{{- end }}

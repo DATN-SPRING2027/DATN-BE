@@ -1,0 +1,6 @@
+apiVersion: v2
+name: continuum-ai
+description: Continuum AI backend runtime topology
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
