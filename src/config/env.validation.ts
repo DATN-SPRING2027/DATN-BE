@@ -14,6 +14,7 @@ export interface EnvironmentVariables {
   REDIS_CLUSTER_NODES?: string;
   REDIS_PASSWORD?: string;
   INFRA_ENABLED: boolean;
+  MONGODB_ENABLED: boolean;
   MONGODB_URI: string;
   MONGODB_DATABASE: string;
   MONGODB_AUTO_INDEX: boolean;
@@ -42,8 +43,9 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   REDIS_CLUSTER_NODES: Joi.string().allow('').optional(),
   REDIS_PASSWORD: Joi.string().allow('').optional(),
   INFRA_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  MONGODB_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
   MONGODB_URI: Joi.string().uri().default('mongodb://127.0.0.1:27017'),
-  MONGODB_DATABASE: Joi.string().default('continuum'),
+  MONGODB_DATABASE: Joi.string().default('continuum_db'),
   MONGODB_AUTO_INDEX: Joi.boolean()
     .truthy('true')
     .falsy('false')
@@ -69,6 +71,15 @@ export function validateEnvironment(
 
   if (result.error) {
     throw new Error(`Environment validation failed: ${result.error.message}`);
+  }
+
+  if (
+    result.value.MONGODB_ENABLED &&
+    result.value.MONGODB_DATABASE !== 'continuum_db'
+  ) {
+    throw new Error(
+      'Environment validation failed: MONGODB_DATABASE must be continuum_db when MONGODB_ENABLED is true',
+    );
   }
 
   return result.value;

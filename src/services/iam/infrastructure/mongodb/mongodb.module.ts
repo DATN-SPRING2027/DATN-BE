@@ -12,15 +12,27 @@ import type { ServicePersistenceDefinition } from './mongodb.types';
 @Module({})
 export class MongoInfrastructureModule {
   static register(definition: ServicePersistenceDefinition): DynamicModule {
-    if (process.env.INFRA_ENABLED !== 'true') {
+    const sharedMongoEnabled = process.env.MONGODB_ENABLED === 'true';
+    const infrastructureEnabled = process.env.INFRA_ENABLED === 'true';
+
+    if (!sharedMongoEnabled && !infrastructureEnabled) {
       return { module: MongoInfrastructureModule };
     }
 
+    const collectionModels = definition.collections.map((collection) => ({
+      name: `${definition.databaseName}_${collection.name}`,
+      schema: createCollectionSchema(collection),
+    }));
+
+    if (sharedMongoEnabled) {
+      return {
+        module: MongoInfrastructureModule,
+        imports: [MongooseModule.forFeature(collectionModels)],
+      };
+    }
+
     const models = [
-      ...definition.collections.map((collection) => ({
-        name: `${definition.databaseName}_${collection.name}`,
-        schema: createCollectionSchema(collection),
-      })),
+      ...collectionModels,
       {
         name: `${definition.databaseName}_${OUTBOX_COLLECTION}`,
         schema: outboxSchema,
