@@ -14,7 +14,6 @@ import { AuthenticationController } from './controllers/authentication.controlle
 import { IamController } from './controllers/iam.controller';
 import { IamInfrastructureModule } from './infrastructure/iam.infrastructure.module';
 import { AuthenticationRepository } from './infrastructure/mongodb/authentication.repository';
-import { UserCredentialRepository } from './infrastructure/mongodb/user-credential.repository';
 import { UserDirectoryController } from './controllers/user-directory.controller';
 import { UserDirectoryService } from './application/users/user-directory.service';
 import { USER_DIRECTORY_REPOSITORY } from './application/users/user-directory.repository';
@@ -48,7 +47,6 @@ import { RedisService } from './infrastructure/redis/redis.service';
       useClass: AuthenticationRepository,
     },
     PasswordCredentialService,
-    UserCredentialRepository,
     UserDirectoryService,
     {
       provide: USER_DIRECTORY_REPOSITORY,

@@ -4,6 +4,7 @@ export type NodeEnvironment = 'development' | 'test' | 'production';
 
 export interface EnvironmentVariables {
   NODE_ENV: NodeEnvironment;
+  JWT_SECRET?: string;
   PORT: number;
   GATEWAY_PORT: number;
   SERVICE_PORT: number;
@@ -33,6 +34,7 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
     .default('development'),
+  JWT_SECRET: Joi.string().min(32).optional(),
   PORT: Joi.number().integer().min(1).max(65535).default(3001),
   GATEWAY_PORT: Joi.number().integer().min(1).max(65535).default(3000),
   SERVICE_PORT: Joi.number().integer().min(1).max(65535).default(3001),

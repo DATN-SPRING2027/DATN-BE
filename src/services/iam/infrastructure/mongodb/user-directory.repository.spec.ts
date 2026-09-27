@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import type { Connection } from 'mongoose';
+import type { Connection, PipelineStage } from 'mongoose';
 import { MongoUserDirectoryRepository } from './user-directory.repository';
 
 const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';
@@ -31,49 +31,45 @@ function chain(result: unknown) {
 
 describe('MongoUserDirectoryRepository', () => {
   it('lists only assigned organization users, paginates, and never returns credentials', async () => {
-    const assignmentsForScope = chain([{ userId: new Types.ObjectId(userId) }]);
     const assignmentsForPage = chain([
       { userId: new Types.ObjectId(userId), roleCode: 'MEMBER' },
     ]);
-    const usersForPage = chain([user]);
-    const rolesModel = {
-      find: jest
+    const aggregate = {
+      allowDiskUse: jest.fn(),
+      exec: jest
         .fn()
-        .mockReturnValueOnce(assignmentsForScope)
-        .mockReturnValueOnce(assignmentsForPage),
+        .mockResolvedValue([{ data: [user], total: [{ count: 1 }] }]),
     };
-    const usersModel = {
-      countDocuments: jest.fn().mockReturnValue(chain(1)),
-      find: jest.fn().mockReturnValue(usersForPage),
+    aggregate.allowDiskUse.mockReturnValue(aggregate);
+    let pipeline: PipelineStage[] = [];
+    const rolesModel = {
+      aggregate: jest.fn((stages: PipelineStage[]) => {
+        pipeline = stages;
+        return aggregate;
+      }),
+      find: jest.fn().mockReturnValue(assignmentsForPage),
     };
     const connection = {
       models: {
-        continuum_iam_users: usersModel,
         continuum_iam_role_assignments: rolesModel,
       },
     } as unknown as Connection;
 
     const result = await new MongoUserDirectoryRepository(connection).list(
       organizationId,
-      { page: 2, pageSize: 10, status: 'ACTIVE' },
+      { page: 2, pageSize: 10, status: 'ACTIVE', roleCode: 'MEMBER' },
     );
 
-    const roleFindCalls = rolesModel.find.mock.calls as unknown as Array<
-      [unknown, unknown?]
-    >;
-    const userFindCalls = usersModel.find.mock.calls as unknown as Array<
-      [unknown, unknown?]
-    >;
-    expect(roleFindCalls[0][0]).toMatchObject({
-      organizationId: new Types.ObjectId(organizationId),
+    expect(pipeline[0]).toMatchObject({
+      $match: {
+        organizationId: new Types.ObjectId(organizationId),
+        roleCode: 'MEMBER',
+      },
     });
-    expect(userFindCalls[0][0]).toMatchObject({
-      _id: { $in: [new Types.ObjectId(userId)] },
-      status: 'ACTIVE',
-    });
-    expect(userFindCalls[0][1]).not.toHaveProperty('passwordHash');
-    expect(usersForPage.skip).toHaveBeenCalledWith(10);
-    expect(usersForPage.limit).toHaveBeenCalledWith(10);
+    expect(pipeline).toContainEqual({ $match: { 'user.status': 'ACTIVE' } });
+    expect(JSON.stringify(pipeline)).not.toContain('passwordHash');
+    expect(JSON.stringify(pipeline)).toContain('"$skip":10');
+    expect(aggregate.allowDiskUse).toHaveBeenCalledWith(true);
     expect(result.totalItems).toBe(1);
     expect(result.data[0]).toMatchObject({
       id: userId,

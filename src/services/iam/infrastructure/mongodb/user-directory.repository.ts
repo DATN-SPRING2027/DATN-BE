@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, Optional } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
-import type { Connection, Model } from 'mongoose';
+import type { Connection, Model, PipelineStage } from 'mongoose';
 import type {
   UserDirectoryRepository as UserDirectoryRepositoryPort,
   UserListQuery,
@@ -24,6 +24,10 @@ interface UserDocument {
 interface AssignmentDocument {
   userId: Types.ObjectId;
   roleCode: string;
+}
+interface UserListFacet {
+  data: UserDocument[];
+  total: { count: number }[];
 }
 
 const modelName = (name: string) => `${IAM_PERSISTENCE.databaseName}_${name}`;
@@ -68,37 +72,47 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
 
   async list(organizationId: string, query: UserListQuery) {
     const organizationObjectId = new Types.ObjectId(organizationId);
-    const assignments = await this.assignments()
-      .find(
-        {
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
           organizationId: organizationObjectId,
           ...organizationLevel,
           ...(query.roleCode ? { roleCode: query.roleCode } : {}),
         },
-        { userId: 1, _id: 0 },
-      )
-      .lean()
+      },
+      { $group: { _id: '$userId' } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          pipeline: [{ $project: publicUserFields }],
+          as: 'user',
+        },
+      },
+      { $unwind: '$user' },
+      ...(query.status
+        ? [{ $match: { 'user.status': query.status } } as PipelineStage]
+        : []),
+      { $sort: { 'user.createdAt': -1, _id: -1 } },
+      {
+        $facet: {
+          data: [
+            { $skip: (query.page - 1) * query.pageSize },
+            { $limit: query.pageSize },
+            { $replaceRoot: { newRoot: '$user' } },
+          ],
+          total: [{ $count: 'count' }],
+        },
+      },
+    ];
+    const [facet] = await this.assignments()
+      .aggregate<UserListFacet>(pipeline)
+      .allowDiskUse(true)
       .exec();
-    const ids = [...new Set(assignments.map((row) => String(row.userId)))].map(
-      (id) => new Types.ObjectId(id),
-    );
-    const filter = {
-      _id: { $in: ids },
-      ...(query.status ? { status: query.status } : {}),
-    };
-    const [totalItems, rows] = await Promise.all([
-      this.users().countDocuments(filter).exec(),
-      this.users()
-        .find(filter, publicUserFields)
-        .sort({ createdAt: -1, _id: -1 })
-        .skip((query.page - 1) * query.pageSize)
-        .limit(query.pageSize)
-        .lean()
-        .exec(),
-    ]);
     return {
-      data: await this.withRoles(organizationObjectId, rows),
-      totalItems,
+      data: await this.withRoles(organizationObjectId, facet?.data ?? []),
+      totalItems: facet?.total[0]?.count ?? 0,
     };
   }
 

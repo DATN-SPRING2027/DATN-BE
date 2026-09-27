@@ -120,6 +120,24 @@ describe('AccessTokenService', () => {
     ).toThrow(new AccessTokenError('INVALID_CLAIMS'));
   });
 
+  it('allows five seconds of issuer clock skew but rejects a larger offset', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-26T00:00:10.000Z'));
+    const service = new AccessTokenService(createConfig(SECRET));
+    const token = service.signAccessToken({
+      sub: 'user-123',
+      email: 'person@example.com',
+      orgId: 'org-456',
+      roles: [],
+    });
+
+    jest.setSystemTime(new Date('2026-09-26T00:00:05.000Z'));
+    expect(() => service.verifyAccessToken(token)).not.toThrow();
+    jest.setSystemTime(new Date('2026-09-26T00:00:04.000Z'));
+    expect(() => service.verifyAccessToken(token)).toThrow(
+      new AccessTokenError('INVALID_CLAIMS'),
+    );
+  });
+
   it('rejects claims with an excessive lifetime or unsupported fields', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-26T00:00:00.000Z'));
     const now = Math.floor(Date.now() / 1000);
@@ -161,7 +179,7 @@ describe('AccessTokenService', () => {
     ).toThrow(AccessTokenClaimsError);
   });
 
-  it('validates JWT_SECRET lazily and never includes its value in errors', () => {
+  it('validates JWT_SECRET at startup and never includes its value in errors', () => {
     expect(() => validateJwtSecret(undefined)).toThrow(
       new JwtConfigurationError('JWT_SECRET_REQUIRED'),
     );
@@ -169,6 +187,13 @@ describe('AccessTokenService', () => {
       new JwtConfigurationError('JWT_SECRET_TOO_SHORT'),
     );
     expect(validateJwtSecret(SECRET)).toBe(SECRET);
+
+    expect(() =>
+      new AccessTokenService(createConfig(undefined)).onModuleInit(),
+    ).toThrow('JWT_SECRET_REQUIRED');
+    expect(() =>
+      new AccessTokenService(createConfig('short-secret')).onModuleInit(),
+    ).toThrow('JWT_SECRET_TOO_SHORT');
 
     expect(() =>
       new AccessTokenService(createConfig(undefined)).signAccessToken({

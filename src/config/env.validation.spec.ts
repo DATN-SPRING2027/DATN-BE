@@ -23,6 +23,7 @@ describe('validateEnvironment', () => {
     [{ PORT: 'not-a-number' }, 'PORT'],
     [{ SWAGGER_ENABLED: 'sometimes' }, 'SWAGGER_ENABLED'],
     [{ MONGODB_ENABLED: 'sometimes' }, 'MONGODB_ENABLED'],
+    [{ JWT_SECRET: 'too-short' }, 'JWT_SECRET'],
   ])('rejects invalid configuration %p', (environment, field) => {
     expect(() => validateEnvironment(environment)).toThrow(field);
   });

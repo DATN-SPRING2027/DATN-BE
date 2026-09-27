@@ -37,6 +37,7 @@ const ALLOWED_CLAIM_NAMES = new Set([
 ]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLOCK_TOLERANCE_SECONDS = 5;
 
 export function validateAccessTokenClaims(
   value: unknown,
@@ -82,7 +83,7 @@ export function validateAccessTokenClaims(
     throw new AccessTokenClaimsError('EXPIRED');
   }
   if (
-    issuedAt > nowSeconds ||
+    issuedAt > nowSeconds + CLOCK_TOLERANCE_SECONDS ||
     expiresAt <= issuedAt ||
     expiresAt - issuedAt > maxLifetimeSeconds
   ) {

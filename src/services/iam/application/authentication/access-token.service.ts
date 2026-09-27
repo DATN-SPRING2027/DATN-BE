@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
@@ -43,8 +43,12 @@ export class AccessTokenError extends Error {
 }
 
 @Injectable()
-export class AccessTokenService {
+export class AccessTokenService implements OnModuleInit {
   constructor(private readonly config: ConfigService) {}
+
+  onModuleInit(): void {
+    validateJwtSecret(this.config.get<unknown>('JWT_SECRET'));
+  }
 
   signAccessToken(claims: AccessTokenClaimsInput): string {
     const issuedAt = Math.floor(Date.now() / 1000);

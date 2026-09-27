@@ -89,6 +89,26 @@ integration('User status invariants in continuum_db', () => {
     await connection.close();
   }, 30000);
 
+  it('lists a bounded page with role and status filters without exposing credentials', async () => {
+    const first = await repository.list(organizationA.toHexString(), {
+      page: 1,
+      pageSize: 2,
+      roleCode: 'ADMIN',
+      status: 'ACTIVE',
+    });
+    const second = await repository.list(organizationA.toHexString(), {
+      page: 2,
+      pageSize: 2,
+      roleCode: 'ADMIN',
+      status: 'ACTIVE',
+    });
+    expect(first.totalItems).toBe(3);
+    expect(first.data).toHaveLength(2);
+    expect(second.totalItems).toBe(3);
+    expect(second.data).toHaveLength(1);
+    expect(JSON.stringify([first, second])).not.toContain('passwordHash');
+  }, 30000);
+
   it('serializes concurrent suspension of the last two admins', async () => {
     // The shared account remains active in A, so first remove its A role.
     await connection.collection('role_assignments').deleteOne({
