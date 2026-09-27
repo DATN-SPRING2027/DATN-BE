@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnvironment } from '../config/env.validation';
 import { MetricsModule } from '../common/observability/metrics.module';
 import { GatewayHealthController } from './gateway-health.controller';
+import { GatewayIamController } from './gateway-iam.controller';
 
 @Module({
   imports: [
@@ -13,6 +14,6 @@ import { GatewayHealthController } from './gateway-health.controller';
     }),
     MetricsModule,
   ],
-  controllers: [GatewayHealthController],
+  controllers: [GatewayHealthController, GatewayIamController],
 })
 export class GatewayModule {}
