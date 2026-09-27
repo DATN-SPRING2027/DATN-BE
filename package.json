@@ -8,7 +8,7 @@
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "npm run start:gateway",
+    "start": "npm run start:legacy-monolith",
     "start:legacy-monolith": "nest start",
     "start:gateway": "nest start --entryFile gateway/main",
     "start:iam": "nest start --entryFile services/iam/main",

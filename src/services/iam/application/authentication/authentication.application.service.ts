@@ -2,10 +2,15 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
+import {
+  AUTH_SECURITY_STORE,
+  type AuthSecurityStore,
+} from './auth-security.store';
 import {
   AUTHENTICATION_REPOSITORY,
   type AuthenticationRepositoryPort,
@@ -95,9 +100,26 @@ export class AuthenticationApplicationService {
     private readonly organizationResolver: OrganizationContextResolver,
     private readonly credentials: PasswordCredentialService,
     private readonly accessTokens: AccessTokenService,
+    @Inject(AUTH_SECURITY_STORE)
+    private readonly securityStore: AuthSecurityStore,
   ) {}
 
   async login(input: LoginInput): Promise<LoginResult> {
+    const emailKey = createHash('sha256')
+      .update(input.email.trim().toLowerCase())
+      .digest('hex');
+    if (
+      !(await this.securityStore.consumeRateLimit(
+        `auth:login:${emailKey}`,
+        5,
+        900,
+      ))
+    ) {
+      throw new HttpException(
+        { code: 'LOGIN_RATE_LIMITED', message: 'Too many login attempts.' },
+        429,
+      );
+    }
     const account = await this.repository.findAccountByEmail(input.email);
     if (!account) throw unauthorized();
 
@@ -112,6 +134,7 @@ export class AuthenticationApplicationService {
       throw error;
     }
     if (!verification.verified) throw unauthorized();
+    await this.securityStore.clearRateLimit(`auth:login:${emailKey}`);
 
     const eligibility = this.eligibilityPolicy.evaluate({
       userStatus: account.status,
@@ -166,6 +189,14 @@ export class AuthenticationApplicationService {
       throw error;
     }
 
+    if (
+      await this.securityStore.isTokenRevoked(
+        createHash('sha256').update(token).digest('hex'),
+      )
+    ) {
+      throw unauthorized();
+    }
+
     const profile = await this.repository.findProfileById(claims.sub);
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
 
@@ -178,7 +209,25 @@ export class AuthenticationApplicationService {
     };
   }
 
-  async logout(cookieHeader: string | undefined): Promise<void> {
+  async logout(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<void> {
+    const accessToken = extractAccessToken(authorization, cookieHeader);
+    if (accessToken) {
+      try {
+        const claims = this.accessTokens.verifyAccessToken(accessToken);
+        const remainingSeconds = claims.exp - Math.floor(Date.now() / 1000);
+        if (remainingSeconds > 0) {
+          await this.securityStore.revokeToken(
+            createHash('sha256').update(accessToken).digest('hex'),
+            remainingSeconds,
+          );
+        }
+      } catch (error) {
+        if (!(error instanceof AccessTokenError)) throw error;
+      }
+    }
     const refreshToken = extractRefreshToken(cookieHeader);
     if (!refreshToken) return;
 

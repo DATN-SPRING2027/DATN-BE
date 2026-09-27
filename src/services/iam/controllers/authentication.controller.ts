@@ -99,12 +99,13 @@ export class AuthenticationController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(
+    @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ status: 'logged_out' }> {
     response.setHeader('Cache-Control', 'no-store');
     try {
-      await this.service.logout(cookie);
+      await this.service.logout(authorization, cookie);
       return { status: 'logged_out' };
     } finally {
       response.setHeader('Set-Cookie', clearAccessCookie());

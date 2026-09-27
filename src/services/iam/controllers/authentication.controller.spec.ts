@@ -156,6 +156,7 @@ describe('AuthenticationController', () => {
       .expect({ status: 'logged_out' });
 
     expect(service.logout).toHaveBeenCalledWith(
+      undefined,
       'continuum_refresh=opaque-refresh',
     );
     expect(response.headers['set-cookie'][0]).toContain('continuum_access=');

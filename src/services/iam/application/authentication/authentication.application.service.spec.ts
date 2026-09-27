@@ -41,6 +41,12 @@ describe('AuthenticationApplicationService', () => {
     signAccessToken: jest.Mock;
     verifyAccessToken: jest.Mock;
   };
+  let securityStore: {
+    consumeRateLimit: jest.Mock;
+    clearRateLimit: jest.Mock;
+    isTokenRevoked: jest.Mock;
+    revokeToken: jest.Mock;
+  };
   let service: AuthenticationApplicationService;
 
   beforeEach(() => {
@@ -83,12 +89,19 @@ describe('AuthenticationApplicationService', () => {
         jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
       }),
     };
+    securityStore = {
+      consumeRateLimit: jest.fn().mockResolvedValue(true),
+      clearRateLimit: jest.fn().mockResolvedValue(undefined),
+      isTokenRevoked: jest.fn().mockResolvedValue(false),
+      revokeToken: jest.fn().mockResolvedValue(undefined),
+    };
     service = new AuthenticationApplicationService(
       repository,
       eligibilityPolicy,
       organizationResolver,
       credentials,
       accessTokens as never,
+      securityStore,
     );
   });
 
@@ -115,6 +128,9 @@ describe('AuthenticationApplicationService', () => {
       orgId: ORG_ID,
       roles: ['ADMIN', 'MEMBER'],
     });
+    expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
+      expect.stringMatching(/^auth:login:[a-f0-9]{64}$/),
+    );
   });
 
   it('passes an explicit organization selector to the server-side resolver', async () => {
@@ -233,6 +249,21 @@ describe('AuthenticationApplicationService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('limits login attempts before expensive password verification', async () => {
+    securityStore.consumeRateLimit.mockResolvedValue(false);
+    await expect(
+      service.login({ email: 'Person@Example.com', password: 'wrong' }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(repository.findAccountByEmail.mock.calls).toHaveLength(0);
+    expect(credentials.verifyPassword.mock.calls).toHaveLength(0);
+    expect(securityStore.clearRateLimit.mock.calls).toHaveLength(0);
+    expect(securityStore.consumeRateLimit).toHaveBeenCalledWith(
+      expect.stringMatching(/^auth:login:[a-f0-9]{64}$/),
+      5,
+      900,
+    );
+  });
+
   it('returns the verified token identity at /me, including organization and roles', async () => {
     await expect(
       service.getCurrentIdentity('Bearer any.valid-token', undefined),
@@ -253,6 +284,26 @@ describe('AuthenticationApplicationService', () => {
     });
     await expect(
       service.getCurrentIdentity('Bearer any.valid-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects a revoked access token when replayed after logout', async () => {
+    const claims = accessTokens.verifyAccessToken() as { exp: number };
+    accessTokens.verifyAccessToken.mockReturnValue({
+      ...claims,
+      exp: Math.floor(Date.now() / 1000) + 600,
+    });
+    await service.logout(undefined, 'continuum_access=signed-access-token');
+    expect(securityStore.revokeToken).toHaveBeenCalledWith(
+      createHash('sha256').update('signed-access-token').digest('hex'),
+      expect.any(Number),
+    );
+    securityStore.isTokenRevoked.mockResolvedValue(true);
+    await expect(
+      service.getCurrentIdentity(
+        undefined,
+        'continuum_access=signed-access-token',
+      ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -280,18 +331,18 @@ describe('AuthenticationApplicationService', () => {
   });
 
   it('revokes a presented refresh session by SHA-256 hash and is idempotent when absent', async () => {
-    await service.logout('continuum_refresh=refresh-secret');
+    await service.logout(undefined, 'continuum_refresh=refresh-secret');
     expect(repository.revokeRefreshSessionByHash.mock.calls).toContainEqual([
       createHash('sha256').update('refresh-secret').digest('hex'),
     ]);
 
     repository.revokeRefreshSessionByHash.mockResolvedValue(false);
     await expect(
-      service.logout('continuum_refresh=refresh-secret'),
+      service.logout(undefined, 'continuum_refresh=refresh-secret'),
     ).resolves.toBeUndefined();
     const callsAfterToken =
       repository.revokeRefreshSessionByHash.mock.calls.length;
-    await expect(service.logout(undefined)).resolves.toBeUndefined();
+    await expect(service.logout(undefined, undefined)).resolves.toBeUndefined();
     expect(repository.revokeRefreshSessionByHash.mock.calls).toHaveLength(
       callsAfterToken,
     );

@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { ConflictException, Injectable, Optional } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
@@ -143,10 +143,105 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     changes: UserUpdate,
   ): Promise<UserRecord | null> {
     if (!(await this.find(organizationId, userId))) return null;
+    if (changes.status !== undefined) {
+      await this.updateStatusAtomically(organizationId, userId, changes);
+      return this.find(organizationId, userId);
+    }
     await this.users()
       .updateOne({ _id: new Types.ObjectId(userId) }, { $set: changes })
       .exec();
     return this.find(organizationId, userId);
+  }
+
+  private async updateStatusAtomically(
+    organizationId: string,
+    userId: string,
+    changes: UserUpdate,
+  ): Promise<void> {
+    if (!this.connection)
+      throw new Error('User directory persistence unavailable');
+    const session = await this.connection.startSession();
+    const userObjectId = new Types.ObjectId(userId);
+    const organizationObjectId = new Types.ObjectId(organizationId);
+    try {
+      await session.withTransaction(async () => {
+        const organizations = await this.assignments()
+          .distinct('organizationId', {
+            userId: userObjectId,
+            ...organizationLevel,
+          })
+          .session(session)
+          .exec();
+        if (
+          organizations.length !== 1 ||
+          String(organizations[0]) !== organizationId
+        ) {
+          throw new ConflictException({
+            code: 'SHARED_ACCOUNT_STATUS_CHANGE',
+            message: 'Status of a shared account cannot be changed here.',
+          });
+        }
+
+        // Every status update writes the same organization document before
+        // counting admins. Concurrent transactions then conflict and retry.
+        const guard = await this.organizations()
+          .updateOne(
+            { _id: organizationObjectId },
+            { $currentDate: { updatedAt: true } },
+            { session },
+          )
+          .exec();
+        if (guard.matchedCount !== 1) {
+          throw new ConflictException({
+            code: 'ORGANIZATION_NOT_FOUND',
+            message: 'Organization is unavailable.',
+          });
+        }
+
+        const existing = await this.users()
+          .findById(userObjectId, { status: 1 })
+          .session(session)
+          .lean()
+          .exec();
+        if (!existing) return;
+        if (existing.status === 'ACTIVE' && changes.status !== 'ACTIVE') {
+          const assignment = await this.assignments()
+            .exists({
+              organizationId: organizationObjectId,
+              userId: userObjectId,
+              roleCode: 'ADMIN',
+              ...organizationLevel,
+            })
+            .session(session);
+          if (assignment) {
+            const ids = await this.assignments()
+              .distinct('userId', {
+                organizationId: organizationObjectId,
+                roleCode: 'ADMIN',
+                ...organizationLevel,
+              })
+              .session(session)
+              .exec();
+            const count = await this.users()
+              .countDocuments({ _id: { $in: ids }, status: 'ACTIVE' })
+              .session(session)
+              .exec();
+            if (count <= 1) {
+              throw new ConflictException({
+                code: 'LAST_ACTIVE_ADMIN',
+                message:
+                  'The last active organization admin cannot be suspended.',
+              });
+            }
+          }
+        }
+        await this.users()
+          .updateOne({ _id: userObjectId }, { $set: changes }, { session })
+          .exec();
+      });
+    } finally {
+      await session.endSession();
+    }
   }
 
   async countActiveAdmins(organizationId: string): Promise<number> {
@@ -216,6 +311,16 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     if (!model)
       throw new Error(
         'User directory persistence unavailable: assignments model',
+      );
+    return model;
+  }
+
+  private organizations(): Model<{ _id: Types.ObjectId }> {
+    const model = this.connection?.models[modelName('organizations')] as
+      Model<{ _id: Types.ObjectId }> | undefined;
+    if (!model)
+      throw new Error(
+        'User directory persistence unavailable: organizations model',
       );
     return model;
   }
