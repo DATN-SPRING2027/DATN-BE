@@ -140,6 +140,24 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     return user ? { name: user.fullName, status: user.status } : null;
   }
 
+  async replacePasswordHashIfCurrent(
+    userId: string,
+    currentHash: string,
+    replacementHash: string,
+  ): Promise<void> {
+    if (!Types.ObjectId.isValid(userId)) return;
+    const model = this.getModel<UserDocument>(
+      USERS_MODEL,
+      'USER_MODEL_UNAVAILABLE',
+    );
+    await model
+      .updateOne(
+        { _id: new Types.ObjectId(userId), passwordHash: currentHash },
+        { $set: { passwordHash: replacementHash } },
+      )
+      .exec();
+  }
+
   async revokeRefreshSessionByHash(tokenHash: string): Promise<boolean> {
     const model = this.getModel<RefreshSessionDocument>(
       REFRESH_SESSIONS_MODEL,

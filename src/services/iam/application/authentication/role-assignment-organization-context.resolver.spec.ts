@@ -13,6 +13,7 @@ describe('RoleAssignmentOrganizationContextResolver', () => {
       findAccountByEmail: jest.fn(),
       findOrganizationRoleAssignments: jest.fn().mockResolvedValue([]),
       findProfileById: jest.fn(),
+      replacePasswordHashIfCurrent: jest.fn(),
       revokeRefreshSessionByHash: jest.fn(),
     };
     resolver = new RoleAssignmentOrganizationContextResolver(repository);

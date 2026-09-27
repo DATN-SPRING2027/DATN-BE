@@ -1,16 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { randomBytes } from 'node:crypto';
+import * as bcrypt from 'bcryptjs';
 import {
-  hash as argon2Hash,
   parseOptions,
   verify as argon2Verify,
   type ParsedHashOptions,
 } from '@node-rs/argon2';
 import {
   PASSWORD_HASH_VERIFICATION_LIMITS,
-  PROVISIONAL_PASSWORD_HASH_PROFILE,
-  createProvisionalPasswordHashOptions,
+  LEGACY_ARGON2_HASH_PROFILE,
 } from './password-hash-policy';
+
+const BCRYPT_ROUNDS = 12;
+const BCRYPT_HASH_PATTERN = /^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/;
 
 export type PasswordHashFormatFailure =
   'MALFORMED' | 'UNSUPPORTED' | 'RESOURCE_LIMIT';
@@ -30,19 +31,16 @@ export interface PasswordVerificationResult {
 @Injectable()
 export class PasswordCredentialService {
   async hashPassword(password: string): Promise<string> {
-    const salt = randomBytes(PROVISIONAL_PASSWORD_HASH_PROFILE.saltLengthBytes);
-    const encodedHash = await argon2Hash(
-      password,
-      createProvisionalPasswordHashOptions(salt),
-    );
-
-    // Fail closed if the selected native package ever stops honoring the
-    // explicit PHC profile. Do not include password/hash material in errors.
-    const parsed = this.parseSupportedHash(encodedHash);
-    if (this.requiresRehash(parsed)) {
+    if (bcrypt.truncates(password)) {
+      throw new PasswordHashFormatError('RESOURCE_LIMIT');
+    }
+    const encodedHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    if (
+      !BCRYPT_HASH_PATTERN.test(encodedHash) ||
+      bcrypt.getRounds(encodedHash) !== BCRYPT_ROUNDS
+    ) {
       throw new Error('Generated password hash does not match the profile');
     }
-
     return encodedHash;
   }
 
@@ -50,12 +48,26 @@ export class PasswordCredentialService {
     encodedHash: string,
     password: string,
   ): Promise<PasswordVerificationResult> {
-    const parsed = this.parseSupportedHash(encodedHash);
+    if (encodedHash.startsWith('$2')) {
+      const match = BCRYPT_HASH_PATTERN.exec(encodedHash);
+      if (!match) throw new PasswordHashFormatError('MALFORMED');
+      const rounds = Number(match[1]);
+      if (rounds > BCRYPT_ROUNDS)
+        throw new PasswordHashFormatError('RESOURCE_LIMIT');
+      if (rounds < 4) throw new PasswordHashFormatError('UNSUPPORTED');
+      if (bcrypt.truncates(password))
+        return { verified: false, needsRehash: false };
+      const verified = await bcrypt.compare(password, encodedHash);
+      return { verified, needsRehash: verified && rounds !== BCRYPT_ROUNDS };
+    }
+
+    this.parseSupportedHash(encodedHash);
     const verified = await argon2Verify(encodedHash, password);
 
     return {
       verified,
-      needsRehash: verified && this.requiresRehash(parsed),
+      // Long legacy passwords cannot be migrated without bcrypt truncation.
+      needsRehash: verified && !bcrypt.truncates(password),
     };
   }
 
@@ -75,10 +87,10 @@ export class PasswordCredentialService {
     }
 
     if (
-      parsed.algorithm !== PROVISIONAL_PASSWORD_HASH_PROFILE.algorithm ||
-      parsed.version !== PROVISIONAL_PASSWORD_HASH_PROFILE.version ||
-      parsed.outputLen !== PROVISIONAL_PASSWORD_HASH_PROFILE.outputLen ||
-      parsed.saltLen !== PROVISIONAL_PASSWORD_HASH_PROFILE.saltLengthBytes
+      parsed.algorithm !== LEGACY_ARGON2_HASH_PROFILE.algorithm ||
+      parsed.version !== LEGACY_ARGON2_HASH_PROFILE.version ||
+      parsed.outputLen !== LEGACY_ARGON2_HASH_PROFILE.outputLen ||
+      parsed.saltLen !== LEGACY_ARGON2_HASH_PROFILE.saltLengthBytes
     ) {
       throw new PasswordHashFormatError('UNSUPPORTED');
     }
@@ -98,17 +110,5 @@ export class PasswordCredentialService {
     }
 
     return parsed;
-  }
-
-  private requiresRehash(parsed: ParsedHashOptions): boolean {
-    return (
-      parsed.algorithm !== PROVISIONAL_PASSWORD_HASH_PROFILE.algorithm ||
-      parsed.version !== PROVISIONAL_PASSWORD_HASH_PROFILE.version ||
-      parsed.memoryCost !== PROVISIONAL_PASSWORD_HASH_PROFILE.memoryCost ||
-      parsed.timeCost !== PROVISIONAL_PASSWORD_HASH_PROFILE.timeCost ||
-      parsed.parallelism !== PROVISIONAL_PASSWORD_HASH_PROFILE.parallelism ||
-      parsed.outputLen !== PROVISIONAL_PASSWORD_HASH_PROFILE.outputLen ||
-      parsed.saltLen !== PROVISIONAL_PASSWORD_HASH_PROFILE.saltLengthBytes
-    );
   }
 }

@@ -157,6 +157,17 @@ export class AuthenticationApplicationService {
     }
     if (organization.outcome !== 'RESOLVED') throw unauthorized();
 
+    if (verification.needsRehash) {
+      const replacementHash = await this.credentials.hashPassword(
+        input.password,
+      );
+      await this.repository.replacePasswordHashIfCurrent(
+        account.userId,
+        account.passwordHash,
+        replacementHash,
+      );
+    }
+
     const identity: AuthenticatedIdentity = {
       id: account.userId,
       email: account.email,

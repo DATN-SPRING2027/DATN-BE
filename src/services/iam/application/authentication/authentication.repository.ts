@@ -25,5 +25,10 @@ export interface AuthenticationRepositoryPort {
     userId: string,
   ): Promise<OrganizationRoleAssignment[]>;
   findProfileById(userId: string): Promise<AuthenticationProfile | null>;
+  replacePasswordHashIfCurrent(
+    userId: string,
+    currentHash: string,
+    replacementHash: string,
+  ): Promise<void>;
   revokeRefreshSessionByHash(tokenHash: string): Promise<boolean>;
 }

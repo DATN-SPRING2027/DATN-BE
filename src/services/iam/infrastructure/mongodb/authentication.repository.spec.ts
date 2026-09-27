@@ -93,6 +93,30 @@ describe('AuthenticationRepository', () => {
     expect(model.find).not.toHaveBeenCalled();
   });
 
+  it('replaces a verified legacy hash only if it is still current', async () => {
+    const updateQuery = {
+      exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const userModel = { updateOne: jest.fn().mockReturnValue(updateQuery) };
+    const connection = {
+      models: { continuum_iam_users: userModel },
+    } as unknown as Connection;
+
+    await new AuthenticationRepository(connection).replacePasswordHashIfCurrent(
+      '651a2b3c4d5e6f7a8b9c0d1e',
+      '$argon2id$legacy',
+      '$2b$12$replacement',
+    );
+
+    expect(userModel.updateOne).toHaveBeenCalledWith(
+      {
+        _id: new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1e'),
+        passwordHash: '$argon2id$legacy',
+      },
+      { $set: { passwordHash: '$2b$12$replacement' } },
+    );
+  });
+
   it('looks up only the profile name and revokes by token hash without new session fields', async () => {
     const profileQuery = {
       lean: jest.fn(),

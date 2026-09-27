@@ -56,6 +56,7 @@ describe('AuthenticationApplicationService', () => {
       findProfileById: jest
         .fn()
         .mockResolvedValue({ name: 'Test Person', status: 'ACTIVE' }),
+      replacePasswordHashIfCurrent: jest.fn().mockResolvedValue(undefined),
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
     };
     eligibilityPolicy = {
@@ -131,6 +132,25 @@ describe('AuthenticationApplicationService', () => {
     expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
       expect.stringMatching(/^auth:login:[a-f0-9]{64}$/),
     );
+  });
+
+  it('upgrades a verified legacy hash after resolving an eligible login', async () => {
+    credentials.verifyPassword.mockResolvedValue({
+      verified: true,
+      needsRehash: true,
+    });
+    credentials.hashPassword.mockResolvedValue('$2b$12$replacement');
+
+    await service.login({ email: account.email, password: 'correct-password' });
+
+    expect(credentials.hashPassword.mock.calls).toContainEqual([
+      'correct-password',
+    ]);
+    expect(repository.replacePasswordHashIfCurrent.mock.calls).toContainEqual([
+      account.userId,
+      account.passwordHash,
+      '$2b$12$replacement',
+    ]);
   });
 
   it('passes an explicit organization selector to the server-side resolver', async () => {
