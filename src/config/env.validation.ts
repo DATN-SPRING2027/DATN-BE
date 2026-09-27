@@ -75,14 +75,5 @@ export function validateEnvironment(
     throw new Error(`Environment validation failed: ${result.error.message}`);
   }
 
-  if (
-    result.value.MONGODB_ENABLED &&
-    result.value.MONGODB_DATABASE !== 'continuum_db'
-  ) {
-    throw new Error(
-      'Environment validation failed: MONGODB_DATABASE must be continuum_db when MONGODB_ENABLED is true',
-    );
-  }
-
   return result.value;
 }

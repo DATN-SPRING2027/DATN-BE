@@ -38,12 +38,15 @@ describe('validateEnvironment', () => {
     });
   });
 
-  it('rejects a non-shared database when the shared Mongo runtime is enabled', () => {
-    expect(() =>
+  it('allows a configured database when Mongo is enabled', () => {
+    expect(
       validateEnvironment({
         MONGODB_ENABLED: 'true',
         MONGODB_DATABASE: 'continuum_iam',
       }),
-    ).toThrow('MONGODB_DATABASE must be continuum_db');
+    ).toMatchObject({
+      MONGODB_ENABLED: true,
+      MONGODB_DATABASE: 'continuum_iam',
+    });
   });
 });
