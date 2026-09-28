@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "Review-first contract for authentication, users, projects, project memberships, teams and team memberships. This document does not imply that the operations are implemented. Protected operations require a bearer access token. Tokens returned by authentication operations are intended for a trusted BFF and must not be stored in browser web storage."
+    "description": "Review-first contract for authentication, users, projects, project memberships, teams and team memberships. Login, current user, logout and user directory are implemented. Other operations, including refresh, remain proposed. Browser authentication uses an HttpOnly access cookie; bearer access is supported for trusted clients. Access tokens are never returned in browser JSON responses."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -16,13 +16,13 @@
     { "name": "Teams", "description": "Teams within a project." },
     { "name": "Team Memberships", "description": "User membership in teams." }
   ],
-  "security": [{ "bearerAuth": [] }],
+  "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
   "paths": {
     "/api/v1/auth/login": {
       "post": {
         "tags": ["Auth"],
         "summary": "Log in",
-        "description": "Authenticates an active user and returns a short-lived access token plus a rotating refresh token. Invalid credentials always use the same generic response.",
+        "description": "Authenticates an active user, sets continuum_access as an HttpOnly cookie and returns the selected user identity. If the verified account belongs to multiple organizations, returns 409 with eligible organization names and IDs. Invalid credentials use a generic response.",
         "operationId": "login",
         "security": [],
         "requestBody": {
@@ -36,13 +36,20 @@
         "responses": {
           "200": {
             "description": "Authentication succeeded.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "continuum_access; HttpOnly; SameSite=Strict; Path=/; Max-Age=900 (Secure outside local development).",
+                "schema": { "type": "string" }
+              }
+            },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/AuthSession" }
+                "schema": { "$ref": "#/components/schemas/LoginResponse" }
               }
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "$ref": "#/components/responses/OrganizationSelectionRequired" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
         }
@@ -52,7 +59,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Rotate a session token pair",
-        "description": "Consumes the current refresh token exactly once. Reuse of a revoked token invalidates its session family and returns 401.",
+        "description": "Proposed, not implemented. Session rotation is outside the current authentication slice and requires a separate contract review before implementation.",
         "operationId": "refreshSession",
         "security": [],
         "requestBody": {
@@ -82,21 +89,37 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log out the current session",
-        "description": "Revokes the presented access token and the supplied current refresh session.",
+        "description": "Revokes the presented access token, clears the access cookie and returns an idempotent confirmation.",
         "operationId": "logout",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/LogoutRequest" }
+        "responses": {
+          "200": {
+            "description": "Session logged out.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LogoutResponse" }
+              }
             }
           }
-        },
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Get the current user",
+        "description": "Loads the active user from a valid cookie or bearer access token.",
+        "operationId": "getCurrentIdentity",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
-          "204": { "description": "Session revoked." },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" },
-          "429": { "$ref": "#/components/responses/TooManyRequests" }
+          "200": {
+            "description": "Authenticated user identity.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CurrentUser" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
         }
       }
     },
@@ -616,6 +639,12 @@
   },
   "components": {
     "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "continuum_access",
+        "description": "HttpOnly browser access cookie."
+      },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
@@ -692,10 +721,18 @@
         }
       },
       "Conflict": {
-        "description": "The request conflicts with an existing unique resource or current state.",
+        "description": "The request conflicts with an existing unique resource or current state. User status updates can return LAST_ACTIVE_ADMIN or SHARED_ACCOUNT_STATUS_CHANGE.",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "OrganizationSelectionRequired": {
+        "description": "The password was verified, but an organization must be selected. The details.organizations array contains only organizations assigned to this account.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/OrganizationSelectionError" }
           }
         }
       },
@@ -794,12 +831,70 @@
         "required": ["email", "password"],
         "properties": {
           "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
           "password": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1024,
             "writeOnly": true
           }
+        }
+      },
+      "CurrentUser": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "name", "organizationId", "roles"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string", "minLength": 1 },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "roles": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["user"],
+        "properties": {
+          "user": { "$ref": "#/components/schemas/CurrentUser" }
+        }
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "const": "logged_out" }
+        }
+      },
+      "OrganizationSelectionError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "details", "requestId"],
+        "properties": {
+          "code": { "type": "string", "const": "ORGANIZATION_SELECTION_REQUIRED" },
+          "message": { "type": "string" },
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["organizations"],
+            "properties": {
+              "organizations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "name"],
+                  "properties": {
+                    "id": { "$ref": "#/components/schemas/ResourceId" },
+                    "name": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
+          },
+          "requestId": { "type": "string" }
         }
       },
       "RefreshSessionRequest": {

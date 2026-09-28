@@ -1,15 +1,14 @@
 # IAM OpenAPI v1
 
-`iam-v1.openapi.json` is the review-first contract for the initial IAM slice.
-It is intentionally separate from the generated NestJS Swagger document because
-none of these business operations is implemented yet. Runtime Swagger continues
-to describe implemented routes only.
+`iam-v1.openapi.json` is the review-first contract for the IAM slice.
+Login, current user, logout and user directory are implemented. Refresh rotation
+and other resources remain proposed. Runtime Swagger describes implemented routes.
 
 ## Covered resources
 
 | Area               | Operations                                  |
 | ------------------ | ------------------------------------------- |
-| Auth               | Login, refresh-token rotation and logout    |
+| Auth               | Login, current user and logout; refresh proposed |
 | User               | List, read and partial update               |
 | Project            | List, create, read and partial update       |
 | Project Membership | List, create, update and idempotent removal |
@@ -23,8 +22,8 @@ to describe implemented routes only.
 - Every list keeps `page=1`, `pageSize=20` and `pageSize<=100`.
 - Error bodies keep `code`, `message`, `details` and `requestId`.
 - Status codes preserve the documented `401/403/404/409/422/429` semantics.
-- Authentication tokens are returned only to a trusted BFF and are never stored
-  in browser web storage.
+- Browser login sets an HttpOnly access cookie and returns user data. Tokens are
+  never returned in the browser JSON response or stored in browser web storage.
 - No controller, DTO or seed implementation may diverge from this document
   without a separate contract review.
 

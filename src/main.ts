@@ -1,17 +1,25 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
-import { Transport } from '@nestjs/microservices';
 import { AppModule } from './app.module';
+import { configureApplication } from './bootstrap';
+import { ConfigService } from '@nestjs/config';
 
 async function bootstrap() {
-  const app = await NestFactory.createMicroservice(AppModule, {
-    transport: Transport.REDIS,
-    options: {
-      host: process.env.REDIS_HOST ?? '127.0.0.1',
-      port: Number(process.env.REDIS_PORT ?? 6379),
-    },
+  const app = await NestFactory.create(AppModule, {
+    logger: ['error', 'warn', 'log'],
   });
-  await app.listen();
+
+  const config = app.get(ConfigService);
+  configureApplication(
+    app,
+    (config.get<string>('GATEWAY_TRUSTED_PROXY_CIDRS') ?? '')
+      .split(',')
+      .map((cidr) => cidr.trim())
+      .filter(Boolean),
+  );
+
+  const port = process.env.PORT || 3001;
+  await app.listen(port);
 }
 
 void bootstrap();

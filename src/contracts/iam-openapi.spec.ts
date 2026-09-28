@@ -188,10 +188,47 @@ describe('IAM OpenAPI contract', () => {
       for (const [status, reference] of Object.entries(expectedReferences)) {
         const response = operation.responses[status];
         if (response) {
-          expect(response).toEqual({ $ref: reference });
+          expect(response).toEqual({
+            $ref:
+              operation.operationId === 'login' && status === '409'
+                ? '#/components/responses/OrganizationSelectionRequired'
+                : reference,
+          });
         }
       }
     }
+  });
+
+  it('documents the implemented browser auth response without a JSON token', () => {
+    const login = contract.paths['/api/v1/auth/login'].post!;
+    const currentUser = contract.paths['/api/v1/auth/me'].get!;
+    const logout = contract.paths['/api/v1/auth/logout'].post!;
+    expect(login.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/LoginResponse' },
+        },
+      },
+      headers: { 'Set-Cookie': { schema: { type: 'string' } } },
+    });
+    expect(contract.components.schemas.LoginResponse).toMatchObject({
+      properties: { user: { $ref: '#/components/schemas/CurrentUser' } },
+    });
+    expect(currentUser.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/CurrentUser' },
+        },
+      },
+    });
+    expect(logout.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/LogoutResponse' },
+        },
+      },
+    });
+    expect(logout.requestBody).toBeUndefined();
   });
 
   it('uses camelCase schema properties and parameter names', () => {

@@ -33,6 +33,13 @@ spec:
               value: {{ .Values.gateway.port | quote }}
             - name: IAM_SERVICE_URL
               value: http://{{ include "continuum-ai.fullname" . }}-iam:3001
+            - name: IAM_GATEWAY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecretName }}
+                  key: gateway-source-secret
+            - name: GATEWAY_TRUSTED_PROXY_CIDRS
+              value: {{ if .Values.ingress.enabled }}{{ required "auth.trustedProxyCidrs is required with ingress" .Values.auth.trustedProxyCidrs | quote }}{{ else }}{{ .Values.auth.trustedProxyCidrs | quote }}{{ end }}
             - name: BACKEND_TIMEOUT_MS
               value: "5000"
           readinessProbe:

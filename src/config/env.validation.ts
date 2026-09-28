@@ -1,19 +1,24 @@
 import Joi from 'joi';
+import { isIP } from 'node:net';
 
 export type NodeEnvironment = 'development' | 'test' | 'production';
 
 export interface EnvironmentVariables {
   NODE_ENV: NodeEnvironment;
+  JWT_SECRET?: string;
   PORT: number;
   GATEWAY_PORT: number;
   SERVICE_PORT: number;
   IAM_SERVICE_URL: string;
+  IAM_GATEWAY_SECRET?: string;
+  GATEWAY_TRUSTED_PROXY_CIDRS: string;
   REDIS_HOST: string;
   REDIS_PORT: number;
   REDIS_MODE: 'standalone' | 'cluster';
   REDIS_CLUSTER_NODES?: string;
   REDIS_PASSWORD?: string;
   INFRA_ENABLED: boolean;
+  MONGODB_ENABLED: boolean;
   MONGODB_URI: string;
   MONGODB_DATABASE: string;
   MONGODB_AUTO_INDEX: boolean;
@@ -32,18 +37,38 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
     .default('development'),
+  JWT_SECRET: Joi.string().min(32).optional(),
   PORT: Joi.number().integer().min(1).max(65535).default(3001),
   GATEWAY_PORT: Joi.number().integer().min(1).max(65535).default(3000),
   SERVICE_PORT: Joi.number().integer().min(1).max(65535).default(3001),
   IAM_SERVICE_URL: Joi.string().uri().default('http://127.0.0.1:3001'),
+  IAM_GATEWAY_SECRET: Joi.string().min(32).allow('').optional(),
+  GATEWAY_TRUSTED_PROXY_CIDRS: Joi.string()
+    .allow('')
+    .default('')
+    .custom((value: string, helpers) => {
+      const valid = value.split(',').every((entry) => {
+        const [address, prefix, extra] = entry.trim().split('/');
+        const version = isIP(address);
+        return (
+          !extra &&
+          version !== 0 &&
+          (prefix === undefined ||
+            (/^\d+$/.test(prefix) &&
+              Number(prefix) <= (version === 4 ? 32 : 128)))
+        );
+      });
+      return valid ? value : helpers.error('any.invalid');
+    }),
   REDIS_HOST: Joi.string().hostname().default('127.0.0.1'),
   REDIS_PORT: Joi.number().integer().min(1).max(65535).default(6379),
   REDIS_MODE: Joi.string().valid('standalone', 'cluster').default('standalone'),
   REDIS_CLUSTER_NODES: Joi.string().allow('').optional(),
   REDIS_PASSWORD: Joi.string().allow('').optional(),
   INFRA_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  MONGODB_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
   MONGODB_URI: Joi.string().uri().default('mongodb://127.0.0.1:27017'),
-  MONGODB_DATABASE: Joi.string().default('continuum'),
+  MONGODB_DATABASE: Joi.string().default('continuum_db'),
   MONGODB_AUTO_INDEX: Joi.boolean()
     .truthy('true')
     .falsy('false')

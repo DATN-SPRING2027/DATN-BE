@@ -7,8 +7,10 @@ import { configureApplication } from '../src/bootstrap';
 
 describe('Health (e2e)', () => {
   let app: INestApplication;
+  const previousSecret = process.env.JWT_SECRET;
 
   beforeAll(async () => {
+    process.env.JWT_SECRET = 'unit-test-secret-at-least-32-characters';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -20,6 +22,8 @@ describe('Health (e2e)', () => {
 
   afterAll(async () => {
     await app.close();
+    if (previousSecret === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = previousSecret;
   });
 
   it('GET /api/v1/health', async () => {

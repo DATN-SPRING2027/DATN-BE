@@ -18,17 +18,21 @@ import { DEFAULT_JOB_OPTIONS } from './queues/queue.policy';
 export class IamInfrastructureModule {
   static register(): DynamicModule {
     const enabled = process.env.INFRA_ENABLED === 'true';
+    const sharedMongoEnabled = process.env.MONGODB_ENABLED === 'true';
     const providers = [
       RedisService,
       IdempotencyService,
       R2Storage,
-      ...(enabled ? [AuditService, OutboxService] : []),
+      ...(enabled && !sharedMongoEnabled ? [AuditService, OutboxService] : []),
     ];
     const imports: DynamicModule['imports'] = [];
 
+    if (sharedMongoEnabled || enabled) {
+      imports.push(MongoInfrastructureModule.register(IAM_PERSISTENCE));
+    }
+
     if (enabled) {
       imports.push(
-        MongoInfrastructureModule.register(IAM_PERSISTENCE),
         BullModule.forRootAsync({
           imports: [ConfigModule],
           inject: [ConfigService],

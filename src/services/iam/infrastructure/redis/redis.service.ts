@@ -54,9 +54,16 @@ export class RedisService implements OnModuleDestroy {
     windowSeconds: number,
   ): Promise<boolean> {
     await this.connect();
-    const count = await this.client.incr(`rate:${key}`);
-    if (count === 1) await this.client.expire(`rate:${key}`, windowSeconds);
-    return count <= limit;
+    const count = await this.client.eval(
+      "local count = redis.call('incr', KEYS[1]); if count == 1 then redis.call('expire', KEYS[1], ARGV[1]); end; return count",
+      1,
+      `rate:${key}`,
+      windowSeconds,
+    );
+    return Number(count) <= limit;
+  }
+  clearRateLimit(key: string): Promise<void> {
+    return this.delete(`rate:${key}`);
   }
   acquireLock(
     key: string,

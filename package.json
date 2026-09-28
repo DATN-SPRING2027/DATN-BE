@@ -8,7 +8,7 @@
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "npm run start:gateway",
+    "start": "npm run start:legacy-monolith",
     "start:legacy-monolith": "nest start",
     "start:gateway": "nest start --entryFile gateway/main",
     "start:iam": "nest start --entryFile services/iam/main",
@@ -46,6 +46,8 @@
     "@nestjs/mongoose": "^11.0.4",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/swagger": "^11.4.7",
+    "@node-rs/argon2": "2.2.1",
+    "bcryptjs": "3.0.3",
     "bullmq": "^5.81.5",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",

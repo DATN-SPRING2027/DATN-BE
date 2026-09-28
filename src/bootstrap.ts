@@ -1,10 +1,18 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import type { Application } from 'express';
 import { requestIdMiddleware } from './common/http/request-id.middleware';
 import { StructuredExceptionFilter } from './common/http/structured-exception.filter';
 
-export function configureApplication(app: INestApplication): void {
+export function configureApplication(
+  app: INestApplication,
+  trustedProxyCidrs: string[] = [],
+): void {
+  if (trustedProxyCidrs.length > 0) {
+    const expressApp = app.getHttpAdapter().getInstance() as Application;
+    expressApp.set('trust proxy', trustedProxyCidrs);
+  }
   app.setGlobalPrefix('api/v1');
   app.use(requestIdMiddleware);
   app.use(
