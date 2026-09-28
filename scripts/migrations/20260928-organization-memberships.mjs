@@ -5,6 +5,7 @@ import { buildBackfillReport, resolveIamDatabaseName, targetFingerprint } from '
 
 const apply = process.argv.includes('--apply');
 const legacyWritesPaused = process.argv.includes('--legacy-writes-paused');
+const membershipWritesPaused = process.argv.includes('--membership-writes-paused');
 const expectedHashFlag = process.argv.find((argument) =>
   argument.startsWith('--expected-report-sha256='),
 );
@@ -24,6 +25,9 @@ if (apply && !expectedHash) {
 }
 if (apply && !legacyWritesPaused) {
   throw new Error('Apply requires --legacy-writes-paused after stopping all legacy role_assignment writers');
+}
+if (apply && !membershipWritesPaused) {
+  throw new Error('Apply requires --membership-writes-paused after stopping all organization_membership writers');
 }
 const intendedTarget = targetFingerprint(uri, databaseName);
 
@@ -81,6 +85,13 @@ try {
         { $setOnInsert: { status: 'ACTIVE', createdAt: new Date(), updatedAt: new Date() } },
         { upsert: true },
       );
+      const persisted = await collection.findOne({
+        organizationId: new Types.ObjectId(row.organizationId),
+        userId: new Types.ObjectId(row.userId),
+      }, { projection: { status: 1 } });
+      if (persisted?.status !== 'ACTIVE') {
+        throw new Error(`Membership is not ACTIVE for ${row.organizationId}/${row.userId}; stop and rerun dry-run`);
+      }
       created += result.upsertedCount;
     }
     process.stdout.write(`Backfill complete: ${created} memberships created; existing memberships and role assignments unchanged.\n`);
