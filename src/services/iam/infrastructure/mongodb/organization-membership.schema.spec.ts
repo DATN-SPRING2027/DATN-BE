@@ -11,10 +11,20 @@ describe('organization_memberships persistence contract', () => {
 
   it('owns a User to Organization relation with one record per pair', () => {
     expect(definition).toBeDefined();
-    expect(definition?.indexes).toContainEqual({
-      fields: { organizationId: 1, userId: 1 },
-      options: { unique: true },
-    });
+    expect(schema.indexes()).toEqual(
+      expect.arrayContaining([
+        [
+          { organizationId: 1, userId: 1 },
+          expect.objectContaining({ unique: true }),
+        ],
+        [{ userId: 1, status: 1, organizationId: 1 }, expect.any(Object)],
+      ]),
+    );
+    expect(Object.keys(schema.indexes()[1][0])).toEqual([
+      'userId',
+      'status',
+      'organizationId',
+    ]);
 
     expect(schema.path('organizationId')).toBeDefined();
     expect(schema.path('userId')).toBeDefined();

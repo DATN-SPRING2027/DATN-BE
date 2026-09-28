@@ -41,7 +41,7 @@ try {
   await connection.asPromise();
   const db = connection.db;
   const [users, organizations, assignments, memberships] = await Promise.all([
-    db.collection('users').find({}, { projection: { _id: 1 } }).toArray(),
+    db.collection('users').find({}, { projection: { _id: 1, status: 1 } }).toArray(),
     db.collection('organizations').find({}, { projection: { _id: 1 } }).toArray(),
     db.collection('role_assignments').find({}, {
       projection: { _id: 1, userId: 1, organizationId: 1, projectId: 1 },
@@ -65,6 +65,10 @@ try {
     await collection.createIndex(
       { organizationId: 1, userId: 1 },
       { unique: true, name: 'organizationId_1_userId_1' },
+    );
+    await collection.createIndex(
+      { userId: 1, status: 1, organizationId: 1 },
+      { name: 'userId_1_status_1_organizationId_1' },
     );
     let created = 0;
     for (const row of report.toCreate) {

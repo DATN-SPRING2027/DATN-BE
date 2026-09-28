@@ -17,13 +17,16 @@ test('reviewed target fingerprint changes with endpoint or database', () => {
   const original = targetFingerprint('mongodb://user:secret@host-a:27017', 'continuum_db');
   assert.notEqual(original, targetFingerprint('mongodb://user:secret@host-b:27017', 'continuum_db'));
   assert.notEqual(original, targetFingerprint('mongodb://user:secret@host-a:27017', 'other_db'));
-  assert.notEqual(original, targetFingerprint('mongodb://other:password@host-a:27017', 'continuum_db'));
+  assert.equal(original, targetFingerprint('mongodb://other:password@host-a:27017', 'continuum_db'));
+  assert.equal(original, targetFingerprint('mongodb://host-a:27017', 'continuum_db'));
+  assert.notEqual(original, targetFingerprint('mongodb+srv://host-a:27017', 'continuum_db'));
+  assert.notEqual(original, targetFingerprint('mongodb://host-a:27017/?replicaSet=rs0', 'continuum_db'));
   assert.match(targetFingerprint('mongodb://host-a:27017,host-b:27017/continuum_db?replicaSet=rs0', 'continuum_db'), /^[a-f0-9]{64}$/);
 });
 
 test('deduplicates organization-level roles and excludes project roles', () => {
   const report = buildBackfillReport({
-    users: [{ _id: user }], organizations: [{ _id: organization }],
+    users: [{ _id: user, status: 'SUSPENDED' }], organizations: [{ _id: organization }],
     assignments: [
       { _id: oid(3), userId: user, organizationId: organization },
       { _id: oid(4), userId: user, organizationId: organization, projectId: null },
@@ -35,6 +38,13 @@ test('deduplicates organization-level roles and excludes project roles', () => {
   assert.equal(report.counts.projectScopedExcluded, 1);
   assert.equal(report.toCreate.length, 1);
   assert.equal(report.toCreate[0].status, 'ACTIVE');
+  assert.equal(report.toCreate[0].userStatus, 'SUSPENDED');
+  assert.equal(report.legacyPairs[0].userStatus, 'SUSPENDED');
+  assert.deepEqual(report.projectScopedExcludedPairs, [{
+    organizationId: organization.toHexString(), userId: user.toHexString(),
+    assignmentIds: [oid(5).toHexString()],
+    hasOrganizationLevelLegacyRelationship: true, hasActiveMembership: false,
+  }]);
   assert.equal(report.duplicateLegacyRelationships.length, 1);
 });
 
@@ -50,6 +60,20 @@ test('rerun leaves existing membership untouched and flags inactive conflict', (
   assert.equal(suspended.clean, false);
   assert.equal(suspended.toCreate.length, 0);
   assert.equal(suspended.conflictingExistingMemberships.length, 1);
+});
+
+test('reports project-only pairs without backfilling them', () => {
+  const report = buildBackfillReport({
+    users: [{ _id: user, status: 'PENDING_INVITE' }],
+    organizations: [{ _id: organization }],
+    assignments: [{ _id: oid(3), userId: user, organizationId: organization, projectId: oid(4) }],
+    memberships: [],
+  });
+  assert.equal(report.clean, true);
+  assert.deepEqual(report.toCreate, []);
+  assert.equal(report.projectScopedExcludedPairs[0].hasOrganizationLevelLegacyRelationship, false);
+  assert.equal(report.projectScopedExcludedPairs[0].hasActiveMembership, false);
+  assert.deepEqual(report.usersWithoutOrganizationLevelLegacyRelationship, [user.toHexString()]);
 });
 
 test('reports unmatched and dangling references without inventing memberships', () => {

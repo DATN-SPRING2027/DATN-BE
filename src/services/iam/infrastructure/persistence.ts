@@ -19,7 +19,10 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
     { name: 'organizations', indexes: [index({ slug: 1 }, { unique: true })] },
     {
       name: 'organization_memberships',
-      indexes: [index({ organizationId: 1, userId: 1 }, { unique: true })],
+      indexes: [
+        index({ organizationId: 1, userId: 1 }, { unique: true }),
+        index({ userId: 1, status: 1, organizationId: 1 }),
+      ],
     },
     {
       name: 'projects',
