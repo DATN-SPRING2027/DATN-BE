@@ -28,7 +28,12 @@ integration('User status invariants in continuum_db', () => {
     }).asPromise();
     for (const definition of IAM_PERSISTENCE.collections) {
       if (
-        ['users', 'organizations', 'role_assignments'].includes(definition.name)
+        [
+          'users',
+          'organizations',
+          'organization_memberships',
+          'role_assignments',
+        ].includes(definition.name)
       ) {
         connection.model(
           `${IAM_PERSISTENCE.databaseName}_${definition.name}`,
@@ -75,10 +80,27 @@ integration('User status invariants in continuum_db', () => {
         updatedAt: now,
       })),
     );
+    await connection.collection('organization_memberships').insertMany(
+      [
+        [organizationA, adminA],
+        [organizationA, adminB],
+        [organizationA, sharedAdmin],
+        [organizationB, sharedAdmin],
+      ].map(([organizationId, userId]) => ({
+        organizationId,
+        userId,
+        status: 'ACTIVE',
+        createdAt: now,
+        updatedAt: now,
+      })),
+    );
   }, 30000);
 
   afterAll(async () => {
     if (!connection) return;
+    await connection.collection('organization_memberships').deleteMany({
+      organizationId: { $in: organizationIds },
+    });
     await connection.collection('role_assignments').deleteMany({
       organizationId: { $in: organizationIds },
     });
