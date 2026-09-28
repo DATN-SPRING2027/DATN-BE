@@ -11,9 +11,8 @@ export function resolveIamDatabaseName({ mongodbEnabled, infraEnabled, configure
 }
 
 export function targetFingerprint(uri, databaseName) {
-  const parsedUri = new URL(uri);
   return createHash('sha256')
-    .update(`${parsedUri.protocol}//${parsedUri.host.toLowerCase()}/${databaseName}`)
+    .update(`${uri}\u0000${databaseName}`)
     .digest('hex');
 }
 

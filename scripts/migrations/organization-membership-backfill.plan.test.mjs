@@ -17,7 +17,8 @@ test('reviewed target fingerprint changes with endpoint or database', () => {
   const original = targetFingerprint('mongodb://user:secret@host-a:27017', 'continuum_db');
   assert.notEqual(original, targetFingerprint('mongodb://user:secret@host-b:27017', 'continuum_db'));
   assert.notEqual(original, targetFingerprint('mongodb://user:secret@host-a:27017', 'other_db'));
-  assert.equal(original, targetFingerprint('mongodb://other:password@host-a:27017', 'continuum_db'));
+  assert.notEqual(original, targetFingerprint('mongodb://other:password@host-a:27017', 'continuum_db'));
+  assert.match(targetFingerprint('mongodb://host-a:27017,host-b:27017/continuum_db?replicaSet=rs0', 'continuum_db'), /^[a-f0-9]{64}$/);
 });
 
 test('deduplicates organization-level roles and excludes project roles', () => {

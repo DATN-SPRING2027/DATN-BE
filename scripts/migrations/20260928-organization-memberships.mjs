@@ -4,6 +4,7 @@ import mongoose, { Types } from 'mongoose';
 import { buildBackfillReport, resolveIamDatabaseName, targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
 const apply = process.argv.includes('--apply');
+const legacyWritesPaused = process.argv.includes('--legacy-writes-paused');
 const expectedHashFlag = process.argv.find((argument) =>
   argument.startsWith('--expected-report-sha256='),
 );
@@ -20,6 +21,9 @@ if (!uri) {
 }
 if (apply && !expectedHash) {
   throw new Error('Apply requires --expected-report-sha256=<hash> from a reviewed clean dry-run');
+}
+if (apply && !legacyWritesPaused) {
+  throw new Error('Apply requires --legacy-writes-paused after stopping all legacy role_assignment writers');
 }
 const intendedTarget = targetFingerprint(uri, databaseName);
 
@@ -60,6 +64,15 @@ try {
     );
     let created = 0;
     for (const row of report.toCreate) {
+      const sourceStillExists = await db.collection('role_assignments').findOne({
+        _id: { $in: row.sourceAssignmentIds.map((id) => new Types.ObjectId(id)) },
+        organizationId: new Types.ObjectId(row.organizationId),
+        userId: new Types.ObjectId(row.userId),
+        projectId: null,
+      }, { projection: { _id: 1 } });
+      if (!sourceStillExists) {
+        throw new Error(`Legacy source disappeared for ${row.organizationId}/${row.userId}; stop and rerun dry-run`);
+      }
       const result = await collection.updateOne(
         {
           organizationId: new Types.ObjectId(row.organizationId),
