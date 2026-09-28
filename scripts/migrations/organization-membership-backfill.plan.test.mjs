@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Types } from 'mongoose';
-import { buildBackfillReport, targetFingerprint } from './organization-membership-backfill.plan.mjs';
+import { buildBackfillReport, resolveIamDatabaseName, targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
 const oid = (number) => new Types.ObjectId(number.toString(16).padStart(24, '0'));
 const user = oid(1);
 const organization = oid(2);
+
+test('chooses the same IAM database as shared and dedicated runtime modes', () => {
+  assert.equal(resolveIamDatabaseName({ mongodbEnabled: 'true', infraEnabled: 'false', configuredName: 'continuum_db' }), 'continuum_db');
+  assert.equal(resolveIamDatabaseName({ mongodbEnabled: 'false', infraEnabled: 'true', configuredName: 'continuum_db' }), 'continuum_iam');
+  assert.throws(() => resolveIamDatabaseName({ mongodbEnabled: 'false', infraEnabled: 'false', configuredName: 'continuum_db' }));
+});
 
 test('reviewed target fingerprint changes with endpoint or database', () => {
   const original = targetFingerprint('mongodb://user:secret@host-a:27017', 'continuum_db');

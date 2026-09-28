@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { createHash } from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { buildBackfillReport, targetFingerprint } from './organization-membership-backfill.plan.mjs';
+import { buildBackfillReport, resolveIamDatabaseName, targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
 const apply = process.argv.includes('--apply');
 const expectedHashFlag = process.argv.find((argument) =>
@@ -9,10 +9,14 @@ const expectedHashFlag = process.argv.find((argument) =>
 );
 const expectedHash = expectedHashFlag?.split('=')[1];
 const uri = process.env.MONGODB_URI;
-const databaseName = process.env.MONGODB_DATABASE;
+const databaseName = resolveIamDatabaseName({
+  mongodbEnabled: process.env.MONGODB_ENABLED,
+  infraEnabled: process.env.INFRA_ENABLED,
+  configuredName: process.env.MONGODB_DATABASE,
+});
 
-if (!uri || !databaseName) {
-  throw new Error('MONGODB_URI and MONGODB_DATABASE are required for the read-only report');
+if (!uri) {
+  throw new Error('MONGODB_URI is required for the read-only report');
 }
 if (apply && !expectedHash) {
   throw new Error('Apply requires --expected-report-sha256=<hash> from a reviewed clean dry-run');

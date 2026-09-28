@@ -1,6 +1,15 @@
 import { Types } from 'mongoose';
 import { createHash } from 'node:crypto';
 
+export function resolveIamDatabaseName({ mongodbEnabled, infraEnabled, configuredName }) {
+  if (mongodbEnabled === 'true') {
+    if (!configuredName) throw new Error('MONGODB_DATABASE is required in shared MongoDB mode');
+    return configuredName;
+  }
+  if (infraEnabled === 'true') return 'continuum_iam';
+  throw new Error('IAM MongoDB persistence is disabled; set MONGODB_ENABLED or INFRA_ENABLED');
+}
+
 export function targetFingerprint(uri, databaseName) {
   const parsedUri = new URL(uri);
   return createHash('sha256')

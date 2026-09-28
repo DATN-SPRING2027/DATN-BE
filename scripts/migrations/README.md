@@ -6,8 +6,12 @@ null or absent `projectId` and valid `userId` and `organizationId`. Multiple
 assignments for the same pair yield one membership. Project-scoped assignments
 are excluded. Existing role assignments are never changed.
 
-Set `MONGODB_URI` and `MONGODB_DATABASE` for the intended existing database.
-The script loads local `.env` when present. Confirm the database name before
+Set `MONGODB_URI` and the same `MONGODB_ENABLED`/`INFRA_ENABLED` flags as the
+runtime being migrated. In shared mode (`MONGODB_ENABLED=true`), the script
+uses `MONGODB_DATABASE`; in dedicated IAM mode (`INFRA_ENABLED=true` and
+`MONGODB_ENABLED=false`), it uses `continuum_iam`, matching IAM persistence.
+It refuses to run when IAM persistence is disabled. The script loads local
+`.env` when present. Confirm the database name before
 running. Save and review the complete read-only report:
 
 ```sh
