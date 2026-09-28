@@ -34,9 +34,18 @@ export class RoleAssignmentOrganizationContextResolver implements OrganizationCo
       return { outcome: 'NO_ELIGIBLE_ORGANIZATION' };
     }
 
+    const ids = [...rolesByOrganization.keys()].sort();
+    const organizations = await this.repository.findOrganizationOptions(ids);
+    if (organizations.length === 0) {
+      return { outcome: 'NO_ELIGIBLE_ORGANIZATION' };
+    }
+
     if (requestedOrganizationId) {
       const selectedRoles = rolesByOrganization.get(requestedOrganizationId);
-      if (!selectedRoles) {
+      if (
+        !selectedRoles ||
+        !organizations.some((entry) => entry.id === requestedOrganizationId)
+      ) {
         return { outcome: 'INVALID_ORGANIZATION_SELECTION' };
       }
       return {
@@ -48,14 +57,15 @@ export class RoleAssignmentOrganizationContextResolver implements OrganizationCo
       };
     }
 
-    if (rolesByOrganization.size > 1) {
-      return { outcome: 'ORGANIZATION_SELECTION_REQUIRED' };
+    if (organizations.length > 1) {
+      return {
+        outcome: 'ORGANIZATION_SELECTION_REQUIRED',
+        organizations,
+      };
     }
 
-    const [orgId, roles] = rolesByOrganization.entries().next().value as [
-      string,
-      Set<string>,
-    ];
+    const orgId = organizations[0].id;
+    const roles = rolesByOrganization.get(orgId)!;
     return {
       outcome: 'RESOLVED',
       context: { orgId, roles: [...roles].sort() },

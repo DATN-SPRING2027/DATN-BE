@@ -6,12 +6,14 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Req,
   Res,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { isIP } from 'node:net';
 import {
   AuthenticationApplicationService,
   type AuthenticatedIdentity,
@@ -77,11 +79,22 @@ export class AuthenticationController {
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() body: unknown,
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ user: AuthenticatedIdentity }> {
     response.setHeader('Cache-Control', 'no-store');
     const dto = await parseLoginBody(body);
-    const result = await this.service.login(dto);
+    const forwardedSource = request.headers['x-iam-source-ip'];
+    const loopbackPeer = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(
+      request.socket.remoteAddress ?? '',
+    );
+    const sourceIp =
+      loopbackPeer &&
+      typeof forwardedSource === 'string' &&
+      isIP(forwardedSource)
+        ? forwardedSource
+        : (request.ip ?? request.socket.remoteAddress ?? 'unknown');
+    const result = await this.service.login({ ...dto, sourceIp });
     response.setHeader('Set-Cookie', serializeAccessCookie(result.accessToken));
     return { user: result.user };
   }

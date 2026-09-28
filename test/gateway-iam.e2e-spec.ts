@@ -58,6 +58,38 @@ describe('microservice gateway IAM routes', () => {
     );
     expect(response.headers['set-cookie']).toHaveLength(2);
     expect(response.body).toEqual({ user: { id: 'user-1' } });
+    const loginHeaders = backend.mock.calls[0][1]?.headers as Record<
+      string,
+      string
+    >;
+    expect(typeof loginHeaders['x-iam-source-ip']).toBe('string');
+  });
+
+  it('replaces an untrusted source header before forwarding login', async () => {
+    const backend = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 'ORGANIZATION_SELECTION_REQUIRED',
+          details: {
+            organizations: [{ id: 'org-a', name: 'Alpha' }],
+          },
+        }),
+        { status: 409, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const response = await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/login')
+      .set('x-iam-source-ip', '203.0.113.200')
+      .send({ email: 'person@example.test', password: 'password' })
+      .expect(409);
+    const headers = backend.mock.calls[0][1]?.headers as Record<string, string>;
+    expect(headers['x-iam-source-ip']).not.toBe('203.0.113.200');
+    const body: unknown = response.body;
+    expect(body).toMatchObject({
+      details: {
+        organizations: [{ id: 'org-a', name: 'Alpha' }],
+      },
+    });
   });
 
   it('forwards protected user requests and IAM authorization errors', async () => {

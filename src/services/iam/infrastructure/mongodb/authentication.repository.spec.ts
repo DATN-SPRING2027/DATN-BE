@@ -93,6 +93,37 @@ describe('AuthenticationRepository', () => {
     expect(model.find).not.toHaveBeenCalled();
   });
 
+  it('loads names only for verified organization assignments', async () => {
+    const orgA = '651a2b3c4d5e6f7a8b9c0d1f';
+    const orgB = '651a2b3c4d5e6f7a8b9c0d20';
+    const query = {
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue([
+        { _id: new Types.ObjectId(orgB), name: 'Beta' },
+        { _id: new Types.ObjectId(orgA), name: 'Alpha' },
+      ]),
+    };
+    query.lean.mockReturnValue(query);
+    const model = { find: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_organizations: model },
+    } as unknown as Connection;
+
+    await expect(
+      new AuthenticationRepository(connection).findOrganizationOptions([
+        orgA,
+        orgB,
+      ]),
+    ).resolves.toEqual([
+      { id: orgA, name: 'Alpha' },
+      { id: orgB, name: 'Beta' },
+    ]);
+    expect(model.find).toHaveBeenCalledWith(
+      { _id: { $in: [new Types.ObjectId(orgA), new Types.ObjectId(orgB)] } },
+      { _id: 1, name: 1 },
+    );
+  });
+
   it('replaces a verified legacy hash only if it is still current', async () => {
     const updateQuery = {
       exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),

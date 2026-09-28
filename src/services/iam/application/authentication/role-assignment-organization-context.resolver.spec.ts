@@ -12,6 +12,11 @@ describe('RoleAssignmentOrganizationContextResolver', () => {
     repository = {
       findAccountByEmail: jest.fn(),
       findOrganizationRoleAssignments: jest.fn().mockResolvedValue([]),
+      findOrganizationOptions: jest
+        .fn()
+        .mockImplementation((ids: string[]) =>
+          Promise.resolve(ids.map((id) => ({ id, name: id }))),
+        ),
       findProfileById: jest.fn(),
       replacePasswordHashIfCurrent: jest.fn(),
       revokeRefreshSessionByHash: jest.fn(),
@@ -43,10 +48,21 @@ describe('RoleAssignmentOrganizationContextResolver', () => {
       { organizationId: orgB, roleCode: 'MEMBER' },
       { organizationId: orgA, roleCode: 'ADMIN' },
     ]);
+    repository.findOrganizationOptions.mockResolvedValue([
+      { id: orgA, name: 'Alpha' },
+      { id: orgB, name: 'Beta' },
+    ]);
 
     await expect(resolver.resolveForUser(userId)).resolves.toEqual({
       outcome: 'ORGANIZATION_SELECTION_REQUIRED',
+      organizations: [
+        { id: orgA, name: 'Alpha' },
+        { id: orgB, name: 'Beta' },
+      ],
     });
+    expect(repository.findOrganizationOptions.mock.calls[0]).toEqual([
+      [orgA, orgB],
+    ]);
   });
 
   it('resolves an explicit eligible organization only', async () => {
@@ -70,6 +86,24 @@ describe('RoleAssignmentOrganizationContextResolver', () => {
       { organizationId: orgA, roleCode: 'ADMIN' },
     ]);
 
+    await expect(resolver.resolveForUser(userId, orgB)).resolves.toEqual({
+      outcome: 'INVALID_ORGANIZATION_SELECTION',
+    });
+  });
+
+  it('does not offer or accept organizations whose documents are missing', async () => {
+    repository.findOrganizationRoleAssignments.mockResolvedValue([
+      { organizationId: orgA, roleCode: 'ADMIN' },
+      { organizationId: orgB, roleCode: 'MEMBER' },
+    ]);
+    repository.findOrganizationOptions.mockResolvedValue([
+      { id: orgA, name: 'Alpha' },
+    ]);
+
+    await expect(resolver.resolveForUser(userId)).resolves.toEqual({
+      outcome: 'RESOLVED',
+      context: { orgId: orgA, roles: ['ADMIN'] },
+    });
     await expect(resolver.resolveForUser(userId, orgB)).resolves.toEqual({
       outcome: 'INVALID_ORGANIZATION_SELECTION',
     });

@@ -1,4 +1,4 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { AccessTokenError } from './access-token.service';
 import type {
@@ -53,6 +53,7 @@ describe('AuthenticationApplicationService', () => {
     repository = {
       findAccountByEmail: jest.fn().mockResolvedValue(account),
       findOrganizationRoleAssignments: jest.fn(),
+      findOrganizationOptions: jest.fn(),
       findProfileById: jest
         .fn()
         .mockResolvedValue({ name: 'Test Person', status: 'ACTIVE' }),
@@ -130,7 +131,7 @@ describe('AuthenticationApplicationService', () => {
       roles: ['ADMIN', 'MEMBER'],
     });
     expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
-      expect.stringMatching(/^auth:login:[a-f0-9]{64}$/),
+      expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
     );
   });
 
@@ -262,25 +263,68 @@ describe('AuthenticationApplicationService', () => {
   it('returns 409 for multiple organizations without a selector', async () => {
     organizationResolver.resolveForUser.mockResolvedValue({
       outcome: 'ORGANIZATION_SELECTION_REQUIRED',
+      organizations: [{ id: ORG_ID, name: 'Alpha' }],
     });
 
     await expect(
       service.login({ email: account.email, password: 'correct-password' }),
-    ).rejects.toBeInstanceOf(ConflictException);
+    ).rejects.toMatchObject({
+      response: {
+        code: 'ORGANIZATION_SELECTION_REQUIRED',
+        details: { organizations: [{ id: ORG_ID, name: 'Alpha' }] },
+      },
+    });
   });
 
-  it('limits login attempts before expensive password verification', async () => {
+  it('limits requests from a source before expensive password verification', async () => {
     securityStore.consumeRateLimit.mockResolvedValue(false);
     await expect(
-      service.login({ email: 'Person@Example.com', password: 'wrong' }),
+      service.login({
+        email: 'Person@Example.com',
+        password: 'wrong',
+        sourceIp: '198.51.100.8',
+      }),
     ).rejects.toMatchObject({ status: 429 });
     expect(repository.findAccountByEmail.mock.calls).toHaveLength(0);
     expect(credentials.verifyPassword.mock.calls).toHaveLength(0);
     expect(securityStore.clearRateLimit.mock.calls).toHaveLength(0);
     expect(securityStore.consumeRateLimit).toHaveBeenCalledWith(
-      expect.stringMatching(/^auth:login:[a-f0-9]{64}$/),
+      expect.stringMatching(/^auth:login:source:[a-f0-9]{64}$/),
+      300,
+      900,
+    );
+  });
+
+  it('returns 429 for excess wrong guesses but permits the correct password', async () => {
+    credentials.verifyPassword.mockResolvedValueOnce({
+      verified: false,
+      needsRehash: false,
+    });
+    securityStore.consumeRateLimit
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    await expect(
+      service.login({
+        email: account.email,
+        password: 'wrong',
+        sourceIp: '198.51.100.8',
+      }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(securityStore.consumeRateLimit).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
       5,
       900,
+    );
+    await expect(
+      service.login({
+        email: account.email,
+        password: 'correct',
+        sourceIp: '203.0.113.9',
+      }),
+    ).resolves.toHaveProperty('accessToken');
+    expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
+      expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
     );
   });
 

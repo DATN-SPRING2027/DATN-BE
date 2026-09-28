@@ -6,6 +6,7 @@ import type {
   AuthenticationAccount,
   AuthenticationProfile,
   AuthenticationRepositoryPort,
+  LoginOrganizationOption,
   OrganizationRoleAssignment,
 } from '../../application/authentication/authentication.repository';
 import { IAM_PERSISTENCE } from '../persistence';
@@ -24,6 +25,11 @@ interface RoleAssignmentDocument {
   roleCode: string;
 }
 
+interface OrganizationDocument {
+  _id: Types.ObjectId;
+  name: string;
+}
+
 interface RefreshSessionDocument {
   tokenHash: string;
   isRevoked: boolean;
@@ -35,6 +41,7 @@ export class AuthenticationRepositoryUnavailableError extends Error {
       | 'CONNECTION_UNAVAILABLE'
       | 'USER_MODEL_UNAVAILABLE'
       | 'ROLE_ASSIGNMENT_MODEL_UNAVAILABLE'
+      | 'ORGANIZATION_MODEL_UNAVAILABLE'
       | 'REFRESH_SESSION_MODEL_UNAVAILABLE',
   ) {
     super(`Authentication persistence unavailable: ${reason}`);
@@ -56,6 +63,7 @@ const modelName = (collectionName: string) => {
 
 const USERS_MODEL = modelName('users');
 const ROLE_ASSIGNMENTS_MODEL = modelName('role_assignments');
+const ORGANIZATIONS_MODEL = modelName('organizations');
 const REFRESH_SESSIONS_MODEL = modelName('refresh_sessions');
 
 @Injectable()
@@ -124,6 +132,29 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       organizationId: String(row.organizationId),
       roleCode: row.roleCode,
     }));
+  }
+
+  async findOrganizationOptions(
+    ids: string[],
+  ): Promise<LoginOrganizationOption[]> {
+    const validIds = ids.filter((id) => Types.ObjectId.isValid(id));
+    if (validIds.length === 0) return [];
+    const model = this.getModel<OrganizationDocument>(
+      ORGANIZATIONS_MODEL,
+      'ORGANIZATION_MODEL_UNAVAILABLE',
+    );
+    const rows = await model
+      .find(
+        { _id: { $in: validIds.map((id) => new Types.ObjectId(id)) } },
+        { _id: 1, name: 1 },
+      )
+      .lean()
+      .exec();
+    const names = new Map(rows.map((row) => [String(row._id), row.name]));
+    return validIds.flatMap((id) => {
+      const name = names.get(id);
+      return name ? [{ id, name }] : [];
+    });
   }
 
   async findProfileById(userId: string): Promise<AuthenticationProfile | null> {

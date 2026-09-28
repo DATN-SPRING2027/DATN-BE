@@ -8,6 +8,7 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import { AuthenticationController } from './authentication.controller';
+import { configureApplication } from '../../../bootstrap';
 
 describe('AuthenticationController', () => {
   let app: INestApplication;
@@ -57,7 +58,7 @@ describe('AuthenticationController', () => {
       ],
     }).compile();
     app = module.createNestApplication();
-    app.setGlobalPrefix('api/v1');
+    configureApplication(app);
     await app.init();
   });
 
@@ -98,6 +99,13 @@ describe('AuthenticationController', () => {
     expect(response.headers['set-cookie'][0]).toContain('HttpOnly');
     expect(response.headers['set-cookie'][0]).toContain('Path=/');
     expect(response.headers['cache-control']).toBe('no-store');
+    const loginCalls = service.login.mock.calls as unknown[][];
+    const loginInput = loginCalls[0]?.[0] as {
+      email: string;
+      sourceIp: string;
+    };
+    expect(loginInput.email).toBe('person@example.com');
+    expect(typeof loginInput.sourceIp).toBe('string');
   });
 
   it('returns 422 for malformed payloads and does not call login', async () => {
@@ -113,12 +121,22 @@ describe('AuthenticationController', () => {
       new ConflictException({
         code: 'ORGANIZATION_SELECTION_REQUIRED',
         message: 'Select an organization to continue.',
+        details: {
+          organizations: [{ id: '651a2b3c4d5e6f7a8b9c0d1f', name: 'Alpha' }],
+        },
       }),
     );
-    await request(app.getHttpServer() as App)
+    const response = await request(app.getHttpServer() as App)
       .post('/api/v1/auth/login')
       .send({ email: 'person@example.com', password: 'password' })
       .expect(409);
+    expect(response.body).toMatchObject({
+      code: 'ORGANIZATION_SELECTION_REQUIRED',
+      details: {
+        organizations: [{ id: '651a2b3c4d5e6f7a8b9c0d1f', name: 'Alpha' }],
+      },
+    });
+    expect(response.headers['set-cookie']).toBeUndefined();
   });
 
   it('GET /api/v1/auth/me supports Bearer and HttpOnly-cookie request context', async () => {

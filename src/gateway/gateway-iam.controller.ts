@@ -73,6 +73,10 @@ export class GatewayIamController {
       const value = request.headers[name];
       if (typeof value === 'string') headers[name] = value;
     }
+    if (request.path.endsWith('/auth/login')) {
+      headers['x-iam-source-ip'] =
+        request.ip ?? request.socket.remoteAddress ?? 'unknown';
+    }
 
     let upstream: globalThis.Response;
     try {

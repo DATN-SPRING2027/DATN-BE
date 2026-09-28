@@ -14,6 +14,11 @@ export interface OrganizationRoleAssignment {
   roleCode: string;
 }
 
+export interface LoginOrganizationOption {
+  id: string;
+  name: string;
+}
+
 export interface AuthenticationProfile {
   name: string;
   status: string;
@@ -24,6 +29,7 @@ export interface AuthenticationRepositoryPort {
   findOrganizationRoleAssignments(
     userId: string,
   ): Promise<OrganizationRoleAssignment[]>;
+  findOrganizationOptions(ids: string[]): Promise<LoginOrganizationOption[]>;
   findProfileById(userId: string): Promise<AuthenticationProfile | null>;
   replacePasswordHashIfCurrent(
     userId: string,

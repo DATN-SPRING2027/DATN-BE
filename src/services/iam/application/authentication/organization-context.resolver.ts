@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { LoginOrganizationOption } from './authentication.repository';
 
 export const ORGANIZATION_CONTEXT_RESOLVER = Symbol(
   'ORGANIZATION_CONTEXT_RESOLVER',
@@ -12,7 +13,10 @@ export interface ResolvedOrganizationContext {
 export type OrganizationContextResolution =
   | { outcome: 'RESOLVED'; context: ResolvedOrganizationContext }
   | { outcome: 'NO_ELIGIBLE_ORGANIZATION' }
-  | { outcome: 'ORGANIZATION_SELECTION_REQUIRED' }
+  | {
+      outcome: 'ORGANIZATION_SELECTION_REQUIRED';
+      organizations: LoginOrganizationOption[];
+    }
   | { outcome: 'INVALID_ORGANIZATION_SELECTION' }
   | { outcome: 'DECISION_REQUIRED'; gates: readonly ['G-01', 'G-02'] };
 

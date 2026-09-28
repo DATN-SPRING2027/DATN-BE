@@ -26,6 +26,7 @@ export interface LoginInput {
   email: string;
   password: string;
   organizationId?: string;
+  sourceIp?: string;
 }
 
 export interface AuthenticatedIdentity {
@@ -108,10 +109,13 @@ export class AuthenticationApplicationService {
     const emailKey = createHash('sha256')
       .update(input.email.trim().toLowerCase())
       .digest('hex');
+    const sourceKey = createHash('sha256')
+      .update(input.sourceIp ?? 'unknown')
+      .digest('hex');
     if (
       !(await this.securityStore.consumeRateLimit(
-        `auth:login:${emailKey}`,
-        5,
+        `auth:login:source:${sourceKey}`,
+        300,
         900,
       ))
     ) {
@@ -121,7 +125,7 @@ export class AuthenticationApplicationService {
       );
     }
     const account = await this.repository.findAccountByEmail(input.email);
-    if (!account) throw unauthorized();
+    if (!account) return this.rejectInvalidPassword(emailKey);
 
     let verification: { verified: boolean; needsRehash: boolean };
     try {
@@ -130,11 +134,12 @@ export class AuthenticationApplicationService {
         input.password,
       );
     } catch (error) {
-      if (error instanceof PasswordHashFormatError) throw unauthorized();
+      if (error instanceof PasswordHashFormatError)
+        return this.rejectInvalidPassword(emailKey);
       throw error;
     }
-    if (!verification.verified) throw unauthorized();
-    await this.securityStore.clearRateLimit(`auth:login:${emailKey}`);
+    if (!verification.verified) return this.rejectInvalidPassword(emailKey);
+    await this.securityStore.clearRateLimit(`auth:login:account:${emailKey}`);
 
     const eligibility = this.eligibilityPolicy.evaluate({
       userStatus: account.status,
@@ -153,6 +158,7 @@ export class AuthenticationApplicationService {
       throw new ConflictException({
         code: 'ORGANIZATION_SELECTION_REQUIRED',
         message: 'Select an organization to continue.',
+        details: { organizations: organization.organizations },
       });
     }
     if (organization.outcome !== 'RESOLVED') throw unauthorized();
@@ -183,6 +189,21 @@ export class AuthenticationApplicationService {
     });
 
     return { accessToken, user: identity };
+  }
+
+  private async rejectInvalidPassword(emailKey: string): Promise<never> {
+    const allowed = await this.securityStore.consumeRateLimit(
+      `auth:login:account:${emailKey}`,
+      5,
+      900,
+    );
+    if (!allowed) {
+      throw new HttpException(
+        { code: 'LOGIN_RATE_LIMITED', message: 'Too many login attempts.' },
+        429,
+      );
+    }
+    throw unauthorized();
   }
 
   async getCurrentIdentity(
