@@ -3,6 +3,35 @@ import type { Connection } from 'mongoose';
 import { AuthenticationRepository } from './authentication.repository';
 
 describe('AuthenticationRepository', () => {
+  it('loads only ACTIVE organization memberships', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';
+    const query = {
+      sort: jest.fn(),
+      lean: jest.fn(),
+      exec: jest
+        .fn()
+        .mockResolvedValue([
+          { organizationId: new Types.ObjectId(organizationId) },
+        ]),
+    };
+    query.sort.mockReturnValue(query);
+    query.lean.mockReturnValue(query);
+    const model = { find: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_organization_memberships: model },
+    } as unknown as Connection;
+    const repository = new AuthenticationRepository(connection);
+    await expect(
+      repository.findActiveOrganizationMembershipIds(userId),
+    ).resolves.toEqual([organizationId]);
+    expect(model.find).toHaveBeenCalledWith(
+      { userId: new Types.ObjectId(userId), status: 'ACTIVE' },
+      { organizationId: 1, _id: 0 },
+    );
+    expect(query.sort).toHaveBeenCalledWith({ organizationId: 1 });
+  });
+
   it('loads credential, status and profile fields from the existing user model', async () => {
     const query = {
       lean: jest.fn(),

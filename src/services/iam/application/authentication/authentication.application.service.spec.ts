@@ -52,6 +52,9 @@ describe('AuthenticationApplicationService', () => {
   beforeEach(() => {
     repository = {
       findAccountByEmail: jest.fn().mockResolvedValue(account),
+      findActiveOrganizationMembershipIds: jest
+        .fn()
+        .mockResolvedValue([ORG_ID]),
       findOrganizationRoleAssignments: jest.fn(),
       findOrganizationOptions: jest.fn(),
       findProfileById: jest
@@ -346,6 +349,13 @@ describe('AuthenticationApplicationService', () => {
       name: 'Test Person',
       status: 'SUSPENDED',
     });
+    await expect(
+      service.getCurrentIdentity('Bearer any.valid-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects a still-valid token after organization membership is suspended or removed', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
     await expect(
       service.getCurrentIdentity('Bearer any.valid-token', undefined),
     ).rejects.toBeInstanceOf(UnauthorizedException);

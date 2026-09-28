@@ -25,6 +25,10 @@ interface RoleAssignmentDocument {
   roleCode: string;
 }
 
+interface OrganizationMembershipDocument {
+  organizationId: Types.ObjectId;
+}
+
 interface OrganizationDocument {
   _id: Types.ObjectId;
   name: string;
@@ -41,6 +45,7 @@ export class AuthenticationRepositoryUnavailableError extends Error {
       | 'CONNECTION_UNAVAILABLE'
       | 'USER_MODEL_UNAVAILABLE'
       | 'ROLE_ASSIGNMENT_MODEL_UNAVAILABLE'
+      | 'ORGANIZATION_MEMBERSHIP_MODEL_UNAVAILABLE'
       | 'ORGANIZATION_MODEL_UNAVAILABLE'
       | 'REFRESH_SESSION_MODEL_UNAVAILABLE',
   ) {
@@ -63,6 +68,7 @@ const modelName = (collectionName: string) => {
 
 const USERS_MODEL = modelName('users');
 const ROLE_ASSIGNMENTS_MODEL = modelName('role_assignments');
+const ORGANIZATION_MEMBERSHIPS_MODEL = modelName('organization_memberships');
 const ORGANIZATIONS_MODEL = modelName('organizations');
 const REFRESH_SESSIONS_MODEL = modelName('refresh_sessions');
 
@@ -132,6 +138,23 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       organizationId: String(row.organizationId),
       roleCode: row.roleCode,
     }));
+  }
+
+  async findActiveOrganizationMembershipIds(userId: string): Promise<string[]> {
+    if (!Types.ObjectId.isValid(userId)) return [];
+    const model = this.getModel<OrganizationMembershipDocument>(
+      ORGANIZATION_MEMBERSHIPS_MODEL,
+      'ORGANIZATION_MEMBERSHIP_MODEL_UNAVAILABLE',
+    );
+    const rows = await model
+      .find(
+        { userId: new Types.ObjectId(userId), status: 'ACTIVE' },
+        { organizationId: 1, _id: 0 },
+      )
+      .sort({ organizationId: 1 })
+      .lean()
+      .exec();
+    return [...new Set(rows.map((row) => String(row.organizationId)))];
   }
 
   async findOrganizationOptions(

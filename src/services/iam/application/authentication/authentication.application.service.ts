@@ -231,6 +231,9 @@ export class AuthenticationApplicationService {
 
     const profile = await this.repository.findProfileById(claims.sub);
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
+    const activeMembershipIds =
+      await this.repository.findActiveOrganizationMembershipIds(claims.sub);
+    if (!activeMembershipIds.includes(claims.orgId)) throw unauthorized();
 
     return {
       id: claims.sub,
