@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { createHash } from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { buildBackfillReport } from './organization-membership-backfill.plan.mjs';
+import { buildBackfillReport, targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
 const apply = process.argv.includes('--apply');
 const expectedHashFlag = process.argv.find((argument) =>
@@ -17,6 +17,7 @@ if (!uri || !databaseName) {
 if (apply && !expectedHash) {
   throw new Error('Apply requires --expected-report-sha256=<hash> from a reviewed clean dry-run');
 }
+const intendedTarget = targetFingerprint(uri, databaseName);
 
 const connection = mongoose.createConnection(uri, {
   dbName: databaseName,
@@ -39,8 +40,9 @@ try {
   ]);
 
   const report = buildBackfillReport({ users, organizations, assignments, memberships });
-  const hash = createHash('sha256').update(JSON.stringify(report)).digest('hex');
-  process.stdout.write(`${JSON.stringify({ databaseName, ...report, reportSha256: hash }, null, 2)}\n`);
+  const reviewedReport = { databaseName, targetFingerprint: intendedTarget, ...report };
+  const hash = createHash('sha256').update(JSON.stringify(reviewedReport)).digest('hex');
+  process.stdout.write(`${JSON.stringify({ ...reviewedReport, reportSha256: hash }, null, 2)}\n`);
 
   if (!apply) {
     process.exitCode = report.clean ? 0 : 2;

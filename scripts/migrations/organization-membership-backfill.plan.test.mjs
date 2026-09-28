@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Types } from 'mongoose';
-import { buildBackfillReport } from './organization-membership-backfill.plan.mjs';
+import { buildBackfillReport, targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
 const oid = (number) => new Types.ObjectId(number.toString(16).padStart(24, '0'));
 const user = oid(1);
 const organization = oid(2);
+
+test('reviewed target fingerprint changes with endpoint or database', () => {
+  const original = targetFingerprint('mongodb://user:secret@host-a:27017', 'continuum_db');
+  assert.notEqual(original, targetFingerprint('mongodb://user:secret@host-b:27017', 'continuum_db'));
+  assert.notEqual(original, targetFingerprint('mongodb://user:secret@host-a:27017', 'other_db'));
+  assert.equal(original, targetFingerprint('mongodb://other:password@host-a:27017', 'continuum_db'));
+});
 
 test('deduplicates organization-level roles and excludes project roles', () => {
   const report = buildBackfillReport({

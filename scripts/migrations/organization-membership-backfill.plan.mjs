@@ -1,4 +1,12 @@
 import { Types } from 'mongoose';
+import { createHash } from 'node:crypto';
+
+export function targetFingerprint(uri, databaseName) {
+  const parsedUri = new URL(uri);
+  return createHash('sha256')
+    .update(`${parsedUri.protocol}//${parsedUri.host.toLowerCase()}/${databaseName}`)
+    .digest('hex');
+}
 
 const id = (value) => value instanceof Types.ObjectId ? value.toHexString() : null;
 const sorted = (values) => [...values].sort();

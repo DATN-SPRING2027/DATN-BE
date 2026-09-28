@@ -23,7 +23,8 @@ memberships; dry-run exits with code 2 then. Unmatched users or organizations
 are reported and are never given an inferred membership.
 
 Only after reviewing a clean report and checking that it targets the intended
-database, apply with the reported `reportSha256`:
+database, apply with the reported `reportSha256`. The hash includes a fingerprint
+of the MongoDB endpoint and database name without printing connection credentials:
 
 ```sh
 node scripts/migrations/20260928-organization-memberships.mjs --apply --expected-report-sha256=<reportSha256>
