@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import { signGatewaySource } from '../common/http/gateway-source';
 
 const forwardedRequestHeaders = [
   'accept',
@@ -29,7 +30,14 @@ const forwardedResponseHeaders = [
 
 @Controller()
 export class GatewayIamController {
-  constructor(private readonly config: ConfigService) {}
+  private readonly sourceSecret: string;
+
+  constructor(private readonly config: ConfigService) {
+    this.sourceSecret = config.getOrThrow<string>('IAM_GATEWAY_SECRET');
+    if (this.sourceSecret.length < 32) {
+      throw new Error('IAM_GATEWAY_SECRET must contain at least 32 characters');
+    }
+  }
 
   @Post('auth/login')
   login(@Req() request: Request, @Res() response: Response): Promise<void> {
@@ -74,8 +82,13 @@ export class GatewayIamController {
       if (typeof value === 'string') headers[name] = value;
     }
     if (request.path.endsWith('/auth/login')) {
-      headers['x-iam-source-ip'] =
-        request.ip ?? request.socket.remoteAddress ?? 'unknown';
+      Object.assign(
+        headers,
+        signGatewaySource(
+          request.ip ?? request.socket.remoteAddress ?? '',
+          this.sourceSecret,
+        ),
+      );
     }
 
     let upstream: globalThis.Response;

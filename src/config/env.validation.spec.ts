@@ -24,6 +24,11 @@ describe('validateEnvironment', () => {
     [{ SWAGGER_ENABLED: 'sometimes' }, 'SWAGGER_ENABLED'],
     [{ MONGODB_ENABLED: 'sometimes' }, 'MONGODB_ENABLED'],
     [{ JWT_SECRET: 'too-short' }, 'JWT_SECRET'],
+    [{ IAM_GATEWAY_SECRET: 'too-short' }, 'IAM_GATEWAY_SECRET'],
+    [
+      { GATEWAY_TRUSTED_PROXY_CIDRS: 'anywhere' },
+      'GATEWAY_TRUSTED_PROXY_CIDRS',
+    ],
   ])('rejects invalid configuration %p', (environment, field) => {
     expect(() => validateEnvironment(environment)).toThrow(field);
   });

@@ -65,6 +65,8 @@ services:
         REDIS_HOST: redis
         GATEWAY_PORT: 3000
         IAM_SERVICE_URL: http://iam:3001
+        IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
+        GATEWAY_TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:?Set the trusted BFF or edge proxy CIDR}
         SWAGGER_ENABLED: "false"
     depends_on:
       redis:
@@ -101,6 +103,8 @@ services:
       SERVICE_PORT: 3001
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
       MONGODB_DATABASE: continuum_iam
+      JWT_SECRET: ${JWT_SECRET:?Set the IAM JWT secret}
+      IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
       REDIS_HOST: redis
     depends_on:
       redis:

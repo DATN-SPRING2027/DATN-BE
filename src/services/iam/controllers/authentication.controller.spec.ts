@@ -4,11 +4,16 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import request from 'supertest';
 import type { App } from 'supertest/types';
+import type { NextFunction, Request, Response } from 'express';
 import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import { AuthenticationController } from './authentication.controller';
 import { configureApplication } from '../../../bootstrap';
+import { signGatewaySource } from '../../../common/http/gateway-source';
+
+const gatewaySecret = 'test-gateway-secret-at-least-32-characters';
 
 describe('AuthenticationController', () => {
   let app: INestApplication;
@@ -55,6 +60,13 @@ describe('AuthenticationController', () => {
       controllers: [AuthenticationController],
       providers: [
         { provide: AuthenticationApplicationService, useValue: service },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (name: string) =>
+              name === 'IAM_GATEWAY_SECRET' ? gatewaySecret : undefined,
+          },
+        },
       ],
     }).compile();
     app = module.createNestApplication();
@@ -106,6 +118,54 @@ describe('AuthenticationController', () => {
     };
     expect(loginInput.email).toBe('person@example.com');
     expect(typeof loginInput.sourceIp).toBe('string');
+  });
+
+  it('accepts a signed source on the internal route and rejects an unsigned one', async () => {
+    const module = await Test.createTestingModule({
+      controllers: [AuthenticationController],
+      providers: [
+        { provide: AuthenticationApplicationService, useValue: service },
+        { provide: ConfigService, useValue: { get: () => gatewaySecret } },
+      ],
+    }).compile();
+    const internalApp = module.createNestApplication();
+    internalApp.setGlobalPrefix('internal');
+    let observedPeer = '';
+    internalApp.use((req: Request, _res: Response, next: NextFunction) => {
+      Object.defineProperty(req.socket, 'remoteAddress', {
+        configurable: true,
+        value: '10.1.2.3',
+      });
+      observedPeer = req.socket.remoteAddress ?? '';
+      next();
+    });
+    await internalApp.init();
+    try {
+      const server = internalApp.getHttpServer() as App;
+      const body = { email: 'person@example.com', password: 'password' };
+      await request(server).post('/internal/auth/login').send(body).expect(401);
+      expect(service.login).not.toHaveBeenCalled();
+
+      const proof = signGatewaySource('203.0.113.7', gatewaySecret);
+      await request(server)
+        .post('/internal/auth/login')
+        .set(proof)
+        .send(body)
+        .expect(200);
+      const loginCalls = service.login.mock.calls as unknown[][];
+      const loginInput = loginCalls[0][0] as { sourceIp: string };
+      expect(observedPeer).toBe('10.1.2.3');
+      expect(loginInput.sourceIp).toBe('203.0.113.7');
+
+      await request(server)
+        .post('/internal/auth/login')
+        .set({ ...proof, 'x-iam-source-ip': '203.0.113.8' })
+        .send(body)
+        .expect(401);
+      expect(service.login).toHaveBeenCalledTimes(1);
+    } finally {
+      await internalApp.close();
+    }
   });
 
   it('returns 422 for malformed payloads and does not call login', async () => {

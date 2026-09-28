@@ -8,6 +8,12 @@ gateway:
   port: 3000
   resources: {}
 
+auth:
+  # Pre-create this Secret with jwt-secret and gateway-source-secret keys.
+  existingSecretName: continuum-iam-auth
+  # Exact CIDR(s) of trusted BFF/ingress peers; required when chart ingress is enabled.
+  trustedProxyCidrs: ""
+
 ingress:
   enabled: false
   className: nginx

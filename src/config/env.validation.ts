@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import { isIP } from 'node:net';
 
 export type NodeEnvironment = 'development' | 'test' | 'production';
 
@@ -9,6 +10,8 @@ export interface EnvironmentVariables {
   GATEWAY_PORT: number;
   SERVICE_PORT: number;
   IAM_SERVICE_URL: string;
+  IAM_GATEWAY_SECRET?: string;
+  GATEWAY_TRUSTED_PROXY_CIDRS: string;
   REDIS_HOST: string;
   REDIS_PORT: number;
   REDIS_MODE: 'standalone' | 'cluster';
@@ -39,6 +42,24 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   GATEWAY_PORT: Joi.number().integer().min(1).max(65535).default(3000),
   SERVICE_PORT: Joi.number().integer().min(1).max(65535).default(3001),
   IAM_SERVICE_URL: Joi.string().uri().default('http://127.0.0.1:3001'),
+  IAM_GATEWAY_SECRET: Joi.string().min(32).allow('').optional(),
+  GATEWAY_TRUSTED_PROXY_CIDRS: Joi.string()
+    .allow('')
+    .default('')
+    .custom((value: string, helpers) => {
+      const valid = value.split(',').every((entry) => {
+        const [address, prefix, extra] = entry.trim().split('/');
+        const version = isIP(address);
+        return (
+          !extra &&
+          version !== 0 &&
+          (prefix === undefined ||
+            (/^\d+$/.test(prefix) &&
+              Number(prefix) <= (version === 4 ? 32 : 128)))
+        );
+      });
+      return valid ? value : helpers.error('any.invalid');
+    }),
   REDIS_HOST: Joi.string().hostname().default('127.0.0.1'),
   REDIS_PORT: Joi.number().integer().min(1).max(65535).default(6379),
   REDIS_MODE: Joi.string().valid('standalone', 'cluster').default('standalone'),

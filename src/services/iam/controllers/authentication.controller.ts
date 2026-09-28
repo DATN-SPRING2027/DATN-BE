@@ -8,12 +8,14 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { Request, Response } from 'express';
-import { isIP } from 'node:net';
+import { verifyGatewaySource } from '../../../common/http/gateway-source';
 import {
   AuthenticationApplicationService,
   type AuthenticatedIdentity,
@@ -73,7 +75,10 @@ async function parseLoginBody(body: unknown): Promise<LoginRequestDto> {
 
 @Controller('auth')
 export class AuthenticationController {
-  constructor(private readonly service: AuthenticationApplicationService) {}
+  constructor(
+    private readonly service: AuthenticationApplicationService,
+    private readonly config: ConfigService,
+  ) {}
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -84,16 +89,20 @@ export class AuthenticationController {
   ): Promise<{ user: AuthenticatedIdentity }> {
     response.setHeader('Cache-Control', 'no-store');
     const dto = await parseLoginBody(body);
-    const forwardedSource = request.headers['x-iam-source-ip'];
-    const loopbackPeer = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(
-      request.socket.remoteAddress ?? '',
-    );
-    const sourceIp =
-      loopbackPeer &&
-      typeof forwardedSource === 'string' &&
-      isIP(forwardedSource)
-        ? forwardedSource
-        : (request.ip ?? request.socket.remoteAddress ?? 'unknown');
+    let sourceIp = request.ip ?? request.socket.remoteAddress ?? 'unknown';
+    if (request.originalUrl.startsWith('/internal/')) {
+      sourceIp =
+        verifyGatewaySource(
+          request.headers,
+          this.config.get<string>('IAM_GATEWAY_SECRET') ?? '',
+        ) ?? '';
+      if (!sourceIp) {
+        throw new UnauthorizedException({
+          code: 'INVALID_GATEWAY_SOURCE',
+          message: 'Gateway source proof is invalid.',
+        });
+      }
+    }
     const result = await this.service.login({ ...dto, sourceIp });
     response.setHeader('Set-Cookie', serializeAccessCookie(result.accessToken));
     return { user: result.user };

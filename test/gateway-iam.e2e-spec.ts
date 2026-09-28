@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
+import { verifyGatewaySource } from '../src/common/http/gateway-source';
 import { configureApplication } from '../src/bootstrap';
 import { GatewayModule } from '../src/gateway/gateway.module';
 
@@ -16,7 +17,11 @@ describe('microservice gateway IAM routes', () => {
       .overrideProvider(ConfigService)
       .useValue({
         getOrThrow: (name: string) =>
-          name === 'IAM_SERVICE_URL' ? 'http://iam.test:3001' : 5000,
+          name === 'IAM_SERVICE_URL'
+            ? 'http://iam.test:3001'
+            : name === 'IAM_GATEWAY_SECRET'
+              ? 'test-gateway-secret-at-least-32-characters'
+              : 5000,
       })
       .compile();
     app = module.createNestApplication();
@@ -63,6 +68,12 @@ describe('microservice gateway IAM routes', () => {
       string
     >;
     expect(typeof loginHeaders['x-iam-source-ip']).toBe('string');
+    expect(
+      verifyGatewaySource(
+        loginHeaders,
+        'test-gateway-secret-at-least-32-characters',
+      ),
+    ).toBe(loginHeaders['x-iam-source-ip']);
   });
 
   it('replaces an untrusted source header before forwarding login', async () => {
@@ -84,12 +95,55 @@ describe('microservice gateway IAM routes', () => {
       .expect(409);
     const headers = backend.mock.calls[0][1]?.headers as Record<string, string>;
     expect(headers['x-iam-source-ip']).not.toBe('203.0.113.200');
+    expect(
+      verifyGatewaySource(
+        headers,
+        'test-gateway-secret-at-least-32-characters',
+      ),
+    ).toBe(headers['x-iam-source-ip']);
     const body: unknown = response.body;
     expect(body).toMatchObject({
       details: {
         organizations: [{ id: 'org-a', name: 'Alpha' }],
       },
     });
+  });
+
+  it('uses X-Forwarded-For only from a configured trusted proxy', async () => {
+    const backend = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(() => Promise.resolve(new Response('{}')));
+    const server = app.getHttpServer() as App;
+    const expressApp = app.getHttpAdapter().getInstance() as {
+      set(name: string, value: string | boolean): void;
+    };
+
+    await request(server)
+      .post('/api/v1/auth/login')
+      .set('X-Forwarded-For', '198.51.100.8, 203.0.113.200')
+      .send({ email: 'person@example.test', password: 'password' })
+      .expect(200);
+    const firstHeaders = backend.mock.calls[0][1]?.headers as Record<
+      string,
+      string
+    >;
+    expect(firstHeaders['x-iam-source-ip']).not.toBe('203.0.113.200');
+
+    expressApp.set('trust proxy', 'loopback');
+    try {
+      await request(server)
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', '198.51.100.8, 203.0.113.200')
+        .send({ email: 'person@example.test', password: 'password' })
+        .expect(200);
+      const secondHeaders = backend.mock.calls[1][1]?.headers as Record<
+        string,
+        string
+      >;
+      expect(secondHeaders['x-iam-source-ip']).toBe('203.0.113.200');
+    } finally {
+      expressApp.set('trust proxy', false);
+    }
   });
 
   it('forwards protected user requests and IAM authorization errors', async () => {
