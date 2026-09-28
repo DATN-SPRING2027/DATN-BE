@@ -63,6 +63,18 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'organizations', timestamps: true, strict: true },
   ),
+  organization_memberships: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      userId: { type: Schema.Types.ObjectId, required: true },
+      status: {
+        type: String,
+        enum: ['PENDING_INVITE', 'ACTIVE', 'SUSPENDED', 'REMOVED'],
+        required: true,
+      },
+    },
+    { collection: 'organization_memberships', timestamps: true, strict: true },
+  ),
   projects: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
