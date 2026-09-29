@@ -1,6 +1,6 @@
 # Project Foundation read policy — work package decision
 
-**Status:** Accepted for the Project Foundation / Create-Read MVP by the requester's explicit decisions on 2026-09-29. This repository copy records the rules used by the implementation. Broader DEC-001 onboarding and approval workflow remains open.
+**Status:** Accepted API and authorization contract for the Project Foundation endpoints by the requester's explicit decisions on 2026-09-29. This is not an end-to-end creator bootstrap or deployment-readiness decision. Broader DEC-001 onboarding and approval workflow remains open.
 
 ## Contract used
 
@@ -23,3 +23,11 @@
 - The requester selected a dedicated `audit_logs_iam` collection in shared `continuum_db` for the required project-create audit event. The Project and audit event are written in one MongoDB transaction; failure of either write aborts the mutation. The event uses the existing IAM audit shape (`organizationId`, `projectId`, `actorUserId`, `action`, `targetResource`, `targetResourceId`, `occurredAt`).
 
 This MVP does not establish a Project owner, leader, Team, or membership lifecycle operation.
+
+## Readiness limits and deferred provisioning
+
+- Project creation does not confer read visibility. Under `PROJECT_CREATE_BOOTSTRAP_V1`, a `TEAM_LEADER` who creates a Project gets no ProjectMembership or project-scoped RoleAssignment. Until a separate membership/assignment workflow is approved and implemented, that creator cannot list or read the new Project under the policy above: list filters it out and detail returns 404. This work package does not claim a usable end-to-end create/read workflow for that actor.
+- Organization `ADMIN` metadata reads still require an organization-scoped assignment whose `roleId` resolves to a current `ADMIN` Role. `TEAM_LEADER` and `MEMBER` reads additionally require a resolved current Role whose `permissions` contains `project.read`, plus the scoped assignment and active ProjectMembership already listed above.
+- This branch contains no system Role seed or role provisioning path. The Role schema defaults `permissions` to an empty array, and the repository's implementation plan records that role seeds and the role-to-permission mapping are absent. On a clean database with no pre-provisioned Role documents, read authorization fails closed; this PR does not make the read endpoints operational on a clean database.
+- Deployment therefore requires Role documents to be provisioned and RoleAssignments to reference those current Role IDs. For `TEAM_LEADER`/`MEMBER`, the approved permission configuration must explicitly place `project.read` in the resolved Role's permissions. No default mapping is inferred here. A separate decision and provisioning change, with authenticated MongoDB integration coverage, is required before claiming clean-database create/read readiness.
+- The accepted product actor document describes initial Project membership/team-leader assignment through an audited bootstrap policy, while this work-package decision explicitly forbids automatic creator bootstrap. This implementation follows the narrower requester-supplied `PROJECT_CREATE_BOOTSTRAP_V1` contract. It does not edit or supersede the canonical product document or close DEC-001; the broader lifecycle conflict remains open for its appropriate decision process.
