@@ -260,4 +260,14 @@ describe('MongoProjectRepository creation', () => {
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
     expect(session.endSession).toHaveBeenCalled();
   });
+
+  it('does not report an audit duplicate as a Project code conflict', async () => {
+    const { repository, audit } = fixture();
+    audit.insertOne.mockRejectedValue(
+      Object.assign(new Error('audit duplicate'), { code: 11000 }),
+    );
+    await expect(repository.create(orgId, userId, input)).rejects.toMatchObject(
+      { code: 11000 },
+    );
+  });
 });

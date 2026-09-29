@@ -70,7 +70,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
         .createIndex({ action: 1 }, { unique: true });
       await expect(
         repository.create(orgA, user, { name: 'Rolled back', code: 'NEW' }),
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ code: 11000 });
       expect(await db.collection('projects').countDocuments()).toBe(1);
       expect(
         await db.collection('projects').countDocuments({ code: 'NEW' }),

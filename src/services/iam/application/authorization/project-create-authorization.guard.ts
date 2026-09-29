@@ -15,7 +15,6 @@ import { AuthorizationPolicy } from './authorization.policy';
 type ScopedRequest = Request & {
   params: Record<string, string>;
   query: Record<string, unknown>;
-  body: unknown;
 };
 
 @Injectable()
@@ -40,9 +39,6 @@ export class ProjectCreateAuthorizationGuard implements CanActivate {
       request.headers['x-organization-id'],
       request.params?.organizationId,
       request.query?.organizationId,
-      typeof request.body === 'object' && request.body !== null
-        ? (request.body as Record<string, unknown>).organizationId
-        : undefined,
     ];
     if (
       selectors.some(

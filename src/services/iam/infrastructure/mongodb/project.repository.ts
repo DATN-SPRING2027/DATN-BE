@@ -60,21 +60,35 @@ export class MongoProjectRepository implements ProjectRepository {
     try {
       let created: ProjectRecord | undefined;
       await session.withTransaction(async () => {
-        const [project] = await this.model<ProjectDocument>('projects').create(
-          [
-            {
-              organizationId: new Types.ObjectId(organizationId),
-              name: input.name,
-              code: input.code,
-              ...(input.description === undefined
-                ? {}
-                : { description: input.description }),
-              status: 'ACTIVE',
-              createdBy: new Types.ObjectId(creatorId),
-            },
-          ],
-          { session },
-        );
+        const [project] = await this.model<ProjectDocument>('projects')
+          .create(
+            [
+              {
+                organizationId: new Types.ObjectId(organizationId),
+                name: input.name,
+                code: input.code,
+                ...(input.description === undefined
+                  ? {}
+                  : { description: input.description }),
+                status: 'ACTIVE',
+                createdBy: new Types.ObjectId(creatorId),
+              },
+            ],
+            { session },
+          )
+          .catch((cause: unknown) => {
+            if (
+              typeof cause === 'object' &&
+              cause !== null &&
+              'code' in cause &&
+              cause.code === 11000
+            )
+              throw new ConflictException({
+                code: 'PROJECT_CODE_CONFLICT',
+                message: 'Project code already exists in this organization.',
+              });
+            throw cause;
+          });
         created = this.record(project.toObject());
         await this.connection!.collection('audit_logs_iam').insertOne(
           {
@@ -92,19 +106,6 @@ export class MongoProjectRepository implements ProjectRepository {
       if (!created)
         throw new Error('Project transaction did not create a record');
       return created;
-    } catch (error) {
-      const cause: unknown = error;
-      if (
-        typeof cause === 'object' &&
-        cause !== null &&
-        'code' in cause &&
-        cause.code === 11000
-      )
-        throw new ConflictException({
-          code: 'PROJECT_CODE_CONFLICT',
-          message: 'Project code already exists in this organization.',
-        });
-      throw error;
     } finally {
       await session.endSession();
     }
