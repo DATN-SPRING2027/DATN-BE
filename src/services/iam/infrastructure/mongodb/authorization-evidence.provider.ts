@@ -139,7 +139,8 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
         userId: String(row.userId),
         organizationId: String(row.organizationId),
         capability: row.capability,
-        expiresAt: row.expiresAt,
+        // Preserve legacy missing expiry as an ineligible null evidence value.
+        expiresAt: row.expiresAt ?? null,
         revokedAt: row.revokedAt,
       })),
       // These current sources can grant project.create but have no DENY field.

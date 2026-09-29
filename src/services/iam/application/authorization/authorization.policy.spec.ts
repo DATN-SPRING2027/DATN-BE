@@ -1,6 +1,7 @@
 import {
   AuthorizationPolicy,
   type AuthorizationEvaluationInput,
+  type CapabilityGrantEvidence,
 } from './authorization.policy';
 
 const userId = 'aaaaaaaaaaaaaaaaaaaaaaaa';
@@ -99,23 +100,45 @@ describe('AuthorizationPolicy: documented project.create boundary', () => {
     },
   );
 
-  it('denies a leader with no grant or an expired or revoked grant', () => {
+  it('denies a leader with no grant or a revoked grant', () => {
     const facts = base();
     facts.roleAssignments = [
       { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
     ];
     expect(policy.evaluate(facts).allowed).toBe(false);
-    for (const grant of [{ expiresAt: now }, { revokedAt: now }]) {
-      facts.grants = [
-        {
-          userId,
-          organizationId: orgId,
-          capability: 'project.create',
-          ...grant,
-        },
-      ];
-      expect(policy.evaluate(facts).allowed).toBe(false);
-    }
+    facts.grants = [
+      {
+        userId,
+        organizationId: orgId,
+        capability: 'project.create',
+        expiresAt: new Date(now.getTime() + 1000),
+        revokedAt: now,
+      },
+    ];
+    expect(policy.evaluate(facts).allowed).toBe(false);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['invalid', new Date(Number.NaN)],
+    ['not a Date', '2026-09-30T00:00:00.000Z'],
+    ['at evaluation time', now],
+    ['past', new Date(now.getTime() - 1)],
+  ])('denies a TEAM_LEADER grant with %s expiry', (_label, expiresAt) => {
+    const facts = base();
+    facts.roleAssignments = [
+      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
+    ];
+    facts.grants = [
+      {
+        userId,
+        organizationId: orgId,
+        capability: 'project.create',
+        expiresAt,
+      } as unknown as CapabilityGrantEvidence,
+    ];
+    expect(policy.evaluate(facts).allowed).toBe(false);
   });
 
   it('does not let a MEMBER or a grant from another organization create a project', () => {
@@ -128,6 +151,7 @@ describe('AuthorizationPolicy: documented project.create boundary', () => {
         userId,
         organizationId: orgId,
         capability: 'project.create',
+        expiresAt: new Date(now.getTime() + 1000),
       },
     ];
     expect(policy.evaluate(facts).allowed).toBe(false);

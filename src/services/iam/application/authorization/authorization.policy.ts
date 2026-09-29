@@ -26,7 +26,7 @@ export interface CapabilityGrantEvidence {
   userId: string;
   organizationId: string;
   capability: string;
-  expiresAt?: Date | null;
+  expiresAt: Date | null;
   revokedAt?: Date | null;
 }
 
@@ -105,9 +105,9 @@ export class AuthorizationPolicy {
           grant.organizationId === requestedOrganizationId &&
           grant.capability === 'project.create' &&
           grant.revokedAt == null &&
-          (grant.expiresAt == null ||
-            (Number.isFinite(grant.expiresAt.getTime()) &&
-              grant.expiresAt > input.now)),
+          grant.expiresAt instanceof Date &&
+          Number.isFinite(grant.expiresAt.getTime()) &&
+          grant.expiresAt.getTime() > input.now.getTime(),
       )
     )
       return { allowed: true };

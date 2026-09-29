@@ -124,7 +124,7 @@ describe('MongoAuthorizationEvidenceProvider', () => {
         userId,
         organizationId: orgId,
         capability: 'project.create',
-        expiresAt: undefined,
+        expiresAt: null,
         revokedAt: undefined,
       },
     ]);

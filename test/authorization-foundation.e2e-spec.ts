@@ -89,6 +89,37 @@ describe('Authorization foundation guard (isolated HTTP harness)', () => {
       .expect(200, { allowed: true });
   });
 
+  it('allows a leader only when the grant has a future expiry', async () => {
+    facts!.roleAssignments = [
+      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
+    ];
+    facts!.grants = [
+      {
+        userId,
+        organizationId: orgId,
+        capability: 'project.create',
+        expiresAt: null,
+      },
+    ];
+    await request(app.getHttpServer() as App)
+      .get(`/api/v1/authorization-foundation-test/${orgId}`)
+      .set('Authorization', 'Bearer valid')
+      .expect(403);
+
+    facts!.grants = [
+      {
+        userId,
+        organizationId: orgId,
+        capability: 'project.create',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ];
+    await request(app.getHttpServer() as App)
+      .get(`/api/v1/authorization-foundation-test/${orgId}`)
+      .set('Authorization', 'Bearer valid')
+      .expect(200, { allowed: true });
+  });
+
   it('returns 403 for cross-organization selector even if the token says ADMIN', async () => {
     await request(app.getHttpServer() as App)
       .get(`/api/v1/authorization-foundation-test/${otherOrgId}`)
