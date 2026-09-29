@@ -43,6 +43,12 @@ integration('duplicate dry-run blocks apply; simple unique index enforces organi
     assert.equal(verified.action, 'NOOP');
     await assert.rejects(collection.insertOne(first), (error) => error.code === 11000);
     await collection.insertOne({ organizationId: 'org-b', code: 'P1' });
+    await db.createCollection('projects_view', { viewOn: 'projects', pipeline: [] });
+    const viewPlan = await inspectProjectCodeIndex({
+      db, collectionName: 'projects_view', targetFingerprint: 'test-only',
+    });
+    assert.equal(viewPlan.action, 'BLOCKED');
+    assert.equal(viewPlan.conflictingObjectType, 'view');
   } catch (error) {
     process.stderr.write(`Integration assertion failed: ${error.stack ?? error}\n`);
     throw error;

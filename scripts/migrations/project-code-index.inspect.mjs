@@ -1,7 +1,9 @@
 import { buildProjectCodeIndexPlan } from './project-code-index.plan.mjs';
 
 export async function inspectProjectCodeIndex({ db, collectionName = 'projects', targetFingerprint }) {
-  const collectionExists = (await db.listCollections({ name: collectionName }, { nameOnly: true }).toArray()).length === 1;
+  const objects = await db.listCollections({ name: collectionName }).toArray();
+  const objectType = objects.length === 0 ? null : objects[0].type;
+  const collectionExists = objectType === 'collection';
   const collection = db.collection(collectionName);
   const indexes = collectionExists ? await collection.indexes() : [];
   const duplicatePairs = collectionExists ? await collection.aggregate([
@@ -15,6 +17,7 @@ export async function inspectProjectCodeIndex({ db, collectionName = 'projects',
     databaseName: db.databaseName,
     targetFingerprint,
     collectionExists,
+    objectType,
     projectCount,
     indexes,
     duplicatePairs,

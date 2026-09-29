@@ -6,6 +6,7 @@ const base = () => ({
   databaseName: 'continuum_db',
   targetFingerprint: 'target',
   collectionExists: true,
+  objectType: 'collection',
   projectCount: 0,
   indexes: [{ name: '_id_', key: { _id: 1 }, unique: true }],
   duplicatePairs: [],
@@ -46,7 +47,18 @@ test('non-unique matching index and missing collection block migration', () => {
   assert.equal(buildProjectCodeIndexPlan(input).action, 'BLOCKED');
   input.indexes = [];
   input.collectionExists = false;
+  input.objectType = null;
   assert.equal(buildProjectCodeIndexPlan(input).action, 'BLOCKED');
+});
+
+test('same-named Project view is a blocked object-type conflict', () => {
+  const input = base();
+  input.collectionExists = false;
+  input.objectType = 'view';
+  input.indexes = [];
+  const plan = buildProjectCodeIndexPlan(input);
+  assert.equal(plan.action, 'BLOCKED');
+  assert.equal(plan.conflictingObjectType, 'view');
 });
 
 for (const [label, options] of [

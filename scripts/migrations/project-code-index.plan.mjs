@@ -22,6 +22,7 @@ export function buildProjectCodeIndexPlan({
   databaseName,
   targetFingerprint,
   collectionExists,
+  objectType,
   projectCount,
   indexes,
   duplicatePairs,
@@ -31,11 +32,14 @@ export function buildProjectCodeIndexPlan({
     (item.name === indexName && !sameKey(item.key)),
   );
   const alreadyUnique = indexes.some(unrestrictedUnique);
-  const clean = collectionExists && duplicatePairs.length === 0 && conflicting.length === 0;
+  const clean = collectionExists && objectType === 'collection' &&
+    duplicatePairs.length === 0 && conflicting.length === 0;
   return {
     databaseName,
     targetFingerprint,
     collectionExists,
+    objectType,
+    conflictingObjectType: objectType === 'view' ? 'view' : null,
     projectCount,
     desiredIndex: { name: indexName, key: indexKey, unique: true },
     existingIndexes: indexes.map(describeIndex),
