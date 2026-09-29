@@ -61,7 +61,7 @@ These are bounded contexts inside one NestJS deployment, not independent microse
 
 ## Architecture gates
 
-Database ownership and SAG storage are unresolved in the source documents. Do not add persistence until those decisions are recorded in accepted ADRs. Business routes must start from approved OpenAPI contracts so FE and BE do not independently invent payloads.
+Database ownership is accepted in project ADR-002/DEC-011: MongoDB 7.0 and shared `continuum_db` for the MVP. The Organization Membership rule for this work package is recorded in [the DEC-016 repository copy](docs/decisions/organization-membership-context.md). The original bootstrap scope above is historical; persistence and IAM routes have since been added under later decisions and contracts. Business routes must start from approved OpenAPI contracts so FE and BE do not independently invent payloads.
 
 ## Environment
 

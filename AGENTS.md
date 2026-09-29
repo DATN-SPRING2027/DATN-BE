@@ -9,7 +9,7 @@
 
 ## Mandatory Gates
 
-- Do not add MongoDB schemas, migrations, indexes, or backfills until the database ownership ADR is accepted.
+- Database ownership is accepted in project ADR-002/DEC-011 (MongoDB 7.0, shared `continuum_db` for MVP). Keep new schema and migration work aligned with that decision and its specific contract.
 - Do not choose LanceDB, PostgreSQL/pgvector, or Qdrant here until the SAG storage ADR is accepted.
 - Business APIs are contract-first. Approve OpenAPI request, response, error, scope, pagination, and streaming semantics before implementation.
 - Treat files, webhooks, Jira data, user input, and AI output as untrusted.

@@ -113,7 +113,7 @@ Use strict TypeScript, dependency injection, descriptive domain names and small 
 
 ## Open Questions and Mandatory Gates
 
-1. Database ownership is unresolved: operational docs describe one MongoDB-backed modular monolith while database design describes database-per-service. Stop before schema or migration work.
+1. Historical bootstrap gate, now resolved by project ADR-002/DEC-011: MongoDB 7.0 is the operational store and the MVP modular monolith uses shared `continuum_db`. Later schema and migration work must follow the accepted decision and its specific contract.
 2. SAG persistence is unresolved between LanceDB and PostgreSQL/pgvector or Qdrant. This repo may expose only a provider-neutral integration boundary until an ADR is accepted.
 3. Endpoint examples are not contracts. Approve shared OpenAPI request, response, error, auth/scope, pagination and streaming semantics before FE and BE implement a business API independently.
 4. Jira OAuth/webhook verification, R2 signing and LLM provider decisions require focused security/contract tasks.
