@@ -23,6 +23,10 @@ import { USER_DIRECTORY_REPOSITORY } from './application/users/user-directory.re
 import { MongoUserDirectoryRepository } from './infrastructure/mongodb/user-directory.repository';
 import { MongoAuthorizationEvidenceProvider } from './infrastructure/mongodb/authorization-evidence.provider';
 import { RedisService } from './infrastructure/redis/redis.service';
+import { ProjectController } from './controllers/project.controller';
+import { ProjectService } from './application/projects/project.service';
+import { PROJECT_REPOSITORY } from './application/projects/project.repository';
+import { MongoProjectRepository } from './infrastructure/mongodb/project.repository';
 
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
@@ -30,6 +34,7 @@ import { RedisService } from './infrastructure/redis/redis.service';
     IamController,
     AuthenticationController,
     UserDirectoryController,
+    ProjectController,
   ],
   providers: [
     IamApplicationService,
@@ -58,6 +63,8 @@ import { RedisService } from './infrastructure/redis/redis.service';
       useClass: MongoAuthorizationEvidenceProvider,
     },
     UserDirectoryService,
+    ProjectService,
+    { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
       provide: USER_DIRECTORY_REPOSITORY,
       useClass: MongoUserDirectoryRepository,

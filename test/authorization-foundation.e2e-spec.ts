@@ -137,6 +137,15 @@ describe('Authorization foundation guard (isolated HTTP harness)', () => {
     expect(evidence.loadProjectCreate).not.toHaveBeenCalled();
   });
 
+  it('rejects an organization selector supplied in the header', async () => {
+    await request(app.getHttpServer() as App)
+      .get(`/api/v1/authorization-foundation-test/${orgId}`)
+      .set('Authorization', 'Bearer valid')
+      .set('x-organization-id', otherOrgId)
+      .expect(403);
+    expect(evidence.loadProjectCreate).not.toHaveBeenCalled();
+  });
+
   it('returns 403 for inactive membership, missing deny evidence, or project-scoped role', async () => {
     facts!.membership = { userId, organizationId: orgId, status: 'SUSPENDED' };
     await request(app.getHttpServer() as App)

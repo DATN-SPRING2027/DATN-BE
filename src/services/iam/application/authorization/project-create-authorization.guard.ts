@@ -37,6 +37,7 @@ export class ProjectCreateAuthorizationGuard implements CanActivate {
     // The existing authentication service verifies the token, active User, and
     // ACTIVE membership for this trusted Organization Context on every call.
     const selectors: unknown[] = [
+      request.headers['x-organization-id'],
       request.params?.organizationId,
       request.query?.organizationId,
       typeof request.body === 'object' && request.body !== null

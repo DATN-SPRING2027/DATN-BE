@@ -2,6 +2,7 @@ import {
   AuthorizationPolicy,
   type AuthorizationEvaluationInput,
   type CapabilityGrantEvidence,
+  type ProjectReadScopeInput,
 } from './authorization.policy';
 
 const userId = 'aaaaaaaaaaaaaaaaaaaaaaaa';
@@ -18,6 +19,110 @@ const base = (): AuthorizationEvaluationInput => ({
   grants: [],
   explicitDeny: 'CLEAR',
   now,
+});
+
+describe('AuthorizationPolicy: Project metadata read scope', () => {
+  const policy = new AuthorizationPolicy();
+  const projectId = 'dddddddddddddddddddddddd';
+  const readBase = (): ProjectReadScopeInput => ({
+    subject: { userId, organizationId: orgId, status: 'ACTIVE' },
+    requestedOrganizationId: orgId,
+    membership: { userId, organizationId: orgId, status: 'ACTIVE' },
+    assignments: [
+      {
+        projectId,
+        roleCode: 'MEMBER',
+        resolvedRoleCode: 'MEMBER',
+        permissions: ['project.read'],
+      },
+    ],
+    activeProjectMembershipIds: [projectId],
+    explicitDeny: 'CLEAR',
+  });
+
+  it('limits MEMBER to an active Project Membership with project.read', () => {
+    expect(policy.projectReadScope(readBase())).toEqual({
+      all: false,
+      projectIds: [projectId],
+    });
+  });
+
+  it('allows organization ADMIN to read all metadata only with a current Role', () => {
+    const facts = readBase();
+    facts.assignments = [
+      {
+        projectId: null,
+        roleCode: 'ADMIN',
+        resolvedRoleCode: 'ADMIN',
+        permissions: [],
+      },
+    ];
+    facts.activeProjectMembershipIds = [];
+    expect(policy.projectReadScope(facts)).toEqual({
+      all: true,
+      projectIds: [],
+    });
+  });
+
+  it.each([
+    [
+      'other organization',
+      (facts: ProjectReadScopeInput) => {
+        facts.requestedOrganizationId = otherOrgId;
+      },
+    ],
+    [
+      'inactive membership',
+      (facts: ProjectReadScopeInput) => {
+        facts.membership!.status = 'SUSPENDED';
+      },
+    ],
+    [
+      'explicit deny',
+      (facts: ProjectReadScopeInput) => {
+        facts.explicitDeny = 'DENY';
+      },
+    ],
+    [
+      'missing project membership',
+      (facts: ProjectReadScopeInput) => {
+        facts.activeProjectMembershipIds = [];
+      },
+    ],
+    [
+      'missing Role permission',
+      (facts: ProjectReadScopeInput) => {
+        facts.assignments = [
+          {
+            projectId,
+            roleCode: 'MEMBER',
+            resolvedRoleCode: 'MEMBER',
+            permissions: [],
+          },
+        ];
+      },
+    ],
+    [
+      'mismatched Role',
+      (facts: ProjectReadScopeInput) => {
+        facts.assignments = [
+          {
+            projectId,
+            roleCode: 'MEMBER',
+            resolvedRoleCode: 'ADMIN',
+            permissions: ['project.read'],
+          },
+        ];
+      },
+    ],
+  ])('denies %s', (_case, mutate) => {
+    const facts = readBase();
+    mutate(facts);
+    expect(policy.projectReadScope(facts)).toEqual({
+      all: false,
+      projectIds: [],
+    });
+  });
 });
 
 describe('AuthorizationPolicy: documented project.create boundary', () => {

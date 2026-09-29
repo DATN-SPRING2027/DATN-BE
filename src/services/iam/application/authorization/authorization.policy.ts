@@ -52,10 +52,77 @@ export type AuthorizationDecision =
         | 'NO_DOCUMENTED_PERMISSION';
     };
 
+export interface ProjectReadAssignmentEvidence {
+  projectId: string | null;
+  roleCode: string;
+  resolvedRoleCode: string | null;
+  permissions: readonly string[];
+}
+
+export interface ProjectReadScopeInput {
+  subject: AuthorizationSubject | null;
+  requestedOrganizationId: string;
+  membership: OrganizationMembershipEvidence | null;
+  assignments: readonly ProjectReadAssignmentEvidence[];
+  activeProjectMembershipIds: readonly string[];
+  explicitDeny: ExplicitDenyAssessment;
+}
+
+export type ProjectReadScope =
+  | { all: true; projectIds: readonly string[] }
+  | { all: false; projectIds: readonly string[] };
+
 const validObjectId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
 
 @Injectable()
 export class AuthorizationPolicy {
+  projectReadScope(input: ProjectReadScopeInput): ProjectReadScope {
+    const deny: ProjectReadScope = { all: false, projectIds: [] };
+    const { subject, membership, requestedOrganizationId } = input;
+    if (
+      !subject ||
+      !validObjectId(subject.userId) ||
+      !validObjectId(subject.organizationId) ||
+      !validObjectId(requestedOrganizationId) ||
+      subject.organizationId !== requestedOrganizationId ||
+      subject.status !== 'ACTIVE' ||
+      !membership ||
+      membership.userId !== subject.userId ||
+      membership.organizationId !== requestedOrganizationId ||
+      membership.status !== 'ACTIVE' ||
+      input.explicitDeny !== 'CLEAR'
+    )
+      return deny;
+
+    if (
+      input.assignments.some(
+        (assignment) =>
+          assignment.projectId === null &&
+          assignment.roleCode === 'ADMIN' &&
+          assignment.resolvedRoleCode === 'ADMIN',
+      )
+    )
+      return { all: true, projectIds: [] };
+
+    const active = new Set(input.activeProjectMembershipIds);
+    const projectIds = [
+      ...new Set(
+        input.assignments
+          .filter(
+            (assignment) =>
+              assignment.projectId !== null &&
+              (assignment.roleCode === 'TEAM_LEADER' ||
+                assignment.roleCode === 'MEMBER') &&
+              assignment.resolvedRoleCode === assignment.roleCode &&
+              assignment.permissions.includes('project.read') &&
+              active.has(assignment.projectId),
+          )
+          .map((assignment) => assignment.projectId as string),
+      ),
+    ];
+    return { all: false, projectIds };
+  }
+
   evaluate(input: AuthorizationEvaluationInput): AuthorizationDecision {
     const { subject, membership, requestedOrganizationId } = input;
     if (
