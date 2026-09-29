@@ -9,6 +9,9 @@ import { LOGIN_ELIGIBILITY_POLICY } from './application/authentication/login-eli
 import { MembershipOrganizationContextResolver } from './application/authentication/membership-organization-context.resolver';
 import { ORGANIZATION_CONTEXT_RESOLVER } from './application/authentication/organization-context.resolver';
 import { PasswordCredentialService } from './application/credentials/password-credential.service';
+import { AUTHORIZATION_EVIDENCE_PROVIDER } from './application/authorization/authorization-evidence.provider';
+import { AuthorizationPolicy } from './application/authorization/authorization.policy';
+import { ProjectCreateAuthorizationGuard } from './application/authorization/project-create-authorization.guard';
 import { IamApplicationService } from './application/iam.service';
 import { AuthenticationController } from './controllers/authentication.controller';
 import { IamController } from './controllers/iam.controller';
@@ -18,6 +21,7 @@ import { UserDirectoryController } from './controllers/user-directory.controller
 import { UserDirectoryService } from './application/users/user-directory.service';
 import { USER_DIRECTORY_REPOSITORY } from './application/users/user-directory.repository';
 import { MongoUserDirectoryRepository } from './infrastructure/mongodb/user-directory.repository';
+import { MongoAuthorizationEvidenceProvider } from './infrastructure/mongodb/authorization-evidence.provider';
 import { RedisService } from './infrastructure/redis/redis.service';
 
 @Module({
@@ -47,6 +51,12 @@ import { RedisService } from './infrastructure/redis/redis.service';
       useClass: AuthenticationRepository,
     },
     PasswordCredentialService,
+    AuthorizationPolicy,
+    ProjectCreateAuthorizationGuard,
+    {
+      provide: AUTHORIZATION_EVIDENCE_PROVIDER,
+      useClass: MongoAuthorizationEvidenceProvider,
+    },
     UserDirectoryService,
     {
       provide: USER_DIRECTORY_REPOSITORY,
