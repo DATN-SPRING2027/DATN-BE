@@ -6,7 +6,7 @@ import { AuthenticationApplicationService } from './application/authentication/a
 import { AUTHENTICATION_REPOSITORY } from './application/authentication/authentication.repository';
 import { LeaderDirectedLoginEligibilityPolicy } from './application/authentication/leader-directed-login-eligibility.policy';
 import { LOGIN_ELIGIBILITY_POLICY } from './application/authentication/login-eligibility.policy';
-import { RoleAssignmentOrganizationContextResolver } from './application/authentication/role-assignment-organization-context.resolver';
+import { MembershipOrganizationContextResolver } from './application/authentication/membership-organization-context.resolver';
 import { ORGANIZATION_CONTEXT_RESOLVER } from './application/authentication/organization-context.resolver';
 import { PasswordCredentialService } from './application/credentials/password-credential.service';
 import { IamApplicationService } from './application/iam.service';
@@ -33,14 +33,14 @@ import { RedisService } from './infrastructure/redis/redis.service';
     AuthenticationApplicationService,
     { provide: AUTH_SECURITY_STORE, useExisting: RedisService },
     LeaderDirectedLoginEligibilityPolicy,
-    RoleAssignmentOrganizationContextResolver,
+    MembershipOrganizationContextResolver,
     {
       provide: LOGIN_ELIGIBILITY_POLICY,
       useExisting: LeaderDirectedLoginEligibilityPolicy,
     },
     {
       provide: ORGANIZATION_CONTEXT_RESOLVER,
-      useExisting: RoleAssignmentOrganizationContextResolver,
+      useExisting: MembershipOrganizationContextResolver,
     },
     {
       provide: AUTHENTICATION_REPOSITORY,

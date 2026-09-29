@@ -25,6 +25,11 @@ interface AssignmentDocument {
   userId: Types.ObjectId;
   roleCode: string;
 }
+interface MembershipDocument {
+  userId: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  status: string;
+}
 interface UserListFacet {
   data: UserDocument[];
   total: { count: number }[];
@@ -56,6 +61,12 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       !Types.ObjectId.isValid(actorId)
     )
       return false;
+    const membership = await this.memberships().exists({
+      organizationId: new Types.ObjectId(organizationId),
+      userId: new Types.ObjectId(actorId),
+      status: 'ACTIVE',
+    });
+    if (!membership) return false;
     const assignment = await this.assignments().exists({
       organizationId: new Types.ObjectId(organizationId),
       userId: new Types.ObjectId(actorId),
@@ -74,17 +85,35 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     const organizationObjectId = new Types.ObjectId(organizationId);
     const pipeline: PipelineStage[] = [
       {
-        $match: {
-          organizationId: organizationObjectId,
-          ...organizationLevel,
-          ...(query.roleCode ? { roleCode: query.roleCode } : {}),
-        },
+        $match: { organizationId: organizationObjectId, status: 'ACTIVE' },
       },
-      { $group: { _id: '$userId' } },
+      ...(query.roleCode
+        ? ([
+            {
+              $lookup: {
+                from: 'role_assignments',
+                localField: 'userId',
+                foreignField: 'userId',
+                pipeline: [
+                  {
+                    $match: {
+                      organizationId: organizationObjectId,
+                      ...organizationLevel,
+                      roleCode: query.roleCode,
+                    },
+                  },
+                  { $project: { _id: 1 } },
+                ],
+                as: 'matchingRole',
+              },
+            },
+            { $match: { 'matchingRole.0': { $exists: true } } },
+          ] as PipelineStage[])
+        : []),
       {
         $lookup: {
           from: 'users',
-          localField: '_id',
+          localField: 'userId',
           foreignField: '_id',
           pipeline: [{ $project: publicUserFields }],
           as: 'user',
@@ -94,7 +123,7 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       ...(query.status
         ? [{ $match: { 'user.status': query.status } } as PipelineStage]
         : []),
-      { $sort: { 'user.createdAt': -1, _id: -1 } },
+      { $sort: { 'user.createdAt': -1, userId: -1 } },
       {
         $facet: {
           data: [
@@ -106,7 +135,7 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
         },
       },
     ];
-    const [facet] = await this.assignments()
+    const [facet] = await this.memberships()
       .aggregate<UserListFacet>(pipeline)
       .allowDiskUse(true)
       .exec();
@@ -127,6 +156,12 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       return null;
     const organizationObjectId = new Types.ObjectId(organizationId);
     const userObjectId = new Types.ObjectId(userId);
+    const membership = await this.memberships().exists({
+      organizationId: organizationObjectId,
+      userId: userObjectId,
+      status: 'ACTIVE',
+    });
+    if (!membership) return null;
     const assignments = await this.assignments()
       .find(
         {
@@ -138,7 +173,6 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       )
       .lean()
       .exec();
-    if (assignments.length === 0) return null;
     const user = await this.users()
       .findById(userObjectId, publicUserFields)
       .lean()
@@ -179,10 +213,10 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     const organizationObjectId = new Types.ObjectId(organizationId);
     try {
       await session.withTransaction(async () => {
-        const organizations = await this.assignments()
+        const organizations = await this.memberships()
           .distinct('organizationId', {
             userId: userObjectId,
-            ...organizationLevel,
+            status: 'ACTIVE',
           })
           .session(session)
           .exec();
@@ -236,8 +270,19 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
               })
               .session(session)
               .exec();
+            const activeMemberIds = await this.memberships()
+              .distinct('userId', {
+                organizationId: organizationObjectId,
+                userId: { $in: ids },
+                status: 'ACTIVE',
+              })
+              .session(session)
+              .exec();
             const count = await this.users()
-              .countDocuments({ _id: { $in: ids }, status: 'ACTIVE' })
+              .countDocuments({
+                _id: { $in: activeMemberIds },
+                status: 'ACTIVE',
+              })
               .session(session)
               .exec();
             if (count <= 1) {
@@ -266,8 +311,15 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
         ...organizationLevel,
       })
       .exec();
+    const activeMemberIds = await this.memberships()
+      .distinct('userId', {
+        organizationId: new Types.ObjectId(organizationId),
+        userId: { $in: ids },
+        status: 'ACTIVE',
+      })
+      .exec();
     return this.users()
-      .countDocuments({ _id: { $in: ids }, status: 'ACTIVE' })
+      .countDocuments({ _id: { $in: activeMemberIds }, status: 'ACTIVE' })
       .exec();
   }
 
@@ -325,6 +377,17 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     if (!model)
       throw new Error(
         'User directory persistence unavailable: assignments model',
+      );
+    return model;
+  }
+
+  private memberships(): Model<MembershipDocument> {
+    const model = this.connection?.models[
+      modelName('organization_memberships')
+    ] as Model<MembershipDocument> | undefined;
+    if (!model)
+      throw new Error(
+        'User directory persistence unavailable: organization memberships model',
       );
     return model;
   }

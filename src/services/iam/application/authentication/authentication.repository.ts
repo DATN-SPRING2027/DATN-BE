@@ -26,6 +26,7 @@ export interface AuthenticationProfile {
 
 export interface AuthenticationRepositoryPort {
   findAccountByEmail(email: string): Promise<AuthenticationAccount | null>;
+  findActiveOrganizationMembershipIds(userId: string): Promise<string[]>;
   findOrganizationRoleAssignments(
     userId: string,
   ): Promise<OrganizationRoleAssignment[]>;

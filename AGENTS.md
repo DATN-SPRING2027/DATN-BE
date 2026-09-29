@@ -14,6 +14,7 @@
 - Business APIs are contract-first. Approve OpenAPI request, response, error, scope, pagination, and streaming semantics before implementation.
 - Treat files, webhooks, Jira data, user input, and AI output as untrusted.
 - Permission filtering happens before evidence is sent to the AI engine.
+- Every authenticated endpoint that reads or changes organization-scoped data (including future project/task APIs) must validate the User's `ACTIVE` Organization Membership on the server; a client context or RoleAssignment alone is insufficient.
 
 ## Development Workflow
 
