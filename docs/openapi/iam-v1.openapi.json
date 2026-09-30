@@ -245,7 +245,7 @@
       "post": {
         "tags": ["Projects"],
         "summary": "Create a project",
-        "description": "Requires organization Admin or an active project.create capability grant.",
+        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creates only the Project and its audit event; it does not bootstrap Project Membership, RoleAssignment, Team, owner, or leader records.",
         "operationId": "createProject",
         "requestBody": {
           "required": true,

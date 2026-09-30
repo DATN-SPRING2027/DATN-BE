@@ -79,10 +79,9 @@ describe('Project Foundation HTTP contract', () => {
   beforeEach(() => {
     facts = {
       membership: { userId, organizationId: orgId, status: 'ACTIVE' },
-      roleAssignments: [{ userId, organizationId: orgId, roleCode: 'ADMIN' }],
-      grants: [],
       explicitDeny: 'CLEAR',
     };
+    actor.roles = ['ADMIN'];
     jest.clearAllMocks();
   });
 
@@ -102,7 +101,8 @@ describe('Project Foundation HTTP contract', () => {
     expect(projects.create).not.toHaveBeenCalled();
   });
 
-  it('creates only through current authorization and validates payload', async () => {
+  it('allows an ACTIVE MEMBER to create without a role grant and validates payload', async () => {
+    actor.roles = ['MEMBER'];
     await request(app.getHttpServer() as App)
       .post('/api/v1/iam/projects')
       .set('Authorization', 'Bearer valid')

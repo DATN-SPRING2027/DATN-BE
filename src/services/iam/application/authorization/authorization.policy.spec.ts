@@ -1,7 +1,6 @@
 import {
   AuthorizationPolicy,
   type AuthorizationEvaluationInput,
-  type CapabilityGrantEvidence,
   type ProjectReadScopeInput,
 } from './authorization.policy';
 
@@ -15,8 +14,6 @@ const base = (): AuthorizationEvaluationInput => ({
   subject: { userId, organizationId: orgId, status: 'ACTIVE' },
   requestedOrganizationId: orgId,
   membership: { userId, organizationId: orgId, status: 'ACTIVE' },
-  roleAssignments: [],
-  grants: [],
   explicitDeny: 'CLEAR',
   now,
 });
@@ -125,30 +122,11 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
   });
 });
 
-describe('AuthorizationPolicy: documented project.create boundary', () => {
+describe('AuthorizationPolicy: active-membership project.create rule', () => {
   const policy = new AuthorizationPolicy();
 
-  it('allows an organization ADMIN only with active membership and a clear deny assessment', () => {
+  it('allows an ACTIVE OrganizationMembership without a role or capability grant', () => {
     const facts = base();
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'ADMIN' },
-    ];
-    expect(policy.evaluate(facts).allowed).toBe(true);
-  });
-
-  it('allows a TEAM_LEADER with a valid organization grant', () => {
-    const facts = base();
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
-    ];
-    facts.grants = [
-      {
-        userId,
-        organizationId: orgId,
-        capability: 'project.create',
-        expiresAt: new Date(now.getTime() + 1000),
-      },
-    ];
     expect(policy.evaluate(facts).allowed).toBe(true);
   });
 
@@ -157,40 +135,28 @@ describe('AuthorizationPolicy: documented project.create boundary', () => {
     (status) => {
       const facts = base();
       facts.membership!.status = status;
-      facts.roleAssignments = [
-        { userId, organizationId: orgId, roleCode: 'ADMIN' },
-      ];
       expect(policy.evaluate(facts).allowed).toBe(false);
     },
   );
 
-  it('denies missing membership even if an organization role exists', () => {
+  it('denies missing membership', () => {
     const facts = base();
     facts.membership = null;
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'ADMIN' },
-    ];
     expect(policy.evaluate(facts).allowed).toBe(false);
   });
 
-  it('denies cross-organization requests and project-scoped ADMIN assignments', () => {
+  it('denies cross-organization context and mismatched membership evidence', () => {
     const crossOrg = base();
     crossOrg.requestedOrganizationId = otherOrgId;
-    crossOrg.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'ADMIN' },
-    ];
     expect(policy.evaluate(crossOrg).allowed).toBe(false);
 
-    const scoped = base();
-    scoped.roleAssignments = [
-      {
-        userId,
-        organizationId: orgId,
-        projectId: 'eeeeeeeeeeeeeeeeeeeeeeee',
-        roleCode: 'ADMIN',
-      },
-    ];
-    expect(policy.evaluate(scoped).allowed).toBe(false);
+    const otherOrganizationMembership = base();
+    otherOrganizationMembership.membership!.organizationId = otherOrgId;
+    expect(policy.evaluate(otherOrganizationMembership).allowed).toBe(false);
+
+    const otherUserMembership = base();
+    otherUserMembership.membership!.userId = 'eeeeeeeeeeeeeeeeeeeeeeee';
+    expect(policy.evaluate(otherUserMembership).allowed).toBe(false);
   });
 
   it.each(['DENY', 'UNKNOWN'] as const)(
@@ -198,82 +164,19 @@ describe('AuthorizationPolicy: documented project.create boundary', () => {
     (explicitDeny) => {
       const facts = base();
       facts.explicitDeny = explicitDeny;
-      facts.roleAssignments = [
-        { userId, organizationId: orgId, roleCode: 'ADMIN' },
-      ];
       expect(policy.evaluate(facts).allowed).toBe(false);
     },
   );
 
-  it('denies a leader with no grant or a revoked grant', () => {
-    const facts = base();
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
-    ];
-    expect(policy.evaluate(facts).allowed).toBe(false);
-    facts.grants = [
-      {
-        userId,
-        organizationId: orgId,
-        capability: 'project.create',
-        expiresAt: new Date(now.getTime() + 1000),
-        revokedAt: now,
-      },
-    ];
-    expect(policy.evaluate(facts).allowed).toBe(false);
-  });
-
-  it.each([
-    ['missing', undefined],
-    ['null', null],
-    ['invalid', new Date(Number.NaN)],
-    ['not a Date', '2026-09-30T00:00:00.000Z'],
-    ['at evaluation time', now],
-    ['past', new Date(now.getTime() - 1)],
-  ])('denies a TEAM_LEADER grant with %s expiry', (_label, expiresAt) => {
-    const facts = base();
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
-    ];
-    facts.grants = [
-      {
-        userId,
-        organizationId: orgId,
-        capability: 'project.create',
-        expiresAt,
-      } as unknown as CapabilityGrantEvidence,
-    ];
-    expect(policy.evaluate(facts).allowed).toBe(false);
-  });
-
-  it('does not let a MEMBER or a grant from another organization create a project', () => {
-    const facts = base();
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'MEMBER' },
-    ];
-    facts.grants = [
-      {
-        userId,
-        organizationId: orgId,
-        capability: 'project.create',
-        expiresAt: new Date(now.getTime() + 1000),
-      },
-    ];
-    expect(policy.evaluate(facts).allowed).toBe(false);
-
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
-    ];
-    facts.grants = [{ ...facts.grants[0], organizationId: otherOrgId }];
-    expect(policy.evaluate(facts).allowed).toBe(false);
-  });
-
-  it('denies an inactive User even with active membership and ADMIN assignment', () => {
+  it('denies an inactive User even with an ACTIVE membership', () => {
     const facts = base();
     facts.subject!.status = 'SUSPENDED';
-    facts.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'ADMIN' },
-    ];
+    expect(policy.evaluate(facts).allowed).toBe(false);
+  });
+
+  it('denies invalid evaluation time', () => {
+    const facts = base();
+    facts.now = new Date(Number.NaN);
     expect(policy.evaluate(facts).allowed).toBe(false);
   });
 });

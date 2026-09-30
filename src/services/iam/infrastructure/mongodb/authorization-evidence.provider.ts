@@ -14,27 +14,6 @@ interface MembershipDocument {
   status: string;
 }
 
-interface RoleAssignmentDocument {
-  userId: Types.ObjectId;
-  organizationId: Types.ObjectId;
-  projectId?: Types.ObjectId | null;
-  roleId: Types.ObjectId;
-  roleCode: string;
-}
-
-interface RoleDocument {
-  _id: Types.ObjectId;
-  code: string;
-}
-
-interface GrantDocument {
-  userId: Types.ObjectId;
-  organizationId: Types.ObjectId;
-  capability: string;
-  expiresAt?: Date | null;
-  revokedAt?: Date | null;
-}
-
 const modelName = (collection: string): string =>
   `${IAM_PERSISTENCE.databaseName}_${collection}`;
 const validId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
@@ -68,65 +47,9 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
     if (!membership) {
       return {
         membership: null,
-        roleAssignments: [],
-        grants: [],
         explicitDeny: 'CLEAR',
       };
     }
-
-    const assignments = await this.model<RoleAssignmentDocument>(
-      'role_assignments',
-    )
-      .find(
-        {
-          userId: userObjectId,
-          organizationId: organizationObjectId,
-          projectId: null,
-        },
-        { userId: 1, organizationId: 1, projectId: 1, roleId: 1, roleCode: 1 },
-      )
-      .lean()
-      .exec();
-    const roleIds = assignments
-      .map((row) => row.roleId)
-      .filter((value) => value instanceof Types.ObjectId);
-    const roles = roleIds.length
-      ? await this.model<RoleDocument>('roles')
-          .find({ _id: { $in: roleIds } }, { _id: 1, code: 1 })
-          .lean()
-          .exec()
-      : [];
-    const codesByRoleId = new Map(
-      roles.map((row) => [String(row._id), row.code]),
-    );
-    const roleAssignments = assignments
-      .filter((row) => codesByRoleId.get(String(row.roleId)) === row.roleCode)
-      .map((row) => ({
-        userId: String(row.userId),
-        organizationId: String(row.organizationId),
-        projectId: row.projectId == null ? null : String(row.projectId),
-        roleCode: row.roleCode,
-      }));
-
-    const grants = await this.model<GrantDocument>(
-      'organization_capability_grants',
-    )
-      .find(
-        {
-          userId: userObjectId,
-          organizationId: organizationObjectId,
-          capability: 'project.create',
-        },
-        {
-          userId: 1,
-          organizationId: 1,
-          capability: 1,
-          expiresAt: 1,
-          revokedAt: 1,
-        },
-      )
-      .lean()
-      .exec();
 
     return {
       membership: {
@@ -134,17 +57,8 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
         organizationId: String(membership.organizationId),
         status: membership.status,
       },
-      roleAssignments,
-      grants: grants.map((row) => ({
-        userId: String(row.userId),
-        organizationId: String(row.organizationId),
-        capability: row.capability,
-        // Preserve legacy missing expiry as an ineligible null evidence value.
-        expiresAt: row.expiresAt ?? null,
-        revokedAt: row.revokedAt,
-      })),
-      // These current sources can grant project.create but have no DENY field.
-      // DEC-002 evaluates explicit DENY only from a source that supports it.
+      // Membership has no DENY field; no current project.create source
+      // supports explicit deny.
       explicitDeny: 'CLEAR',
     };
   }

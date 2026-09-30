@@ -5,6 +5,7 @@ type JsonObject = Record<string, unknown>;
 
 interface OpenApiOperation extends JsonObject {
   operationId: string;
+  description?: string;
   parameters?: JsonObject[];
   responses: Record<string, JsonObject>;
 }
@@ -80,6 +81,19 @@ describe('IAM OpenAPI contract', () => {
     );
 
     expect(new Set(operationIds).size).toBe(operationIds.length);
+  });
+
+  it('documents ACTIVE Organization Membership as the project.create boundary', () => {
+    const createProject = contract.paths['/api/v1/iam/projects'].post;
+    expect(createProject?.description).toContain(
+      'ACTIVE Organization Membership',
+    );
+    expect(createProject?.description).toContain(
+      'trusted Organization Context',
+    );
+    expect(createProject?.description).toContain(
+      'project.create capability grant are not required',
+    );
   });
 
   it('defines the required pagination defaults and limit', () => {

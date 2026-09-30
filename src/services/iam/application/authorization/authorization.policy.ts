@@ -15,28 +15,11 @@ export interface OrganizationMembershipEvidence {
   status: string;
 }
 
-export interface RoleAssignmentEvidence {
-  userId: string;
-  organizationId: string;
-  projectId?: string | null;
-  roleCode: string;
-}
-
-export interface CapabilityGrantEvidence {
-  userId: string;
-  organizationId: string;
-  capability: string;
-  expiresAt: Date | null;
-  revokedAt?: Date | null;
-}
-
 export interface AuthorizationEvaluationInput {
   permission: DocumentedPermission;
   subject: AuthorizationSubject | null;
   requestedOrganizationId: string;
   membership: OrganizationMembershipEvidence | null;
-  roleAssignments: readonly RoleAssignmentEvidence[];
-  grants: readonly CapabilityGrantEvidence[];
   explicitDeny: ExplicitDenyAssessment;
   now: Date;
 }
@@ -152,33 +135,9 @@ export class AuthorizationPolicy {
       return { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
     }
 
-    const roles = new Set(
-      input.roleAssignments
-        .filter(
-          (assignment) =>
-            assignment.userId === subject.userId &&
-            assignment.organizationId === requestedOrganizationId &&
-            assignment.projectId == null,
-        )
-        .map((assignment) => assignment.roleCode),
-    );
-    if (roles.has('ADMIN')) return { allowed: true };
-
-    if (
-      roles.has('TEAM_LEADER') &&
-      input.grants.some(
-        (grant) =>
-          grant.userId === subject.userId &&
-          grant.organizationId === requestedOrganizationId &&
-          grant.capability === 'project.create' &&
-          grant.revokedAt == null &&
-          grant.expiresAt instanceof Date &&
-          Number.isFinite(grant.expiresAt.getTime()) &&
-          grant.expiresAt.getTime() > input.now.getTime(),
-      )
-    )
-      return { allowed: true };
-
-    return { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
+    // The accepted Project decision supersedes the older role/grant gate:
+    // every authenticated User with an ACTIVE membership in the trusted
+    // Organization Context may create a Project.
+    return { allowed: true };
   }
 }
