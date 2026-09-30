@@ -94,6 +94,20 @@ describe('IAM OpenAPI contract', () => {
     expect(createProject?.description).toContain(
       'project.create capability grant are not required',
     );
+    expect(createProject?.description).toContain('New Projects are PRIVATE');
+  });
+
+  it('documents PUBLIC Project metadata visibility for active Organization members', () => {
+    const listProjects = contract.paths['/api/v1/iam/projects'].get;
+    const getProject = contract.paths['/api/v1/iam/projects/{projectId}'].get;
+    expect(listProjects?.description).toContain('PUBLIC Project metadata');
+    expect(listProjects?.description).toContain(
+      'ACTIVE Organization Membership',
+    );
+    expect(getProject?.description).toContain('PUBLIC Project metadata');
+    expect(getProject?.description).toContain(
+      'Nested Project resources are outside this endpoint contract',
+    );
   });
 
   it('defines the required pagination defaults and limit', () => {

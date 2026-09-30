@@ -18,6 +18,7 @@ interface ProjectDocument {
   name: string;
   code: string;
   description?: string | null;
+  visibility?: 'PRIVATE' | 'PUBLIC';
   status: ProjectStatus;
   createdBy: Types.ObjectId;
   createdAt: Date;
@@ -70,6 +71,7 @@ export class MongoProjectRepository implements ProjectRepository {
                 ...(input.description === undefined
                   ? {}
                   : { description: input.description }),
+                visibility: 'PRIVATE',
                 status: 'ACTIVE',
                 createdBy: new Types.ObjectId(creatorId),
               },
@@ -118,9 +120,26 @@ export class MongoProjectRepository implements ProjectRepository {
   ) {
     const scope = await this.visibleScope(organizationId, userId);
     if (!scope) return { data: [], totalItems: 0 };
+    if (
+      !scope.all &&
+      !scope.includePublicProjects &&
+      scope.projectIds.length === 0
+    )
+      return { data: [], totalItems: 0 };
     const filter = {
       organizationId: new Types.ObjectId(organizationId),
-      ...(scope.all ? {} : { _id: { $in: scope.projectIds } }),
+      ...(scope.all
+        ? {}
+        : {
+            $or: [
+              ...(scope.includePublicProjects
+                ? [{ visibility: 'PUBLIC' }]
+                : []),
+              ...(scope.projectIds.length > 0
+                ? [{ _id: { $in: scope.projectIds } }]
+                : []),
+            ],
+          }),
       ...(query.status ? { status: query.status } : {}),
     };
     const projects = this.model<ProjectDocument>('projects');
@@ -140,16 +159,16 @@ export class MongoProjectRepository implements ProjectRepository {
   async findVisible(organizationId: string, userId: string, projectId: string) {
     if (!validId(projectId)) return null;
     const scope = await this.visibleScope(organizationId, userId);
-    if (
-      !scope ||
-      (!scope.all &&
-        !scope.projectIds.some((id) => String(id) === projectId.toLowerCase()))
-    )
-      return null;
+    if (!scope) return null;
+    const hasPrivateProjectAccess =
+      scope.all ||
+      scope.projectIds.some((id) => String(id) === projectId.toLowerCase());
+    if (!hasPrivateProjectAccess && !scope.includePublicProjects) return null;
     const project = await this.model<ProjectDocument>('projects')
       .findOne({
         _id: new Types.ObjectId(projectId),
         organizationId: new Types.ObjectId(organizationId),
+        ...(!hasPrivateProjectAccess ? { visibility: 'PUBLIC' } : {}),
       })
       .lean()
       .exec();
@@ -161,7 +180,11 @@ export class MongoProjectRepository implements ProjectRepository {
     userId: string,
   ): Promise<
     | { all: true; projectIds: Types.ObjectId[] }
-    | { all: false; projectIds: Types.ObjectId[] }
+    | {
+        all: false;
+        projectIds: Types.ObjectId[];
+        includePublicProjects: boolean;
+      }
     | null
   > {
     if (!validId(organizationId) || !validId(userId)) return null;
@@ -222,6 +245,7 @@ export class MongoProjectRepository implements ProjectRepository {
       : {
           all: false,
           projectIds: scope.projectIds.map((id) => new Types.ObjectId(id)),
+          includePublicProjects: scope.includePublicProjects,
         };
   }
 

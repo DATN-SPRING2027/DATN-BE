@@ -23,6 +23,7 @@ function fixture(
     roleCode?: string;
     permissions?: string[];
     activeProjectId?: string | null;
+    projectVisibility?: 'PRIVATE' | 'PUBLIC';
   } = {},
 ) {
   const assignmentProjectId =
@@ -34,6 +35,7 @@ function fixture(
     organizationId: new Types.ObjectId(orgId),
     name: 'Example',
     code: 'EX',
+    visibility: options.projectVisibility ?? 'PRIVATE',
     status: 'ACTIVE',
     createdBy: new Types.ObjectId(userId),
     createdAt: new Date('2026-09-01T00:00:00Z'),
@@ -86,7 +88,13 @@ function fixture(
   };
   const projects = {
     create: jest.fn().mockResolvedValue([{ toObject: () => project }]),
-    findOne: jest.fn().mockReturnValue(query(project)),
+    findOne: jest.fn((filter?: { visibility?: 'PRIVATE' | 'PUBLIC' }) =>
+      query(
+        filter?.visibility && filter.visibility !== project.visibility
+          ? null
+          : project,
+      ),
+    ),
     find: jest.fn().mockReturnValue({
       sort: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
@@ -164,6 +172,51 @@ describe('MongoProjectRepository visibility', () => {
     );
   });
 
+  it('allows an active Organization member to read PUBLIC metadata without ProjectMembership', async () => {
+    const { repository, projects } = fixture({
+      assignmentProjectId: null,
+      activeProjectId: null,
+      projectVisibility: 'PUBLIC',
+    });
+    expect((await repository.findVisible(orgId, userId, projectId))?.id).toBe(
+      projectId,
+    );
+    expect(projects.findOne).toHaveBeenCalledWith({
+      _id: new Types.ObjectId(projectId),
+      organizationId: new Types.ObjectId(orgId),
+      visibility: 'PUBLIC',
+    });
+  });
+
+  it('keeps a PRIVATE Project hidden from an active Organization member outside the Project', async () => {
+    const { repository, projects } = fixture({
+      assignmentProjectId: null,
+      activeProjectId: null,
+      projectVisibility: 'PRIVATE',
+    });
+    projects.findOne.mockReturnValue(query(null));
+    expect(await repository.findVisible(orgId, userId, projectId)).toBeNull();
+    expect(projects.findOne).toHaveBeenCalledWith({
+      _id: new Types.ObjectId(projectId),
+      organizationId: new Types.ObjectId(orgId),
+      visibility: 'PUBLIC',
+    });
+  });
+
+  it('does not make PUBLIC Projects visible without ACTIVE OrganizationMembership', async () => {
+    const { repository, memberships, projects } = fixture({
+      activeOrganization: false,
+      projectVisibility: 'PUBLIC',
+    });
+    expect(await repository.findVisible(orgId, userId, projectId)).toBeNull();
+    expect(memberships.exists).toHaveBeenCalledWith({
+      organizationId: new Types.ObjectId(orgId),
+      userId: new Types.ObjectId(userId),
+      status: 'ACTIVE',
+    });
+    expect(projects.findOne).not.toHaveBeenCalled();
+  });
+
   it('filters list before pagination to the authorized Project IDs and Organization', async () => {
     const { repository, projects } = fixture();
     const result = await repository.listVisible(orgId, userId, {
@@ -172,16 +225,16 @@ describe('MongoProjectRepository visibility', () => {
       status: 'ACTIVE',
     });
     expect(result.totalItems).toBe(1);
-    expect(projects.find).toHaveBeenCalledWith({
+    const expectedFilter = {
       organizationId: new Types.ObjectId(orgId),
-      _id: { $in: [new Types.ObjectId(projectId)] },
+      $or: [
+        { visibility: 'PUBLIC' },
+        { _id: { $in: [new Types.ObjectId(projectId)] } },
+      ],
       status: 'ACTIVE',
-    });
-    expect(projects.countDocuments).toHaveBeenCalledWith(
-      expect.objectContaining({
-        _id: { $in: [new Types.ObjectId(projectId)] },
-      }),
-    );
+    };
+    expect(projects.find).toHaveBeenCalledWith(expectedFilter);
+    expect(projects.countDocuments).toHaveBeenCalledWith(expectedFilter);
   });
 
   it.each([
@@ -193,7 +246,16 @@ describe('MongoProjectRepository visibility', () => {
   ])('denies %s', async (_case, options) => {
     const { repository, projects } = fixture(options);
     expect(await repository.findVisible(orgId, userId, projectId)).toBeNull();
-    expect(projects.findOne).not.toHaveBeenCalled();
+    if (
+      'activeOrganization' in options &&
+      options.activeOrganization === false
+    ) {
+      expect(projects.findOne).not.toHaveBeenCalled();
+    } else {
+      expect(projects.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ visibility: 'PUBLIC' }),
+      );
+    }
   });
 });
 
@@ -218,6 +280,7 @@ describe('MongoProjectRepository creation', () => {
         expect.objectContaining({
           organizationId: new Types.ObjectId(orgId),
           createdBy: new Types.ObjectId(userId),
+          visibility: 'PRIVATE',
           status: 'ACTIVE',
         }),
       ],

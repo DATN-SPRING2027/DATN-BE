@@ -52,15 +52,27 @@ export interface ProjectReadScopeInput {
 }
 
 export type ProjectReadScope =
-  | { all: true; projectIds: readonly string[] }
-  | { all: false; projectIds: readonly string[] };
+  | {
+      all: true;
+      projectIds: readonly string[];
+      includePublicProjects: false;
+    }
+  | {
+      all: false;
+      projectIds: readonly string[];
+      includePublicProjects: boolean;
+    };
 
 const validObjectId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
 
 @Injectable()
 export class AuthorizationPolicy {
   projectReadScope(input: ProjectReadScopeInput): ProjectReadScope {
-    const deny: ProjectReadScope = { all: false, projectIds: [] };
+    const deny: ProjectReadScope = {
+      all: false,
+      projectIds: [],
+      includePublicProjects: false,
+    };
     const { subject, membership, requestedOrganizationId } = input;
     if (
       !subject ||
@@ -85,7 +97,11 @@ export class AuthorizationPolicy {
           assignment.resolvedRoleCode === 'ADMIN',
       )
     )
-      return { all: true, projectIds: [] };
+      return {
+        all: true,
+        projectIds: [],
+        includePublicProjects: false,
+      };
 
     const active = new Set(input.activeProjectMembershipIds);
     const projectIds = [
@@ -103,7 +119,7 @@ export class AuthorizationPolicy {
           .map((assignment) => assignment.projectId as string),
       ),
     ];
-    return { all: false, projectIds };
+    return { all: false, projectIds, includePublicProjects: true };
   }
 
   evaluate(input: AuthorizationEvaluationInput): AuthorizationDecision {

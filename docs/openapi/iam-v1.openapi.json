@@ -216,7 +216,7 @@
       "get": {
         "tags": ["Projects"],
         "summary": "List projects",
-        "description": "Returns only projects in which the caller has visibility. Organization Admins may list all organization projects.",
+        "description": "Returns Project metadata visible to the authenticated User in the trusted Organization. Users with an ACTIVE Organization Membership may read PUBLIC Project metadata; PRIVATE Projects require the documented Project read policy. Organization Admins may list all organization Projects. Nested Project resources are outside this endpoint contract.",
         "operationId": "listProjects",
         "parameters": [
           { "$ref": "#/components/parameters/Page" },
@@ -245,7 +245,7 @@
       "post": {
         "tags": ["Projects"],
         "summary": "Create a project",
-        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creates only the Project and its audit event; it does not bootstrap Project Membership, RoleAssignment, Team, owner, or leader records.",
+        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creates only the Project and its audit event; it does not bootstrap Project Membership, RoleAssignment, Team, owner, or leader records.",
         "operationId": "createProject",
         "requestBody": {
           "required": true,
@@ -276,6 +276,7 @@
       "get": {
         "tags": ["Projects"],
         "summary": "Get a project",
+        "description": "Returns Project metadata when the authenticated User has visibility in the trusted Organization. An ACTIVE Organization member may read PUBLIC Project metadata. PRIVATE Projects require the documented Project read policy. Nested Project resources are outside this endpoint contract.",
         "operationId": "getProject",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "responses": {

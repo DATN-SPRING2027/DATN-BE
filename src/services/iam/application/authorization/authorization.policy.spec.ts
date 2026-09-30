@@ -41,6 +41,7 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
     expect(policy.projectReadScope(readBase())).toEqual({
       all: false,
       projectIds: [projectId],
+      includePublicProjects: true,
     });
   });
 
@@ -58,6 +59,18 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
     expect(policy.projectReadScope(facts)).toEqual({
       all: true,
       projectIds: [],
+      includePublicProjects: false,
+    });
+  });
+
+  it('includes public metadata for an ACTIVE Organization member without a Project role', () => {
+    const facts = readBase();
+    facts.assignments = [];
+    facts.activeProjectMembershipIds = [];
+    expect(policy.projectReadScope(facts)).toEqual({
+      all: false,
+      projectIds: [],
+      includePublicProjects: true,
     });
   });
 
@@ -67,27 +80,31 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
       (facts: ProjectReadScopeInput) => {
         facts.requestedOrganizationId = otherOrgId;
       },
+      false,
     ],
     [
       'inactive membership',
       (facts: ProjectReadScopeInput) => {
         facts.membership!.status = 'SUSPENDED';
       },
+      false,
     ],
     [
       'explicit deny',
       (facts: ProjectReadScopeInput) => {
         facts.explicitDeny = 'DENY';
       },
+      false,
     ],
     [
-      'missing project membership',
+      'missing private Project membership',
       (facts: ProjectReadScopeInput) => {
         facts.activeProjectMembershipIds = [];
       },
+      true,
     ],
     [
-      'missing Role permission',
+      'missing private Role permission',
       (facts: ProjectReadScopeInput) => {
         facts.assignments = [
           {
@@ -98,9 +115,10 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
           },
         ];
       },
+      true,
     ],
     [
-      'mismatched Role',
+      'mismatched private Role',
       (facts: ProjectReadScopeInput) => {
         facts.assignments = [
           {
@@ -111,15 +129,20 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
           },
         ];
       },
+      true,
     ],
-  ])('denies %s', (_case, mutate) => {
-    const facts = readBase();
-    mutate(facts);
-    expect(policy.projectReadScope(facts)).toEqual({
-      all: false,
-      projectIds: [],
-    });
-  });
+  ])(
+    'does not authorize private Project through %s',
+    (_case, mutate, includePublicProjects) => {
+      const facts = readBase();
+      mutate(facts);
+      expect(policy.projectReadScope(facts)).toEqual({
+        all: false,
+        projectIds: [],
+        includePublicProjects,
+      });
+    },
+  );
 });
 
 describe('AuthorizationPolicy: active-membership project.create rule', () => {
