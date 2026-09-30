@@ -26,6 +26,7 @@ export function buildProjectCodeIndexPlan({
   projectCount,
   indexes,
   duplicatePairs,
+  nonCanonicalProjectCodes,
 }) {
   const conflicting = indexes.filter((item) =>
     (sameKey(item.key) && !unrestrictedUnique(item)) ||
@@ -33,7 +34,8 @@ export function buildProjectCodeIndexPlan({
   );
   const alreadyUnique = indexes.some(unrestrictedUnique);
   const clean = collectionExists && objectType === 'collection' &&
-    duplicatePairs.length === 0 && conflicting.length === 0;
+    duplicatePairs.length === 0 && nonCanonicalProjectCodes.length === 0 &&
+    conflicting.length === 0;
   return {
     databaseName,
     targetFingerprint,
@@ -44,6 +46,7 @@ export function buildProjectCodeIndexPlan({
     desiredIndex: { name: indexName, key: indexKey, unique: true },
     existingIndexes: indexes.map(describeIndex),
     duplicatePairs,
+    nonCanonicalProjectCodes,
     conflictingIndexes: conflicting.map(describeIndex),
     action: clean ? alreadyUnique ? 'NOOP' : 'CREATE_UNIQUE_INDEX' : 'BLOCKED',
     clean,

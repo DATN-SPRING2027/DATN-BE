@@ -10,6 +10,7 @@ const base = () => ({
   projectCount: 0,
   indexes: [{ name: '_id_', key: { _id: 1 }, unique: true }],
   duplicatePairs: [],
+  nonCanonicalProjectCodes: [],
 });
 
 test('clean missing index proposes one non-destructive create', () => {
@@ -39,6 +40,20 @@ test('duplicate organization/code pair blocks index creation', () => {
   const plan = buildProjectCodeIndexPlan(input);
   assert.equal(plan.clean, false);
   assert.equal(plan.action, 'BLOCKED');
+});
+
+test('non-canonical project codes block index creation for manual remediation', () => {
+  const input = base();
+  input.nonCanonicalProjectCodes.push({
+    projectId: 'project-a',
+    organizationId: 'org-a',
+    code: ' p1 ',
+    normalizedCode: 'P1',
+  });
+  const plan = buildProjectCodeIndexPlan(input);
+  assert.equal(plan.clean, false);
+  assert.equal(plan.action, 'BLOCKED');
+  assert.deepEqual(plan.nonCanonicalProjectCodes, input.nonCanonicalProjectCodes);
 });
 
 test('non-unique matching index and missing collection block migration', () => {

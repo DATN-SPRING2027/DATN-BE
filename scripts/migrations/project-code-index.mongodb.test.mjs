@@ -30,10 +30,38 @@ integration('duplicate dry-run blocks apply; simple unique index enforces organi
     assert.deepEqual((await collection.indexes()).map((item) => item.name), ['_id_']);
 
     await collection.deleteOne({ _id: duplicate.insertedIds[1] });
-    await collection.insertOne({ organizationId: 'org-a', code: 'p1' });
+    const lowerCase = await collection.insertOne({ organizationId: 'org-a', code: 'p1' });
+    const normalizedDuplicate = await inspectProjectCodeIndex({ db, targetFingerprint: 'test-only' });
+    assert.equal(normalizedDuplicate.action, 'BLOCKED');
+    assert.deepEqual(normalizedDuplicate.duplicatePairs, [
+      { organizationId: 'org-a', code: 'P1', count: 2 },
+    ]);
+    assert.deepEqual(normalizedDuplicate.nonCanonicalProjectCodes, [{
+      projectId: lowerCase.insertedId,
+      organizationId: 'org-a',
+      code: 'p1',
+      normalizedCode: 'P1',
+    }]);
+    assert.deepEqual((await collection.indexes()).map((item) => item.name), ['_id_']);
+
+    await collection.deleteOne({ _id: lowerCase.insertedId });
+    const nonCanonical = await collection.insertOne({ organizationId: 'org-a', code: ' P2 ' });
+    const nonCanonicalReport = await inspectProjectCodeIndex({ db, targetFingerprint: 'test-only' });
+    assert.equal(nonCanonicalReport.action, 'BLOCKED');
+    assert.deepEqual(nonCanonicalReport.duplicatePairs, []);
+    assert.deepEqual(nonCanonicalReport.nonCanonicalProjectCodes, [{
+      projectId: nonCanonical.insertedId,
+      organizationId: 'org-a',
+      code: ' P2 ',
+      normalizedCode: 'P2',
+    }]);
+    assert.deepEqual((await collection.indexes()).map((item) => item.name), ['_id_']);
+
+    await collection.deleteOne({ _id: nonCanonical.insertedId });
     const ready = await inspectProjectCodeIndex({ db, targetFingerprint: 'test-only' });
     assert.equal(ready.action, 'CREATE_UNIQUE_INDEX');
     assert.deepEqual(ready.duplicatePairs, []);
+    assert.deepEqual(ready.nonCanonicalProjectCodes, []);
     await collection.createIndex(ready.desiredIndex.key, {
       name: ready.desiredIndex.name,
       unique: true,

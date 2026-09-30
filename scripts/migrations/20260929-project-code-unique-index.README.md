@@ -8,7 +8,9 @@ Run from the BE repository with the runtime MongoDB environment. Keep the dry-ru
 node scripts/migrations/20260929-project-code-unique-index.mjs > project-code-index-dry-run.json
 ```
 
-Only when `clean=true`, `duplicatePairs=[]` and the target is correct, apply using `reportSha256` from that exact report. A same-key non-unique, sparse, partial or differently collated index is treated as a conflict, not as adequate uniqueness:
+The preflight groups Project codes after MongoDB `$trim` and `$toUpper`, matching the Project schema's trim/uppercase normalization. It also reports every `nonCanonicalProjectCodes` record with its original and normalized value. Duplicate normalized pairs and any non-canonical code block the migration for manual remediation; the migration never rewrites existing codes.
+
+Only when `clean=true`, `duplicatePairs=[]`, `nonCanonicalProjectCodes=[]` and the target is correct, apply using `reportSha256` from that exact report. A same-key non-unique, sparse, partial or differently collated index is treated as a conflict, not as adequate uniqueness:
 
 ```sh
 node scripts/migrations/20260929-project-code-unique-index.mjs --apply --expected-report-sha256=<reportSha256>
