@@ -84,3 +84,42 @@ membership IDs, their legacy sources, and any subsequent membership changes;
 obtain an environment-specific correction plan before modifying data. Rolling
 back BE code alone is unsafe once organization access depends on memberships;
 restore the previous code only with an explicit access and data plan.
+
+## Project visibility and Project Membership uniqueness
+
+`20260930-project-visibility-membership-index.mjs` is a read-only report by
+default. It lists every existing Project whose `visibility` field would be set
+to `PRIVATE`, rejects unexpected visibility values or missing Organization
+scope, reports duplicate or malformed Project Membership pairs, and reports
+scope mismatches, unknown membership statuses, and whether the unique
+`(projectId, userId)` index is present, would be created, or is blocked. It
+never infers or creates Project Membership records from existing user or role
+data.
+
+Run and save the dry-run report before any apply:
+
+```sh
+node scripts/migrations/20260930-project-visibility-membership-index.mjs > project-foundation-dry-run.json
+```
+
+Review all listed Project IDs and membership conflicts. A clean report may
+include known Projects that need the default `PRIVATE` value; `clean: false`
+means invalid Project data, malformed or cross-Organization membership,
+duplicate membership pairs, or a conflicting index needs a separate reviewed
+correction. This migration does not delete or merge duplicate memberships.
+
+Only after a clean report is reviewed and both Project and Project Membership
+writers are paused, an operator may apply that exact report:
+
+```sh
+node scripts/migrations/20260930-project-visibility-membership-index.mjs --apply --project-writes-paused --project-membership-writes-paused --expected-report-sha256=<reportSha256>
+```
+
+Apply sets only missing `projects.visibility` values to `PRIVATE`, creates the
+existing schema-declared unique `(projectId, userId)` index when absent, and
+verifies both conditions afterward. It is idempotent and does not change
+existing `PRIVATE`/`PUBLIC` values, Project Membership records, or role
+assignments. It binds the reviewed hash to the target endpoint and database,
+without printing connection credentials. Do not apply it as part of this code
+review; the migration PR must first be reviewed and the environment's dry-run
+report must be clean.

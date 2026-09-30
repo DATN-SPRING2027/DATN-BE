@@ -81,6 +81,12 @@ const iamSchemas: Record<string, Schema> = {
       name: { type: String, required: true, trim: true },
       code: { type: String, required: true, uppercase: true, trim: true },
       description: String,
+      visibility: {
+        type: String,
+        enum: ['PRIVATE', 'PUBLIC'],
+        required: true,
+        default: 'PRIVATE',
+      },
       status: { type: String, enum: ['ACTIVE', 'ARCHIVED'], required: true },
       createdBy: { type: Schema.Types.ObjectId, required: true },
     },
