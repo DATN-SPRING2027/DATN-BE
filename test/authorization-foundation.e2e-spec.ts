@@ -33,6 +33,7 @@ class AuthorizationHarnessController {
 describe('Authorization foundation guard (isolated HTTP harness)', () => {
   let app: INestApplication;
   let facts: ProjectCreateEvidence | null;
+  let authenticatedRole = 'ADMIN';
   const authentication = {
     getCurrentIdentity: jest.fn((authorization: string | undefined) => {
       if (authorization !== 'Bearer valid') throw new UnauthorizedException();
@@ -41,7 +42,7 @@ describe('Authorization foundation guard (isolated HTTP harness)', () => {
         email: 'user@example.test',
         name: 'User',
         organizationId: orgId,
-        roles: ['ADMIN'],
+        roles: [authenticatedRole],
       });
     }),
   };
@@ -67,10 +68,9 @@ describe('Authorization foundation guard (isolated HTTP harness)', () => {
   beforeEach(() => {
     facts = {
       membership: { userId, organizationId: orgId, status: 'ACTIVE' },
-      roleAssignments: [{ userId, organizationId: orgId, roleCode: 'ADMIN' }],
-      grants: [],
       explicitDeny: 'CLEAR',
     };
+    authenticatedRole = 'ADMIN';
     evidence.loadProjectCreate.mockClear();
   });
 
@@ -82,42 +82,23 @@ describe('Authorization foundation guard (isolated HTTP harness)', () => {
       .expect(401);
   });
 
-  it('allows documented ADMIN permission with active membership and clear deny evidence', async () => {
-    await request(app.getHttpServer() as App)
-      .get(`/api/v1/authorization-foundation-test/${orgId}`)
-      .set('Authorization', 'Bearer valid')
-      .expect(200, { allowed: true });
-  });
+  it.each(['MEMBER', 'TEAM_LEADER', 'ADMIN'])(
+    'allows an ACTIVE %s without a role assignment or project.create grant',
+    async (role) => {
+      authenticatedRole = role;
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/authorization-foundation-test/${orgId}`)
+        .set('Authorization', 'Bearer valid')
+        .expect(200, { allowed: true });
+    },
+  );
 
-  it('allows a leader only when the grant has a future expiry', async () => {
-    facts!.roleAssignments = [
-      { userId, organizationId: orgId, roleCode: 'TEAM_LEADER' },
-    ];
-    facts!.grants = [
-      {
-        userId,
-        organizationId: orgId,
-        capability: 'project.create',
-        expiresAt: null,
-      },
-    ];
+  it('returns 403 when the user has no ACTIVE Organization Membership', async () => {
+    facts!.membership = null;
     await request(app.getHttpServer() as App)
       .get(`/api/v1/authorization-foundation-test/${orgId}`)
       .set('Authorization', 'Bearer valid')
       .expect(403);
-
-    facts!.grants = [
-      {
-        userId,
-        organizationId: orgId,
-        capability: 'project.create',
-        expiresAt: new Date(Date.now() + 60_000),
-      },
-    ];
-    await request(app.getHttpServer() as App)
-      .get(`/api/v1/authorization-foundation-test/${orgId}`)
-      .set('Authorization', 'Bearer valid')
-      .expect(200, { allowed: true });
   });
 
   it('returns 403 for cross-organization selector even if the token says ADMIN', async () => {
@@ -137,29 +118,40 @@ describe('Authorization foundation guard (isolated HTTP harness)', () => {
     expect(evidence.loadProjectCreate).not.toHaveBeenCalled();
   });
 
-  it('returns 403 for inactive membership, missing deny evidence, or project-scoped role', async () => {
-    facts!.membership = { userId, organizationId: orgId, status: 'SUSPENDED' };
+  it('rejects an organization selector supplied in the header', async () => {
+    await request(app.getHttpServer() as App)
+      .get(`/api/v1/authorization-foundation-test/${orgId}`)
+      .set('Authorization', 'Bearer valid')
+      .set('x-organization-id', otherOrgId)
+      .expect(403);
+    expect(evidence.loadProjectCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(['PENDING_INVITE', 'SUSPENDED', 'REMOVED'])(
+    'returns 403 for %s Organization Membership',
+    async (status) => {
+      facts!.membership = { userId, organizationId: orgId, status };
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/authorization-foundation-test/${orgId}`)
+        .set('Authorization', 'Bearer valid')
+        .expect(403);
+    },
+  );
+
+  it('returns 403 when membership evidence belongs to another Organization', async () => {
+    facts!.membership = {
+      userId,
+      organizationId: otherOrgId,
+      status: 'ACTIVE',
+    };
     await request(app.getHttpServer() as App)
       .get(`/api/v1/authorization-foundation-test/${orgId}`)
       .set('Authorization', 'Bearer valid')
       .expect(403);
+  });
 
-    facts!.membership = { userId, organizationId: orgId, status: 'ACTIVE' };
+  it('returns 403 when deny evidence is unknown', async () => {
     facts!.explicitDeny = 'UNKNOWN';
-    await request(app.getHttpServer() as App)
-      .get(`/api/v1/authorization-foundation-test/${orgId}`)
-      .set('Authorization', 'Bearer valid')
-      .expect(403);
-
-    facts!.explicitDeny = 'CLEAR';
-    facts!.roleAssignments = [
-      {
-        userId,
-        organizationId: orgId,
-        projectId: 'dddddddddddddddddddddddd',
-        roleCode: 'ADMIN',
-      },
-    ];
     await request(app.getHttpServer() as App)
       .get(`/api/v1/authorization-foundation-test/${orgId}`)
       .set('Authorization', 'Bearer valid')

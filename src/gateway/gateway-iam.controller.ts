@@ -59,6 +59,30 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/projects')
+  listProjects(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/projects')
+  createProject(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/projects/:projectId')
+  getProject(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/users/:userId')
   getUser(@Req() request: Request, @Res() response: Response): Promise<void> {
     return this.forward(request, response);

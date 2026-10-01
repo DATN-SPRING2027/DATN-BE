@@ -15,28 +15,11 @@ export interface OrganizationMembershipEvidence {
   status: string;
 }
 
-export interface RoleAssignmentEvidence {
-  userId: string;
-  organizationId: string;
-  projectId?: string | null;
-  roleCode: string;
-}
-
-export interface CapabilityGrantEvidence {
-  userId: string;
-  organizationId: string;
-  capability: string;
-  expiresAt: Date | null;
-  revokedAt?: Date | null;
-}
-
 export interface AuthorizationEvaluationInput {
   permission: DocumentedPermission;
   subject: AuthorizationSubject | null;
   requestedOrganizationId: string;
   membership: OrganizationMembershipEvidence | null;
-  roleAssignments: readonly RoleAssignmentEvidence[];
-  grants: readonly CapabilityGrantEvidence[];
   explicitDeny: ExplicitDenyAssessment;
   now: Date;
 }
@@ -52,10 +35,93 @@ export type AuthorizationDecision =
         | 'NO_DOCUMENTED_PERMISSION';
     };
 
+export interface ProjectReadAssignmentEvidence {
+  projectId: string | null;
+  roleCode: string;
+  resolvedRoleCode: string | null;
+  permissions: readonly string[];
+}
+
+export interface ProjectReadScopeInput {
+  subject: AuthorizationSubject | null;
+  requestedOrganizationId: string;
+  membership: OrganizationMembershipEvidence | null;
+  assignments: readonly ProjectReadAssignmentEvidence[];
+  activeProjectMembershipIds: readonly string[];
+  explicitDeny: ExplicitDenyAssessment;
+}
+
+export type ProjectReadScope =
+  | {
+      all: true;
+      projectIds: readonly string[];
+      includePublicProjects: false;
+    }
+  | {
+      all: false;
+      projectIds: readonly string[];
+      includePublicProjects: boolean;
+    };
+
 const validObjectId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
 
 @Injectable()
 export class AuthorizationPolicy {
+  projectReadScope(input: ProjectReadScopeInput): ProjectReadScope {
+    const deny: ProjectReadScope = {
+      all: false,
+      projectIds: [],
+      includePublicProjects: false,
+    };
+    const { subject, membership, requestedOrganizationId } = input;
+    if (
+      !subject ||
+      !validObjectId(subject.userId) ||
+      !validObjectId(subject.organizationId) ||
+      !validObjectId(requestedOrganizationId) ||
+      subject.organizationId !== requestedOrganizationId ||
+      subject.status !== 'ACTIVE' ||
+      !membership ||
+      membership.userId !== subject.userId ||
+      membership.organizationId !== requestedOrganizationId ||
+      membership.status !== 'ACTIVE' ||
+      input.explicitDeny !== 'CLEAR'
+    )
+      return deny;
+
+    if (
+      input.assignments.some(
+        (assignment) =>
+          assignment.projectId === null &&
+          assignment.roleCode === 'ADMIN' &&
+          assignment.resolvedRoleCode === 'ADMIN',
+      )
+    )
+      return {
+        all: true,
+        projectIds: [],
+        includePublicProjects: false,
+      };
+
+    const active = new Set(input.activeProjectMembershipIds);
+    const projectIds = [
+      ...new Set(
+        input.assignments
+          .filter(
+            (assignment) =>
+              assignment.projectId !== null &&
+              (assignment.roleCode === 'TEAM_LEADER' ||
+                assignment.roleCode === 'MEMBER') &&
+              assignment.resolvedRoleCode === assignment.roleCode &&
+              assignment.permissions.includes('project.read') &&
+              active.has(assignment.projectId),
+          )
+          .map((assignment) => assignment.projectId as string),
+      ),
+    ];
+    return { all: false, projectIds, includePublicProjects: true };
+  }
+
   evaluate(input: AuthorizationEvaluationInput): AuthorizationDecision {
     const { subject, membership, requestedOrganizationId } = input;
     if (
@@ -85,33 +151,9 @@ export class AuthorizationPolicy {
       return { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
     }
 
-    const roles = new Set(
-      input.roleAssignments
-        .filter(
-          (assignment) =>
-            assignment.userId === subject.userId &&
-            assignment.organizationId === requestedOrganizationId &&
-            assignment.projectId == null,
-        )
-        .map((assignment) => assignment.roleCode),
-    );
-    if (roles.has('ADMIN')) return { allowed: true };
-
-    if (
-      roles.has('TEAM_LEADER') &&
-      input.grants.some(
-        (grant) =>
-          grant.userId === subject.userId &&
-          grant.organizationId === requestedOrganizationId &&
-          grant.capability === 'project.create' &&
-          grant.revokedAt == null &&
-          grant.expiresAt instanceof Date &&
-          Number.isFinite(grant.expiresAt.getTime()) &&
-          grant.expiresAt.getTime() > input.now.getTime(),
-      )
-    )
-      return { allowed: true };
-
-    return { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
+    // The accepted Project decision supersedes the older role/grant gate:
+    // every authenticated User with an ACTIVE membership in the trusted
+    // Organization Context may create a Project.
+    return { allowed: true };
   }
 }
