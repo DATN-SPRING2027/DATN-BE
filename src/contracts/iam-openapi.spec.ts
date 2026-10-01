@@ -95,6 +95,15 @@ describe('IAM OpenAPI contract', () => {
       'project.create capability grant are not required',
     );
     expect(createProject?.description).toContain('New Projects are PRIVATE');
+    expect(createProject?.description).toContain(
+      'ACTIVE ProjectMembership with a project-scoped MEMBER RoleAssignment',
+    );
+    expect(createProject?.description).toContain(
+      'does not make the creator a Project Leader',
+    );
+    expect(createProject?.description).toContain(
+      'current MEMBER Role with project.read',
+    );
   });
 
   it('documents PUBLIC Project metadata visibility for active Organization members', () => {

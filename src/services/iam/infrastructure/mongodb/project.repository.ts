@@ -25,12 +25,21 @@ interface ProjectDocument {
   updatedAt: Date;
 }
 interface MembershipDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
   projectId: Types.ObjectId;
+  userId: Types.ObjectId;
+  status: 'ACTIVE' | 'INACTIVE';
+  joinedAt: Date;
 }
 interface RoleAssignmentDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  userId: Types.ObjectId;
   roleId: Types.ObjectId;
   roleCode: string;
   projectId?: Types.ObjectId | null;
+  assignedBy: Types.ObjectId;
 }
 interface RoleDocument {
   _id: Types.ObjectId;
@@ -61,6 +70,21 @@ export class MongoProjectRepository implements ProjectRepository {
     try {
       let created: ProjectRecord | undefined;
       await session.withTransaction(async () => {
+        const memberRole = await this.model<RoleDocument>('roles')
+          .findOne({ code: 'MEMBER' })
+          .session(session)
+          .lean()
+          .exec();
+        if (
+          !memberRole ||
+          memberRole.code !== 'MEMBER' ||
+          !Array.isArray(memberRole.permissions) ||
+          !memberRole.permissions.includes('project.read')
+        )
+          throw new Error(
+            'Project bootstrap requires a MEMBER Role with project.read',
+          );
+
         const [project] = await this.model<ProjectDocument>('projects')
           .create(
             [
@@ -92,6 +116,35 @@ export class MongoProjectRepository implements ProjectRepository {
             throw cause;
           });
         created = this.record(project.toObject());
+        const [projectMembership] = await this.model<MembershipDocument>(
+          'project_memberships',
+        ).create(
+          [
+            {
+              organizationId: new Types.ObjectId(organizationId),
+              projectId: new Types.ObjectId(created.id),
+              userId: new Types.ObjectId(creatorId),
+              status: 'ACTIVE',
+              joinedAt: new Date(),
+            },
+          ],
+          { session },
+        );
+        const [roleAssignment] = await this.model<RoleAssignmentDocument>(
+          'role_assignments',
+        ).create(
+          [
+            {
+              organizationId: new Types.ObjectId(organizationId),
+              projectId: new Types.ObjectId(created.id),
+              userId: new Types.ObjectId(creatorId),
+              roleId: memberRole._id,
+              roleCode: 'MEMBER',
+              assignedBy: new Types.ObjectId(creatorId),
+            },
+          ],
+          { session },
+        );
         await this.connection!.collection('audit_logs_iam').insertOne(
           {
             organizationId,
@@ -100,6 +153,13 @@ export class MongoProjectRepository implements ProjectRepository {
             action: 'project.create',
             targetResource: 'PROJECT',
             targetResourceId: created.id,
+            metadata: {
+              bootstrap: {
+                projectMembershipId: String(projectMembership._id),
+                roleAssignmentId: String(roleAssignment._id),
+                roleCode: 'MEMBER',
+              },
+            },
             occurredAt: new Date(),
           },
           { session },

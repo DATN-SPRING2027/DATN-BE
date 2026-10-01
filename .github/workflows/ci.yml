@@ -88,3 +88,40 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --runInBand
+
+  mongodb-integration-tests:
+    name: BE / MongoDB transaction integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MONGODB_INTEGRATION: 'true'
+      MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Start MongoDB replica set
+        shell: bash
+        run: |
+          docker run --detach --name datn-mongo-rs --publish 27017:27017 mongo:7.0 mongod --replSet rs0 --bind_ip_all
+          for attempt in $(seq 1 30); do
+            if docker exec datn-mongo-rs mongosh --quiet --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec datn-mongo-rs mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})'
+          for attempt in $(seq 1 30); do
+            if docker exec datn-mongo-rs mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'MongoDB replica set did not elect a primary.' >&2
+          exit 1
+      - run: npm test -- --runInBand project.repository.mongodb.spec.ts

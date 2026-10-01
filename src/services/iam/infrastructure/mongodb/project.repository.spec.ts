@@ -10,8 +10,13 @@ const otherProjectId = 'dddddddddddddddddddddddd';
 const roleId = new Types.ObjectId('eeeeeeeeeeeeeeeeeeeeeeee');
 
 function query<T>(value: T) {
-  const result = { lean: jest.fn(), exec: jest.fn().mockResolvedValue(value) };
+  const result = {
+    lean: jest.fn(),
+    session: jest.fn(),
+    exec: jest.fn().mockResolvedValue(value),
+  };
   result.lean.mockReturnValue(result);
+  result.session.mockReturnValue(result);
   return result;
 }
 
@@ -47,6 +52,7 @@ function fixture(
       .mockResolvedValue(options.activeOrganization === false ? null : {}),
   };
   const assignments = {
+    create: jest.fn().mockResolvedValue([{ _id: new Types.ObjectId() }]),
     find: jest.fn().mockReturnValue(
       query([
         {
@@ -61,6 +67,11 @@ function fixture(
     ),
   };
   const roles = {
+    findOne: jest
+      .fn()
+      .mockReturnValue(
+        query({ _id: roleId, code: 'MEMBER', permissions: ['project.read'] }),
+      ),
     find: jest.fn().mockReturnValue(
       query([
         {
@@ -72,6 +83,7 @@ function fixture(
     ),
   };
   const projectMemberships = {
+    create: jest.fn().mockResolvedValue([{ _id: new Types.ObjectId() }]),
     find: jest.fn().mockReturnValue(
       query(
         options.activeProjectId === null
@@ -130,6 +142,7 @@ function fixture(
     ),
     memberships,
     assignments,
+    roles,
     projectMemberships,
     projects,
     audit,
@@ -262,7 +275,7 @@ describe('MongoProjectRepository visibility', () => {
 describe('MongoProjectRepository creation', () => {
   const input = { name: 'Example', code: 'EX' };
 
-  it('writes Project and audit event in one transaction without bootstrap records', async () => {
+  it('bootstraps the creator as a Project MEMBER with read access in one transaction', async () => {
     const {
       repository,
       projects,
@@ -271,6 +284,7 @@ describe('MongoProjectRepository creation', () => {
       collection,
       projectMemberships,
       assignments,
+      roles,
     } = fixture();
     const created = await repository.create(orgId, userId, input);
     expect(created.id).toBe(projectId);
@@ -286,6 +300,31 @@ describe('MongoProjectRepository creation', () => {
       ],
       { session },
     );
+    expect(roles.findOne).toHaveBeenCalledWith({ code: 'MEMBER' });
+    expect(projectMemberships.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          organizationId: new Types.ObjectId(orgId),
+          projectId: new Types.ObjectId(projectId),
+          userId: new Types.ObjectId(userId),
+          status: 'ACTIVE',
+        }),
+      ],
+      { session },
+    );
+    expect(assignments.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          organizationId: new Types.ObjectId(orgId),
+          projectId: new Types.ObjectId(projectId),
+          userId: new Types.ObjectId(userId),
+          roleId,
+          roleCode: 'MEMBER',
+          assignedBy: new Types.ObjectId(userId),
+        }),
+      ],
+      { session },
+    );
     expect(collection).toHaveBeenCalledWith('audit_logs_iam');
     expect(audit.insertOne).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -295,9 +334,29 @@ describe('MongoProjectRepository creation', () => {
       }),
       { session },
     );
-    expect(projectMemberships.find).not.toHaveBeenCalled();
-    expect(assignments.find).not.toHaveBeenCalled();
     expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('fails closed without a configured MEMBER role with project.read', async () => {
+    const {
+      repository,
+      projects,
+      projectMemberships,
+      assignments,
+      audit,
+      roles,
+    } = fixture();
+    roles.findOne.mockReturnValue(
+      query({ _id: roleId, code: 'MEMBER', permissions: [] }),
+    );
+
+    await expect(repository.create(orgId, userId, input)).rejects.toThrow(
+      'Project bootstrap requires a MEMBER Role with project.read',
+    );
+    expect(projects.create).not.toHaveBeenCalled();
+    expect(projectMemberships.create).not.toHaveBeenCalled();
+    expect(assignments.create).not.toHaveBeenCalled();
+    expect(audit.insertOne).not.toHaveBeenCalled();
   });
 
   it('maps unique-code races to 409 without writing an audit event', async () => {
@@ -315,12 +374,15 @@ describe('MongoProjectRepository creation', () => {
   });
 
   it('fails the mutation if the audit write fails', async () => {
-    const { repository, audit, session } = fixture();
+    const { repository, audit, session, projectMemberships, assignments } =
+      fixture();
     audit.insertOne.mockRejectedValue(new Error('audit unavailable'));
     await expect(repository.create(orgId, userId, input)).rejects.toThrow(
       'audit unavailable',
     );
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
+    expect(projectMemberships.create).toHaveBeenCalled();
+    expect(assignments.create).toHaveBeenCalled();
     expect(session.endSession).toHaveBeenCalled();
   });
 
