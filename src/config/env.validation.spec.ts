@@ -36,8 +36,7 @@ describe('validateEnvironment', () => {
   it('keeps Swagger disabled when the toggle is omitted', () => {
     expect(
       validateEnvironment({
-        MONGODB_ENABLED: 'true',
-        MONGODB_DATABASE: 'continuum_iam',
+        NODE_ENV: 'production',
       }),
     ).toMatchObject({
       NODE_ENV: 'production',
