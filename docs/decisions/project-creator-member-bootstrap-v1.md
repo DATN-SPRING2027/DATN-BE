@@ -19,7 +19,7 @@ For the current Private Project metadata API, the project-scoped RoleAssignment 
 
 This decision supersedes the earlier requester-approved `PROJECT_CREATE_BOOTSTRAP_V1` rule, which created only a Project and audit event and explicitly omitted creator membership and RoleAssignment. That earlier bootstrap rule must no longer be treated as authoritative.
 
-Project, creator ProjectMembership, project-scoped `MEMBER` RoleAssignment, and the existing `project.create` audit event in `audit_logs_iam` are committed in one MongoDB transaction. The event's `metadata.bootstrap` records the generated membership and RoleAssignment IDs. A failure of any write leaves none of these records committed.
+Project, creator ProjectMembership, and project-scoped `MEMBER` RoleAssignment are stored in `continuum_iam`; the existing `project.create` audit event in `continuum_audit.audit_logs_iam` is committed in the same MongoDB transaction/session. The event's `metadata.bootstrap` records the generated membership and RoleAssignment IDs. A failure of any write leaves none of these records committed. Cross-database atomicity is verified by replica-set integration tests.
 
 The `project.create` authorization rule remains unchanged: no organization role or `project.create` grant is required beyond authenticated active subject, trusted matching Organization Context, and `ACTIVE` Organization Membership. This decision does not change `project.read` for other users or Projects, public visibility behavior, request/response schemas, or other capability policies.
 

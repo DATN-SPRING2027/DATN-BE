@@ -24,9 +24,14 @@ import { MongoUserDirectoryRepository } from './infrastructure/mongodb/user-dire
 import { MongoAuthorizationEvidenceProvider } from './infrastructure/mongodb/authorization-evidence.provider';
 import { RedisService } from './infrastructure/redis/redis.service';
 import { ProjectController } from './controllers/project.controller';
+import { ProjectAccessController } from './controllers/project-access.controller';
 import { ProjectService } from './application/projects/project.service';
 import { PROJECT_REPOSITORY } from './application/projects/project.repository';
 import { MongoProjectRepository } from './infrastructure/mongodb/project.repository';
+import { ProjectAccessAuthorizationGuard } from './application/authorization/project-access-authorization.guard';
+import { ProjectAccessService } from './application/projects/project-access.service';
+import { PROJECT_ACCESS_REPOSITORY } from './application/projects/project-access.repository';
+import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-access.repository';
 
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
@@ -35,6 +40,7 @@ import { MongoProjectRepository } from './infrastructure/mongodb/project.reposit
     AuthenticationController,
     UserDirectoryController,
     ProjectController,
+    ProjectAccessController,
   ],
   providers: [
     IamApplicationService,
@@ -58,13 +64,19 @@ import { MongoProjectRepository } from './infrastructure/mongodb/project.reposit
     PasswordCredentialService,
     AuthorizationPolicy,
     ProjectCreateAuthorizationGuard,
+    ProjectAccessAuthorizationGuard,
     {
       provide: AUTHORIZATION_EVIDENCE_PROVIDER,
       useClass: MongoAuthorizationEvidenceProvider,
     },
     UserDirectoryService,
     ProjectService,
+    ProjectAccessService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
+    {
+      provide: PROJECT_ACCESS_REPOSITORY,
+      useClass: MongoProjectAccessRepository,
+    },
     {
       provide: USER_DIRECTORY_REPOSITORY,
       useClass: MongoUserDirectoryRepository,

@@ -75,3 +75,127 @@ describe('MongoAuthorizationEvidenceProvider for project.create', () => {
     );
   });
 });
+
+describe('MongoAuthorizationEvidenceProvider for Project access', () => {
+  it('loads exact organization, user, project, membership, and current Role evidence', async () => {
+    const projectId = 'cccccccccccccccccccccccc';
+    const roleId = new Types.ObjectId('dddddddddddddddddddddddd');
+    const projects = {
+      findOne: jest.fn().mockReturnValue(
+        query({
+          _id: new Types.ObjectId(projectId),
+          organizationId: new Types.ObjectId(orgId),
+          status: 'ACTIVE',
+          visibility: 'PRIVATE',
+        }),
+      ),
+    };
+    const organizationMemberships = {
+      findOne: jest.fn().mockReturnValue(
+        query({
+          userId: new Types.ObjectId(userId),
+          organizationId: new Types.ObjectId(orgId),
+          status: 'ACTIVE',
+        }),
+      ),
+    };
+    const projectMemberships = {
+      findOne: jest.fn().mockReturnValue(
+        query({
+          userId: new Types.ObjectId(userId),
+          organizationId: new Types.ObjectId(orgId),
+          projectId: new Types.ObjectId(projectId),
+          status: 'ACTIVE',
+        }),
+      ),
+    };
+    const assignments = {
+      find: jest.fn().mockReturnValue(
+        query([
+          {
+            organizationId: new Types.ObjectId(orgId),
+            userId: new Types.ObjectId(userId),
+            projectId: new Types.ObjectId(projectId),
+            roleId,
+            roleCode: 'TEAM_LEADER',
+          },
+        ]),
+      ),
+    };
+    const roles = {
+      find: jest.fn().mockReturnValue(
+        query([
+          {
+            _id: roleId,
+            code: 'TEAM_LEADER',
+            permissions: ['project.members.list'],
+          },
+        ]),
+      ),
+    };
+    const connection = {
+      models: {
+        continuum_iam_projects: projects,
+        continuum_iam_organization_memberships: organizationMemberships,
+        continuum_iam_project_memberships: projectMemberships,
+        continuum_iam_role_assignments: assignments,
+        continuum_iam_roles: roles,
+      },
+    } as unknown as Connection;
+
+    const evidence = await new MongoAuthorizationEvidenceProvider(
+      connection,
+    ).loadProjectAccess(userId, orgId, projectId);
+
+    expect(evidence).toMatchObject({
+      project: {
+        id: projectId,
+        organizationId: orgId,
+        status: 'ACTIVE',
+        visibility: 'PRIVATE',
+      },
+      projectMembership: {
+        userId,
+        organizationId: orgId,
+        projectId,
+        status: 'ACTIVE',
+      },
+      assignments: [
+        {
+          userId,
+          organizationId: orgId,
+          projectId,
+          roleCode: 'TEAM_LEADER',
+          resolvedRoleCode: 'TEAM_LEADER',
+          permissions: ['project.members.list'],
+        },
+      ],
+    });
+    expect(projectMemberships.findOne).toHaveBeenCalledWith(
+      {
+        userId: new Types.ObjectId(userId),
+        organizationId: new Types.ObjectId(orgId),
+        projectId: new Types.ObjectId(projectId),
+      },
+      { userId: 1, organizationId: 1, projectId: 1, status: 1 },
+    );
+    expect(assignments.find).toHaveBeenCalledWith(
+      {
+        organizationId: new Types.ObjectId(orgId),
+        userId: new Types.ObjectId(userId),
+        $or: [
+          { projectId: { $exists: false } },
+          { projectId: null },
+          { projectId: new Types.ObjectId(projectId) },
+        ],
+      },
+      {
+        organizationId: 1,
+        userId: 1,
+        roleId: 1,
+        roleCode: 1,
+        projectId: 1,
+      },
+    );
+  });
+});

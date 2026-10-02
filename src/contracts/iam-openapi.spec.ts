@@ -14,6 +14,7 @@ interface OpenApiPathItem extends JsonObject {
   get?: OpenApiOperation;
   post?: OpenApiOperation;
   patch?: OpenApiOperation;
+  put?: OpenApiOperation;
   delete?: OpenApiOperation;
 }
 
@@ -37,7 +38,7 @@ function loadContract(): OpenApiDocument {
 }
 
 function operations(document: OpenApiDocument): OpenApiOperation[] {
-  const methods = ['get', 'post', 'patch', 'delete'] as const;
+  const methods = ['get', 'post', 'patch', 'put', 'delete'] as const;
 
   return Object.values(document.paths).flatMap((pathItem) =>
     methods.flatMap((method) => {
@@ -117,6 +118,54 @@ describe('IAM OpenAPI contract', () => {
     expect(getProject?.description).toContain(
       'Nested Project resources are outside this endpoint contract',
     );
+  });
+
+  it('documents Project Access V1 scope, permission codes, and leader replacement', () => {
+    const visibility =
+      contract.paths['/api/v1/iam/projects/{projectId}/visibility'].patch;
+    const memberList =
+      contract.paths['/api/v1/iam/projects/{projectId}/memberships'].get;
+    const memberAdd =
+      contract.paths['/api/v1/iam/projects/{projectId}/memberships'].post;
+    const memberRemove =
+      contract.paths[
+        '/api/v1/iam/projects/{projectId}/memberships/{membershipId}'
+      ].delete;
+    const proposedMembershipPatch =
+      contract.paths[
+        '/api/v1/iam/projects/{projectId}/memberships/{membershipId}'
+      ].patch;
+    const leaders = contract.paths['/api/v1/iam/projects/{projectId}/leaders'];
+    expect(visibility?.description).toContain('project.visibility.manage');
+    expect(visibility?.description).toContain('PRIVATE to PUBLIC');
+    expect(visibility?.description).toContain(
+      'already-PUBLIC active Project returns 409 after authorization succeeds',
+    );
+    expect(visibility?.responses['409']).toEqual({
+      $ref: '#/components/responses/Conflict',
+    });
+    expect(memberList?.description).toContain('project.members.list');
+    expect(memberAdd?.description).toContain('project.members.add');
+    expect(memberRemove?.description).toContain('project.members.remove');
+    expect(memberRemove?.description).toContain(
+      'already-INACTIVE membership or repeated DELETE returns 204',
+    );
+    expect(memberRemove?.responses['204']?.description).toContain(
+      'repeated DELETE also returns 204',
+    );
+    expect(proposedMembershipPatch?.description).toContain(
+      'no generic ProjectMembership PATCH is enabled',
+    );
+    expect(proposedMembershipPatch?.description).toContain(
+      'project.members.role.change permission is disabled',
+    );
+    expect(leaders.post?.description).toContain('project.leader.manage');
+    expect(leaders.put?.description).toContain('PROJECT_LEADER_CHANGED');
+    expect(
+      contract.paths['/api/v1/iam/projects/{projectId}/leaders/{userId}'].delete
+        ?.description,
+    ).toContain('project.leader.manage');
+    expect(leaders.put?.requestBody).toBeDefined();
   });
 
   it('defines the required pagination defaults and limit', () => {

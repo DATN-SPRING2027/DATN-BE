@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "Review-first contract for authentication, users, projects, project memberships, teams and team memberships. Login, current user, logout and user directory are implemented. Other operations, including refresh, remain proposed. Browser authentication uses an HttpOnly access cookie; bearer access is supported for trusted clients. Access tokens are never returned in browser JSON responses."
+    "description": "Contract for authentication, users and Project Foundation. Project create/list/detail remain accepted. Project Access & Visibility V1 additionally accepts Project visibility read, PRIVATE-to-PUBLIC mutation, Project member list/add/remove, and Project Leader assign/revoke. Other operations, including Project metadata update, member role changes, PUBLIC-to-PRIVATE, teams, and refresh remain proposed or unresolved. Browser authentication uses an HttpOnly access cookie; bearer access is supported for trusted clients. Access tokens are never returned in browser JSON responses."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -325,10 +325,44 @@
         }
       }
     },
+    "/api/v1/iam/projects/{projectId}/visibility": {
+      "patch": {
+        "tags": ["Projects"],
+        "summary": "Make a private project public",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.visibility.manage in the resolved Role.permissions. Allows PRIVATE to PUBLIC only; PUBLIC to PRIVATE is not supported by V1. An already-PUBLIC active Project returns 409 after authorization succeeds. The mutation is audited in continuum_audit.audit_logs_iam. Project content permissions are unchanged.",
+        "operationId": "makeProjectPublic",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MakeProjectPublicRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Project visibility changed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Project" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
     "/api/v1/iam/projects/{projectId}/memberships": {
       "get": {
         "tags": ["Project Memberships"],
         "summary": "List project memberships",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.list in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize member listing. Returns membership identifiers, status, and join time; it does not return user profile fields or conflate membership with role assignment.",
         "operationId": "listProjectMemberships",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
@@ -361,7 +395,7 @@
       "post": {
         "tags": ["Project Memberships"],
         "summary": "Add a project member",
-        "description": "Creates an active project membership for an organization user.",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize adding members. The target must be an active User with ACTIVE OrganizationMembership in the Project's Organization. Creates ACTIVE ProjectMembership with the current MEMBER RoleAssignment; no leader or owner privilege is added.",
         "operationId": "createProjectMembership",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "requestBody": {
@@ -396,6 +430,7 @@
       "patch": {
         "tags": ["Project Memberships"],
         "summary": "Update a project membership",
+        "description": "Proposed only; no generic ProjectMembership PATCH is enabled in Project Access & Visibility V1. Membership changes use the explicit add/remove operations. The project.members.role.change permission is disabled and must not be provisioned. A Project Leader cannot self-escalate, assign TEAM_LEADER to another User, or change another Project Leader. This operation is not implemented.",
         "operationId": "updateProjectMembership",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
@@ -431,7 +466,7 @@
       "delete": {
         "tags": ["Project Memberships"],
         "summary": "Remove a project membership",
-        "description": "Idempotently removes the membership from the active project view. The containing project must exist. Active team memberships for the same user cause a conflict and must be removed first.",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.remove in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize removing members. Changes an ACTIVE ProjectMembership to INACTIVE without deleting ProjectMembership or RoleAssignment history. Idempotent: an already-INACTIVE membership or repeated DELETE returns 204 without another state transition or audit event. An ACTIVE to INACTIVE change is audited in continuum_audit.audit_logs_iam.",
         "operationId": "deleteProjectMembership",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
@@ -439,8 +474,78 @@
         ],
         "responses": {
           "204": {
-            "description": "Membership is absent from the active project view."
+            "description": "Membership is absent from the active project view; repeated DELETE also returns 204."
           },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}/leaders": {
+      "post": {
+        "tags": ["Project Memberships"],
+        "summary": "Assign a Project Leader",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. The target must already have ACTIVE OrganizationMembership and ACTIVE ProjectMembership in this Project. Assigns the existing TEAM_LEADER Role at Project scope. The event is written to continuum_audit.audit_logs_iam.",
+        "operationId": "assignProjectLeader",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AssignProjectLeaderRequest" }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Project Leader assigned." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "put": {
+        "tags": ["Project Memberships"],
+        "summary": "Replace one Project Leader appointment",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. Atomically changes one current Project Leader to another active Project member with a current MEMBER RoleAssignment. It changes no ProjectMembership. The continuum_audit.audit_logs_iam action is PROJECT_LEADER_CHANGED; the current contract records the affected RoleAssignment IDs but has no before/after snapshot fields.",
+        "operationId": "changeProjectLeader",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChangeProjectLeaderRequest" }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Project Leader appointment changed." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}/leaders/{userId}": {
+      "delete": {
+        "tags": ["Project Memberships"],
+        "summary": "Revoke a Project Leader appointment",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. Downgrades the project-scoped RoleAssignment to the current MEMBER Role and retains ACTIVE ProjectMembership. The event is written to continuum_audit.audit_logs_iam.",
+        "operationId": "revokeProjectLeader",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectId" },
+          { "$ref": "#/components/parameters/UserId" }
+        ],
+        "responses": {
+          "204": { "description": "Project Leader appointment revoked." },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
@@ -1009,6 +1114,7 @@
           "organizationId",
           "name",
           "code",
+          "visibility",
           "status",
           "createdBy",
           "createdAt",
@@ -1020,6 +1126,7 @@
           "name": { "type": "string", "minLength": 1, "maxLength": 200 },
           "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
           "description": { "type": ["string", "null"], "maxLength": 2000 },
+          "visibility": { "$ref": "#/components/schemas/ProjectVisibility" },
           "status": { "$ref": "#/components/schemas/ProjectStatus" },
           "createdBy": { "$ref": "#/components/schemas/ResourceId" },
           "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
@@ -1034,6 +1141,35 @@
           "name": { "type": "string", "minLength": 1, "maxLength": 200 },
           "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
           "description": { "type": "string", "maxLength": 2000 }
+        }
+      },
+      "ProjectVisibility": {
+        "type": "string",
+        "enum": ["PRIVATE", "PUBLIC"]
+      },
+      "MakeProjectPublicRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["visibility"],
+        "properties": {
+          "visibility": { "const": "PUBLIC" }
+        }
+      },
+      "AssignProjectLeaderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" }
+        }
+      },
+      "ChangeProjectLeaderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["previousUserId", "nextUserId"],
+        "properties": {
+          "previousUserId": { "$ref": "#/components/schemas/ResourceId" },
+          "nextUserId": { "$ref": "#/components/schemas/ResourceId" }
         }
       },
       "UpdateProjectRequest": {

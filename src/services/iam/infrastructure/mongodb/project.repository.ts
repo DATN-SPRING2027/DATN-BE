@@ -335,6 +335,7 @@ export class MongoProjectRepository implements ProjectRepository {
       ...(row.description === undefined
         ? {}
         : { description: row.description }),
+      visibility: row.visibility ?? 'PRIVATE',
       status: row.status,
       createdBy: String(row.createdBy),
       createdAt: row.createdAt.toISOString(),
