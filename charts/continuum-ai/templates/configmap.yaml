@@ -13,4 +13,3 @@ data:
   REDIS_PORT: {{ .Values.redis.port | quote }}
   BULLMQ_PREFIX: continuum
   MONGODB_AUTO_INDEX: "false"
-  AUDIT_DATABASE: continuum_audit

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
+import { IAM_PERSISTENCE } from '../persistence';
 
 export interface OutboxEventInput {
   eventName: string;
@@ -11,7 +12,10 @@ export interface OutboxEventInput {
 
 @Injectable()
 export class OutboxService {
-  constructor(@InjectConnection() private readonly connection: Connection) {}
+  constructor(
+    @InjectConnection(IAM_PERSISTENCE.databaseName)
+    private readonly connection: Connection,
+  ) {}
 
   async append(event: OutboxEventInput): Promise<void> {
     await this.connection.collection('outbox_events').insertOne({

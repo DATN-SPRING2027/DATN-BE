@@ -9,7 +9,7 @@
 
 ## Mandatory Gates
 
-- Database ownership is accepted in project ADR-002/DEC-011 (MongoDB 7.0, shared `continuum_db` for MVP). Keep new schema and migration work aligned with that decision and its specific contract.
+- Database ownership follows accepted ADR-003/DEC-011: MongoDB 7.0 is the operational source of truth; each active bounded service owns its logical database on the configured cluster, with cross-cutting audit in `continuum_audit`. Do not add a shared `continuum_db` runtime path. Keep service collection, index and migration ownership local.
 - Do not choose LanceDB, PostgreSQL/pgvector, or Qdrant here until the SAG storage ADR is accepted.
 - Business APIs are contract-first. Approve OpenAPI request, response, error, scope, pagination, and streaming semantics before implementation.
 - Treat files, webhooks, Jira data, user input, and AI output as untrusted.

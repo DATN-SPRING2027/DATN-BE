@@ -21,7 +21,9 @@ const validId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
 @Injectable()
 export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidenceProvider {
   constructor(
-    @Optional() @InjectConnection() private readonly connection?: Connection,
+    @Optional()
+    @InjectConnection(IAM_PERSISTENCE.databaseName)
+    private readonly connection?: Connection,
   ) {}
 
   async loadProjectCreate(

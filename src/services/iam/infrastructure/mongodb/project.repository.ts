@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, Optional } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Optional,
+} from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
@@ -10,6 +15,11 @@ import type {
   ProjectStatus,
 } from '../../application/projects/project.repository';
 import { AuthorizationPolicy } from '../../application/authorization/authorization.policy';
+import {
+  AUDIT_DATABASE_NAME,
+  AUDIT_DATABASE_NAME_TOKEN,
+  IAM_AUDIT_COLLECTION_NAME,
+} from '../../../../common/mongodb/database-names';
 import { IAM_PERSISTENCE } from '../persistence';
 
 interface ProjectDocument {
@@ -55,7 +65,12 @@ const validId = (value: string) => /^[a-f\d]{24}$/i.test(value);
 export class MongoProjectRepository implements ProjectRepository {
   constructor(
     private readonly policy: AuthorizationPolicy,
-    @Optional() @InjectConnection() private readonly connection?: Connection,
+    @Optional()
+    @InjectConnection(IAM_PERSISTENCE.databaseName)
+    private readonly connection?: Connection,
+    @Optional()
+    @Inject(AUDIT_DATABASE_NAME_TOKEN)
+    private readonly auditDatabaseName = AUDIT_DATABASE_NAME,
   ) {}
 
   async create(
@@ -145,25 +160,27 @@ export class MongoProjectRepository implements ProjectRepository {
           ],
           { session },
         );
-        await this.connection!.collection('audit_logs_iam').insertOne(
-          {
-            organizationId,
-            projectId: created.id,
-            actorUserId: creatorId,
-            action: 'project.create',
-            targetResource: 'PROJECT',
-            targetResourceId: created.id,
-            metadata: {
-              bootstrap: {
-                projectMembershipId: String(projectMembership._id),
-                roleAssignmentId: String(roleAssignment._id),
-                roleCode: 'MEMBER',
+        await this.connection!.useDb(this.auditDatabaseName, { useCache: true })
+          .collection(IAM_AUDIT_COLLECTION_NAME)
+          .insertOne(
+            {
+              organizationId,
+              projectId: created.id,
+              actorUserId: creatorId,
+              action: 'project.create',
+              targetResource: 'PROJECT',
+              targetResourceId: created.id,
+              metadata: {
+                bootstrap: {
+                  projectMembershipId: String(projectMembership._id),
+                  roleAssignmentId: String(roleAssignment._id),
+                  roleCode: 'MEMBER',
+                },
               },
+              occurredAt: new Date(),
             },
-            occurredAt: new Date(),
-          },
-          { session },
-        );
+            { session },
+          );
       });
       if (!created)
         throw new Error('Project transaction did not create a record');
