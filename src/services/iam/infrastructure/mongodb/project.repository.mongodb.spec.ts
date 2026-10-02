@@ -60,6 +60,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
   it('bootstraps creator access, reads the Private Project, rolls back failures, and scopes codes by Organization', async () => {
     if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
     const databaseName = `pf_api_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+    const auditDatabaseName = `${databaseName}_audit`;
     const connection = mongoose.createConnection(process.env.MONGODB_URI, {
       dbName: databaseName,
       autoIndex: false,
@@ -74,6 +75,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
       if (db.databaseName !== databaseName)
         throw new Error('Wrong test database');
       createdDatabase = true;
+      const auditDb = connection.useDb(auditDatabaseName, { useCache: true });
       const collections = [
         'projects',
         'organization_memberships',
@@ -93,10 +95,11 @@ integration('MongoProjectRepository transaction and unique index', () => {
         );
         await model.createIndexes();
       }
-      await db.createCollection('audit_logs_iam');
+      await auditDb.createCollection('audit_logs_iam');
       const repository = new MongoProjectRepository(
         new AuthorizationPolicy(),
         connection,
+        auditDatabaseName,
       );
       const orgA = new Types.ObjectId().toString();
       const orgB = new Types.ObjectId().toString();
@@ -163,12 +166,12 @@ integration('MongoProjectRepository transaction and unique index', () => {
       expect(first.id).toMatch(/^[a-f\d]{24}$/i);
       expect(await db.collection('projects').countDocuments()).toBe(1);
       expect(
-        await db.collection('audit_logs_iam').countDocuments({
+        await auditDb.collection('audit_logs_iam').countDocuments({
           targetResourceId: first.id,
           action: 'project.create',
         }),
       ).toBe(1);
-      const auditEvent = await db.collection('audit_logs_iam').findOne({
+      const auditEvent = await auditDb.collection('audit_logs_iam').findOne({
         targetResourceId: first.id,
         action: 'project.create',
       });
@@ -212,7 +215,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
       expect(detailBody).toMatchObject({ id: first.id, organizationId: orgA });
 
       // Test-only audit constraint forces the second audit write to fail.
-      await db
+      await auditDb
         .collection('audit_logs_iam')
         .createIndex({ action: 1 }, { unique: true });
       await expect(
@@ -226,8 +229,10 @@ integration('MongoProjectRepository transaction and unique index', () => {
         1,
       );
       expect(await db.collection('role_assignments').countDocuments()).toBe(1);
-      expect(await db.collection('audit_logs_iam').countDocuments()).toBe(1);
-      await db.collection('audit_logs_iam').dropIndex('action_1');
+      expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
+        1,
+      );
+      await auditDb.collection('audit_logs_iam').dropIndex('action_1');
 
       await expect(
         repository.create(orgA, user, { name: 'Duplicate', code: 'EX' }),
@@ -242,7 +247,9 @@ integration('MongoProjectRepository transaction and unique index', () => {
         2,
       );
       expect(await db.collection('role_assignments').countDocuments()).toBe(2);
-      expect(await db.collection('audit_logs_iam').countDocuments()).toBe(2);
+      expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
+        2,
+      );
     } finally {
       await app?.close();
       if (
@@ -251,6 +258,8 @@ integration('MongoProjectRepository transaction and unique index', () => {
         connection.db?.databaseName === databaseName
       )
         await connection.db.dropDatabase();
+      if (createdDatabase)
+        await connection.useDb(auditDatabaseName).dropDatabase();
       await connection.close();
     }
   });

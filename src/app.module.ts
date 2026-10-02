@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { MongoRuntimeModule } from './common/mongodb/mongo-runtime.module';
 import { RuntimeConfigModule } from './config/runtime-config.module';
 import { HealthModule } from './health/health.module';
 import { AiEngineModule } from './integrations/ai-engine/ai-engine.module';
@@ -15,7 +14,6 @@ import { NotificationModule } from './services/notification/notification.module'
 @Module({
   imports: [
     RuntimeConfigModule,
-    MongoRuntimeModule.register(),
     HealthModule,
     IamModule,
     CaptureModule,

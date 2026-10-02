@@ -1,9 +1,11 @@
 import {
   Controller,
+  Delete,
   Get,
   GatewayTimeoutException,
   Patch,
   Post,
+  Put,
   Req,
   Res,
   ServiceUnavailableException,
@@ -77,6 +79,62 @@ export class GatewayIamController {
 
   @Get('iam/projects/:projectId')
   getProject(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Patch('iam/projects/:projectId/visibility')
+  makeProjectPublic(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/projects/:projectId/memberships')
+  listProjectMemberships(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/projects/:projectId/memberships')
+  addProjectMember(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Delete('iam/projects/:projectId/memberships/:membershipId')
+  removeProjectMember(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/projects/:projectId/leaders')
+  assignProjectLeader(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Put('iam/projects/:projectId/leaders')
+  changeProjectLeader(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Delete('iam/projects/:projectId/leaders/:userId')
+  revokeProjectLeader(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {

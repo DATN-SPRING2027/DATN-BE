@@ -9,7 +9,7 @@ import { IAM_PERSISTENCE } from '../src/services/iam/infrastructure/persistence'
 const integration =
   process.env.MONGODB_INTEGRATION === 'true' ? describe : describe.skip;
 
-integration('User status invariants in continuum_db', () => {
+integration('User status invariants in continuum_iam', () => {
   let connection: Connection;
   let repository: MongoUserDirectoryRepository;
   const organizationA = new Types.ObjectId();
@@ -23,7 +23,7 @@ integration('User status invariants in continuum_db', () => {
 
   beforeAll(async () => {
     connection = await createConnection(process.env.MONGODB_URI ?? '', {
-      dbName: 'continuum_db',
+      dbName: 'continuum_iam',
       serverSelectionTimeoutMS: 10000,
     }).asPromise();
     for (const definition of IAM_PERSISTENCE.collections) {

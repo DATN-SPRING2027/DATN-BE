@@ -124,6 +124,8 @@ function fixture(
     endSession: jest.fn().mockResolvedValue(undefined),
   };
   const collection = jest.fn().mockReturnValue(audit);
+  const auditConnection = { collection };
+  const useDb = jest.fn().mockReturnValue(auditConnection);
   const connection = {
     models: {
       continuum_iam_organization_memberships: memberships,
@@ -133,7 +135,7 @@ function fixture(
       continuum_iam_projects: projects,
     },
     startSession: jest.fn().mockResolvedValue(session),
-    collection,
+    useDb,
   } as unknown as Connection;
   return {
     repository: new MongoProjectRepository(
@@ -148,7 +150,9 @@ function fixture(
     audit,
     session,
     connection,
+    auditConnection,
     collection,
+    useDb,
   };
 }
 
@@ -281,6 +285,7 @@ describe('MongoProjectRepository creation', () => {
       projects,
       audit,
       session,
+      useDb,
       collection,
       projectMemberships,
       assignments,
@@ -325,6 +330,7 @@ describe('MongoProjectRepository creation', () => {
       ],
       { session },
     );
+    expect(useDb).toHaveBeenCalledWith('continuum_audit', { useCache: true });
     expect(collection).toHaveBeenCalledWith('audit_logs_iam');
     expect(audit.insertOne).toHaveBeenCalledWith(
       expect.objectContaining({

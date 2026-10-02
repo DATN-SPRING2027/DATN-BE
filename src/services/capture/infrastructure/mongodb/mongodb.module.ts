@@ -1,8 +1,9 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
+import { resolveServiceDatabaseName } from '../../../../common/mongodb/service-database';
+import { MongoAuditModule } from '../../../../common/mongodb/mongo-audit.module';
 import {
-  auditSchema,
   createCollectionSchema,
   OUTBOX_COLLECTION,
   outboxSchema,
@@ -15,6 +16,10 @@ export class MongoInfrastructureModule {
     if (process.env.INFRA_ENABLED !== 'true') {
       return { module: MongoInfrastructureModule };
     }
+    const serviceDatabaseName = resolveServiceDatabaseName(
+      definition,
+      process.env.SERVICE_DATABASE,
+    );
 
     const models = [
       ...definition.collections.map((collection) => ({
@@ -30,33 +35,20 @@ export class MongoInfrastructureModule {
     return {
       module: MongoInfrastructureModule,
       imports: [
+        MongoAuditModule,
         ConfigModule,
         MongooseModule.forRootAsync({
           imports: [ConfigModule],
+          connectionName: definition.databaseName,
           inject: [ConfigService],
           useFactory: (config: ConfigService) => ({
             uri: config.getOrThrow<string>('MONGODB_URI'),
-            dbName: definition.databaseName,
+            dbName: serviceDatabaseName,
             autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
             serverSelectionTimeoutMS: 5000,
           }),
         }),
-        MongooseModule.forRootAsync({
-          imports: [ConfigModule],
-          connectionName: 'audit',
-          inject: [ConfigService],
-          useFactory: (config: ConfigService) => ({
-            uri: config.getOrThrow<string>('MONGODB_URI'),
-            dbName: config.get<string>('AUDIT_DATABASE') ?? 'continuum_audit',
-            autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
-            serverSelectionTimeoutMS: 5000,
-          }),
-        }),
-        MongooseModule.forFeature(models),
-        MongooseModule.forFeature(
-          [{ name: 'audit_logs', schema: auditSchema }],
-          'audit',
-        ),
+        MongooseModule.forFeature(models, definition.databaseName),
       ],
     };
   }

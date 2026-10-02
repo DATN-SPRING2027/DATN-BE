@@ -52,7 +52,9 @@ const publicUserFields = {
 @Injectable()
 export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort {
   constructor(
-    @Optional() @InjectConnection() private readonly connection?: Connection,
+    @Optional()
+    @InjectConnection(IAM_PERSISTENCE.databaseName)
+    private readonly connection?: Connection,
   ) {}
 
   async isAdmin(organizationId: string, actorId: string): Promise<boolean> {

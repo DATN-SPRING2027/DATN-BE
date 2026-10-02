@@ -1,6 +1,7 @@
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export type ProjectStatus = 'ACTIVE' | 'ARCHIVED';
+export type ProjectVisibility = 'PRIVATE' | 'PUBLIC';
 
 export interface ProjectRecord {
   id: string;
@@ -8,6 +9,7 @@ export interface ProjectRecord {
   name: string;
   code: string;
   description?: string | null;
+  visibility: ProjectVisibility;
   status: ProjectStatus;
   createdBy: string;
   createdAt: string;

@@ -11,7 +11,6 @@ describe('IAM runtime environment bootstrap', () => {
       'fixtures/iam-runtime.fixture',
     );
     childEnvironment.INFRA_ENABLED = 'false';
-    childEnvironment.MONGODB_ENABLED = 'false';
 
     const code = [
       "require('reflect-metadata')",
