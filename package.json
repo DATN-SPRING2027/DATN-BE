@@ -34,6 +34,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:migrations:plan": "node --test scripts/migrations/*.plan.test.mjs",
+    "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "check": "npm run lint && npm run typecheck && npm test -- --runInBand && npm run test:e2e -- --runInBand && npm run build"
   },
   "dependencies": {

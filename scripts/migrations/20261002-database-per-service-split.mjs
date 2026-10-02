@@ -8,7 +8,6 @@ import {
   DATABASE_PER_SERVICE_INVENTORY,
   SPLIT_SOURCE_DATABASE,
   buildDatabasePerServiceSplitReport,
-  ownerForCollection,
 } from './database-per-service-split.plan.mjs';
 import { targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
@@ -41,19 +40,29 @@ async function implementationDigest() {
 
 if (!uri) throw new Error('MONGODB_URI is required for the read-only report');
 if (apply && !expectedHash) {
-  throw new Error('Apply requires --expected-report-sha256=<hash> from a reviewed clean dry-run');
+  throw new Error(
+    'Apply requires --expected-report-sha256=<hash> from a reviewed clean dry-run',
+  );
 }
 if (apply && !sourceWritesPaused) {
-  throw new Error('Apply requires --source-writes-paused after stopping every writer to continuum_db');
+  throw new Error(
+    'Apply requires --source-writes-paused after stopping every writer to continuum_db',
+  );
 }
 if (apply && !targetWritesPaused) {
-  throw new Error('Apply requires --target-writes-paused after stopping every writer to all target databases');
+  throw new Error(
+    'Apply requires --target-writes-paused after stopping every writer to all target databases',
+  );
 }
 if (apply && !backupVerified) {
-  throw new Error('Apply requires --backup-verified after a restorable backup has been verified');
+  throw new Error(
+    'Apply requires --backup-verified after a restorable backup has been verified',
+  );
 }
 if (apply && !cutoverAuthorized) {
-  throw new Error('Apply requires --cutover-authorized after the environment cutover is separately approved');
+  throw new Error(
+    'Apply requires --cutover-authorized after the environment cutover is separately approved',
+  );
 }
 
 const fingerprint = targetFingerprint(uri, SPLIT_SOURCE_DATABASE);
@@ -95,9 +104,9 @@ function reportHash(report) {
 
 function collectionCreateOptions(sourceOptions = {}) {
   return Object.fromEntries(
-    COLLECTION_OPTION_ALLOWLIST
-      .filter((key) => sourceOptions[key] !== undefined)
-      .map((key) => [key, sourceOptions[key]]),
+    COLLECTION_OPTION_ALLOWLIST.filter(
+      (key) => sourceOptions[key] !== undefined,
+    ).map((key) => [key, sourceOptions[key]]),
   );
 }
 
@@ -143,28 +152,28 @@ async function scan() {
     throw new Error('Connected source database does not match continuum_db');
   }
 
-  const sourceInfo = await sourceDb.listCollections({}, { nameOnly: false }).toArray();
+  const sourceInfo = await sourceDb
+    .listCollections({}, { nameOnly: false })
+    .toArray();
   const sourceCollections = await Promise.all(
     sourceInfo
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((info) => readCollection(sourceDb, info)),
   );
   const targetCollections = {};
-  const mappedSourceNames = new Map();
-  for (const source of sourceCollections) {
-    const owner = ownerForCollection(source.name);
-    if (owner) mappedSourceNames.set(owner, [...(mappedSourceNames.get(owner) ?? []), source.name]);
-  }
 
   for (const databaseName of targetDatabases) {
-    const names = mappedSourceNames.get(databaseName) ?? [];
     const targetDb = connection.useDb(databaseName, { useCache: true }).db;
-    if (!targetDb) throw new Error(`Target database handle unavailable for ${databaseName}`);
-    const collections = [];
-    for (const name of names.sort()) {
-      const info = (await targetDb.listCollections({ name }, { nameOnly: false }).toArray())[0];
-      if (info) collections.push(await readCollection(targetDb, info));
-    }
+    if (!targetDb)
+      throw new Error(`Target database handle unavailable for ${databaseName}`);
+    const infos = await targetDb
+      .listCollections({}, { nameOnly: false })
+      .toArray();
+    const collections = await Promise.all(
+      infos
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((info) => readCollection(targetDb, info)),
+    );
     targetCollections[databaseName] = collections;
   }
 
@@ -187,17 +196,29 @@ async function scan() {
 async function applyPlan(scanned) {
   const sourceDb = connection.db;
   if (!sourceDb) throw new Error('Source database handle unavailable');
-  const sourceByName = new Map(scanned.sourceCollections.map((item) => [item.name, item]));
+  const sourceByName = new Map(
+    scanned.sourceCollections.map((item) => [item.name, item]),
+  );
 
   for (const planned of scanned.report.collections) {
     const source = sourceByName.get(planned.sourceCollection);
-    if (!source) throw new Error(`Source collection disappeared: ${planned.sourceCollection}`);
-    const targetDb = connection.useDb(planned.targetDatabase, { useCache: true }).db;
-    if (!targetDb) throw new Error(`Target database unavailable: ${planned.targetDatabase}`);
-    const targetInfo = (await targetDb.listCollections(
-      { name: planned.targetCollection },
-      { nameOnly: false },
-    ).toArray())[0];
+    if (!source)
+      throw new Error(
+        `Source collection disappeared: ${planned.sourceCollection}`,
+      );
+    const targetDb = connection.useDb(planned.targetDatabase, {
+      useCache: true,
+    }).db;
+    if (!targetDb)
+      throw new Error(`Target database unavailable: ${planned.targetDatabase}`);
+    const targetInfo = (
+      await targetDb
+        .listCollections(
+          { name: planned.targetCollection },
+          { nameOnly: false },
+        )
+        .toArray()
+    )[0];
     if (!targetInfo) {
       await targetDb.createCollection(
         planned.targetCollection,
@@ -220,7 +241,8 @@ async function applyPlan(scanned) {
         operations.length = 0;
       }
     }
-    if (operations.length) await target.bulkWrite(operations, { ordered: true });
+    if (operations.length)
+      await target.bulkWrite(operations, { ordered: true });
 
     for (const index of source.indexes) {
       await target.createIndex(index.key, {
@@ -234,18 +256,26 @@ async function applyPlan(scanned) {
 try {
   await connection.asPromise();
   const initial = await scan();
-  const display = JSON.parse(EJSON.stringify(initial.report, { relaxed: true }));
-  process.stdout.write(`${JSON.stringify({ ...display, reportSha256: initial.sha256 }, null, 2)}\n`);
+  const display = JSON.parse(
+    EJSON.stringify(initial.report, { relaxed: true }),
+  );
+  process.stdout.write(
+    `${JSON.stringify({ ...display, reportSha256: initial.sha256 }, null, 2)}\n`,
+  );
 
   if (!apply) {
     if (!initial.report.clean) process.exitCode = 2;
   } else {
     if (!initial.report.clean || expectedHash !== initial.sha256) {
-      throw new Error('Apply refused: report is not clean or SHA-256 differs from the reviewed dry-run');
+      throw new Error(
+        'Apply refused: report is not clean or SHA-256 differs from the reviewed dry-run',
+      );
     }
     const fresh = await scan();
     if (fresh.sha256 !== expectedHash) {
-      throw new Error('Apply refused: source or destination changed since the reviewed dry-run');
+      throw new Error(
+        'Apply refused: source or destination changed since the reviewed dry-run',
+      );
     }
     await applyPlan(fresh);
     const verified = await scan();
@@ -259,7 +289,9 @@ try {
       verified.report.counts.conflictingDocuments !== 0 ||
       missingIndexes.length !== 0
     ) {
-      throw new Error('Post-copy verification failed; source remains intact. Review a new dry-run before retrying.');
+      throw new Error(
+        'Post-copy verification failed; source remains intact. Review a new dry-run before retrying.',
+      );
     }
     process.stdout.write(
       `Verified copy to ${targetDatabases.length} database targets; source collections remain unchanged.\n`,

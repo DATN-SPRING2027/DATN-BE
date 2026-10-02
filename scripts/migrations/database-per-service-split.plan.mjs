@@ -112,9 +112,14 @@ function stableValue(value) {
   );
 }
 
-function indexSignature(index, document) {
-  if (index.partialFilterExpression) return { unsupported: 'partialFilterExpression' };
-  if (index.collation && index.collation.locale !== 'simple') {
+function effectiveCollation(index, collectionOptions = {}) {
+  return index.collation ?? collectionOptions.collation ?? { locale: 'simple' };
+}
+
+function indexSignature(index, document, collectionOptions = {}) {
+  if (index.partialFilterExpression)
+    return { unsupported: 'partialFilterExpression' };
+  if (effectiveCollation(index, collectionOptions).locale !== 'simple') {
     return { unsupported: 'non-simple index collation' };
   }
   const fields = Object.keys(index.key ?? {});
@@ -123,7 +128,11 @@ function indexSignature(index, document) {
     let value = document;
     let found = true;
     for (const segment of field.split('.')) {
-      if (value === null || value === undefined || !Object.hasOwn(value, segment)) {
+      if (
+        value === null ||
+        value === undefined ||
+        !Object.hasOwn(value, segment)
+      ) {
         found = false;
         value = undefined;
         break;
@@ -144,13 +153,61 @@ function indexSignature(index, document) {
   );
 }
 
-function comparableIndex(index) {
-  const { ns: _namespace, v: _version, ...definition } = index;
-  return JSON.stringify(stableValue(definition));
+function comparableIndex(index, collectionOptions = {}) {
+  const {
+    ns: _namespace,
+    v: _version,
+    name: _name,
+    collation: _collation,
+    key: _key,
+    background: _background,
+    ...definition
+  } = index;
+  return JSON.stringify(
+    stableValue({
+      ...definition,
+      // The order of a compound key is significant; stableValue sorts ordinary
+      // object keys, so keep key order as an explicit array.
+      key: Object.entries(index.key ?? {}),
+      collation: effectiveCollation(index, collectionOptions),
+    }),
+  );
 }
 
 function comparableOptions(options = {}) {
   return JSON.stringify(stableValue(options));
+}
+
+function indexKeySignature(index) {
+  return JSON.stringify(
+    Object.entries(index.key ?? {}).map(([field, direction]) => [
+      field,
+      stableValue(direction),
+    ]),
+  );
+}
+
+function collationSignature(index, collectionOptions) {
+  return JSON.stringify(
+    stableValue(effectiveCollation(index, collectionOptions)),
+  );
+}
+
+function conflictingIndexOptionReason(
+  sourceIndex,
+  sourceOptions,
+  targetIndex,
+  targetOptions,
+) {
+  if (
+    indexKeySignature(sourceIndex) === indexKeySignature(targetIndex) &&
+    collationSignature(sourceIndex, sourceOptions) ===
+      collationSignature(targetIndex, targetOptions) &&
+    sourceIndex.expireAfterSeconds !== targetIndex.expireAfterSeconds
+  ) {
+    return 'MongoDB 7 does not allow multiple indexes with the same key pattern and effective collation but different expireAfterSeconds options';
+  }
+  return null;
 }
 
 function byName(left, right) {
@@ -164,8 +221,12 @@ function byId(left, right) {
 function inspectIndexes(source, target, databaseName) {
   const sourceIndexes = [...(source.indexes ?? [])].sort(byName);
   const targetIndexes = [...(target?.indexes ?? [])].sort(byName);
-  const sourceByName = new Map(sourceIndexes.map((index) => [index.name, index]));
-  const targetByName = new Map(targetIndexes.map((index) => [index.name, index]));
+  const sourceByName = new Map(
+    sourceIndexes.map((index) => [index.name, index]),
+  );
+  const targetByName = new Map(
+    targetIndexes.map((index) => [index.name, index]),
+  );
   const differences = [];
   const blockingDifferences = [];
   const uniqueIndexConflicts = [];
@@ -176,13 +237,61 @@ function inspectIndexes(source, target, databaseName) {
   for (const index of sourceIndexes) {
     const existing = targetByName.get(index.name);
     if (!existing) {
-      differences.push({
-        databaseName,
-        collection: source.name,
-        index: index.name,
-        status: 'MISSING_TARGET_INDEX',
-      });
-    } else if (comparableIndex(index) !== comparableIndex(existing)) {
+      const incompatibleOptions = targetIndexes
+        .map((candidate) => ({
+          candidate,
+          reason: conflictingIndexOptionReason(
+            index,
+            source.options,
+            candidate,
+            target?.options,
+          ),
+        }))
+        .find((entry) => entry.reason);
+      if (incompatibleOptions) {
+        const difference = {
+          databaseName,
+          collection: source.name,
+          index: index.name,
+          targetIndex: incompatibleOptions.candidate.name,
+          status: 'INCOMPATIBLE_TARGET_INDEX_OPTIONS',
+          reason: incompatibleOptions.reason,
+          source: index,
+          target: incompatibleOptions.candidate,
+        };
+        differences.push(difference);
+        blockingDifferences.push(difference);
+        continue;
+      }
+      const equivalent = targetIndexes.find(
+        (candidate) =>
+          comparableIndex(index, source.options) ===
+          comparableIndex(candidate, target?.options),
+      );
+      if (equivalent) {
+        const difference = {
+          databaseName,
+          collection: source.name,
+          index: index.name,
+          targetIndex: equivalent.name,
+          status: 'EQUIVALENT_TARGET_INDEX_DIFFERENT_NAME',
+          source: index,
+          target: equivalent,
+        };
+        differences.push(difference);
+        blockingDifferences.push(difference);
+      } else {
+        differences.push({
+          databaseName,
+          collection: source.name,
+          index: index.name,
+          status: 'MISSING_TARGET_INDEX',
+        });
+      }
+    } else if (
+      comparableIndex(index, source.options) !==
+      comparableIndex(existing, target?.options)
+    ) {
       const difference = {
         databaseName,
         collection: source.name,
@@ -197,6 +306,18 @@ function inspectIndexes(source, target, databaseName) {
   }
   for (const index of targetIndexes) {
     if (!sourceByName.has(index.name)) {
+      const equivalentSource = sourceIndexes.find(
+        (candidate) =>
+          comparableIndex(candidate, source.options) ===
+            comparableIndex(index, target?.options) ||
+          conflictingIndexOptionReason(
+            candidate,
+            source.options,
+            index,
+            target?.options,
+          ),
+      );
+      if (equivalentSource) continue;
       differences.push({
         databaseName,
         collection: source.name,
@@ -241,20 +362,27 @@ function inspectIndexes(source, target, databaseName) {
   }
 
   const uniqueIndexes = new Map();
-  for (const index of [...sourceIndexes, ...targetIndexes].filter(
-    (candidate) => candidate.unique,
-  )) {
-    uniqueIndexes.set(comparableIndex(index), index);
+  for (const [index, options] of [
+    ...sourceIndexes.map((candidate) => [candidate, source.options]),
+    ...targetIndexes.map((candidate) => [candidate, target?.options]),
+  ].filter(([candidate]) => candidate.unique)) {
+    uniqueIndexes.set(comparableIndex(index, options), { index, options });
   }
-  for (const index of [...uniqueIndexes.values()].sort(byName)) {
+  for (const { index, options } of [...uniqueIndexes.values()].sort(
+    (left, right) => byName(left.index, right.index),
+  )) {
     const seen = new Map();
     let unsupported = null;
     for (const [id, document] of effectiveById) {
       const raw = document.raw ?? document;
-      const signature = indexSignature(index, {
-        ...raw,
-        _id: raw._id ?? document._id,
-      });
+      const signature = indexSignature(
+        index,
+        {
+          ...raw,
+          _id: raw._id ?? document._id,
+        },
+        options,
+      );
       if (signature?.unsupported) {
         unsupported = signature.unsupported;
         break;
@@ -266,6 +394,7 @@ function inspectIndexes(source, target, databaseName) {
           databaseName,
           collection: source.name,
           index: index.name,
+          effectiveCollation: effectiveCollation(index, options),
           documentIds: [previous, id].sort(),
           reason: 'documents violate a unique index after the planned copy',
         });
@@ -278,6 +407,7 @@ function inspectIndexes(source, target, databaseName) {
         databaseName,
         collection: source.name,
         index: index.name,
+        effectiveCollation: effectiveCollation(index, options),
         reason: `preflight cannot safely evaluate ${unsupported}`,
       });
     }
@@ -301,9 +431,10 @@ export function buildDatabasePerServiceSplitReport({
     Object.entries(targetCollections).map(([databaseName, collections]) => [
       databaseName,
       new Map(
-        (Array.isArray(collections) ? collections : Object.values(collections)).map(
-          (collection) => [collection.name, collection],
-        ),
+        (Array.isArray(collections)
+          ? collections
+          : Object.values(collections)
+        ).map((collection) => [collection.name, collection]),
       ),
     ]),
   );
@@ -318,6 +449,44 @@ export function buildDatabasePerServiceSplitReport({
   const unsupportedCollectionOptions = [];
   const allDocuments = [];
   const targetOnlyDocuments = [];
+  const targetOnlyCollections = [];
+  const mappedSourceCollections = new Map();
+  for (const source of sourceCollections) {
+    if (source.type && source.type !== 'collection') continue;
+    const databaseName = ownerForCollection(source.name);
+    if (!databaseName) continue;
+    const names = mappedSourceCollections.get(databaseName) ?? new Set();
+    names.add(source.name);
+    mappedSourceCollections.set(databaseName, names);
+  }
+
+  for (const [databaseName, collections] of targetsByDatabase) {
+    for (const collection of collections.values()) {
+      const sourceMapped = mappedSourceCollections
+        .get(databaseName)
+        ?.has(collection.name);
+      if (!sourceMapped) {
+        targetOnlyCollections.push({
+          databaseName,
+          collection: collection.name,
+          type: collection.type ?? 'collection',
+          documentCount: collection.documents?.length ?? 0,
+          documentIds: (collection.documents ?? [])
+            .map((document) => String(document._id))
+            .sort(),
+          status: 'TARGET_ONLY_COLLECTION',
+        });
+        for (const document of [...(collection.documents ?? [])].sort(byId)) {
+          targetOnlyDocuments.push({
+            targetDatabase: databaseName,
+            targetCollection: collection.name,
+            id: String(document._id),
+            targetDigest: document.digest,
+          });
+        }
+      }
+    }
+  }
 
   for (const source of [...sourceCollections].sort((a, b) =>
     a.name.localeCompare(b.name),
@@ -340,12 +509,15 @@ export function buildDatabasePerServiceSplitReport({
           source.name === 'outbox_events'
             ? 'legacy outbox documents have no persisted service owner'
             : 'collection is absent from the accepted active-service inventory',
-        documentIds: source.documents.map((document) => String(document._id)).sort(),
+        documentIds: source.documents
+          .map((document) => String(document._id))
+          .sort(),
       });
       continue;
     }
 
-    const target = targetsByDatabase.get(databaseName)?.get(source.name) ?? null;
+    const target =
+      targetsByDatabase.get(databaseName)?.get(source.name) ?? null;
     const targetById = new Map(
       (target?.documents ?? []).map((document) => [
         String(document._id),
@@ -382,7 +554,9 @@ export function buildDatabasePerServiceSplitReport({
       }
       return item;
     });
-    const sourceIds = new Set(source.documents.map((document) => String(document._id)));
+    const sourceIds = new Set(
+      source.documents.map((document) => String(document._id)),
+    );
     for (const document of [...(target?.documents ?? [])].sort(byId)) {
       if (!sourceIds.has(String(document._id))) {
         targetOnlyDocuments.push({
@@ -395,17 +569,19 @@ export function buildDatabasePerServiceSplitReport({
     }
 
     const targetCount = target?.documents.length ?? 0;
-    const indexInspection = inspectIndexes(
-      source,
-      target,
-      databaseName,
-    );
+    const indexInspection = inspectIndexes(source, target, databaseName);
     indexDifferences.push(...indexInspection.differences);
     blockingIndexDifferences.push(...indexInspection.blockingDifferences);
     uniqueIndexConflicts.push(...indexInspection.uniqueIndexConflicts);
-    unverifiableUniqueIndexes.push(...indexInspection.unverifiableUniqueIndexes);
-    collectionOptionsDifferences.push(...indexInspection.collectionOptionsDifferences);
-    unsupportedCollectionOptions.push(...indexInspection.unsupportedCollectionOptions);
+    unverifiableUniqueIndexes.push(
+      ...indexInspection.unverifiableUniqueIndexes,
+    );
+    collectionOptionsDifferences.push(
+      ...indexInspection.collectionOptionsDifferences,
+    );
+    unsupportedCollectionOptions.push(
+      ...indexInspection.unsupportedCollectionOptions,
+    );
     plannedCollections.push({
       sourceCollection: source.name,
       targetDatabase: databaseName,
@@ -425,6 +601,7 @@ export function buildDatabasePerServiceSplitReport({
     unmappedCollections.length === 0 &&
     conflictingCollections.length === 0 &&
     blockingIndexDifferences.length === 0 &&
+    targetOnlyCollections.length === 0 &&
     uniqueIndexConflicts.length === 0 &&
     unverifiableUniqueIndexes.length === 0 &&
     collectionOptionsDifferences.length === 0 &&
@@ -448,6 +625,7 @@ export function buildDatabasePerServiceSplitReport({
       ).length,
       conflictingDocuments: conflictingCollections.length,
       targetOnlyDocuments: targetOnlyDocuments.length,
+      targetOnlyCollections: targetOnlyCollections.length,
       indexDifferences: indexDifferences.length,
       blockingIndexDifferences: blockingIndexDifferences.length,
       uniqueIndexConflicts: uniqueIndexConflicts.length,
@@ -464,6 +642,11 @@ export function buildDatabasePerServiceSplitReport({
     targetOnlyDocuments: targetOnlyDocuments.sort((a, b) =>
       `${a.targetDatabase}:${a.targetCollection}:${a.id}`.localeCompare(
         `${b.targetDatabase}:${b.targetCollection}:${b.id}`,
+      ),
+    ),
+    targetOnlyCollections: targetOnlyCollections.sort((a, b) =>
+      `${a.databaseName}:${a.collection}`.localeCompare(
+        `${b.databaseName}:${b.collection}`,
       ),
     ),
     unmappedCollections,
