@@ -18,11 +18,8 @@ export interface EnvironmentVariables {
   REDIS_CLUSTER_NODES?: string;
   REDIS_PASSWORD?: string;
   INFRA_ENABLED: boolean;
-  MONGODB_ENABLED: boolean;
   MONGODB_URI: string;
-  MONGODB_DATABASE: string;
   MONGODB_AUTO_INDEX: boolean;
-  AUDIT_DATABASE: string;
   BULLMQ_PREFIX: string;
   R2_ENDPOINT?: string;
   R2_BUCKET?: string;
@@ -66,14 +63,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   REDIS_CLUSTER_NODES: Joi.string().allow('').optional(),
   REDIS_PASSWORD: Joi.string().allow('').optional(),
   INFRA_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
-  MONGODB_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
   MONGODB_URI: Joi.string().uri().default('mongodb://127.0.0.1:27017'),
-  MONGODB_DATABASE: Joi.string().default('continuum_db'),
   MONGODB_AUTO_INDEX: Joi.boolean()
     .truthy('true')
     .falsy('false')
     .default(false),
-  AUDIT_DATABASE: Joi.string().default('continuum_audit'),
   BULLMQ_PREFIX: Joi.string().default('continuum'),
   R2_ENDPOINT: Joi.string().uri().allow('').optional(),
   R2_BUCKET: Joi.string().allow('').optional(),

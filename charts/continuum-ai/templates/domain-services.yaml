@@ -36,7 +36,7 @@ spec:
               value: {{ $service.port | quote }}
             - name: MONGODB_URI
               value: {{ $.Values.mongodb.uri | default (printf "mongodb://%s-mongo-0.%s-mongo-headless:27017,%s-mongo-1.%s-mongo-headless:27017,%s-mongo-2.%s-mongo-headless:27017/?replicaSet=rs0" (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $)) | quote }}
-            - name: MONGODB_DATABASE
+            - name: SERVICE_DATABASE
               value: {{ $service.database | quote }}
             {{- if eq $name "iam" }}
             - name: JWT_SECRET

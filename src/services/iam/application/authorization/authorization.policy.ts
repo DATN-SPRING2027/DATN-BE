@@ -1,6 +1,20 @@
 import { Injectable } from '@nestjs/common';
+import { Types } from 'mongoose';
 
 export type DocumentedPermission = 'project.create';
+export type ProjectAccessPermission =
+  | 'project.visibility.manage'
+  | 'project.leader.manage'
+  | 'project.members.list'
+  | 'project.members.add'
+  | 'project.members.remove';
+const enabledProjectAccessPermissions: ReadonlySet<string> = new Set([
+  'project.visibility.manage',
+  'project.leader.manage',
+  'project.members.list',
+  'project.members.add',
+  'project.members.remove',
+]);
 export type ExplicitDenyAssessment = 'CLEAR' | 'DENY' | 'UNKNOWN';
 
 export interface AuthorizationSubject {
@@ -51,6 +65,35 @@ export interface ProjectReadScopeInput {
   explicitDeny: ExplicitDenyAssessment;
 }
 
+export interface ProjectAccessProjectEvidence {
+  id: string;
+  organizationId: string;
+  status: string;
+  visibility?: 'PRIVATE' | 'PUBLIC';
+}
+
+export interface ProjectAccessAssignmentEvidence extends ProjectReadAssignmentEvidence {
+  userId: string;
+  organizationId: string;
+}
+
+export interface ProjectAccessEvaluationInput {
+  permission: ProjectAccessPermission;
+  subject: AuthorizationSubject | null;
+  requestedOrganizationId: string;
+  requestedProjectId: string;
+  project: ProjectAccessProjectEvidence | null;
+  membership: OrganizationMembershipEvidence | null;
+  projectMembership: {
+    userId: string;
+    organizationId: string;
+    projectId: string;
+    status: string;
+  } | null;
+  assignments: readonly ProjectAccessAssignmentEvidence[];
+  explicitDeny: ExplicitDenyAssessment;
+}
+
 export type ProjectReadScope =
   | {
       all: true;
@@ -64,6 +107,12 @@ export type ProjectReadScope =
     };
 
 const validObjectId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
+const objectIdKey = (value: string): string | null =>
+  validObjectId(value) ? new Types.ObjectId(value).toHexString() : null;
+const sameObjectId = (left: string, right: string): boolean =>
+  validObjectId(left) &&
+  validObjectId(right) &&
+  new Types.ObjectId(left).equals(new Types.ObjectId(right));
 
 @Injectable()
 export class AuthorizationPolicy {
@@ -79,11 +128,11 @@ export class AuthorizationPolicy {
       !validObjectId(subject.userId) ||
       !validObjectId(subject.organizationId) ||
       !validObjectId(requestedOrganizationId) ||
-      subject.organizationId !== requestedOrganizationId ||
+      !sameObjectId(subject.organizationId, requestedOrganizationId) ||
       subject.status !== 'ACTIVE' ||
       !membership ||
-      membership.userId !== subject.userId ||
-      membership.organizationId !== requestedOrganizationId ||
+      !sameObjectId(membership.userId, subject.userId) ||
+      !sameObjectId(membership.organizationId, requestedOrganizationId) ||
       membership.status !== 'ACTIVE' ||
       input.explicitDeny !== 'CLEAR'
     )
@@ -103,7 +152,11 @@ export class AuthorizationPolicy {
         includePublicProjects: false,
       };
 
-    const active = new Set(input.activeProjectMembershipIds);
+    const active = new Set(
+      input.activeProjectMembershipIds
+        .map(objectIdKey)
+        .filter((id): id is string => id !== null),
+    );
     const projectIds = [
       ...new Set(
         input.assignments
@@ -114,12 +167,90 @@ export class AuthorizationPolicy {
                 assignment.roleCode === 'MEMBER') &&
               assignment.resolvedRoleCode === assignment.roleCode &&
               assignment.permissions.includes('project.read') &&
-              active.has(assignment.projectId),
+              objectIdKey(assignment.projectId) !== null &&
+              active.has(objectIdKey(assignment.projectId) as string),
           )
-          .map((assignment) => assignment.projectId as string),
+          .map((assignment) => objectIdKey(assignment.projectId as string)!),
       ),
     ];
     return { all: false, projectIds, includePublicProjects: true };
+  }
+
+  evaluateProjectAccess(
+    input: ProjectAccessEvaluationInput,
+  ): AuthorizationDecision {
+    const {
+      subject,
+      membership,
+      project,
+      requestedOrganizationId,
+      requestedProjectId,
+      permission,
+    } = input;
+    if (!enabledProjectAccessPermissions.has(permission))
+      return { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
+
+    if (
+      !subject ||
+      !validObjectId(subject.userId) ||
+      !validObjectId(subject.organizationId) ||
+      !validObjectId(requestedOrganizationId) ||
+      !validObjectId(requestedProjectId) ||
+      !sameObjectId(subject.organizationId, requestedOrganizationId) ||
+      subject.status !== 'ACTIVE' ||
+      !project ||
+      !sameObjectId(project.id, requestedProjectId) ||
+      !sameObjectId(project.organizationId, requestedOrganizationId) ||
+      project.status !== 'ACTIVE'
+    )
+      return { allowed: false, reason: 'INVALID_CONTEXT' };
+
+    if (
+      !membership ||
+      !sameObjectId(membership.userId, subject.userId) ||
+      !sameObjectId(membership.organizationId, requestedOrganizationId) ||
+      membership.status !== 'ACTIVE'
+    )
+      return { allowed: false, reason: 'INACTIVE_MEMBERSHIP' };
+
+    if (input.explicitDeny !== 'CLEAR')
+      return { allowed: false, reason: 'EXPLICIT_DENY_OR_UNKNOWN' };
+
+    const requiresOrganizationAdmin =
+      permission === 'project.visibility.manage' ||
+      permission === 'project.leader.manage';
+    if (
+      !requiresOrganizationAdmin &&
+      (!input.projectMembership ||
+        !sameObjectId(input.projectMembership.userId, subject.userId) ||
+        !sameObjectId(
+          input.projectMembership.organizationId,
+          requestedOrganizationId,
+        ) ||
+        !sameObjectId(input.projectMembership.projectId, requestedProjectId) ||
+        input.projectMembership.status !== 'ACTIVE')
+    )
+      return { allowed: false, reason: 'INACTIVE_MEMBERSHIP' };
+
+    const expectedRole = requiresOrganizationAdmin ? 'ADMIN' : 'TEAM_LEADER';
+    const expectedProjectId = requiresOrganizationAdmin
+      ? null
+      : requestedProjectId;
+    const allowed = input.assignments.some(
+      (assignment) =>
+        sameObjectId(assignment.userId, subject.userId) &&
+        sameObjectId(assignment.organizationId, requestedOrganizationId) &&
+        (assignment.projectId === null
+          ? expectedProjectId === null
+          : expectedProjectId !== null &&
+            sameObjectId(assignment.projectId, expectedProjectId)) &&
+        assignment.roleCode === expectedRole &&
+        assignment.resolvedRoleCode === expectedRole &&
+        assignment.permissions.includes(permission),
+    );
+    return allowed
+      ? { allowed: true }
+      : { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
   }
 
   evaluate(input: AuthorizationEvaluationInput): AuthorizationDecision {

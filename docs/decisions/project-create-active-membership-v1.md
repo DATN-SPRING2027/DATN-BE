@@ -15,7 +15,7 @@ The request must have:
 - an `ACTIVE` Organization Membership for that User and Organization;
 - valid Project input;
 - a unique Project code within that Organization; and
-- a `project.create` audit event in `audit_logs_iam` committed with the Project.
+- a `project.create` audit event in `continuum_audit.audit_logs_iam` committed with the Project through the accepted cross-database MongoDB transaction/session.
 
 No `ADMIN` or `TEAM_LEADER` role and no `organization_capability_grants.project.create` grant is required. Missing or non-`ACTIVE` membership, invalid or cross-Organization context, invalid Project input, or an explicit deny where a deny-capable source applies results in denial.
 

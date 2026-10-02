@@ -13,21 +13,25 @@ import { RedisService } from './redis/redis.service';
 import { R2Storage } from './storage/r2.storage';
 import { IAM_PERSISTENCE, IAM_QUEUES } from './persistence';
 import { DEFAULT_JOB_OPTIONS } from './queues/queue.policy';
+import {
+  AUDIT_DATABASE_NAME,
+  AUDIT_DATABASE_NAME_TOKEN,
+} from '../../../common/mongodb/database-names';
 
 @Module({})
 export class IamInfrastructureModule {
   static register(): DynamicModule {
     const enabled = process.env.INFRA_ENABLED === 'true';
-    const sharedMongoEnabled = process.env.MONGODB_ENABLED === 'true';
     const providers = [
       RedisService,
       IdempotencyService,
       R2Storage,
-      ...(enabled && !sharedMongoEnabled ? [AuditService, OutboxService] : []),
+      { provide: AUDIT_DATABASE_NAME_TOKEN, useValue: AUDIT_DATABASE_NAME },
+      ...(enabled ? [AuditService, OutboxService] : []),
     ];
     const imports: DynamicModule['imports'] = [];
 
-    if (sharedMongoEnabled || enabled) {
+    if (enabled) {
       imports.push(MongoInfrastructureModule.register(IAM_PERSISTENCE));
     }
 

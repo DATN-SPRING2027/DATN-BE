@@ -75,7 +75,9 @@ const REFRESH_SESSIONS_MODEL = modelName('refresh_sessions');
 @Injectable()
 export class AuthenticationRepository implements AuthenticationRepositoryPort {
   constructor(
-    @Optional() @InjectConnection() private readonly connection?: Connection,
+    @Optional()
+    @InjectConnection(IAM_PERSISTENCE.databaseName)
+    private readonly connection?: Connection,
   ) {}
 
   async findAccountByEmail(

@@ -11,7 +11,7 @@ and other resources remain proposed. Runtime Swagger describes implemented route
 | Auth               | Login, current user and logout; refresh proposed |
 | User               | List, read and partial update               |
 | Project            | List, create, read and partial update       |
-| Project Membership | List, create, update and idempotent removal |
+| Project Membership | List, create and idempotent removal; generic update proposed only and not enabled in Project Access V1 |
 | Team               | List, create, read and partial update       |
 | Team Membership    | List, create and idempotent removal         |
 
