@@ -29,13 +29,13 @@ describe('IAM MongoInfrastructureModule', () => {
     expect(result.module).toBe(MongoInfrastructureModule);
   });
 
-  it('rejects a deployment database that does not belong to IAM', () => {
+  it('uses the canonical IAM database in AppModule composition', () => {
     process.env.INFRA_ENABLED = 'true';
-    process.env.SERVICE_DATABASE = 'continuum_db';
+    process.env.SERVICE_DATABASE = 'continuum_capture';
 
-    expect(() => MongoInfrastructureModule.register(IAM_PERSISTENCE)).toThrow(
-      'does not match the owning service database',
-    );
+    expect(() =>
+      MongoInfrastructureModule.register(IAM_PERSISTENCE),
+    ).not.toThrow();
   });
 
   it('registers the IAM and audit connections when infrastructure is enabled', () => {

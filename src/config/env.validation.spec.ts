@@ -8,12 +8,14 @@ describe('validateEnvironment', () => {
         PORT: '3001',
         SWAGGER_ENABLED: 'false',
         INFRA_ENABLED: 'true',
+        SERVICE_DATABASE: 'continuum_iam',
       }),
     ).toMatchObject({
       NODE_ENV: 'test',
       PORT: 3001,
       SWAGGER_ENABLED: false,
       INFRA_ENABLED: true,
+      SERVICE_DATABASE: 'continuum_iam',
     });
   });
 
@@ -25,6 +27,8 @@ describe('validateEnvironment', () => {
     [{ INFRA_ENABLED: 'sometimes' }, 'INFRA_ENABLED'],
     [{ JWT_SECRET: 'too-short' }, 'JWT_SECRET'],
     [{ IAM_GATEWAY_SECRET: 'too-short' }, 'IAM_GATEWAY_SECRET'],
+    [{ SERVICE_DATABASE: 'continuum_db' }, 'SERVICE_DATABASE'],
+    [{ SERVICE_DATABASE: 'continuum_task' }, 'SERVICE_DATABASE'],
     [
       { GATEWAY_TRUSTED_PROXY_CIDRS: 'anywhere' },
       'GATEWAY_TRUSTED_PROXY_CIDRS',

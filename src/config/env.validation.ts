@@ -1,5 +1,9 @@
 import Joi from 'joi';
 import { isIP } from 'node:net';
+import {
+  SERVICE_DATABASES,
+  type ServiceDatabaseName,
+} from '../common/mongodb/database-names';
 
 export type NodeEnvironment = 'development' | 'test' | 'production';
 
@@ -18,6 +22,7 @@ export interface EnvironmentVariables {
   REDIS_CLUSTER_NODES?: string;
   REDIS_PASSWORD?: string;
   INFRA_ENABLED: boolean;
+  SERVICE_DATABASE?: ServiceDatabaseName;
   MONGODB_URI: string;
   MONGODB_AUTO_INDEX: boolean;
   BULLMQ_PREFIX: string;
@@ -63,6 +68,9 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   REDIS_CLUSTER_NODES: Joi.string().allow('').optional(),
   REDIS_PASSWORD: Joi.string().allow('').optional(),
   INFRA_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  SERVICE_DATABASE: Joi.string()
+    .valid(...Object.values(SERVICE_DATABASES))
+    .optional(),
   MONGODB_URI: Joi.string().uri().default('mongodb://127.0.0.1:27017'),
   MONGODB_AUTO_INDEX: Joi.boolean()
     .truthy('true')
