@@ -12,13 +12,40 @@ when present and scans `continuum_db` plus all nine accepted target databases.
 It outputs a deterministic report with every source record ID and content
 digest, destination action, `targetOnlyCollections`, target-only records,
 index differences, unique-index collisions, unowned collections, and the
-target fingerprint. `targetOnlyCollections` lists every destination collection
+target fingerprint. The scanner walks one collection cursor at a time with a
+batch size of 100; apply streams source documents in batches of 500 rather than
+retaining document bodies for the copy. To keep the auditable in-memory report
+bounded, a scan refuses to emit a report if it exceeds 100,000 documents,
+64 MiB of Extended JSON document data, 32 MiB of serialized report data, or
+512 MiB of V8 heap. The output includes observed heap/RSS and byte/count
+metrics outside the report hash. Exceeding any limit fails closed; it does not
+emit a partial report or permit apply. Larger datasets need a separately
+reviewed disk-spilling planner before this migration can be used for them.
+
+`targetOnlyCollections` lists every destination collection
 without a corresponding mapped source collection and makes the report unclean,
 including collections whose names exist in the inventory but are absent from
 the current source. Target-only documents inside a source-mapped collection are
 reported and preserved but do not alone make the report unclean. The SHA-256
-binds the full report, data digests, indexes, endpoint, and exact runner/planner
-contents, but does not expose connection credentials.
+binds the full report, data digests, source/target indexes, endpoint, service
+schema index manifest, and exact runner/planner/budget/fingerprint/schema
+implementation plus `package-lock.json`, but does not expose connection
+credentials.
+
+Destination index requirements come from each active service's
+`persistence.ts` definition passed through its `createCollectionSchema`
+factory, plus the shared `audit_logs` schema. The migration hashes those
+schema/persistence source files into the reviewed report identity and fails if
+the schema manifest no longer exactly covers the accepted collection
+inventory. With `MONGODB_AUTO_INDEX=false`, source indexes alone are not a
+complete statement of runtime requirements. The report identifies required
+schema indexes absent at the destination; apply creates them after the data
+copy, and final verification requires every required index to be present and
+compatible. Source/schema drift, incompatible same-key unique or TTL options,
+unique data collisions, and equivalent indexes with conflicting names block
+apply. `audit_logs_iam` is currently written as a raw collection without an
+application index declaration; MongoDB's built-in `_id_` index is
+server-managed.
 
 ```sh
 node scripts/migrations/20261002-database-per-service-split.mjs > database-per-service-split-dry-run.json
@@ -39,7 +66,8 @@ approximating MongoDB collation behavior. An equivalent target index with a
 different name blocks preflight; the runner never renames or drops indexes.
 Same-key indexes with distinct collations and MongoDB-supported option variants
 such as sparse versus non-sparse can coexist. Same-key/same-collation indexes
-with conflicting TTL settings are blocked because MongoDB rejects them.
+with conflicting unique or TTL settings are blocked because MongoDB rejects
+those conflicting specifications.
 
 ## Apply gate
 
@@ -74,8 +102,11 @@ MongoDB test commands enabled, and the marker document in `admin` described
 below. The test drops only the fixed source and service database names on that
 fixture; never aim it at a shared or live database. It covers successful apply
 and retry, deterministic index-creation failure after copying and recovery,
+required indexes from service schemas when `MONGODB_AUTO_INDEX` is disabled,
 both P1 preflight blocks, allowed same-key index variants, destination-only
-collection blocking, source preservation, and post-apply verification.
+collection blocking, source preservation, post-apply verification, measured
+memory for a multi-batch scan, and refusal to report/apply over the configured
+memory input limit.
 
 Create the disposable fixture:
 

@@ -397,6 +397,133 @@ test('blocks unsupported unique-index preflight and incompatible target indexes'
   assert.equal(report.unverifiableUniqueIndexes.length, 1);
 });
 
+test('plans required service-schema indexes even when legacy source lacks them', () => {
+  const requiredIndex = {
+    name: 'organizationId_1_code_1',
+    key: { organizationId: 1, code: 1 },
+    unique: true,
+  };
+  const report = buildDatabasePerServiceSplitReport({
+    sourceCollections: [
+      {
+        name: 'projects',
+        indexes: [{ name: '_id_', key: { _id: 1 }, unique: true }],
+        documents: [
+          {
+            _id: 'p1',
+            digest: 'one',
+            raw: { organizationId: 'org-1', code: 'P-1' },
+          },
+        ],
+      },
+    ],
+    targetCollections: {
+      continuum_iam: [
+        {
+          name: 'projects',
+          indexes: [{ name: '_id_', key: { _id: 1 }, unique: true }],
+          documents: [],
+        },
+      ],
+    },
+    schemaIndexesByDatabase: {
+      continuum_iam: { projects: [requiredIndex] },
+    },
+  });
+
+  assert.equal(report.clean, true);
+  assert.equal(report.counts.requiredSchemaIndexes, 1);
+  assert.deepEqual(
+    report.missingRequiredSchemaIndexes.map((item) => item.index),
+    ['organizationId_1_code_1'],
+  );
+  assert.deepEqual(report.collections[0].requiredSchemaIndexes, [
+    requiredIndex,
+  ]);
+});
+
+test('blocks source-schema drift and unique collisions in schema-only indexes', () => {
+  const requiredIndex = {
+    name: 'email_1',
+    key: { email: 1 },
+    unique: true,
+  };
+  const driftedReport = buildDatabasePerServiceSplitReport({
+    sourceCollections: [
+      {
+        name: 'users',
+        indexes: [
+          { name: '_id_', key: { _id: 1 }, unique: true },
+          { name: 'email_1', key: { email: 1 }, unique: false },
+        ],
+        documents: [{ _id: 'u1', digest: 'one', raw: { email: 'a@test' } }],
+      },
+    ],
+    targetCollections: {},
+    schemaIndexesByDatabase: { continuum_iam: { users: [requiredIndex] } },
+  });
+
+  assert.equal(driftedReport.clean, false);
+  assert.equal(
+    driftedReport.blockingSchemaIndexDifferences[0].status,
+    'SCHEMA_SOURCE_INDEX_CONFLICT',
+  );
+
+  const collisionReport = buildDatabasePerServiceSplitReport({
+    sourceCollections: [
+      {
+        name: 'users',
+        indexes: [{ name: '_id_', key: { _id: 1 }, unique: true }],
+        documents: [
+          { _id: 'u1', digest: 'one', raw: { email: 'duplicate@test' } },
+          { _id: 'u2', digest: 'two', raw: { email: 'duplicate@test' } },
+        ],
+      },
+    ],
+    targetCollections: {},
+    schemaIndexesByDatabase: { continuum_iam: { users: [requiredIndex] } },
+  });
+
+  assert.equal(collisionReport.clean, false);
+  assert.equal(collisionReport.uniqueIndexConflicts.length, 1);
+  assert.equal(collisionReport.uniqueIndexConflicts[0].index, 'email_1');
+});
+
+test('blocks a target index that conflicts with a required schema unique index', () => {
+  const report = buildDatabasePerServiceSplitReport({
+    sourceCollections: [
+      {
+        name: 'users',
+        indexes: [],
+        documents: [{ _id: 'u1', digest: 'one', raw: { email: 'a@test' } }],
+      },
+    ],
+    targetCollections: {
+      continuum_iam: [
+        {
+          name: 'users',
+          indexes: [
+            { name: '_id_', key: { _id: 1 }, unique: true },
+            { name: 'email_simple', key: { email: 1 }, unique: false },
+          ],
+          documents: [],
+        },
+      ],
+    },
+    schemaIndexesByDatabase: {
+      continuum_iam: {
+        users: [{ name: 'email_1', key: { email: 1 }, unique: true }],
+      },
+    },
+  });
+
+  assert.equal(report.clean, false);
+  assert.equal(
+    report.blockingSchemaIndexDifferences[0].status,
+    'INCOMPATIBLE_REQUIRED_SCHEMA_INDEX_OPTIONS',
+  );
+});
+
 test('treats missing and null unique keys as collisions and blocks non-simple collations', () => {
   const report = buildDatabasePerServiceSplitReport({
     sourceCollections: [

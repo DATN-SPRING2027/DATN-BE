@@ -9,6 +9,14 @@ import {
   SPLIT_SOURCE_DATABASE,
   buildDatabasePerServiceSplitReport,
 } from './database-per-service-split.plan.mjs';
+import {
+  SERVICE_SCHEMA_INDEX_MANIFEST,
+  schemaAuthoritySha256,
+} from './database-per-service-split.schema-indexes.mjs';
+import {
+  MIGRATION_SCAN_LIMITS,
+  MigrationScanBudget,
+} from './migration-scan-budget.mjs';
 import { targetFingerprint } from './organization-membership-backfill.plan.mjs';
 
 const apply = process.argv.includes('--apply');
@@ -25,16 +33,67 @@ const { EJSON } = mongoose.mongo.BSON;
 const plannerPath = fileURLToPath(
   new URL('./database-per-service-split.plan.mjs', import.meta.url),
 );
+const schemaIndexesPath = fileURLToPath(
+  new URL('./database-per-service-split.schema-indexes.mjs', import.meta.url),
+);
+const scanBudgetPath = fileURLToPath(
+  new URL('./migration-scan-budget.mjs', import.meta.url),
+);
+const fingerprintPlanPath = fileURLToPath(
+  new URL('./organization-membership-backfill.plan.mjs', import.meta.url),
+);
+const packageLockPath = fileURLToPath(
+  new URL('../../package-lock.json', import.meta.url),
+);
+
+for (const [databaseName, collectionNames] of Object.entries(
+  DATABASE_PER_SERVICE_INVENTORY,
+)) {
+  const manifestCollections = Object.keys(
+    SERVICE_SCHEMA_INDEX_MANIFEST[databaseName] ?? {},
+  ).sort();
+  if (
+    JSON.stringify([...collectionNames].sort()) !==
+    JSON.stringify(manifestCollections)
+  ) {
+    throw new Error(
+      `Schema index manifest does not match migration inventory for ${databaseName}`,
+    );
+  }
+}
 
 async function implementationDigest() {
-  const [runner, planner] = await Promise.all([
+  const [
+    runner,
+    planner,
+    schemaIndexes,
+    scanBudget,
+    fingerprintPlan,
+    packageLock,
+    schemaAuthority,
+  ] = await Promise.all([
     readFile(fileURLToPath(import.meta.url)),
     readFile(plannerPath),
+    readFile(schemaIndexesPath),
+    readFile(scanBudgetPath),
+    readFile(fingerprintPlanPath),
+    readFile(packageLockPath),
+    schemaAuthoritySha256(),
   ]);
   return createHash('sha256')
     .update(runner)
     .update('\u0000')
     .update(planner)
+    .update('\u0000')
+    .update(schemaIndexes)
+    .update('\u0000')
+    .update(scanBudget)
+    .update('\u0000')
+    .update(fingerprintPlan)
+    .update('\u0000')
+    .update(packageLock)
+    .update('\u0000')
+    .update(schemaAuthority)
     .digest('hex');
 }
 
@@ -72,10 +131,14 @@ const connection = mongoose.createConnection(uri, {
   serverSelectionTimeoutMS: 5000,
 });
 
-function documentDigest(document) {
-  return createHash('sha256')
-    .update(EJSON.stringify(document, { relaxed: false }))
-    .digest('hex');
+function documentFingerprint(document) {
+  const serialized = EJSON.stringify(canonicalize(document), {
+    relaxed: false,
+  });
+  return {
+    digest: createHash('sha256').update(serialized).digest('hex'),
+    ejsonBytes: Buffer.byteLength(serialized),
+  };
 }
 
 function canonicalize(value) {
@@ -96,10 +159,10 @@ function canonicalize(value) {
   );
 }
 
-function reportHash(report) {
-  return createHash('sha256')
-    .update(EJSON.stringify(canonicalize(report), { relaxed: false }))
-    .digest('hex');
+function reportHash(report, budget) {
+  const serialized = EJSON.stringify(canonicalize(report), { relaxed: false });
+  budget.setReportBytes(Buffer.byteLength(serialized));
+  return createHash('sha256').update(serialized).digest('hex');
 }
 
 function collectionCreateOptions(sourceOptions = {}) {
@@ -117,7 +180,7 @@ function indexCreateOptions(index) {
   );
 }
 
-async function readCollection(db, collectionInfo) {
+async function readCollection(db, collectionInfo, budget) {
   if (collectionInfo.type !== 'collection') {
     return {
       name: collectionInfo.name,
@@ -128,15 +191,17 @@ async function readCollection(db, collectionInfo) {
     };
   }
   const collection = db.collection(collectionInfo.name);
-  const [indexes, rawDocuments] = await Promise.all([
-    collection.listIndexes().toArray(),
-    collection.find({}).sort({ _id: 1 }).toArray(),
-  ]);
-  const documents = rawDocuments.map((raw) => ({
-    _id: raw._id,
-    digest: documentDigest(raw),
-    raw,
-  }));
+  const indexes = await collection.listIndexes().toArray();
+  const documents = [];
+  const cursor = collection
+    .find({})
+    .sort({ _id: 1 })
+    .batchSize(MIGRATION_SCAN_LIMITS.cursorBatchSize);
+  for await (const raw of cursor) {
+    const fingerprint = documentFingerprint(raw);
+    budget.addDocument(fingerprint.ejsonBytes);
+    documents.push({ _id: raw._id, digest: fingerprint.digest, raw });
+  }
   return {
     name: collectionInfo.name,
     type: collectionInfo.type,
@@ -147,6 +212,7 @@ async function readCollection(db, collectionInfo) {
 }
 
 async function scan() {
+  const budget = new MigrationScanBudget();
   const sourceDb = connection.db;
   if (!sourceDb || sourceDb.databaseName !== SPLIT_SOURCE_DATABASE) {
     throw new Error('Connected source database does not match continuum_db');
@@ -155,11 +221,12 @@ async function scan() {
   const sourceInfo = await sourceDb
     .listCollections({}, { nameOnly: false })
     .toArray();
-  const sourceCollections = await Promise.all(
-    sourceInfo
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .map((info) => readCollection(sourceDb, info)),
-  );
+  const sourceCollections = [];
+  for (const info of sourceInfo.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    sourceCollections.push(await readCollection(sourceDb, info, budget));
+  }
   const targetCollections = {};
 
   for (const databaseName of targetDatabases) {
@@ -169,18 +236,21 @@ async function scan() {
     const infos = await targetDb
       .listCollections({}, { nameOnly: false })
       .toArray();
-    const collections = await Promise.all(
-      infos
-        .sort((left, right) => left.name.localeCompare(right.name))
-        .map((info) => readCollection(targetDb, info)),
-    );
+    const collections = [];
+    for (const info of infos.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      collections.push(await readCollection(targetDb, info, budget));
+    }
     targetCollections[databaseName] = collections;
   }
 
   const plan = buildDatabasePerServiceSplitReport({
     sourceCollections,
     targetCollections,
+    schemaIndexesByDatabase: SERVICE_SCHEMA_INDEX_MANIFEST,
   });
+  budget.sampleHeap('report planning');
   const report = {
     migrationId: '20261002-database-per-service-split-v1',
     implementationSha256: await implementationDigest(),
@@ -189,23 +259,14 @@ async function scan() {
     targetDatabases,
     ...plan,
   };
-  const sha256 = reportHash(report);
-  return { report, sha256, sourceCollections };
+  const sha256 = reportHash(report, budget);
+  return { report, sha256, metrics: budget.metrics() };
 }
 
 async function applyPlan(scanned) {
   const sourceDb = connection.db;
   if (!sourceDb) throw new Error('Source database handle unavailable');
-  const sourceByName = new Map(
-    scanned.sourceCollections.map((item) => [item.name, item]),
-  );
-
   for (const planned of scanned.report.collections) {
-    const source = sourceByName.get(planned.sourceCollection);
-    if (!source)
-      throw new Error(
-        `Source collection disappeared: ${planned.sourceCollection}`,
-      );
     const targetDb = connection.useDb(planned.targetDatabase, {
       useCache: true,
     }).db;
@@ -222,17 +283,22 @@ async function applyPlan(scanned) {
     if (!targetInfo) {
       await targetDb.createCollection(
         planned.targetCollection,
-        collectionCreateOptions(source.options),
+        collectionCreateOptions(planned.sourceOptions),
       );
     }
 
     const target = targetDb.collection(planned.targetCollection);
     const operations = [];
-    for (const document of source.documents) {
+    const sourceCursor = sourceDb
+      .collection(planned.sourceCollection)
+      .find({})
+      .sort({ _id: 1 })
+      .batchSize(MIGRATION_SCAN_LIMITS.cursorBatchSize);
+    for await (const document of sourceCursor) {
       operations.push({
         updateOne: {
           filter: { _id: document._id },
-          update: { $setOnInsert: document.raw },
+          update: { $setOnInsert: document },
           upsert: true,
         },
       });
@@ -244,7 +310,14 @@ async function applyPlan(scanned) {
     if (operations.length)
       await target.bulkWrite(operations, { ordered: true });
 
-    for (const index of source.indexes) {
+    const indexesByName = new Map(
+      [...planned.sourceIndexes, ...planned.requiredSchemaIndexes].map(
+        (index) => [index.name, index],
+      ),
+    );
+    for (const index of [...indexesByName.values()].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
       await target.createIndex(index.key, {
         name: index.name,
         ...indexCreateOptions(index),
@@ -260,7 +333,15 @@ try {
     EJSON.stringify(initial.report, { relaxed: true }),
   );
   process.stdout.write(
-    `${JSON.stringify({ ...display, reportSha256: initial.sha256 }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        ...display,
+        reportSha256: initial.sha256,
+        scanMetrics: initial.metrics,
+      },
+      null,
+      2,
+    )}\n`,
   );
 
   if (!apply) {
@@ -287,7 +368,8 @@ try {
       !verified.report.clean ||
       remainingInserts !== 0 ||
       verified.report.counts.conflictingDocuments !== 0 ||
-      missingIndexes.length !== 0
+      missingIndexes.length !== 0 ||
+      verified.report.missingRequiredSchemaIndexes.length !== 0
     ) {
       throw new Error(
         'Post-copy verification failed; source remains intact. Review a new dry-run before retrying.',

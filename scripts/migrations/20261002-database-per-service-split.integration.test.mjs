@@ -61,7 +61,7 @@ function runRunner(args = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runnerPath, ...args], {
       cwd: process.cwd(),
-      env: process.env,
+      env: { ...process.env, MONGODB_AUTO_INDEX: 'false' },
       windowsHide: true,
     });
     let stdout = '';
@@ -193,6 +193,16 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
         assert.equal(dryRun.status, 0, dryRun.stderr);
         const plan = parseReport(dryRun.stdout);
         assert.equal(plan.clean, true);
+        assert.ok(plan.scanMetrics.peakHeapUsedBytes > 0);
+        assert.equal(plan.scanMetrics.limits.cursorBatchSize, 100);
+        assert.ok(
+          plan.missingRequiredSchemaIndexes.some(
+            (difference) =>
+              difference.databaseName === 'continuum_iam' &&
+              difference.collection === 'users' &&
+              difference.index === 'status_1_createdAt_1',
+          ),
+        );
 
         const applied = await runRunner(applyArgs(plan.reportSha256));
         assert.equal(
@@ -206,9 +216,26 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
           await allDocuments(client.db('continuum_iam').collection('users')),
           sourceBefore,
         );
+        assert.ok(
+          (
+            await client
+              .db('continuum_iam')
+              .collection('users')
+              .listIndexes()
+              .toArray()
+          ).some((index) => index.name === 'status_1_createdAt_1'),
+          'apply must create a required index declared by the active IAM schema',
+        );
+        t.diagnostic(
+          `Initial MongoDB 7 disposable-fixture scan metrics: ${JSON.stringify(plan.scanMetrics)}`,
+        );
 
         const retryPlanResult = await runRunner();
-        assert.equal(retryPlanResult.status, 0, retryPlanResult.stderr);
+        assert.equal(
+          retryPlanResult.status,
+          0,
+          `${retryPlanResult.stdout}\n${retryPlanResult.stderr}`,
+        );
         const retryPlan = parseReport(retryPlanResult.stdout);
         assert.equal(retryPlan.clean, true);
         assert.equal(retryPlan.counts.documentsToInsert, 0);
@@ -233,8 +260,18 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
           {
             indexes: [{ name: 'team_code_1', key: { code: 1 }, unique: true }],
             documents: [
-              { _id: 'team-1', code: 'TEAM-1' },
-              { _id: 'team-2', code: 'TEAM-2' },
+              {
+                _id: 'team-1',
+                organizationId: 'org-1',
+                projectId: 'project-1',
+                code: 'TEAM-1',
+              },
+              {
+                _id: 'team-2',
+                organizationId: 'org-1',
+                projectId: 'project-1',
+                code: 'TEAM-2',
+              },
             ],
           },
         );
@@ -266,7 +303,11 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
         assert.deepEqual(await allDocuments(partialTarget), sourceBefore);
 
         const retryPlanResult = await runRunner();
-        assert.equal(retryPlanResult.status, 0, retryPlanResult.stderr);
+        assert.equal(
+          retryPlanResult.status,
+          0,
+          `${retryPlanResult.stdout}\n${retryPlanResult.stderr}`,
+        );
         const retryPlan = parseReport(retryPlanResult.stdout);
         assert.equal(retryPlan.clean, true);
         assert.equal(retryPlan.counts.documentsToInsert, 0);
@@ -421,7 +462,7 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
         await resetDatabases(client);
         const source = await createCollection(
           client.db(sourceDatabase),
-          'users',
+          'audit_logs_iam',
           {
             indexes: [
               {
@@ -435,8 +476,8 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
           },
         );
         const target = await createCollection(
-          client.db('continuum_iam'),
-          'users',
+          client.db('continuum_audit'),
+          'audit_logs_iam',
           {
             indexes: [
               { name: 'email_simple', key: { email: 1 } },
@@ -465,6 +506,41 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
         assert.ok(indexNames.includes('email_simple'));
         assert.ok(indexNames.includes('username_sparse'));
         assert.ok(indexNames.includes('username_dense'));
+      },
+    );
+
+    await t.test(
+      'reports measured memory for a bounded multi-batch document scan',
+      async () => {
+        await resetDatabases(client);
+        const source = await client
+          .db(sourceDatabase)
+          .createCollection('users');
+        const payload = 'm'.repeat(8 * 1024 * 1024);
+        for (let index = 0; index < 4; index += 1) {
+          await source.insertOne({
+            _id: `measured-user-${index}`,
+            email: `measured-${index}@example.test`,
+            payload,
+          });
+        }
+
+        const dryRun = await runRunner();
+        assert.equal(dryRun.status, 0, dryRun.stderr);
+        const plan = parseReport(dryRun.stdout);
+        assert.equal(plan.clean, true);
+        assert.ok(plan.scanMetrics.ejsonDocumentBytes >= 32 * 1024 * 1024);
+        assert.ok(
+          plan.scanMetrics.peakHeapUsedBytes <=
+            plan.scanMetrics.limits.maxHeapUsedBytes,
+        );
+        assert.ok(
+          plan.scanMetrics.reportBytes <=
+            plan.scanMetrics.limits.maxReportBytes,
+        );
+        t.diagnostic(
+          `32 MiB+ MongoDB 7 disposable-fixture scan metrics: ${JSON.stringify(plan.scanMetrics)}`,
+        );
       },
     );
 
@@ -532,6 +608,37 @@ integration('MongoDB 7 replica-set migration runner integration', async (t) => {
             .collection('unexpected_capture_collection')
             .countDocuments(),
           1,
+        );
+      },
+    );
+
+    await t.test(
+      'scan refuses a dataset beyond its configured memory input budget',
+      async () => {
+        await resetDatabases(client);
+        const source = await client
+          .db(sourceDatabase)
+          .createCollection('users');
+        const oversizedPayload = 'x'.repeat(13 * 1024 * 1024);
+        for (let index = 0; index < 5; index += 1) {
+          await source.insertOne({
+            _id: `large-user-${index}`,
+            email: `large-${index}@example.test`,
+            payload: oversizedPayload,
+          });
+        }
+
+        const dryRun = await runRunner();
+        assert.equal(dryRun.status, 1, dryRun.stdout);
+        assert.match(
+          dryRun.stderr,
+          /EJSON document-byte limit; refusing to build a partial report/,
+        );
+        assert.equal(dryRun.stdout.includes('reportSha256'), false);
+        assert.equal(await source.countDocuments(), 5);
+        assert.equal(
+          await client.db('continuum_iam').collection('users').countDocuments(),
+          0,
         );
       },
     );

@@ -202,10 +202,14 @@ function conflictingIndexOptionReason(
   if (
     indexKeySignature(sourceIndex) === indexKeySignature(targetIndex) &&
     collationSignature(sourceIndex, sourceOptions) ===
-      collationSignature(targetIndex, targetOptions) &&
-    sourceIndex.expireAfterSeconds !== targetIndex.expireAfterSeconds
+      collationSignature(targetIndex, targetOptions)
   ) {
-    return 'MongoDB 7 does not allow multiple indexes with the same key pattern and effective collation but different expireAfterSeconds options';
+    if (sourceIndex.expireAfterSeconds !== targetIndex.expireAfterSeconds) {
+      return 'MongoDB 7 does not allow multiple indexes with the same key pattern and effective collation but different expireAfterSeconds options';
+    }
+    if (Boolean(sourceIndex.unique) !== Boolean(targetIndex.unique)) {
+      return 'MongoDB 7 does not allow multiple indexes with the same key pattern and effective collation but different unique options';
+    }
   }
   return null;
 }
@@ -218,9 +222,15 @@ function byId(left, right) {
   return String(left._id).localeCompare(String(right._id));
 }
 
-function inspectIndexes(source, target, databaseName) {
+function inspectIndexes(
+  source,
+  target,
+  databaseName,
+  requiredSchemaIndexes = [],
+) {
   const sourceIndexes = [...(source.indexes ?? [])].sort(byName);
   const targetIndexes = [...(target?.indexes ?? [])].sort(byName);
+  const schemaIndexes = [...requiredSchemaIndexes].sort(byName);
   const sourceByName = new Map(
     sourceIndexes.map((index) => [index.name, index]),
   );
@@ -229,6 +239,9 @@ function inspectIndexes(source, target, databaseName) {
   );
   const differences = [];
   const blockingDifferences = [];
+  const schemaDifferences = [];
+  const blockingSchemaDifferences = [];
+  const missingRequiredSchemaIndexes = [];
   const uniqueIndexConflicts = [];
   const unverifiableUniqueIndexes = [];
   const collectionOptionsDifferences = [];
@@ -326,6 +339,127 @@ function inspectIndexes(source, target, databaseName) {
       });
     }
   }
+
+  for (const index of schemaIndexes) {
+    const sourceIndex = sourceByName.get(index.name);
+    if (
+      sourceIndex &&
+      comparableIndex(sourceIndex, source.options) !==
+        comparableIndex(index, source.options)
+    ) {
+      const difference = {
+        databaseName,
+        collection: source.name,
+        index: index.name,
+        status: 'SCHEMA_SOURCE_INDEX_CONFLICT',
+        source: sourceIndex,
+        required: index,
+      };
+      schemaDifferences.push(difference);
+      blockingSchemaDifferences.push(difference);
+      continue;
+    }
+
+    const incompatibleSourceOptions = sourceIndexes
+      .map((candidate) => ({
+        candidate,
+        reason: conflictingIndexOptionReason(
+          candidate,
+          source.options,
+          index,
+          source.options,
+        ),
+      }))
+      .find((entry) => entry.reason);
+    if (incompatibleSourceOptions) {
+      const difference = {
+        databaseName,
+        collection: source.name,
+        index: index.name,
+        sourceIndex: incompatibleSourceOptions.candidate.name,
+        status: 'INCOMPATIBLE_SCHEMA_SOURCE_INDEX_OPTIONS',
+        reason: incompatibleSourceOptions.reason,
+        source: incompatibleSourceOptions.candidate,
+        required: index,
+      };
+      schemaDifferences.push(difference);
+      blockingSchemaDifferences.push(difference);
+      continue;
+    }
+
+    const existing = targetByName.get(index.name);
+    if (!existing) {
+      const incompatibleOptions = targetIndexes
+        .map((candidate) => ({
+          candidate,
+          reason: conflictingIndexOptionReason(
+            index,
+            source.options,
+            candidate,
+            target?.options,
+          ),
+        }))
+        .find((entry) => entry.reason);
+      if (incompatibleOptions) {
+        const difference = {
+          databaseName,
+          collection: source.name,
+          index: index.name,
+          targetIndex: incompatibleOptions.candidate.name,
+          status: 'INCOMPATIBLE_REQUIRED_SCHEMA_INDEX_OPTIONS',
+          reason: incompatibleOptions.reason,
+          required: index,
+          target: incompatibleOptions.candidate,
+        };
+        schemaDifferences.push(difference);
+        blockingSchemaDifferences.push(difference);
+        continue;
+      }
+
+      const equivalent = targetIndexes.find(
+        (candidate) =>
+          comparableIndex(index, source.options) ===
+          comparableIndex(candidate, target?.options),
+      );
+      if (equivalent) {
+        const difference = {
+          databaseName,
+          collection: source.name,
+          index: index.name,
+          targetIndex: equivalent.name,
+          status: 'EQUIVALENT_REQUIRED_SCHEMA_INDEX_DIFFERENT_NAME',
+          required: index,
+          target: equivalent,
+        };
+        schemaDifferences.push(difference);
+        blockingSchemaDifferences.push(difference);
+      } else {
+        const difference = {
+          databaseName,
+          collection: source.name,
+          index: index.name,
+          status: 'MISSING_REQUIRED_SCHEMA_INDEX',
+          required: index,
+        };
+        schemaDifferences.push(difference);
+        missingRequiredSchemaIndexes.push(difference);
+      }
+    } else if (
+      comparableIndex(index, source.options) !==
+      comparableIndex(existing, target?.options)
+    ) {
+      const difference = {
+        databaseName,
+        collection: source.name,
+        index: index.name,
+        status: 'INCOMPATIBLE_REQUIRED_SCHEMA_INDEX',
+        required: index,
+        target: existing,
+      };
+      schemaDifferences.push(difference);
+      blockingSchemaDifferences.push(difference);
+    }
+  }
   if (
     target &&
     comparableOptions(source.options) !== comparableOptions(target.options)
@@ -365,6 +499,7 @@ function inspectIndexes(source, target, databaseName) {
   for (const [index, options] of [
     ...sourceIndexes.map((candidate) => [candidate, source.options]),
     ...targetIndexes.map((candidate) => [candidate, target?.options]),
+    ...schemaIndexes.map((candidate) => [candidate, source.options]),
   ].filter(([candidate]) => candidate.unique)) {
     uniqueIndexes.set(comparableIndex(index, options), { index, options });
   }
@@ -416,6 +551,9 @@ function inspectIndexes(source, target, databaseName) {
   return {
     differences,
     blockingDifferences,
+    schemaDifferences,
+    blockingSchemaDifferences,
+    missingRequiredSchemaIndexes,
     uniqueIndexConflicts,
     unverifiableUniqueIndexes,
     collectionOptionsDifferences,
@@ -426,6 +564,7 @@ function inspectIndexes(source, target, databaseName) {
 export function buildDatabasePerServiceSplitReport({
   sourceCollections,
   targetCollections,
+  schemaIndexesByDatabase = {},
 }) {
   const targetsByDatabase = new Map(
     Object.entries(targetCollections).map(([databaseName, collections]) => [
@@ -443,6 +582,10 @@ export function buildDatabasePerServiceSplitReport({
   const conflictingCollections = [];
   const indexDifferences = [];
   const blockingIndexDifferences = [];
+  const schemaIndexDifferences = [];
+  const blockingSchemaIndexDifferences = [];
+  const missingRequiredSchemaIndexes = [];
+  let requiredSchemaIndexCount = 0;
   const uniqueIndexConflicts = [];
   const unverifiableUniqueIndexes = [];
   const collectionOptionsDifferences = [];
@@ -569,9 +712,24 @@ export function buildDatabasePerServiceSplitReport({
     }
 
     const targetCount = target?.documents.length ?? 0;
-    const indexInspection = inspectIndexes(source, target, databaseName);
+    const requiredSchemaIndexes =
+      schemaIndexesByDatabase[databaseName]?.[source.name] ?? [];
+    requiredSchemaIndexCount += requiredSchemaIndexes.length;
+    const indexInspection = inspectIndexes(
+      source,
+      target,
+      databaseName,
+      requiredSchemaIndexes,
+    );
     indexDifferences.push(...indexInspection.differences);
     blockingIndexDifferences.push(...indexInspection.blockingDifferences);
+    schemaIndexDifferences.push(...indexInspection.schemaDifferences);
+    blockingSchemaIndexDifferences.push(
+      ...indexInspection.blockingSchemaDifferences,
+    );
+    missingRequiredSchemaIndexes.push(
+      ...indexInspection.missingRequiredSchemaIndexes,
+    );
     uniqueIndexConflicts.push(...indexInspection.uniqueIndexConflicts);
     unverifiableUniqueIndexes.push(
       ...indexInspection.unverifiableUniqueIndexes,
@@ -590,6 +748,7 @@ export function buildDatabasePerServiceSplitReport({
       targetCount,
       documents,
       sourceIndexes: [...(source.indexes ?? [])].sort(byName),
+      requiredSchemaIndexes,
       targetIndexes: [...(target?.indexes ?? [])].sort(byName),
       sourceOptions: source.options ?? {},
       targetOptions: target?.options ?? {},
@@ -601,6 +760,7 @@ export function buildDatabasePerServiceSplitReport({
     unmappedCollections.length === 0 &&
     conflictingCollections.length === 0 &&
     blockingIndexDifferences.length === 0 &&
+    blockingSchemaIndexDifferences.length === 0 &&
     targetOnlyCollections.length === 0 &&
     uniqueIndexConflicts.length === 0 &&
     unverifiableUniqueIndexes.length === 0 &&
@@ -628,6 +788,9 @@ export function buildDatabasePerServiceSplitReport({
       targetOnlyCollections: targetOnlyCollections.length,
       indexDifferences: indexDifferences.length,
       blockingIndexDifferences: blockingIndexDifferences.length,
+      requiredSchemaIndexes: requiredSchemaIndexCount,
+      missingRequiredSchemaIndexes: missingRequiredSchemaIndexes.length,
+      blockingSchemaIndexDifferences: blockingSchemaIndexDifferences.length,
       uniqueIndexConflicts: uniqueIndexConflicts.length,
       unverifiableUniqueIndexes: unverifiableUniqueIndexes.length,
       collectionOptionsDifferences: collectionOptionsDifferences.length,
@@ -653,6 +816,9 @@ export function buildDatabasePerServiceSplitReport({
     conflictingCollections,
     indexDifferences,
     blockingIndexDifferences,
+    schemaIndexDifferences,
+    blockingSchemaIndexDifferences,
+    missingRequiredSchemaIndexes,
     uniqueIndexConflicts,
     unverifiableUniqueIndexes,
     collectionOptionsDifferences,
