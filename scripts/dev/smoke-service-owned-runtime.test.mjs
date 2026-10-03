@@ -4,22 +4,36 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  assertSafeLocalRuntimeEndpoints,
-  createAppAfterLocalEndpointValidation,
+  assertSafeDevelopmentRuntimeEndpoints,
+  createAppAfterDevelopmentEndpointValidation,
+  redactRuntimeError,
 } from './smoke-service-owned-runtime.mjs';
 
 const localEnvironment = () => ({
+  DATN_DB_ENV: 'development',
+  NODE_ENV: 'development',
   MONGODB_URI: 'mongodb://127.0.0.1:27017/?replicaSet=rs0',
   REDIS_HOST: '127.0.0.1',
   REDIS_PORT: '6379',
 });
 
+test('allows an explicitly labeled Atlas and remote Redis development configuration', async () => {
+  await assertSafeDevelopmentRuntimeEndpoints({
+    ...localEnvironment(),
+    MONGODB_URI:
+      'mongodb+srv://dev-user:dev%40password@cluster0.example.mongodb.net/?retryWrites=true&w=majority',
+    REDIS_HOST: 'redis.development.example.test',
+    REDIS_PORT: '6380',
+  });
+});
+
 test('allows direct loopback MongoDB and standalone Redis endpoints', async () => {
-  await assertSafeLocalRuntimeEndpoints(localEnvironment());
+  await assertSafeDevelopmentRuntimeEndpoints(localEnvironment());
 });
 
 test('allows IPv6 loopback endpoints', async () => {
-  await assertSafeLocalRuntimeEndpoints({
+  await assertSafeDevelopmentRuntimeEndpoints({
+    ...localEnvironment(),
     MONGODB_URI: 'mongodb://[::1]:27017/?replicaSet=rs0',
     REDIS_HOST: '::1',
     REDIS_PORT: '6379',
@@ -28,6 +42,7 @@ test('allows IPv6 loopback endpoints', async () => {
 
 test('allows localhost only when every resolved address is loopback', async () => {
   const environment = {
+    ...localEnvironment(),
     MONGODB_URI: 'mongodb://localhost:27017/?replicaSet=rs0',
     REDIS_HOST: 'localhost',
     REDIS_PORT: '6379',
@@ -37,7 +52,7 @@ test('allows localhost only when every resolved address is loopback', async () =
     { address: '::1', family: 6 },
   ];
 
-  await assertSafeLocalRuntimeEndpoints(environment, { lookupHost });
+  await assertSafeDevelopmentRuntimeEndpoints(environment, { lookupHost });
 });
 
 test('rejects localhost when any resolved address is not loopback', async () => {
@@ -47,7 +62,7 @@ test('rejects localhost when any resolved address is not loopback', async () => 
   };
 
   await assert.rejects(
-    assertSafeLocalRuntimeEndpoints(environment, {
+    assertSafeDevelopmentRuntimeEndpoints(environment, {
       lookupHost: async () => [
         { address: '127.0.0.1', family: 4 },
         { address: '192.0.2.10', family: 4 },
@@ -57,62 +72,82 @@ test('rejects localhost when any resolved address is not loopback', async () => 
   );
 });
 
-test('rejects MongoDB SRV and remote MongoDB hostname or IP endpoints', async (t) => {
+test('rejects malformed Atlas URIs and database overrides', async (t) => {
   const cases = [
-    'mongodb+srv://cluster.example.test/database',
-    'mongodb://cluster.example.test:27017/',
-    'mongodb://192.0.2.10:27017/',
+    'mongodb+srv://dev-user:dev-password@cluster.example.test/continuum_db',
+    'mongodb+srv://dev-user:dev-password@cluster.example.test/?tls=false',
+    'mongodb+srv://cluster.example.test/',
     'mongodb://127.0.0.1:27017,cluster.example.test:27017/',
+    'mongodb://0.0.0.0:27017/',
   ];
 
   for (const MONGODB_URI of cases) {
-    await t.test(
-      'remote or multi-host MongoDB endpoint is rejected',
-      async () => {
-        await assert.rejects(
-          assertSafeLocalRuntimeEndpoints({
-            ...localEnvironment(),
-            MONGODB_URI,
-          }),
-          /MongoDB/,
-        );
-      },
-    );
-  }
-});
-
-test('rejects remote Redis hostname, IP, and cluster nodes', async (t) => {
-  const cases = [
-    { REDIS_HOST: 'redis.example.test' },
-    { REDIS_HOST: '192.0.2.10' },
-    {
-      REDIS_MODE: 'cluster',
-      REDIS_CLUSTER_NODES: '127.0.0.1:6379,redis.example.test:6380',
-    },
-  ];
-
-  for (const redis of cases) {
-    await t.test('remote Redis endpoint is rejected', async () => {
+    await t.test('invalid development MongoDB URI is rejected', async () => {
       await assert.rejects(
-        assertSafeLocalRuntimeEndpoints({ ...localEnvironment(), ...redis }),
-        /loopback Redis endpoints/,
+        assertSafeDevelopmentRuntimeEndpoints({
+          ...localEnvironment(),
+          MONGODB_URI,
+        }),
+        /MONGODB_URI|Atlas development/,
       );
     });
   }
 });
 
-test('remote MongoDB or Redis endpoints cannot reach bootstrap or write callbacks', async (t) => {
+test('rejects malformed development Redis endpoints', async (t) => {
+  const cases = [
+    { REDIS_HOST: 'redis host' },
+    { REDIS_PORT: '70000' },
+    {
+      REDIS_MODE: 'cluster',
+      REDIS_CLUSTER_NODES: '127.0.0.1:6379,redis host:6380',
+    },
+  ];
+
+  for (const redis of cases) {
+    await t.test('malformed Redis endpoint is rejected', async () => {
+      await assert.rejects(
+        assertSafeDevelopmentRuntimeEndpoints({
+          ...localEnvironment(),
+          ...redis,
+        }),
+        /valid Redis|host\[:port\]/,
+      );
+    });
+  }
+});
+
+test('non-development environment labels cannot reach bootstrap or write callbacks', async (t) => {
   const cases = [
     {
-      name: 'remote MongoDB',
+      name: 'missing development label',
       env: {
         ...localEnvironment(),
-        MONGODB_URI: 'mongodb://192.0.2.10:27017/',
+        DATN_DB_ENV: undefined,
+        MONGODB_URI:
+          'mongodb+srv://dev-user:dev-password@cluster0.example.mongodb.net/',
+        REDIS_HOST: 'redis.development.example.test',
       },
     },
     {
-      name: 'remote Redis',
-      env: { ...localEnvironment(), REDIS_HOST: 'redis.example.test' },
+      name: 'production label',
+      env: {
+        ...localEnvironment(),
+        DATN_DB_ENV: 'production',
+        MONGODB_URI: 'mongodb://mongo.example.test:27017/',
+      },
+    },
+    {
+      name: 'staging label',
+      env: {
+        ...localEnvironment(),
+        DATN_DB_ENV: 'staging',
+        REDIS_HOST: 'redis.example.test',
+      },
+    },
+    {
+      name: 'production NODE_ENV despite development marker',
+      env: { ...localEnvironment(), NODE_ENV: 'production' },
     },
   ];
 
@@ -123,7 +158,7 @@ test('remote MongoDB or Redis endpoints cannot reach bootstrap or write callback
       let writeAttempted = false;
 
       await assert.rejects(
-        createAppAfterLocalEndpointValidation({
+        createAppAfterDevelopmentEndpointValidation({
           env: item.env,
           validateConfiguration: () => {},
           importAppModule: async () => {
@@ -143,17 +178,13 @@ test('remote MongoDB or Redis endpoints cannot reach bootstrap or write callback
   }
 });
 
-test('validates every local Redis cluster node', async () => {
-  await assertSafeLocalRuntimeEndpoints(
-    {
-      ...localEnvironment(),
-      REDIS_MODE: 'cluster',
-      REDIS_CLUSTER_NODES: '127.0.0.1:6379,localhost:6380',
-    },
-    {
-      lookupHost: async () => [{ address: '127.0.0.1', family: 4 }],
-    },
-  );
+test('allows a configured remote Redis cluster in development', async () => {
+  await assertSafeDevelopmentRuntimeEndpoints({
+    ...localEnvironment(),
+    REDIS_MODE: 'cluster',
+    REDIS_CLUSTER_NODES:
+      'redis-a.development.example.test:6379,redis-b.development.example.test:6380',
+  });
 });
 
 test('rejects an alternate dotenv path before importing AppModule', async (t) => {
@@ -174,7 +205,7 @@ test('rejects an alternate dotenv path before importing AppModule', async (t) =>
   };
 
   await assert.rejects(
-    createAppAfterLocalEndpointValidation({
+    createAppAfterDevelopmentEndpointValidation({
       env,
       validateConfiguration: () => {},
       importAppModule: async () => {
@@ -210,7 +241,7 @@ test('rejects dotenv override even when its file would replace a safe preset URI
   let appBootstrapped = false;
 
   await assert.rejects(
-    createAppAfterLocalEndpointValidation({
+    createAppAfterDevelopmentEndpointValidation({
       env,
       validateConfiguration: () => {},
       importAppModule: async () => {
@@ -234,12 +265,12 @@ test('revalidates effective endpoints after AppModule import and before bootstra
   let writeAttempted = false;
 
   await assert.rejects(
-    createAppAfterLocalEndpointValidation({
+    createAppAfterDevelopmentEndpointValidation({
       env,
       validateConfiguration: () => {},
       importAppModule: async () => {
         appModuleImported = true;
-        env.MONGODB_URI = 'mongodb://192.0.2.10:27017/';
+        env.DATN_DB_ENV = 'production';
         return {};
       },
       createApp: async () => {
@@ -247,7 +278,7 @@ test('revalidates effective endpoints after AppModule import and before bootstra
         writeAttempted = true;
       },
     }),
-    /loopback MongoDB endpoints/,
+    /DATN_DB_ENV and NODE_ENV/,
   );
 
   assert.equal(appModuleImported, true);
@@ -255,19 +286,30 @@ test('revalidates effective endpoints after AppModule import and before bootstra
   assert.equal(writeAttempted, false);
 });
 
-test('does not include MongoDB credentials or full URI in rejection errors', async () => {
-  const secretUri = 'mongodb://test-user:test-password@192.0.2.10:27017/db';
+test('does not include MongoDB credentials or full URI in validation errors', async () => {
+  const secretUri =
+    'mongodb+srv://test-user:test-password@cluster.example.test/?tls=false';
   await assert.rejects(
-    assertSafeLocalRuntimeEndpoints({
+    assertSafeDevelopmentRuntimeEndpoints({
       ...localEnvironment(),
       MONGODB_URI: secretUri,
     }),
     (error) => {
       assert.doesNotMatch(
         error.message,
-        /test-user|test-password|192\.0\.2\.10/,
+        /test-user|test-password|cluster\.example\.test/,
       );
       return true;
     },
+  );
+  const runtimeError = redactRuntimeError(new Error(secretUri), {
+    MONGODB_URI: secretUri,
+    REDIS_PASSWORD: 'redis-secret',
+    DATN_DEV_SEED_PASSWORD: 'seed-secret',
+    JWT_SECRET: 'jwt-secret',
+  });
+  assert.doesNotMatch(
+    runtimeError,
+    /test-user|test-password|cluster\.example\.test|redis-secret|seed-secret|jwt-secret/,
   );
 });

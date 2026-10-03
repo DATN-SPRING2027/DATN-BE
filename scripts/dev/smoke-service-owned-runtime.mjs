@@ -1,8 +1,13 @@
 import { createRequire } from 'node:module';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import {
+  parseDevelopmentMongoUri,
+  requireDevelopmentEnvironment,
+} from './development-target-policy.mjs';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '../..');
@@ -22,70 +27,46 @@ function rejectDotenvOverrides(env) {
   }
 }
 
-function mongoHostFromUri(uri) {
-  if (typeof uri !== 'string') {
-    throw new Error(
-      'A local MongoDB URI is required for the development smoke test.',
-    );
-  }
-
-  let parsed;
-  try {
-    parsed = new URL(uri);
-  } catch {
-    throw new Error(
-      'A valid local MongoDB URI is required for the development smoke test.',
-    );
-  }
-
-  if (parsed.protocol !== 'mongodb:') {
-    throw new Error(
-      'Only direct loopback MongoDB URIs are allowed for the development smoke test.',
-    );
-  }
-
-  const authorityStart = uri.indexOf('://') + 3;
-  const authority = uri.slice(authorityStart).split(/[/?#]/, 1)[0];
-  const hosts = authority.slice(authority.lastIndexOf('@') + 1);
-  if (!hosts || hosts.includes(',')) {
-    throw new Error(
-      'Only a single loopback MongoDB host is allowed for the development smoke test.',
-    );
-  }
-
-  return parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-}
-
-async function requireLoopbackHost(host, label, lookupHost) {
+async function validateDevelopmentHost(host, label, lookupHost) {
   const normalized = String(host ?? '')
     .replace(/^\[|\]$/g, '')
     .toLowerCase();
   if (loopbackAddresses.has(normalized)) return;
 
-  if (normalized !== 'localhost') {
-    throw new Error(
-      `Only loopback ${label} endpoints are allowed for the development smoke test.`,
-    );
-  }
+  if (normalized === 'localhost') {
+    let addresses;
+    try {
+      addresses = await lookupHost(normalized, { all: true, verbatim: true });
+    } catch {
+      throw new Error(
+        `The ${label} localhost endpoint could not be verified as loopback.`,
+      );
+    }
 
-  let addresses;
-  try {
-    addresses = await lookupHost(normalized, { all: true, verbatim: true });
-  } catch {
-    throw new Error(
-      `The ${label} localhost endpoint could not be verified as loopback.`,
-    );
+    if (
+      !Array.isArray(addresses) ||
+      addresses.length === 0 ||
+      addresses.some(
+        ({ address }) => !loopbackAddresses.has(address.toLowerCase()),
+      )
+    ) {
+      throw new Error(
+        `The ${label} localhost endpoint could not be verified as loopback.`,
+      );
+    }
+    return;
   }
 
   if (
-    !Array.isArray(addresses) ||
-    addresses.length === 0 ||
-    addresses.some(
-      ({ address }) => !loopbackAddresses.has(address.toLowerCase()),
-    )
+    normalized === '0.0.0.0' ||
+    normalized === '::' ||
+    (!isIP(normalized) &&
+      !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/i.test(
+        normalized,
+      ))
   ) {
     throw new Error(
-      `The ${label} localhost endpoint could not be verified as loopback.`,
+      `A valid ${label} development hostname or IP address is required.`,
     );
   }
 }
@@ -132,23 +113,24 @@ async function requireValidPort(port, label) {
   }
 }
 
-export async function assertSafeLocalRuntimeEndpoints(
+export async function assertSafeDevelopmentRuntimeEndpoints(
   env,
   { lookupHost = dnsLookup } = {},
 ) {
+  requireDevelopmentEnvironment(env);
   rejectDotenvOverrides(env);
 
-  const mongoHost = mongoHostFromUri(env.MONGODB_URI);
-  await requireLoopbackHost(mongoHost, 'MongoDB', lookupHost);
+  const mongo = parseDevelopmentMongoUri(env.MONGODB_URI);
+  await validateDevelopmentHost(mongo.hostname, 'MongoDB', lookupHost);
 
   const redis = redisEndpoints(env);
   for (const endpoint of redis) {
     await requireValidPort(endpoint.port, 'Redis');
-    await requireLoopbackHost(endpoint.host, 'Redis', lookupHost);
+    await validateDevelopmentHost(endpoint.host, 'Redis', lookupHost);
   }
 }
 
-export async function createAppAfterLocalEndpointValidation({
+export async function createAppAfterDevelopmentEndpointValidation({
   env,
   validateConfiguration,
   importAppModule,
@@ -156,16 +138,50 @@ export async function createAppAfterLocalEndpointValidation({
   endpointOptions,
 }) {
   await validateConfiguration(env);
-  await assertSafeLocalRuntimeEndpoints(env, endpointOptions);
+  await assertSafeDevelopmentRuntimeEndpoints(env, endpointOptions);
 
   const importedApp = await importAppModule();
 
   // AppModule imports dotenv/config. Revalidate its effective process env before
   // NestFactory can open Mongo/Redis connections or run any application hook.
   await validateConfiguration(env);
-  await assertSafeLocalRuntimeEndpoints(env, endpointOptions);
+  await assertSafeDevelopmentRuntimeEndpoints(env, endpointOptions);
 
   return { importedApp, app: await createApp(importedApp) };
+}
+
+export function redactRuntimeError(error, env) {
+  let message =
+    error instanceof Error ? error.message : 'Runtime smoke failed.';
+  const secrets = [
+    env.MONGODB_URI,
+    env.REDIS_PASSWORD,
+    env.DATN_DEV_SEED_PASSWORD,
+    env.JWT_SECRET,
+  ].filter((value) => typeof value === 'string' && value.length > 0);
+
+  if (typeof env.MONGODB_URI === 'string') {
+    try {
+      const uri = new URL(env.MONGODB_URI);
+      secrets.push(uri.username, uri.password);
+      for (const value of [uri.username, uri.password]) {
+        if (value) {
+          try {
+            secrets.push(decodeURIComponent(value));
+          } catch {
+            // The encoded value is still redacted below.
+          }
+        }
+      }
+    } catch {
+      // The malformed URI itself is still redacted if it appears in the error.
+    }
+  }
+
+  for (const secret of new Set(secrets)) {
+    if (secret) message = message.split(secret).join('[redacted]');
+  }
+  return message;
 }
 
 function assertResponse(response, operation) {
@@ -211,7 +227,7 @@ async function main() {
     );
   }
 
-  const { validateLocalDevelopmentEnvironment } =
+  const { validateDevelopmentSeedEnvironment } =
     await import('./initialize-service-owned-databases.mjs');
 
   const password = process.env.DATN_DEV_SEED_PASSWORD;
@@ -231,36 +247,37 @@ async function main() {
     );
   }
 
-  const { importedApp, app } = await createAppAfterLocalEndpointValidation({
-    env: process.env,
-    validateConfiguration: validateLocalDevelopmentEnvironment,
-    importAppModule: async () => {
-      require('ts-node/register/transpile-only');
-      const { NestFactory } = require('@nestjs/core');
-      const { ConfigModule } = require('@nestjs/config');
-      const { getConnectionToken } = require('@nestjs/mongoose');
-      const { AppModule } = require(
-        path.join(repositoryRoot, 'src/app.module.ts'),
-      );
-      await ConfigModule.envVariablesLoaded;
-      const { configureApplication } = require(
-        path.join(repositoryRoot, 'src/bootstrap.ts'),
-      );
-      const { AUDIT_CONNECTION_NAME, IAM_AUDIT_COLLECTION_NAME } = require(
-        path.join(repositoryRoot, 'src/common/mongodb/database-names.ts'),
-      );
-      return {
-        NestFactory,
-        getConnectionToken,
-        AppModule,
-        configureApplication,
-        AUDIT_CONNECTION_NAME,
-        IAM_AUDIT_COLLECTION_NAME,
-      };
-    },
-    createApp: ({ NestFactory, AppModule }) =>
-      NestFactory.create(AppModule, { logger: false }),
-  });
+  const { importedApp, app } =
+    await createAppAfterDevelopmentEndpointValidation({
+      env: process.env,
+      validateConfiguration: validateDevelopmentSeedEnvironment,
+      importAppModule: async () => {
+        require('ts-node/register/transpile-only');
+        const { NestFactory } = require('@nestjs/core');
+        const { ConfigModule } = require('@nestjs/config');
+        const { getConnectionToken } = require('@nestjs/mongoose');
+        const { AppModule } = require(
+          path.join(repositoryRoot, 'src/app.module.ts'),
+        );
+        await ConfigModule.envVariablesLoaded;
+        const { configureApplication } = require(
+          path.join(repositoryRoot, 'src/bootstrap.ts'),
+        );
+        const { AUDIT_CONNECTION_NAME, IAM_AUDIT_COLLECTION_NAME } = require(
+          path.join(repositoryRoot, 'src/common/mongodb/database-names.ts'),
+        );
+        return {
+          NestFactory,
+          getConnectionToken,
+          AppModule,
+          configureApplication,
+          AUDIT_CONNECTION_NAME,
+          IAM_AUDIT_COLLECTION_NAME,
+        };
+      },
+      createApp: ({ NestFactory, AppModule }) =>
+        NestFactory.create(AppModule, { logger: false }),
+    });
   const {
     getConnectionToken,
     configureApplication,
@@ -397,9 +414,7 @@ if (invokedDirectly) {
       process.exit(0);
     })
     .catch((error) => {
-      console.error(
-        error instanceof Error ? error.message : 'Runtime smoke failed.',
-      );
+      console.error(redactRuntimeError(error, process.env));
       process.exit(1);
     });
 }

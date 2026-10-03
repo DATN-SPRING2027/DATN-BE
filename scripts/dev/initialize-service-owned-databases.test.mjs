@@ -5,16 +5,48 @@ import {
   buildInitializationPlan,
   initializeServiceOwnedDatabases,
   seedDevelopmentDataset,
-  validateLocalDevelopmentEnvironment,
+  validateDevelopmentSeedEnvironment,
 } from './initialize-service-owned-databases.mjs';
 
 const targetUri = 'mongodb://127.0.0.1:27017/?replicaSet=rs0';
 const approvedEnvironment = {
+  DATN_DB_ENV: 'development',
   NODE_ENV: 'development',
   INFRA_ENABLED: 'true',
-  DATN_DEV_DB_INITIALIZATION: 'service-owned-local-only',
+  DATN_DEV_DB_INITIALIZATION: 'service-owned-development',
   MONGODB_URI: targetUri,
 };
+
+test('accepts an explicitly labeled Atlas development URI with credentials', () => {
+  const atlasUri =
+    'mongodb+srv://dev-user:dev%40password@cluster0.example.mongodb.net/?retryWrites=true&w=majority';
+  assert.equal(
+    validateDevelopmentSeedEnvironment({
+      ...approvedEnvironment,
+      MONGODB_URI: atlasUri,
+    }),
+    atlasUri,
+  );
+});
+
+test('accepts a remote standard MongoDB URI only under the explicit development label', () => {
+  const remoteDevelopmentUri =
+    'mongodb://dev-user:dev-password@mongo.development.example.test:27017/?authSource=admin';
+  assert.equal(
+    validateDevelopmentSeedEnvironment({
+      ...approvedEnvironment,
+      MONGODB_URI: remoteDevelopmentUri,
+    }),
+    remoteDevelopmentUri,
+  );
+  assert.throws(() =>
+    validateDevelopmentSeedEnvironment({
+      ...approvedEnvironment,
+      DATN_DB_ENV: 'staging',
+      MONGODB_URI: remoteDevelopmentUri,
+    }),
+  );
+});
 
 function indexName(key) {
   return Object.entries(key)
@@ -117,36 +149,64 @@ class FakeConnection {
   }
 }
 
-test('requires explicit development-only loopback Mongo target and never echoes URI', () => {
+test('requires explicit development confirmation and never echoes URI', () => {
   assert.equal(
-    validateLocalDevelopmentEnvironment(approvedEnvironment),
+    validateDevelopmentSeedEnvironment(approvedEnvironment),
     targetUri,
   );
   assert.throws(
     () =>
-      validateLocalDevelopmentEnvironment({
+      validateDevelopmentSeedEnvironment({
         ...approvedEnvironment,
-        MONGODB_URI: 'mongodb://local-user:secret@shared.example.test/db',
+        MONGODB_URI:
+          'mongodb://local-user:secret@shared.example.test/continuum_db',
       }),
     (error) => !error.message.includes('secret'),
   );
   assert.throws(() =>
-    validateLocalDevelopmentEnvironment({
+    validateDevelopmentSeedEnvironment({
       ...approvedEnvironment,
       MONGODB_URI: 'mongodb://127.0.0.1:27017/continuum_iam',
     }),
   );
   assert.throws(() =>
-    validateLocalDevelopmentEnvironment({
+    validateDevelopmentSeedEnvironment({
       ...approvedEnvironment,
       DATN_DEV_DB_INITIALIZATION: undefined,
     }),
   );
   assert.throws(() =>
-    validateLocalDevelopmentEnvironment({
+    validateDevelopmentSeedEnvironment({
       ...approvedEnvironment,
       NODE_ENV: 'production',
     }),
+  );
+  for (const DATN_DB_ENV of [undefined, 'staging', 'production']) {
+    assert.throws(() =>
+      validateDevelopmentSeedEnvironment({
+        ...approvedEnvironment,
+        DATN_DB_ENV,
+        MONGODB_URI:
+          'mongodb+srv://dev-user:dev-password@cluster0.example.mongodb.net/',
+      }),
+    );
+  }
+  assert.throws(
+    () =>
+      validateDevelopmentSeedEnvironment({
+        ...approvedEnvironment,
+        MONGODB_URI:
+          'mongodb+srv://dev-user:dev-password@cluster0.example.mongodb.net/?tls=false',
+      }),
+    /must not disable TLS/,
+  );
+  assert.throws(
+    () =>
+      validateDevelopmentSeedEnvironment({
+        ...approvedEnvironment,
+        MONGODB_URI: 'mongodb+srv://cluster0.example.mongodb.net/',
+      }),
+    /include database-user credentials/,
   );
 });
 

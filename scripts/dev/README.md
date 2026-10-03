@@ -1,11 +1,16 @@
-# Local service-owned database initialization
+# Development service-owned database initialization
 
-This development-only initializer prepares fresh local data under the accepted
-database-per-service topology. It never reads `continuum_db`, loads a `.env`
-file, changes runtime connections, runs migration tooling, deletes documents, or
-drops collections/databases. It refuses a non-loopback MongoDB URI, a default
-database in the URI path, a non-development `NODE_ENV`, or a missing explicit
-local-target confirmation.
+This development-only initializer prepares synthetic data under the accepted
+database-per-service topology. The approved development environment may use
+MongoDB Atlas with an `mongodb+srv://` URI and a configured remote Redis
+endpoint. Every command requires the explicit, non-secret
+`DATN_DB_ENV=development` and `NODE_ENV=development` labels; the initializer
+also requires `DATN_DEV_DB_INITIALIZATION=service-owned-development`. It does
+not infer the target environment from hostnames. Operators must provide the
+approved development endpoints and must not label production/shared endpoints
+as development. The tool never reads `continuum_db`, loads a `.env` file,
+changes runtime connections, runs migration tooling, deletes documents, or
+drops collections/databases.
 
 ## Research and runtime behavior
 
@@ -84,27 +89,62 @@ and [Project creator bootstrap decision](../../docs/decisions/project-creator-me
 `TEAM_LEADER` receives `project.read` and the three approved member-management
 permissions; `MEMBER` receives `project.read`. The disabled
 `project.members.role.change` permission is absent. These role records are
-inserted only into an explicitly confirmed local development database; this is
+inserted only into an explicitly confirmed development database; this is
 not a production role-provisioning mechanism.
 
-Use a local MongoDB 7 replica set. Supply the URI and seed password in the
-current shell environment. The script does not load `.env`, print either
-value, or persist a password outside the bcrypt hash stored in the three local
-development User records.
+For the approved development seed, supply the Atlas URI, Redis endpoint, and
+seed password through the current shell environment. The URI must use
+`mongodb+srv://`, include the Atlas database user's username and password, and
+must not select a default database or disable TLS. The initializer chooses
+only the service databases listed above. For an isolated test/CI run, a
+disposable local MongoDB 7 replica set is also supported with `mongodb://`.
+The script does not load `.env`, print connection values, or persist the seed
+password outside the bcrypt hash stored in the three synthetic development
+User records.
 
 ```powershell
+$env:DATN_DB_ENV = 'development'
 $env:NODE_ENV = 'development'
 $env:INFRA_ENABLED = 'true'
-$env:MONGODB_URI = 'mongodb://127.0.0.1:27017/?replicaSet=rs0'
-$env:DATN_DEV_DB_INITIALIZATION = 'service-owned-local-only'
-$env:DATN_DEV_SEED_PASSWORD = '<choose a local-only password in this shell>'
+$env:MONGODB_URI = '<approved Atlas development mongodb+srv URI>'
+$env:REDIS_HOST = '<approved development Redis host>'
+$env:REDIS_PORT = '<development Redis port>'
+$env:DATN_DEV_DB_INITIALIZATION = 'service-owned-development'
+$env:DATN_DEV_SEED_PASSWORD = '<development-only seed password>'
 npm run dev:db:init
 ```
 
-Set `MONGODB_URI` to a URI with no
-database path, and use only `localhost`, `127.0.0.1`, or `::1`. The URI can
-include the replica-set query parameter, but must not use a remote host or
-`mongodb+srv`.
+Set these values only from the approved development configuration. Before any
+connection, the command prints the environment label and the exact
+service-owned database names it will target; it never prints the URI,
+credentials, seed password, hashes, or document contents. The Mongo URI must
+have no default database path, so a URI cannot redirect the seed plan to
+`continuum_db` or another database. `mongodb+srv://` is accepted only with
+explicit development labels, one valid DNS seed-list hostname, credentials,
+and TLS enabled. A direct `mongodb://` endpoint supports disposable local
+MongoDB tests and explicitly labeled remote development endpoints.
+
+Atlas requires TLS, database-user authentication, and an operator-configured
+project IP access list/private network path. This command does not configure
+Atlas networking or weaken its access list. If DNS, network policy, or the IP
+access list blocks the connection, it stops before any database writes and
+prints a generic safe connection error. Do not add `0.0.0.0/0`. See MongoDB's
+official [Atlas connection string documentation](https://www.mongodb.com/docs/manual/reference/connection-string-formats/)
+and [Atlas cluster security requirements](https://www.mongodb.com/docs/atlas/setup-cluster-security/).
+
+To run the same initializer against test-only disposable local MongoDB, keep
+the explicit development labels and set only the test URI in that isolated
+shell:
+
+```powershell
+$env:DATN_DB_ENV = 'development'
+$env:NODE_ENV = 'development'
+$env:INFRA_ENABLED = 'true'
+$env:MONGODB_URI = 'mongodb://127.0.0.1:27017/?replicaSet=rs0'
+$env:DATN_DEV_DB_INITIALIZATION = 'service-owned-development'
+$env:DATN_DEV_SEED_PASSWORD = '<disposable test-only password>'
+npm run dev:db:init
+```
 
 To create only the collections and schema indexes without seed data, run:
 
@@ -120,9 +160,10 @@ human review. A rerun with the same seed password adds no records.
 
 ## Runtime and smoke validation
 
-After initializing a local replica set, enable the composed `AppModule` with
-`INFRA_ENABLED=true`, the same loopback `MONGODB_URI`, and a valid local
-`JWT_SECRET`. IAM repositories/models resolve against `continuum_iam`; Capture
+After initialization, enable the composed `AppModule` with
+`DATN_DB_ENV=development`, `INFRA_ENABLED=true`, the same explicitly approved
+development MongoDB/Redis endpoints, and a valid development `JWT_SECRET`.
+IAM repositories/models resolve against `continuum_iam`; Capture
 schemas resolve against `continuum_capture`; audit event persistence remains
 `continuum_audit`. Leave `MONGODB_AUTO_INDEX=false` if you want initialization
 to happen only through the explicit script.
@@ -136,8 +177,8 @@ health; draft CRUD cannot be smoke-tested through an API until that contract is
 implemented. Capture's indexes are still verified against its real schema.
 
 After init, `npm run dev:db:smoke` exercises the current authenticated API using
-the same seed password and loopback Mongo/Redis services. Set a local `JWT_SECRET`
-of at least 32 characters first. The smoke test creates one synthetic Project
+the same seed password and explicitly configured development MongoDB/Redis
+endpoints. Set a development `JWT_SECRET` of at least 32 characters first. The smoke test creates one synthetic Project
 and its required audit event; it does not clean up that data. It changes the
 process working directory to `scripts/dev` and refuses to run if that directory
 contains a `.env` or `.env.vault`, so root developer credentials cannot be loaded
@@ -148,12 +189,13 @@ effective MongoDB and Redis endpoints both before importing `AppModule` and
 after its `dotenv/config` import and `ConfigModule.envVariablesLoaded` resolves,
 before `NestFactory.create` can connect or run application hooks.
 
-The smoke accepts MongoDB `mongodb://` URIs with one host at `127.0.0.1`, `::1`,
-or `localhost`; it rejects `mongodb+srv://` and multi-host URIs. Redis standalone
-hosts and every Redis cluster node must use `127.0.0.1`, `::1`, or `localhost`.
+The smoke accepts a valid Atlas `mongodb+srv://` URI with credentials and TLS,
+or a direct single-host `mongodb://` URI. Redis standalone and cluster
+endpoints may be remote when the explicit development labels are present.
 `localhost` is accepted only when every address returned by the system resolver
-is loopback. Other hostnames and IPs are rejected without attempting a database
-or Redis connection. The application currently imports `dotenv/config` before
+is loopback; unspecified addresses and malformed host/port values are rejected.
+Endpoint checks run before `AppModule` import and again after the import, before
+`NestFactory.create` can connect or run application hooks. The application currently imports `dotenv/config` before
 `ConfigModule.forRoot()`. NestJS documents that `ConfigModule` reads env files
 from its configured/current working directory, merges them with `process.env`,
 and gives `process.env` precedence unless override is enabled; this smoke refuses
@@ -173,5 +215,14 @@ callback. These focused tests use no database or Redis connections.
 - The initializer uses the already-accepted ADR-003 mapping and repository
   schema declarations; it changes neither product requirements nor database
   ownership.
-- Only local loopback MongoDB development data is permitted. There are no
-  drop, delete, replace, or document-rewrite operations in this script.
+- Only an explicitly labeled development environment is permitted; the command
+  rejects any value other than `DATN_DB_ENV=development` plus
+  `NODE_ENV=development`, and also requires the seed confirmation variable.
+  It does not classify remote endpoints by hostname. The operator must provide
+  the approved development Atlas/Redis endpoints; an endpoint falsely labeled
+  as development cannot be independently identified by this tooling. There are
+  no drop, delete, replace, or document-rewrite operations in this script.
+- `continuum_db` remains legacy and is not a seed target. No legacy data is
+  migrated, copied, or read.
+- Test/CI may use a disposable local MongoDB replica set; this does not change
+  the team's Atlas development topology.

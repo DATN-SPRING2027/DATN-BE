@@ -3,6 +3,10 @@ import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import {
+  parseDevelopmentMongoUri,
+  requireDevelopmentEnvironment,
+} from './development-target-policy.mjs';
 
 const require = createRequire(import.meta.url);
 require('ts-node/register/transpile-only');
@@ -199,42 +203,23 @@ export function buildInitializationPlan() {
   return plan;
 }
 
-export function validateLocalDevelopmentEnvironment(env) {
-  if (env.NODE_ENV !== 'development') {
-    throw new Error(
-      'NODE_ENV must be development; no database changes were made.',
-    );
-  }
+export function validateDevelopmentSeedEnvironment(env) {
+  requireDevelopmentEnvironment(env);
   if (env.INFRA_ENABLED !== 'true') {
     throw new Error(
       'INFRA_ENABLED must be true for service-owned database initialization.',
     );
   }
-  if (env.DATN_DEV_DB_INITIALIZATION !== 'service-owned-local-only') {
+  if (env.DATN_DEV_DB_INITIALIZATION !== 'service-owned-development') {
     throw new Error(
-      'Set DATN_DEV_DB_INITIALIZATION=service-owned-local-only to confirm a local development target.',
+      'Set DATN_DEV_DB_INITIALIZATION=service-owned-development to confirm a development target.',
     );
   }
   if (!env.MONGODB_URI) {
     throw new Error('MONGODB_URI must be supplied by the command environment.');
   }
 
-  let parsed;
-  try {
-    parsed = new URL(env.MONGODB_URI);
-  } catch {
-    throw new Error('MONGODB_URI must be a valid loopback MongoDB URI.');
-  }
-  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-  if (
-    parsed.protocol !== 'mongodb:' ||
-    !localHosts.has(parsed.hostname.toLowerCase()) ||
-    !['', '/'].includes(parsed.pathname)
-  ) {
-    throw new Error(
-      'Only a direct loopback MongoDB URI with no default database is allowed; no database changes were made.',
-    );
-  }
+  parseDevelopmentMongoUri(env.MONGODB_URI);
 
   return env.MONGODB_URI;
 }
@@ -705,7 +690,7 @@ async function run() {
   if (process.argv.slice(2).some((argument) => argument !== '--schema-only')) {
     throw new Error('Only the optional --schema-only argument is supported.');
   }
-  const uri = validateLocalDevelopmentEnvironment(process.env);
+  const uri = validateDevelopmentSeedEnvironment(process.env);
   const seedPassword = schemaOnly
     ? undefined
     : process.env.DATN_DEV_SEED_PASSWORD;
@@ -716,6 +701,10 @@ async function run() {
   }
 
   const plan = buildInitializationPlan();
+  const targetNames = plan.map(({ databaseName }) => databaseName).join(', ');
+  console.log(
+    `Development target confirmed (${process.env.DATN_DB_ENV}). Service-owned database targets: ${targetNames}. Legacy continuum_db is excluded.`,
+  );
   let connection;
   try {
     connection = await mongoose
@@ -728,7 +717,7 @@ async function run() {
       .asPromise();
   } catch {
     throw new Error(
-      'Could not connect to the loopback MongoDB target; connection details were not logged and no database writes were made.',
+      'Could not connect to the configured development MongoDB target. Check Atlas IP Access List/network policy and endpoint availability; connection details were not logged and no database writes were made.',
     );
   }
 
