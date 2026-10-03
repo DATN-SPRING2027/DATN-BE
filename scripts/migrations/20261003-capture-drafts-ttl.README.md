@@ -44,18 +44,22 @@ No explicit index names are set; MongoDB generates `userId_1_contextKey_1` and
 ## Existing database transition
 
 `20261003-capture-drafts-ttl.mjs` is a separate, report-first index migration.
-It is restricted to the legacy migration source database `continuum_db` or the
-Capture owner database `continuum_capture`; the operator must set
-`CAPTURE_DRAFTS_TTL_DATABASE` explicitly. It requires `MONGODB_URI`, disables
-Mongoose auto-indexing, and prints the selected database and a credential-free
-target fingerprint.
+The active Capture service owns `continuum_capture`, so that is the current
+topology target. The script also permits the legacy migration source database
+`continuum_db` so operators can report it separately if the collection is
+still there. The operator must set `CAPTURE_DRAFTS_TTL_DATABASE` explicitly.
+It requires `MONGODB_URI`, disables Mongoose auto-indexing, and prints the
+selected database and a credential-free target fingerprint.
 
 Run the read-only report and retain the JSON output:
 
 ```powershell
-$env:CAPTURE_DRAFTS_TTL_DATABASE = 'continuum_db'
+$env:CAPTURE_DRAFTS_TTL_DATABASE = 'continuum_capture'
 node scripts/migrations/20261003-capture-drafts-ttl.mjs > capture-drafts-ttl-dry-run.json
 ```
+
+Only repeat the report with `CAPTURE_DRAFTS_TTL_DATABASE='continuum_db'` if an
+inventory confirms that legacy collection may remain there.
 
 The report gives exact total, missing-`lastSavedAt`, non-Date, duplicate
 `userId + contextKey`, and already-expired counts. It includes bounded examples
