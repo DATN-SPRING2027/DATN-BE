@@ -42,6 +42,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test -- --runInBand
+      - run: npm run test:dev-db-smoke-safety
 
   migration-planner-tests:
     name: BE / Migration planner tests

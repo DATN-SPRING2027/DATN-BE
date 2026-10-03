@@ -140,7 +140,30 @@ the same seed password and loopback Mongo/Redis services. Set a local `JWT_SECRE
 of at least 32 characters first. The smoke test creates one synthetic Project
 and its required audit event; it does not clean up that data. It changes the
 process working directory to `scripts/dev` and refuses to run if that directory
-contains a `.env`, so root developer credentials cannot be loaded implicitly.
+contains a `.env` or `.env.vault`, so root developer credentials cannot be loaded
+implicitly. Supply configuration in the command environment; any `DOTENV_KEY`
+or `DOTENV_CONFIG_*` setting is rejected before `AppModule` is imported. This
+blocks alternate dotenv paths and dotenv override mode. The smoke validates the
+effective MongoDB and Redis endpoints both before importing `AppModule` and
+after its `dotenv/config` import and `ConfigModule.envVariablesLoaded` resolves,
+before `NestFactory.create` can connect or run application hooks.
+
+The smoke accepts MongoDB `mongodb://` URIs with one host at `127.0.0.1`, `::1`,
+or `localhost`; it rejects `mongodb+srv://` and multi-host URIs. Redis standalone
+hosts and every Redis cluster node must use `127.0.0.1`, `::1`, or `localhost`.
+`localhost` is accepted only when every address returned by the system resolver
+is loopback. Other hostnames and IPs are rejected without attempting a database
+or Redis connection. The application currently imports `dotenv/config` before
+`ConfigModule.forRoot()`. NestJS documents that `ConfigModule` reads env files
+from its configured/current working directory, merges them with `process.env`,
+and gives `process.env` precedence unless override is enabled; this smoke refuses
+dotenv control variables, awaits Nest's documented `envVariablesLoaded` hook,
+and revalidates the resolved process environment after the import. See the
+[NestJS configuration guide](https://docs.nestjs.com/techniques/configuration).
+
+Run `npm run test:dev-db-smoke-safety` to verify endpoint parsing, dotenv-control
+rejection, and that unsafe endpoints cannot reach AppModule bootstrap or a write
+callback. These focused tests use no database or Redis connections.
 
 ## Safety boundary
 
