@@ -25,7 +25,10 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
     },
     {
       name: 'capture_drafts',
-      indexes: [index({ userId: 1, contextKey: 1 }, { expireAfterSeconds: 0 })],
+      indexes: [
+        index({ userId: 1, contextKey: 1 }, { unique: true }),
+        index({ lastSavedAt: 1 }, { expireAfterSeconds: 2_592_000 }),
+      ],
     },
     {
       name: 'work_note_templates',
