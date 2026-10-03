@@ -97,13 +97,13 @@ describe('IAM OpenAPI contract', () => {
     );
     expect(createProject?.description).toContain('New Projects are PRIVATE');
     expect(createProject?.description).toContain(
-      'ACTIVE ProjectMembership with a project-scoped MEMBER RoleAssignment',
+      'does not automatically create a ProjectMembership',
     );
     expect(createProject?.description).toContain(
-      'does not make the creator a Project Leader',
+      'project-scoped RoleAssignment, Team, Project Leader appointment',
     );
     expect(createProject?.description).toContain(
-      'current MEMBER Role with project.read',
+      'createdBy does not itself grant Project access',
     );
   });
 
