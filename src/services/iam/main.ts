@@ -1,5 +1,6 @@
 import { IamModule } from './iam.module';
 import { bootstrapService } from '../service-bootstrap';
+import { IAM_PERSISTENCE } from './infrastructure/persistence';
 
 if (
   !process.env.IAM_GATEWAY_SECRET ||
@@ -8,4 +9,4 @@ if (
   throw new Error('IAM_GATEWAY_SECRET is required for standalone IAM');
 }
 
-void bootstrapService(IamModule);
+void bootstrapService(IamModule, IAM_PERSISTENCE);

@@ -102,7 +102,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3001
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_iam
+      SERVICE_DATABASE: continuum_iam
       JWT_SECRET: ${JWT_SECRET:?Set the IAM JWT secret}
       IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
       REDIS_HOST: redis
@@ -118,7 +118,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3002
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_capture
+      SERVICE_DATABASE: continuum_capture
       REDIS_HOST: redis
     depends_on:
       redis:
@@ -132,7 +132,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3003
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_jira
+      SERVICE_DATABASE: continuum_jira
       REDIS_HOST: redis
     depends_on:
       redis:
@@ -146,7 +146,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3004
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_lifecycle
+      SERVICE_DATABASE: continuum_lifecycle
       REDIS_HOST: redis
     depends_on:
       redis:
@@ -160,7 +160,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3005
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_chat
+      SERVICE_DATABASE: continuum_chat
       REDIS_HOST: redis
     depends_on:
       redis:
@@ -174,7 +174,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3006
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_handover
+      SERVICE_DATABASE: continuum_handover
       REDIS_HOST: redis
     depends_on:
       redis:
@@ -188,7 +188,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3007
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_ingestion
+      SERVICE_DATABASE: continuum_ingestion
       REDIS_HOST: redis
     depends_on:
       redis:
@@ -202,7 +202,7 @@ services:
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3008
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
-      MONGODB_DATABASE: continuum_notification
+      SERVICE_DATABASE: continuum_notification
       REDIS_HOST: redis
     depends_on:
       redis:

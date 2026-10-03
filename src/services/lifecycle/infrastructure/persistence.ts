@@ -1,3 +1,4 @@
+import { SERVICE_DATABASES } from '../../../common/mongodb/database-names';
 import type { ServicePersistenceDefinition } from './mongodb/mongodb.types';
 import type { QueueName } from './queues/queue.names';
 
@@ -7,7 +8,8 @@ const index = (
 ) => ({ fields, options });
 
 export const LIFECYCLE_PERSISTENCE: ServicePersistenceDefinition = {
-  databaseName: 'continuum_lifecycle',
+  serviceName: 'lifecycle',
+  databaseName: SERVICE_DATABASES.lifecycle,
   collections: [
     {
       name: 'knowledge_objects',

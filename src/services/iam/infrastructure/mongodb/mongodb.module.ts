@@ -2,7 +2,7 @@ import { DynamicModule, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { MongoAuditModule } from '../../../../common/mongodb/mongo-audit.module';
-import { resolveServiceDatabaseName } from '../../../../common/mongodb/service-database';
+import { getOwnedServiceDatabaseName } from '../../../../common/mongodb/service-database';
 import {
   createCollectionSchema,
   OUTBOX_COLLECTION,
@@ -18,20 +18,17 @@ export class MongoInfrastructureModule {
     if (!infrastructureEnabled) {
       return { module: MongoInfrastructureModule };
     }
-    const serviceDatabaseName = resolveServiceDatabaseName(
-      definition,
-      process.env.SERVICE_DATABASE,
-    );
+    const serviceDatabaseName = getOwnedServiceDatabaseName(definition);
 
     const collectionModels = definition.collections.map((collection) => ({
-      name: `${definition.databaseName}_${collection.name}`,
+      name: `${serviceDatabaseName}_${collection.name}`,
       schema: createCollectionSchema(collection),
     }));
 
     const models = [
       ...collectionModels,
       {
-        name: `${definition.databaseName}_${OUTBOX_COLLECTION}`,
+        name: `${serviceDatabaseName}_${OUTBOX_COLLECTION}`,
         schema: outboxSchema,
       },
     ];
@@ -43,7 +40,7 @@ export class MongoInfrastructureModule {
         ConfigModule,
         MongooseModule.forRootAsync({
           imports: [ConfigModule],
-          connectionName: definition.databaseName,
+          connectionName: serviceDatabaseName,
           inject: [ConfigService],
           useFactory: (config: ConfigService) => ({
             uri: config.getOrThrow<string>('MONGODB_URI'),
@@ -52,7 +49,7 @@ export class MongoInfrastructureModule {
             serverSelectionTimeoutMS: 5000,
           }),
         }),
-        MongooseModule.forFeature(models, definition.databaseName),
+        MongooseModule.forFeature(models, serviceDatabaseName),
       ],
     };
   }

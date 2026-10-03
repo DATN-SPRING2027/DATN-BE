@@ -1,3 +1,8 @@
+import type {
+  ServiceDatabaseName,
+  ServiceName,
+} from '../../../../common/mongodb/database-names';
+
 export type IndexFields = Record<string, 1 | -1>;
 
 export interface CollectionIndex {
@@ -15,6 +20,7 @@ export interface ServiceCollectionDefinition {
 }
 
 export interface ServicePersistenceDefinition {
-  databaseName: string;
+  serviceName: ServiceName;
+  databaseName: ServiceDatabaseName;
   collections: ServiceCollectionDefinition[];
 }

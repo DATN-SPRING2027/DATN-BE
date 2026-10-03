@@ -72,3 +72,10 @@ Database ownership follows accepted ADR-003/DEC-011: MongoDB 7.0 is the operatio
 | `SWAGGER_ENABLED` |       `false` | Enables `/docs`; the local example opts in |
 
 Never commit `.env` or credentials.
+
+### MongoDB runtime topology
+
+- The composed `AppModule` uses a separate named connection for each active service database from `src/common/mongodb/database-names.ts`, plus the `continuum_audit` connection. It does not use `MONGODB_DATABASE` or fall back to `continuum_db`.
+- Standalone domain-service entrypoints require `SERVICE_DATABASE` when `INFRA_ENABLED=true`. It must exactly match that service's database in the canonical mapping; missing, inactive, or mismatched names fail before Nest creates the application.
+- `INFRA_ENABLED=false` is the local no-persistence mode. There is no shared `continuum_db` runtime mode.
+- Docker Compose and the Helm chart pass `SERVICE_DATABASE` to standalone service containers.
