@@ -41,6 +41,28 @@ test('manifest is built from active Mongoose service schemas and persistence dec
     [],
     'the raw IAM audit collection has no declared application indexes',
   );
+
+  const captureDraftIndexes =
+    SERVICE_SCHEMA_INDEX_MANIFEST.continuum_capture.capture_drafts;
+  assert.ok(
+    captureDraftIndexes.some(
+      (index) =>
+        index.name === 'userId_1_contextKey_1' &&
+        index.key.userId === 1 &&
+        index.key.contextKey === 1 &&
+        index.unique === true &&
+        index.expireAfterSeconds === undefined,
+    ),
+  );
+  assert.ok(
+    captureDraftIndexes.some(
+      (index) =>
+        index.name === 'lastSavedAt_1' &&
+        Object.keys(index.key).length === 1 &&
+        index.key.lastSavedAt === 1 &&
+        index.expireAfterSeconds === 2_592_000,
+    ),
+  );
 });
 
 test('schema source digest is stable and covers the authority files', async () => {
