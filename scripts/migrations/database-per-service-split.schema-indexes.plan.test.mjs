@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { DATABASE_PER_SERVICE_INVENTORY } from './database-per-service-split.plan.mjs';
+import {
+  SERVICE_SCHEMA_INDEX_MANIFEST,
+  schemaAuthoritySha256,
+} from './database-per-service-split.schema-indexes.mjs';
+
+test('schema index manifest covers every mapped collection exactly once', () => {
+  assert.deepEqual(
+    Object.keys(SERVICE_SCHEMA_INDEX_MANIFEST).sort(),
+    Object.keys(DATABASE_PER_SERVICE_INVENTORY).sort(),
+  );
+
+  for (const [databaseName, collections] of Object.entries(
+    DATABASE_PER_SERVICE_INVENTORY,
+  )) {
+    assert.deepEqual(
+      Object.keys(SERVICE_SCHEMA_INDEX_MANIFEST[databaseName]).sort(),
+      [...collections].sort(),
+    );
+  }
+});
+
+test('manifest is built from active Mongoose service schemas and persistence declarations', () => {
+  const userIndexes = SERVICE_SCHEMA_INDEX_MANIFEST.continuum_iam.users;
+  assert.ok(
+    userIndexes.some(
+      (index) =>
+        index.name === 'email_1' &&
+        index.key.email === 1 &&
+        index.unique === true,
+    ),
+  );
+  assert.ok(userIndexes.some((index) => index.name === 'status_1_createdAt_1'));
+  assert.ok(
+    SERVICE_SCHEMA_INDEX_MANIFEST.continuum_audit.audit_logs.length > 0,
+  );
+  assert.deepEqual(
+    SERVICE_SCHEMA_INDEX_MANIFEST.continuum_audit.audit_logs_iam,
+    [],
+    'the raw IAM audit collection has no declared application indexes',
+  );
+});
+
+test('schema source digest is stable and covers the authority files', async () => {
+  const first = await schemaAuthoritySha256();
+  const second = await schemaAuthoritySha256();
+  assert.match(first, /^[a-f0-9]{64}$/);
+  assert.equal(first, second);
+});
