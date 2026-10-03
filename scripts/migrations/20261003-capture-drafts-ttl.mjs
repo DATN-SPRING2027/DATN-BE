@@ -20,6 +20,19 @@ const typeCountsPipeline = [
   { $project: { _id: 0, type: '$_id', count: 1 } },
 ];
 
+async function fingerprintCollectionData(collection) {
+  const digest = createHash('sha256');
+  const cursor = collection.find({}).sort({ _id: 1 });
+  const { EJSON } = mongoose.mongo.BSON;
+
+  for await (const document of cursor) {
+    digest.update(EJSON.stringify(document, null, 0, { relaxed: false }));
+    digest.update('\n');
+  }
+
+  return digest.digest('hex');
+}
+
 export async function inspectCaptureDraftsTtl({
   db,
   databaseName,
@@ -47,6 +60,7 @@ export async function inspectCaptureDraftsTtl({
       alreadyExpiredExamples: [],
       duplicatePairs: [],
       indexes: [],
+      dataFingerprint: createHash('sha256').digest('hex'),
       asOf,
     });
   }
@@ -123,6 +137,7 @@ export async function inspectCaptureDraftsTtl({
         ])
         .toArray(),
     ]);
+  const dataFingerprint = await fingerprintCollectionData(collection);
 
   return buildCaptureDraftsTtlPlan({
     databaseName,
@@ -135,6 +150,7 @@ export async function inspectCaptureDraftsTtl({
     alreadyExpiredExamples,
     duplicatePairs,
     indexes,
+    dataFingerprint,
     asOf,
   });
 }

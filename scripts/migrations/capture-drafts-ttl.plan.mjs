@@ -90,6 +90,7 @@ export function buildCaptureDraftsTtlReport({
   alreadyExpiredExamples,
   duplicatePairs,
   indexes,
+  dataFingerprint,
   asOf,
 }) {
   const pairIndexes = indexes
@@ -198,6 +199,7 @@ export function buildCaptureDraftsTtlReport({
     indexes: indexes
       .map(serializeIndex)
       .sort((left, right) => left.name.localeCompare(right.name)),
+    dataFingerprint,
     indexActions: {
       uniqueUserContext: desiredPairIndex
         ? 'PRESENT'

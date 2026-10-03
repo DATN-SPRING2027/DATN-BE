@@ -19,6 +19,7 @@ const base = {
   alreadyExpiredExamples: [],
   duplicatePairs: [],
   indexes: [{ name: '_id_', key: { _id: 1 } }],
+  dataFingerprint: 'fixture-data-fingerprint',
   asOf,
 };
 

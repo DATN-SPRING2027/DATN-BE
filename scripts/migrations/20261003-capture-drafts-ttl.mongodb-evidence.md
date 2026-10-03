@@ -26,8 +26,9 @@ Date: 2026-10-03
   single-field TTL index with `expireAfterSeconds: 2592000`.
 - Duplicate `userId + contextKey` insertion failed with duplicate-key code 11000.
 - Apply refused without a write-pause confirmation, without review of the
-  expired document, and after a synthetic post-report data change; each refusal
-  left indexes unchanged.
+  expired document, and after a synthetic post-report data change (including a
+  valid timestamp edit that left report counts unchanged); each refusal left
+  indexes unchanged.
 - Re-running the planner and apply was a no-op for indexes and issued no
   document delete command.
 - MongoDB removed the expired Date fixture document through its TTL monitor;

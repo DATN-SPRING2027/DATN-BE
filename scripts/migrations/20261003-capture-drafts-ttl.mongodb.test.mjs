@@ -238,6 +238,26 @@ integration(
       );
       assert.deepEqual(await drafts.listIndexes().toArray(), oldIndexes);
 
+      const originalFreshDraft = await drafts.findOne({ _id: 'fresh-draft' });
+      await drafts.updateOne(
+        { _id: 'fresh-draft' },
+        { $set: { lastSavedAt: new Date(Date.now() - 1_000) } },
+      );
+      await assert.rejects(
+        applyCaptureDraftsTtl({
+          db: database,
+          report,
+          captureDraftWritesPaused: true,
+          expiredDraftsReviewed: true,
+        }),
+        /collection data or indexes changed since the reviewed report/,
+      );
+      assert.deepEqual(await drafts.listIndexes().toArray(), oldIndexes);
+      await drafts.updateOne(
+        { _id: 'fresh-draft' },
+        { $set: { lastSavedAt: originalFreshDraft.lastSavedAt } },
+      );
+
       await drafts.insertOne({
         _id: 'changed-after-report',
         userId: 'user-after-report',

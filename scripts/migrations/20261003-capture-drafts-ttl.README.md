@@ -73,7 +73,9 @@ data decision and a new report before TTL can be enabled. The migration also
 requires `--expired-drafts-reviewed` when the reviewed report finds existing
 expired documents. Immediately before changing indexes, the apply function
 rechecks collection data and index metadata against the reviewed report; any
-change blocks apply and requires a fresh report.
+change blocks apply and requires a fresh report. The report includes a
+deterministic SHA-256 fingerprint of the full collection documents; it emits
+the fingerprint rather than document contents.
 
 After confirming the database, report hash, and write pause, apply only the
 reviewed report:
