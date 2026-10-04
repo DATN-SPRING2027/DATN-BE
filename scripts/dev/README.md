@@ -178,8 +178,11 @@ implemented. Capture's indexes are still verified against its real schema.
 
 After init, `npm run dev:db:smoke` exercises the current authenticated API using
 the same seed password and explicitly configured development MongoDB/Redis
-endpoints. Set a development `JWT_SECRET` of at least 32 characters first. The smoke test creates one synthetic Project
-and its required audit event; it does not clean up that data. It changes the
+endpoints. Set a development `JWT_SECRET` of at least 32 characters first. The smoke test creates one synthetic `PRIVATE` Project, an active
+ProjectMembership, a project-scoped `MEMBER` RoleAssignment, and its required
+audit event. It confirms the creator can list/read the Project and that no
+Leader Project assignment or Team is created. The smoke does not clean up that
+data. It changes the
 process working directory to `scripts/dev` and refuses to run if that directory
 contains a `.env` or `.env.vault`, so root developer credentials cannot be loaded
 implicitly. Supply configuration in the command environment; any `DOTENV_KEY`

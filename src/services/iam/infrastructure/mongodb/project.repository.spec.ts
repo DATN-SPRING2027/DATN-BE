@@ -98,6 +98,7 @@ function fixture(
       ),
     ),
   };
+  const teams = { create: jest.fn().mockResolvedValue([]) };
   const projects = {
     create: jest.fn().mockResolvedValue([{ toObject: () => project }]),
     findOne: jest.fn((filter?: { visibility?: 'PRIVATE' | 'PUBLIC' }) =>
@@ -132,6 +133,7 @@ function fixture(
       continuum_iam_role_assignments: assignments,
       continuum_iam_roles: roles,
       continuum_iam_project_memberships: projectMemberships,
+      continuum_iam_teams: teams,
       continuum_iam_projects: projects,
     },
     startSession: jest.fn().mockResolvedValue(session),
@@ -146,6 +148,7 @@ function fixture(
     assignments,
     roles,
     projectMemberships,
+    teams,
     projects,
     audit,
     session,
@@ -288,6 +291,7 @@ describe('MongoProjectRepository creation', () => {
       useDb,
       collection,
       projectMemberships,
+      teams,
       assignments,
       roles,
     } = fixture();
@@ -296,12 +300,14 @@ describe('MongoProjectRepository creation', () => {
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
     expect(projects.create).toHaveBeenCalledWith(
       [
-        expect.objectContaining({
+        {
           organizationId: new Types.ObjectId(orgId),
-          createdBy: new Types.ObjectId(userId),
+          name: 'Example',
+          code: 'EX',
           visibility: 'PRIVATE',
           status: 'ACTIVE',
-        }),
+          createdBy: new Types.ObjectId(userId),
+        },
       ],
       { session },
     );
@@ -330,6 +336,8 @@ describe('MongoProjectRepository creation', () => {
       ],
       { session },
     );
+    expect(assignments.create).toHaveBeenCalledTimes(1);
+    expect(teams.create).not.toHaveBeenCalled();
     expect(useDb).toHaveBeenCalledWith('continuum_audit', { useCache: true });
     expect(collection).toHaveBeenCalledWith('audit_logs_iam');
     expect(audit.insertOne).toHaveBeenCalledWith(
@@ -351,6 +359,7 @@ describe('MongoProjectRepository creation', () => {
       assignments,
       audit,
       roles,
+      teams,
     } = fixture();
     roles.findOne.mockReturnValue(
       query({ _id: roleId, code: 'MEMBER', permissions: [] }),
@@ -362,6 +371,29 @@ describe('MongoProjectRepository creation', () => {
     expect(projects.create).not.toHaveBeenCalled();
     expect(projectMemberships.create).not.toHaveBeenCalled();
     expect(assignments.create).not.toHaveBeenCalled();
+    expect(teams.create).not.toHaveBeenCalled();
+    expect(audit.insertOne).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the MEMBER Role is missing', async () => {
+    const {
+      repository,
+      projects,
+      projectMemberships,
+      assignments,
+      audit,
+      roles,
+      teams,
+    } = fixture();
+    roles.findOne.mockReturnValue(query(null));
+
+    await expect(repository.create(orgId, userId, input)).rejects.toThrow(
+      'Project bootstrap requires a MEMBER Role with project.read',
+    );
+    expect(projects.create).not.toHaveBeenCalled();
+    expect(projectMemberships.create).not.toHaveBeenCalled();
+    expect(assignments.create).not.toHaveBeenCalled();
+    expect(teams.create).not.toHaveBeenCalled();
     expect(audit.insertOne).not.toHaveBeenCalled();
   });
 

@@ -263,9 +263,14 @@ async function main() {
         const { configureApplication } = require(
           path.join(repositoryRoot, 'src/bootstrap.ts'),
         );
-        const { AUDIT_CONNECTION_NAME, IAM_AUDIT_COLLECTION_NAME } = require(
+        const {
+          AUDIT_CONNECTION_NAME,
+          IAM_AUDIT_COLLECTION_NAME,
+          SERVICE_DATABASES,
+        } = require(
           path.join(repositoryRoot, 'src/common/mongodb/database-names.ts'),
         );
+        const { Types } = require('mongoose');
         return {
           NestFactory,
           getConnectionToken,
@@ -273,6 +278,8 @@ async function main() {
           configureApplication,
           AUDIT_CONNECTION_NAME,
           IAM_AUDIT_COLLECTION_NAME,
+          SERVICE_DATABASES,
+          Types,
         };
       },
       createApp: ({ NestFactory, AppModule }) =>
@@ -283,6 +290,8 @@ async function main() {
     configureApplication,
     AUDIT_CONNECTION_NAME,
     IAM_AUDIT_COLLECTION_NAME,
+    SERVICE_DATABASES,
+    Types,
   } = importedApp;
   try {
     configureApplication(app);
@@ -356,6 +365,67 @@ async function main() {
       throw new Error('Project creation returned an unexpected record.');
     }
 
+    const iamConnection = app.get(getConnectionToken(SERVICE_DATABASES.iam));
+    const projectId = new Types.ObjectId(created.id);
+    const creatorId = new Types.ObjectId(member.user.id);
+    const organizationId = new Types.ObjectId(member.user.organizationId);
+    const storedProject = await iamConnection.db
+      .collection('projects')
+      .findOne({ _id: projectId });
+    if (
+      storedProject?.visibility !== 'PRIVATE' ||
+      !storedProject.createdBy?.equals(creatorId)
+    ) {
+      throw new Error(
+        'Project creation did not persist a PRIVATE Project for its creator.',
+      );
+    }
+    if (
+      Object.hasOwn(storedProject, 'owner') ||
+      Object.hasOwn(storedProject, 'ownerId')
+    ) {
+      throw new Error('Project creation added an implicit Project owner.');
+    }
+    const [
+      membershipCount,
+      memberAssignmentCount,
+      leaderAssignmentCount,
+      teamCount,
+    ] = await Promise.all([
+      iamConnection.db.collection('project_memberships').countDocuments({
+        organizationId,
+        projectId,
+        userId: creatorId,
+        status: 'ACTIVE',
+      }),
+      iamConnection.db.collection('role_assignments').countDocuments({
+        organizationId,
+        projectId,
+        userId: creatorId,
+        roleCode: 'MEMBER',
+      }),
+      iamConnection.db.collection('role_assignments').countDocuments({
+        organizationId,
+        projectId,
+        userId: creatorId,
+        roleCode: 'TEAM_LEADER',
+      }),
+      iamConnection.db.collection('teams').countDocuments({
+        organizationId,
+        projectId,
+      }),
+    ]);
+    if (membershipCount !== 1 || memberAssignmentCount !== 1) {
+      throw new Error(
+        'Project creation did not bootstrap exactly one active Project MEMBER.',
+      );
+    }
+    if (leaderAssignmentCount !== 0 || teamCount !== 0) {
+      throw new Error(
+        'Project creation added a Leader Project assignment or Team.',
+      );
+    }
+
     await requestJson(
       `${baseUrl}/iam/projects/${created.id}`,
       { headers: memberHeaders },
@@ -394,7 +464,7 @@ async function main() {
     }
 
     console.log(
-      'Runtime smoke passed: health, MEMBER authentication, trusted organization context, Project list/detail/create, ADMIN metadata access, and audit persistence.',
+      'Runtime smoke passed: health, MEMBER authentication, trusted organization context, Project creation with ordinary MEMBER bootstrap, Project list/detail, no Leader Project or Team bootstrap, ADMIN metadata access, and audit persistence.',
     );
     console.log(`Audit event count increased by ${auditAfter - auditBefore}.`);
     console.log(`Created one synthetic local Project (${projectCode}).`);

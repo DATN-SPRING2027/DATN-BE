@@ -82,6 +82,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
         'project_memberships',
         'role_assignments',
         'roles',
+        'teams',
       ];
       for (const collection of collections) {
         await db.createCollection(collection);
@@ -165,6 +166,14 @@ integration('MongoProjectRepository transaction and unique index', () => {
       expect(first.organizationId).toBe(orgA);
       expect(first.id).toMatch(/^[a-f\d]{24}$/i);
       expect(await db.collection('projects').countDocuments()).toBe(1);
+      const storedProject = await db.collection('projects').findOne({
+        _id: new Types.ObjectId(first.id),
+      });
+      expect(storedProject).toMatchObject({
+        organizationId: new Types.ObjectId(orgA),
+        createdBy: new Types.ObjectId(user),
+        visibility: 'PRIVATE',
+      });
       expect(
         await auditDb.collection('audit_logs_iam').countDocuments({
           targetResourceId: first.id,
@@ -196,6 +205,27 @@ integration('MongoProjectRepository transaction and unique index', () => {
           roleCode: 'MEMBER',
         }),
       ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+          roleCode: 'TEAM_LEADER',
+        }),
+      ).toBe(0);
+      expect(
+        await db.collection('teams').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+        }),
+      ).toBe(0);
       const headers = { Authorization: 'Bearer valid' };
       const visibleProjects = await request(app.getHttpServer() as App)
         .get('/api/v1/iam/projects')
@@ -229,6 +259,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
         1,
       );
       expect(await db.collection('role_assignments').countDocuments()).toBe(1);
+      expect(await db.collection('teams').countDocuments()).toBe(0);
       expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
         1,
       );
@@ -247,6 +278,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
         2,
       );
       expect(await db.collection('role_assignments').countDocuments()).toBe(2);
+      expect(await db.collection('teams').countDocuments()).toBe(0);
       expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
         2,
       );

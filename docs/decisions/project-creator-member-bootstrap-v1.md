@@ -1,7 +1,7 @@
 # Project creator Member bootstrap — Project Foundation
 
-- **Status:** Requester-approved for PR11 follow-up
-- **Decision date:** 2026-09-30
+- **Status:** Current requester-approved Project Create bootstrap policy; reaffirmed on 2026-10-04 during PR #17 review
+- **Decision date:** 2026-09-30; reaffirmed 2026-10-04
 - **Scope:** Creator bootstrap performed by `POST /api/v1/iam/projects`
 
 ## Decision
