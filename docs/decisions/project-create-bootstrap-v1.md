@@ -1,48 +1,39 @@
-# Project Create bootstrap V1 — superseded
+# Project Create bootstrap V1 — superseded historical decision
 
 - **Status:** Superseded on 2026-10-04 by [`project-creator-member-bootstrap-v1.md`](project-creator-member-bootstrap-v1.md)
-- **Decision date:** 2026-10-04
-- **Scope:** `POST /api/v1/iam/projects`
+- **Original decision date:** 2026-10-04
+- **Scope:** Earlier proposal for `POST /api/v1/iam/projects`
 
-> Historical decision only. Its “Project + audit only” bootstrap is no longer
-> authoritative. The current decision creates an `ACTIVE` ProjectMembership
-> and project-scoped `MEMBER` RoleAssignment for the creator in the same
+> This file records a former Project Create proposal. It is historical context,
+> not the current implementation contract. The current requester-approved
+> behavior is documented in
+> [`project-creator-member-bootstrap-v1.md`](project-creator-member-bootstrap-v1.md):
+> Project creation also creates an `ACTIVE` ProjectMembership and a
+> project-scoped `MEMBER` RoleAssignment for the creator in the same
 > transaction as the Project and audit event.
 
-## Decision
+## Former decision — superseded
 
-An authenticated User with an `ACTIVE` Organization Membership in the trusted
-Organization Context may create a Project in that Organization. The Project
-defaults to `PRIVATE`. Creation records the User as `createdBy`; that field
-does not itself grant Project access.
+The earlier proposal allowed an authenticated User with an `ACTIVE`
+Organization Membership in the trusted Organization Context to create a
+`PRIVATE` Project. Under that proposal, creation recorded the creator in
+`createdBy` but wrote only the Project and its `project.create` audit event.
+It did not create a ProjectMembership, project-scoped RoleAssignment, Team,
+Project Leader appointment, or owner for the creator. The `createdBy` field
+was not considered Project access evidence.
 
-Project creation creates only:
+This proposal was superseded by the creator Member bootstrap decision. It must
+not be used to determine current Project visibility or authorization behavior.
 
-- the Project; and
-- the existing `project.create` audit event.
+## Former persistence and audit behavior
 
-It does not automatically create a `ProjectMembership`, a project-scoped
-`RoleAssignment`, a Team, a Project Leader appointment, or another project
-role for the creator. Existing Project visibility and authorization rules
-continue to determine whether the creator can read the new Private Project.
+Under the superseded proposal, the Project was stored in `continuum_iam` and
+the audit event in `continuum_audit.audit_logs_iam`; those two writes shared a
+MongoDB transaction/session on the configured replica set. Because that
+proposal created no membership or role assignment, its audit event had no
+`metadata.bootstrap` fields. These details describe the former proposal only.
 
-## Persistence and audit
-
-The Project is stored in `continuum_iam`; the existing audit event is stored in
-`continuum_audit.audit_logs_iam`. Both writes remain in one MongoDB
-transaction/session on the configured replica set. The event keeps its
-established IAM audit fields (`organizationId`, `projectId`, `actorUserId`,
-`action`, `targetResource`, `targetResourceId`, and `occurredAt`). It does not
-record bootstrap membership or role-assignment IDs because those records are
-not created.
-
-If Project persistence or the required audit write fails, the transaction
-rolls back. Unique Project code behavior, input validation, response shape,
-and `project.create` authorization are unchanged.
-
-## Supersession
-
-This former decision was superseded by the 2026-09-30 creator Member
-bootstrap, reaffirmed during the PR #17 review on 2026-10-04. It remains only
-as a record of the earlier implementation direction and must not be used as
-current implementation authority.
+The current decision writes the Project, creator membership, project-scoped
+`MEMBER` RoleAssignment, and audit event atomically. See
+[`project-creator-member-bootstrap-v1.md`](project-creator-member-bootstrap-v1.md)
+for the authoritative policy and verification requirements.
