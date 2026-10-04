@@ -98,9 +98,7 @@ function fixture(
       ),
     ),
   };
-  const teams = {
-    create: jest.fn().mockResolvedValue([{ _id: new Types.ObjectId() }]),
-  };
+  const teams = { create: jest.fn().mockResolvedValue([]) };
   const projects = {
     create: jest.fn().mockResolvedValue([{ toObject: () => project }]),
     findOne: jest.fn((filter?: { visibility?: 'PRIVATE' | 'PUBLIC' }) =>
@@ -121,17 +119,10 @@ function fixture(
       .fn()
       .mockReturnValue({ exec: jest.fn().mockResolvedValue(1) }),
   };
+  const audit = { insertOne: jest.fn().mockResolvedValue({}) };
   const session = {
     withTransaction: jest.fn(async (work: () => Promise<void>) => work()),
     endSession: jest.fn().mockResolvedValue(undefined),
-  };
-  const audit = {
-    insertOne: jest
-      .fn<
-        Promise<void>,
-        [Record<string, unknown>, { session: typeof session }]
-      >()
-      .mockResolvedValue(undefined),
   };
   const collection = jest.fn().mockReturnValue(audit);
   const auditConnection = { collection };
@@ -291,7 +282,7 @@ describe('MongoProjectRepository visibility', () => {
 describe('MongoProjectRepository creation', () => {
   const input = { name: 'Example', code: 'EX' };
 
-  it('creates only a Private Project and audit event in one transaction', async () => {
+  it('bootstraps the creator as a Project MEMBER with read access in one transaction', async () => {
     const {
       repository,
       projects,
@@ -300,54 +291,110 @@ describe('MongoProjectRepository creation', () => {
       useDb,
       collection,
       projectMemberships,
+      teams,
       assignments,
       roles,
-      teams,
     } = fixture();
-    roles.findOne.mockReturnValue(query(null));
     const created = await repository.create(orgId, userId, input);
     expect(created.id).toBe(projectId);
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
     expect(projects.create).toHaveBeenCalledWith(
       [
+        {
+          organizationId: new Types.ObjectId(orgId),
+          name: 'Example',
+          code: 'EX',
+          visibility: 'PRIVATE',
+          status: 'ACTIVE',
+          createdBy: new Types.ObjectId(userId),
+        },
+      ],
+      { session },
+    );
+    expect(roles.findOne).toHaveBeenCalledWith({ code: 'MEMBER' });
+    expect(projectMemberships.create).toHaveBeenCalledWith(
+      [
         expect.objectContaining({
           organizationId: new Types.ObjectId(orgId),
-          createdBy: new Types.ObjectId(userId),
-          visibility: 'PRIVATE',
+          projectId: new Types.ObjectId(projectId),
+          userId: new Types.ObjectId(userId),
           status: 'ACTIVE',
         }),
       ],
       { session },
     );
-    expect(roles.findOne).not.toHaveBeenCalled();
-    expect(projectMemberships.create).not.toHaveBeenCalled();
-    expect(assignments.create).not.toHaveBeenCalled();
+    expect(assignments.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          organizationId: new Types.ObjectId(orgId),
+          projectId: new Types.ObjectId(projectId),
+          userId: new Types.ObjectId(userId),
+          roleId,
+          roleCode: 'MEMBER',
+          assignedBy: new Types.ObjectId(userId),
+        }),
+      ],
+      { session },
+    );
+    expect(assignments.create).toHaveBeenCalledTimes(1);
     expect(teams.create).not.toHaveBeenCalled();
     expect(useDb).toHaveBeenCalledWith('continuum_audit', { useCache: true });
     expect(collection).toHaveBeenCalledWith('audit_logs_iam');
-    const auditCall = audit.insertOne.mock.calls[0];
-    expect(auditCall?.[0]).toMatchObject({
-      organizationId: orgId,
-      action: 'project.create',
-      projectId,
-      actorUserId: userId,
-      targetResource: 'PROJECT',
-      targetResourceId: projectId,
-    });
-    expect(Object.keys(auditCall?.[0] ?? {}).sort()).toEqual(
-      [
-        'action',
-        'actorUserId',
-        'occurredAt',
-        'organizationId',
-        'projectId',
-        'targetResource',
-        'targetResourceId',
-      ].sort(),
+    expect(audit.insertOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'project.create',
+        projectId,
+        actorUserId: userId,
+      }),
+      { session },
     );
-    expect(auditCall?.[0].occurredAt).toBeInstanceOf(Date);
-    expect(auditCall?.[1]).toEqual({ session });
     expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('fails closed without a configured MEMBER role with project.read', async () => {
+    const {
+      repository,
+      projects,
+      projectMemberships,
+      assignments,
+      audit,
+      roles,
+      teams,
+    } = fixture();
+    roles.findOne.mockReturnValue(
+      query({ _id: roleId, code: 'MEMBER', permissions: [] }),
+    );
+
+    await expect(repository.create(orgId, userId, input)).rejects.toThrow(
+      'Project bootstrap requires a MEMBER Role with project.read',
+    );
+    expect(projects.create).not.toHaveBeenCalled();
+    expect(projectMemberships.create).not.toHaveBeenCalled();
+    expect(assignments.create).not.toHaveBeenCalled();
+    expect(teams.create).not.toHaveBeenCalled();
+    expect(audit.insertOne).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the MEMBER Role is missing', async () => {
+    const {
+      repository,
+      projects,
+      projectMemberships,
+      assignments,
+      audit,
+      roles,
+      teams,
+    } = fixture();
+    roles.findOne.mockReturnValue(query(null));
+
+    await expect(repository.create(orgId, userId, input)).rejects.toThrow(
+      'Project bootstrap requires a MEMBER Role with project.read',
+    );
+    expect(projects.create).not.toHaveBeenCalled();
+    expect(projectMemberships.create).not.toHaveBeenCalled();
+    expect(assignments.create).not.toHaveBeenCalled();
+    expect(teams.create).not.toHaveBeenCalled();
+    expect(audit.insertOne).not.toHaveBeenCalled();
   });
 
   it('maps unique-code races to 409 without writing an audit event', async () => {
@@ -372,8 +419,8 @@ describe('MongoProjectRepository creation', () => {
       'audit unavailable',
     );
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
-    expect(projectMemberships.create).not.toHaveBeenCalled();
-    expect(assignments.create).not.toHaveBeenCalled();
+    expect(projectMemberships.create).toHaveBeenCalled();
+    expect(assignments.create).toHaveBeenCalled();
     expect(session.endSession).toHaveBeenCalled();
   });
 

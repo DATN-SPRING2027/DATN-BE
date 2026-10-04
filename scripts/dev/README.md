@@ -84,7 +84,7 @@ database roles, extra permissions, or fake audit events.
 
 Permission values are taken from the current accepted
 [Project Access & Visibility V1 decision](../../docs/decisions/project-access-visibility-v1.md)
-and [Project Create bootstrap V1 decision](../../docs/decisions/project-create-bootstrap-v1.md):
+and [Project creator bootstrap decision](../../docs/decisions/project-creator-member-bootstrap-v1.md):
 `ADMIN` receives only `project.visibility.manage` and `project.leader.manage`;
 `TEAM_LEADER` receives `project.read` and the three approved member-management
 permissions; `MEMBER` receives `project.read`. The disabled
@@ -178,13 +178,11 @@ implemented. Capture's indexes are still verified against its real schema.
 
 After init, `npm run dev:db:smoke` exercises the current authenticated API using
 the same seed password and explicitly configured development MongoDB/Redis
-endpoints. Set a development `JWT_SECRET` of at least 32 characters first. The smoke test creates one synthetic `PRIVATE` Project
-and its required audit event; it does not clean up that data. Project Create
-records the creator in `createdBy` but does not automatically add a
-ProjectMembership, RoleAssignment, Team, or Project Leader. The smoke checks
-that the creator has no implicit Project membership or role, cannot list/read
-the new Private Project, and that organization ADMIN metadata access still
-works. It changes the
+endpoints. Set a development `JWT_SECRET` of at least 32 characters first. The smoke test creates one synthetic `PRIVATE` Project, an active
+ProjectMembership, a project-scoped `MEMBER` RoleAssignment, and its required
+audit event. It confirms the creator can list/read the Project and that no
+Leader Project assignment or Team is created. The smoke does not clean up that
+data. It changes the
 process working directory to `scripts/dev` and refuses to run if that directory
 contains a `.env` or `.env.vault`, so root developer credentials cannot be loaded
 implicitly. Supply configuration in the command environment; any `DOTENV_KEY`

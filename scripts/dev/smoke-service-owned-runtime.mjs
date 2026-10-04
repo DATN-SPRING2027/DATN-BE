@@ -263,12 +263,14 @@ async function main() {
         const { configureApplication } = require(
           path.join(repositoryRoot, 'src/bootstrap.ts'),
         );
-        const { AUDIT_CONNECTION_NAME, IAM_AUDIT_COLLECTION_NAME } = require(
+        const {
+          AUDIT_CONNECTION_NAME,
+          IAM_AUDIT_COLLECTION_NAME,
+          SERVICE_DATABASES,
+        } = require(
           path.join(repositoryRoot, 'src/common/mongodb/database-names.ts'),
         );
-        const { SERVICE_DATABASES } = require(
-          path.join(repositoryRoot, 'src/common/mongodb/database-names.ts'),
-        );
+        const { Types } = require('mongoose');
         return {
           NestFactory,
           getConnectionToken,
@@ -277,6 +279,7 @@ async function main() {
           AUDIT_CONNECTION_NAME,
           IAM_AUDIT_COLLECTION_NAME,
           SERVICE_DATABASES,
+          Types,
         };
       },
       createApp: ({ NestFactory, AppModule }) =>
@@ -288,6 +291,7 @@ async function main() {
     AUDIT_CONNECTION_NAME,
     IAM_AUDIT_COLLECTION_NAME,
     SERVICE_DATABASES,
+    Types,
   } = importedApp;
   try {
     configureApplication(app);
@@ -338,8 +342,6 @@ async function main() {
     const auditCollection = auditConnection.db.collection(
       IAM_AUDIT_COLLECTION_NAME,
     );
-    const iamConnection = app.get(getConnectionToken(SERVICE_DATABASES.iam));
-    const { Types } = require('mongoose');
     const auditBefore = await auditCollection.countDocuments({});
 
     const projectCode = `SMK_${Date.now().toString(36).toUpperCase()}`;
@@ -362,59 +364,83 @@ async function main() {
     if (created.code !== projectCode || !created.id) {
       throw new Error('Project creation returned an unexpected record.');
     }
-    const createdProjectId = new Types.ObjectId(created.id);
+
+    const iamConnection = app.get(getConnectionToken(SERVICE_DATABASES.iam));
+    const projectId = new Types.ObjectId(created.id);
     const creatorId = new Types.ObjectId(member.user.id);
-    const createdProject = await iamConnection.db
+    const organizationId = new Types.ObjectId(member.user.organizationId);
+    const storedProject = await iamConnection.db
       .collection('projects')
-      .findOne({ _id: createdProjectId }, { projection: { visibility: 1 } });
-    if (createdProject?.visibility !== 'PRIVATE') {
-      throw new Error('A newly created Project did not default to PRIVATE.');
+      .findOne({ _id: projectId });
+    if (
+      storedProject?.visibility !== 'PRIVATE' ||
+      !storedProject.createdBy?.equals(creatorId)
+    ) {
+      throw new Error(
+        'Project creation did not persist a PRIVATE Project for its creator.',
+      );
     }
-    const [projectMembershipCount, projectRoleAssignmentCount, teamCount] =
-      await Promise.all([
-        iamConnection.db.collection('project_memberships').countDocuments({
-          organizationId: new Types.ObjectId(member.user.organizationId),
-          projectId: createdProjectId,
-          userId: creatorId,
-        }),
-        iamConnection.db.collection('role_assignments').countDocuments({
-          organizationId: new Types.ObjectId(member.user.organizationId),
-          projectId: createdProjectId,
-          userId: creatorId,
-        }),
-        iamConnection.db.collection('teams').countDocuments({
-          organizationId: new Types.ObjectId(member.user.organizationId),
-          projectId: createdProjectId,
-        }),
-      ]);
-    if (projectMembershipCount !== 0) {
-      throw new Error('Project creation added an implicit ProjectMembership.');
+    if (
+      Object.hasOwn(storedProject, 'owner') ||
+      Object.hasOwn(storedProject, 'ownerId')
+    ) {
+      throw new Error('Project creation added an implicit Project owner.');
     }
-    if (projectRoleAssignmentCount !== 0) {
-      throw new Error('Project creation added an implicit RoleAssignment.');
+    const [
+      membershipCount,
+      memberAssignmentCount,
+      leaderAssignmentCount,
+      teamCount,
+    ] = await Promise.all([
+      iamConnection.db.collection('project_memberships').countDocuments({
+        organizationId,
+        projectId,
+        userId: creatorId,
+        status: 'ACTIVE',
+      }),
+      iamConnection.db.collection('role_assignments').countDocuments({
+        organizationId,
+        projectId,
+        userId: creatorId,
+        roleCode: 'MEMBER',
+      }),
+      iamConnection.db.collection('role_assignments').countDocuments({
+        organizationId,
+        projectId,
+        userId: creatorId,
+        roleCode: 'TEAM_LEADER',
+      }),
+      iamConnection.db.collection('teams').countDocuments({
+        organizationId,
+        projectId,
+      }),
+    ]);
+    if (membershipCount !== 1 || memberAssignmentCount !== 1) {
+      throw new Error(
+        'Project creation did not bootstrap exactly one active Project MEMBER.',
+      );
     }
-    if (teamCount !== 0) {
-      throw new Error('Project creation added an implicit Team.');
+    if (leaderAssignmentCount !== 0 || teamCount !== 0) {
+      throw new Error(
+        'Project creation added a Leader Project assignment or Team.',
+      );
     }
 
+    await requestJson(
+      `${baseUrl}/iam/projects/${created.id}`,
+      { headers: memberHeaders },
+      'Project detail after creation',
+    );
     const { body: refreshedMemberList } = await requestJson(
       `${baseUrl}/iam/projects`,
       { headers: memberHeaders },
       'Project list after creation',
     );
     if (
-      refreshedMemberList.data?.some((project) => project.id === created.id)
+      !refreshedMemberList.data?.some((project) => project.code === projectCode)
     ) {
       throw new Error(
-        'The creator without ProjectMembership could see the new Private Project.',
-      );
-    }
-    const creatorDetail = await fetch(`${baseUrl}/iam/projects/${created.id}`, {
-      headers: memberHeaders,
-    });
-    if (creatorDetail.status !== 404) {
-      throw new Error(
-        'The creator without ProjectMembership should not read the Private Project.',
+        'The created Project was not visible in the member list.',
       );
     }
 
@@ -438,7 +464,7 @@ async function main() {
     }
 
     console.log(
-      'Runtime smoke passed: health, MEMBER authentication, trusted organization context, Project create with PRIVATE default and no implicit membership/role/Team, creator read denial, ADMIN metadata access, and audit persistence.',
+      'Runtime smoke passed: health, MEMBER authentication, trusted organization context, Project creation with ordinary MEMBER bootstrap, Project list/detail, no Leader Project or Team bootstrap, ADMIN metadata access, and audit persistence.',
     );
     console.log(`Audit event count increased by ${auditAfter - auditBefore}.`);
     console.log(`Created one synthetic local Project (${projectCode}).`);

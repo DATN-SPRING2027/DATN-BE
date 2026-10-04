@@ -1,8 +1,13 @@
-# Project Create bootstrap V1
+# Project Create bootstrap V1 — superseded
 
-- **Status:** Requester-approved and current for the Project Foundation work package
+- **Status:** Superseded on 2026-10-04 by [`project-creator-member-bootstrap-v1.md`](project-creator-member-bootstrap-v1.md)
 - **Decision date:** 2026-10-04
 - **Scope:** `POST /api/v1/iam/projects`
+
+> Historical decision only. Its “Project + audit only” bootstrap is no longer
+> authoritative. The current decision creates an `ACTIVE` ProjectMembership
+> and project-scoped `MEMBER` RoleAssignment for the creator in the same
+> transaction as the Project and audit event.
 
 ## Decision
 
@@ -37,9 +42,7 @@ and `project.create` authorization are unchanged.
 
 ## Supersession
 
-This current decision reaffirms the earlier `PROJECT_CREATE_BOOTSTRAP_V1`
-rule and supersedes the 2026-09-30 creator Member bootstrap recorded in
-[`project-creator-member-bootstrap-v1.md`](project-creator-member-bootstrap-v1.md).
-That historical decision must not be used as current implementation
-authority. This decision does not change Project Access APIs, Project read
-policies, database topology, or any other capability policy.
+This former decision was superseded by the 2026-09-30 creator Member
+bootstrap, reaffirmed during the PR #17 review on 2026-10-04. It remains only
+as a record of the earlier implementation direction and must not be used as
+current implementation authority.

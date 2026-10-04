@@ -57,7 +57,7 @@ function isProjectListResponse(
 }
 
 integration('MongoProjectRepository transaction and unique index', () => {
-  it('creates only a Private Project and audit event, rolls back failures, and scopes codes by Organization', async () => {
+  it('bootstraps creator access, reads the Private Project, rolls back failures, and scopes codes by Organization', async () => {
     if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
     const databaseName = `pf_api_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
     const auditDatabaseName = `${databaseName}_audit`;
@@ -105,6 +105,13 @@ integration('MongoProjectRepository transaction and unique index', () => {
       const orgA = new Types.ObjectId().toString();
       const orgB = new Types.ObjectId().toString();
       const user = new Types.ObjectId().toString();
+      await db.collection('roles').insertOne({
+        _id: new Types.ObjectId(),
+        code: 'MEMBER',
+        name: 'Member',
+        permissions: ['project.read'],
+        isSystem: true,
+      });
       await db.collection('organization_memberships').insertOne({
         organizationId: new Types.ObjectId(orgA),
         userId: new Types.ObjectId(user),
@@ -177,15 +184,11 @@ integration('MongoProjectRepository transaction and unique index', () => {
         targetResourceId: first.id,
         action: 'project.create',
       });
-      expect(auditEvent).toMatchObject({
-        organizationId: orgA,
-        projectId: first.id,
-        actorUserId: user,
-        action: 'project.create',
-        targetResource: 'PROJECT',
-        targetResourceId: first.id,
+      expect(auditEvent?.metadata).toMatchObject({
+        bootstrap: {
+          roleCode: 'MEMBER',
+        },
       });
-      expect(auditEvent?.metadata).toBeUndefined();
       expect(
         await db.collection('project_memberships').countDocuments({
           organizationId: new Types.ObjectId(orgA),
@@ -193,12 +196,28 @@ integration('MongoProjectRepository transaction and unique index', () => {
           userId: new Types.ObjectId(user),
           status: 'ACTIVE',
         }),
-      ).toBe(0);
+      ).toBe(1);
       expect(
         await db.collection('role_assignments').countDocuments({
           organizationId: new Types.ObjectId(orgA),
           projectId: new Types.ObjectId(first.id),
           userId: new Types.ObjectId(user),
+          roleCode: 'MEMBER',
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+          roleCode: 'TEAM_LEADER',
         }),
       ).toBe(0);
       expect(
@@ -215,11 +234,15 @@ integration('MongoProjectRepository transaction and unique index', () => {
       const visibleProjectsBody: unknown = visibleProjects.body;
       if (!isProjectListResponse(visibleProjectsBody))
         throw new Error('List Projects response is invalid');
-      expect(visibleProjectsBody.data.map((project) => project.id)).toEqual([]);
-      await request(app.getHttpServer() as App)
+      expect(visibleProjectsBody.data.map((project) => project.id)).toEqual([
+        first.id,
+      ]);
+      const detail = await request(app.getHttpServer() as App)
         .get(`/api/v1/iam/projects/${first.id}`)
         .set(headers)
-        .expect(404);
+        .expect(200);
+      const detailBody: unknown = detail.body;
+      expect(detailBody).toMatchObject({ id: first.id, organizationId: orgA });
 
       // Test-only audit constraint forces the second audit write to fail.
       await auditDb
@@ -233,9 +256,9 @@ integration('MongoProjectRepository transaction and unique index', () => {
         await db.collection('projects').countDocuments({ code: 'NEW' }),
       ).toBe(0);
       expect(await db.collection('project_memberships').countDocuments()).toBe(
-        0,
+        1,
       );
-      expect(await db.collection('role_assignments').countDocuments()).toBe(0);
+      expect(await db.collection('role_assignments').countDocuments()).toBe(1);
       expect(await db.collection('teams').countDocuments()).toBe(0);
       expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
         1,
@@ -252,9 +275,9 @@ integration('MongoProjectRepository transaction and unique index', () => {
       expect(second.organizationId).toBe(orgB);
       expect(await db.collection('projects').countDocuments()).toBe(2);
       expect(await db.collection('project_memberships').countDocuments()).toBe(
-        0,
+        2,
       );
-      expect(await db.collection('role_assignments').countDocuments()).toBe(0);
+      expect(await db.collection('role_assignments').countDocuments()).toBe(2);
       expect(await db.collection('teams').countDocuments()).toBe(0);
       expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
         2,

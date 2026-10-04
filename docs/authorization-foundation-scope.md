@@ -18,7 +18,7 @@ The policy requires an active authenticated User, a valid matching trusted Organ
 
 The guard revalidates the User and active membership through the existing authentication service. It rejects any client-provided Organization selector that differs from the trusted context. Project payload validation, unique `(organizationId, code)` enforcement, and the transactional `project.create` event in `audit_logs_iam` remain required.
 
-The current [`PROJECT_CREATE_BOOTSTRAP_V1`](decisions/project-create-bootstrap-v1.md), reaffirmed on 2026-10-04, supersedes the later creator Member bootstrap rule. Creation writes only the `PRIVATE` Project and its `project.create` audit event in one transaction. It creates no ProjectMembership, project-scoped RoleAssignment, Team, Project Leader appointment, owner, or special project role. Project Create authorization remains unchanged; it still requires an authenticated active subject, trusted matching Organization Context, and `ACTIVE` Organization Membership. Private Project reads continue to use the existing Project Access policy; `createdBy` is not access evidence.
+The latest requester-approved Project Foundation rule supersedes the earlier `PROJECT_CREATE_BOOTSTRAP_V1`: creation also bootstraps an `ACTIVE` ProjectMembership and a project-scoped `MEMBER` RoleAssignment for the creator. It creates no Project Leader, owner, or Team. This bootstrap is transactional with the Project and `project.create` audit event. It does not change the `project.create` authorization rule or any other capability policy. Private Project reads continue to require `project.read` in the current Role; creation aborts atomically if the provisioned `MEMBER` Role is unavailable or lacks that permission.
 
 ## Other grants and open work
 

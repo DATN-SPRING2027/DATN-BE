@@ -245,7 +245,7 @@
       "post": {
         "tags": ["Projects"],
         "summary": "Create a project",
-        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. The creator is recorded only in createdBy; Project creation does not automatically create a ProjectMembership, project-scoped RoleAssignment, Team, Project Leader appointment, or special project role. createdBy does not itself grant Project access. The Project and required project.create audit event are committed atomically.",
+        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped MEMBER RoleAssignment, but does not make the creator a Project Leader, owner, or Team. A provisioned current MEMBER Role with project.read is required for the bootstrap; the Project, membership, assignment, and project.create audit event are committed atomically.",
         "operationId": "createProject",
         "requestBody": {
           "required": true,
