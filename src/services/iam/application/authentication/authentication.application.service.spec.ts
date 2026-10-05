@@ -65,6 +65,7 @@ describe('AuthenticationApplicationService', () => {
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
       rotateRefreshSession: jest.fn(),
       findAccountById: jest.fn().mockResolvedValue(account),
+      createRefreshSession: jest.fn().mockResolvedValue(undefined),
     };
     eligibilityPolicy = {
       evaluate: jest.fn(
@@ -114,9 +115,11 @@ describe('AuthenticationApplicationService', () => {
   });
 
   it('authenticates an ACTIVE user and signs only the selected organization context', async () => {
-    await expect(
-      service.login({ email: account.email, password: 'correct-password' }),
-    ).resolves.toEqual({
+    const result = await service.login({
+      email: account.email,
+      password: 'correct-password',
+    });
+    expect(result).toMatchObject({
       accessToken: 'signed-access-token',
       user: {
         id: USER_ID,
@@ -126,6 +129,18 @@ describe('AuthenticationApplicationService', () => {
         roles: ['ADMIN', 'MEMBER'],
       },
     });
+    expect(result.refreshToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(result.csrfToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(result.csrfToken).not.toBe(result.refreshToken);
+    expect(repository.createRefreshSession.mock.calls).toContainEqual([
+      USER_ID,
+      ORG_ID,
+      createHash('sha256').update(result.refreshToken).digest('hex'),
+      expect.any(Date),
+    ]);
+    const issuedExpiry = repository.createRefreshSession.mock.calls[0][3];
+    expect(issuedExpiry.getTime() - Date.now()).toBeGreaterThan(604799000);
+    expect(issuedExpiry.getTime() - Date.now()).toBeLessThanOrEqual(604800000);
     expect(organizationResolver.resolveForUser.mock.calls).toContainEqual([
       USER_ID,
       undefined,
@@ -139,6 +154,16 @@ describe('AuthenticationApplicationService', () => {
     expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
       expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
     );
+  });
+
+  it('issues no Login credentials when initial refresh-session persistence fails', async () => {
+    repository.createRefreshSession.mockRejectedValue(
+      new Error('persistence failed'),
+    );
+    await expect(
+      service.login({ email: account.email, password: 'correct-password' }),
+    ).rejects.toThrow('persistence failed');
+    expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
   });
 
   it('upgrades a verified legacy hash after resolving an eligible login', async () => {
@@ -447,6 +472,9 @@ describe('AuthenticationApplicationService', () => {
     const presented = 'A'.repeat(43);
 
     it('passes only hashes to persistence and issues credentials after rotation', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation();
       repository.rotateRefreshSession.mockResolvedValue({
         outcome: 'ROTATED',
         userId: USER_ID,
@@ -479,6 +507,12 @@ describe('AuthenticationApplicationService', () => {
         orgId: ORG_ID,
         roles: ['ADMIN', 'MEMBER'],
       });
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
     });
 
     it.each([

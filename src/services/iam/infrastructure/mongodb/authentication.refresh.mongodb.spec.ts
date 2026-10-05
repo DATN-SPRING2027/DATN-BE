@@ -48,6 +48,16 @@ integration('refresh session rotation on MongoDB replica set', () => {
           isRevoked: revoked,
         });
 
+      const initialHash = 'a'.repeat(64);
+      await repository.createRefreshSession(
+        String(userId),
+        String(organizationId),
+        initialHash,
+        expiresAt,
+      );
+      const initialRow = await model.findOne({ tokenHash: initialHash }).lean();
+      expect(initialRow?.tokenHash).toBe(initialHash);
+
       await create('old');
       await expect(
         repository.rotateRefreshSession('old', 'new', expiresAt, now),

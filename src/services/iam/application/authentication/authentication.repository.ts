@@ -55,4 +55,10 @@ export interface AuthenticationRepositoryPort {
     now: Date,
   ): Promise<RefreshRotationResult>;
   findAccountById(userId: string): Promise<RefreshAccount | null>;
+  createRefreshSession(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<void>;
 }

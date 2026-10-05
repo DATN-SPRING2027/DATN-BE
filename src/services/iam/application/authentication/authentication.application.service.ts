@@ -39,6 +39,8 @@ export interface AuthenticatedIdentity {
 
 export interface LoginResult {
   accessToken: string;
+  refreshToken: string;
+  csrfToken: string;
   user: AuthenticatedIdentity;
 }
 
@@ -88,7 +90,7 @@ function unauthorized(): UnauthorizedException {
   });
 }
 
-function readCookie(
+export function readCookie(
   cookieHeader: string | undefined,
   name: string,
 ): string | undefined {
@@ -220,6 +222,14 @@ export class AuthenticationApplicationService {
       organizationId: organization.context.orgId,
       roles: organization.context.roles,
     };
+    const refreshToken = randomBytes(32).toString('base64url');
+    const csrfToken = randomBytes(32).toString('base64url');
+    await this.repository.createRefreshSession(
+      identity.id,
+      identity.organizationId,
+      createHash('sha256').update(refreshToken).digest('hex'),
+      new Date(Date.now() + REFRESH_LIFETIME_MS),
+    );
     const accessToken = this.accessTokens.signAccessToken({
       sub: identity.id,
       email: identity.email,
@@ -227,7 +237,7 @@ export class AuthenticationApplicationService {
       roles: identity.roles,
     });
 
-    return { accessToken, user: identity };
+    return { accessToken, refreshToken, csrfToken, user: identity };
   }
 
   private async rejectInvalidPassword(emailKey: string): Promise<never> {

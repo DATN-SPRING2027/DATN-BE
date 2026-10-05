@@ -343,6 +343,31 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     }
   }
 
+  async createRefreshSession(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    if (
+      !Types.ObjectId.isValid(userId) ||
+      !Types.ObjectId.isValid(organizationId)
+    ) {
+      throw new Error('Invalid refresh session owner');
+    }
+    const model = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    await model.create({
+      userId: new Types.ObjectId(userId),
+      organizationId: new Types.ObjectId(organizationId),
+      tokenHash,
+      isRevoked: false,
+      expiresAt,
+    });
+  }
+
   private getModel<T>(
     name: string,
     missingReason: ConstructorParameters<
