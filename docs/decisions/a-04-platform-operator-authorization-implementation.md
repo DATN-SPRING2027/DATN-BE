@@ -1,9 +1,9 @@
 # A-04 Platform Operator Authorization — Implementation Evidence
 
-**Status:** Implemented on `feat/Danh-A-04-platform-operator-authorization-be-api`; awaiting review and operational database rollout.
+**Status:** Implemented in commit `8e61b13` on `feat/Danh-A-04-platform-operator-authorization-be-api`; [implementation PR #21](https://github.com/DATN-SPRING2027/DATN-BE/pull/21) is open for review. Operational database rollout remains a follow-up.
 **Policy authority:** [DEC-ACCESS-09](dec-access-09-platform-operator-authorization.md), A-04 sub-scope DECIDED; DEC-ACCESS-09 remains PARTIAL overall.
 **Decision approval evidence:** Leader-approved decision documentation merged in [DATN-BE PR #20](https://github.com/DATN-SPRING2027/DATN-BE/pull/20).
-**Implementation PR:** To be linked after publication.
+**Implementation PR:** [DATN-BE PR #21](https://github.com/DATN-SPRING2027/DATN-BE/pull/21).
 
 This record classifies implementation evidence and choices. It does not amend
 DEC-ACCESS-09, close DEC-ACCESS-10, select a SAGE baseline, or create product
@@ -40,7 +40,7 @@ policy.
 | `platform.audit.read` | enforced by | [Safe platform audit query](../../src/services/iam/infrastructure/mongodb/platform-audit.repository.ts) |
 | Policy/evidence | verified by | [Policy tests](../../src/services/iam/application/authorization/platform-authorization.policy.spec.ts), [guard HTTP tests](../../src/services/iam/application/authorization/platform-authorization.guard.spec.ts), [evidence freshness tests](../../src/services/iam/infrastructure/mongodb/authorization-evidence.provider.spec.ts), and [MongoDB transaction/audit integration test](../../src/services/iam/infrastructure/mongodb/platform-operator.mongodb.spec.ts) |
 | IAM DB collection/indexes | deployed by reviewed operation | [A-04 collection/index migration](../../scripts/migrations/20261005-platform-authority-assignments.mjs) and [migration instructions](../../scripts/migrations/20261005-platform-authority-assignments.README.md) |
-| This implementation | delivered through | A-04 implementation PR, to be linked after publication |
+| Implementation commit `8e61b13` | reviewed through | [A-04 implementation PR #21](https://github.com/DATN-SPRING2027/DATN-BE/pull/21) |
 
 ## External research / implementation reference
 
