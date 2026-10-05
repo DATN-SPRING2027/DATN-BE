@@ -63,6 +63,12 @@ describe('AuthenticationApplicationService', () => {
         .mockResolvedValue({ name: 'Test Person', status: 'ACTIVE' }),
       replacePasswordHashIfCurrent: jest.fn().mockResolvedValue(undefined),
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
+      findRefreshSessionForRotation: jest.fn().mockResolvedValue({
+        outcome: 'ACTIVE',
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      }),
       rotateRefreshSession: jest.fn(),
       findAccountById: jest.fn().mockResolvedValue(account),
       createRefreshSession: jest.fn().mockResolvedValue(undefined),
@@ -433,14 +439,15 @@ describe('AuthenticationApplicationService', () => {
   });
 
   it('revokes a presented refresh session by SHA-256 hash and is idempotent when absent', async () => {
-    await service.logout(undefined, 'continuum_refresh=refresh-secret');
+    const refreshToken = 'A'.repeat(43);
+    await service.logout(undefined, `__Secure-refresh=${refreshToken}`);
     expect(repository.revokeRefreshSessionByHash.mock.calls).toContainEqual([
-      createHash('sha256').update('refresh-secret').digest('hex'),
+      createHash('sha256').update(refreshToken).digest('hex'),
     ]);
 
     repository.revokeRefreshSessionByHash.mockResolvedValue(false);
     await expect(
-      service.logout(undefined, 'continuum_refresh=refresh-secret'),
+      service.logout(undefined, `continuum_refresh=${refreshToken}`),
     ).resolves.toBeUndefined();
     const callsAfterToken =
       repository.revokeRefreshSessionByHash.mock.calls.length;
@@ -448,6 +455,41 @@ describe('AuthenticationApplicationService', () => {
     expect(repository.revokeRefreshSessionByHash.mock.calls).toHaveLength(
       callsAfterToken,
     );
+  });
+
+  it('rejects refresh after logout revokes the rotated credential', async () => {
+    const initialToken = 'A'.repeat(43);
+    repository.rotateRefreshSession.mockResolvedValueOnce({
+      outcome: 'ROTATED',
+      userId: USER_ID,
+      organizationId: ORG_ID,
+    });
+    const refreshed = await service.refresh(
+      initialToken,
+      'csrf-value',
+      'csrf-value',
+    );
+
+    await service.logout(
+      undefined,
+      `__Secure-refresh=${refreshed.refreshToken}`,
+    );
+    expect(repository.revokeRefreshSessionByHash.mock.calls).toContainEqual([
+      createHash('sha256').update(refreshed.refreshToken).digest('hex'),
+    ]);
+
+    repository.findRefreshSessionForRotation.mockResolvedValueOnce({
+      outcome: 'REVOKED',
+      userId: USER_ID,
+      organizationId: ORG_ID,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    repository.rotateRefreshSession.mockResolvedValueOnce({
+      outcome: 'REPLAYED',
+    });
+    await expect(
+      service.refresh(refreshed.refreshToken, 'csrf-value', 'csrf-value'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('extracts Bearer and HttpOnly cookie access tokens but rejects ambiguous or malformed inputs', () => {
@@ -501,6 +543,22 @@ describe('AuthenticationApplicationService', () => {
         USER_ID,
         ORG_ID,
       ]);
+      expect(
+        repository.findRefreshSessionForRotation.mock.invocationCallOrder[0],
+      ).toBeLessThan(repository.findAccountById.mock.invocationCallOrder[0]);
+      expect(
+        repository.findAccountById.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        organizationResolver.resolveForUser.mock.invocationCallOrder[0],
+      );
+      expect(
+        organizationResolver.resolveForUser.mock.invocationCallOrder[0],
+      ).toBeLessThan(accessTokens.signAccessToken.mock.invocationCallOrder[0]);
+      expect(
+        accessTokens.signAccessToken.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        repository.rotateRefreshSession.mock.invocationCallOrder[0],
+      );
       expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
         sub: USER_ID,
         email: account.email,
@@ -523,34 +581,79 @@ describe('AuthenticationApplicationService', () => {
       'A'.repeat(42) + '!',
       'A'.repeat(42) + 'B',
     ])(
-      'rejects missing or malformed credential %p before persistence',
+      'rejects missing or malformed credential %p before session lookup',
       async (token) => {
         await expect(
           service.refresh(token, 'csrf', 'csrf'),
         ).rejects.toBeInstanceOf(UnauthorizedException);
         expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+        expect(
+          repository.findRefreshSessionForRotation.mock.calls,
+        ).toHaveLength(0);
       },
     );
 
+    it('rejects an unknown credential without attempting rotation', async () => {
+      repository.findRefreshSessionForRotation.mockResolvedValue({
+        outcome: 'INVALID',
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+    });
+
+    it('preserves user-wide invalidation when a revoked credential is replayed', async () => {
+      repository.findRefreshSessionForRotation.mockResolvedValue({
+        outcome: 'REVOKED',
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      repository.rotateRefreshSession.mockResolvedValue({
+        outcome: 'REPLAYED',
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(repository.findAccountById.mock.calls).toHaveLength(0);
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(1);
+      expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired lookup before checking eligibility or rotating', async () => {
+      repository.findRefreshSessionForRotation.mockResolvedValue({
+        outcome: 'ACTIVE',
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(repository.findAccountById.mock.calls).toHaveLength(0);
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+    });
+
     it.each(['INVALID', 'REPLAYED'] as const)(
-      'issues no credentials for %s rotation outcome',
+      'returns no credentials for %s rotation outcome',
       async (outcome) => {
         repository.rotateRefreshSession.mockResolvedValue({ outcome });
         await expect(
           service.refresh(presented, 'csrf', 'csrf'),
         ).rejects.toBeInstanceOf(UnauthorizedException);
-        expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+        expect(accessTokens.signAccessToken).toHaveBeenCalledTimes(1);
       },
     );
 
-    it('issues no credentials when persistence fails', async () => {
+    it('returns no credentials when persistence fails after access token preparation', async () => {
       repository.rotateRefreshSession.mockRejectedValue(
         new Error('transaction failed'),
       );
       await expect(service.refresh(presented, 'csrf', 'csrf')).rejects.toThrow(
         'transaction failed',
       );
-      expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+      expect(accessTokens.signAccessToken).toHaveBeenCalledTimes(1);
     });
 
     it.each([
@@ -566,12 +669,7 @@ describe('AuthenticationApplicationService', () => {
       },
     );
 
-    it('issues no credentials when user or membership is no longer eligible', async () => {
-      repository.rotateRefreshSession.mockResolvedValue({
-        outcome: 'ROTATED',
-        userId: USER_ID,
-        organizationId: ORG_ID,
-      });
+    it('preserves the current token when the account is no longer eligible', async () => {
       repository.findAccountById.mockResolvedValue({
         ...account,
         status: 'SUSPENDED',
@@ -579,7 +677,29 @@ describe('AuthenticationApplicationService', () => {
       await expect(
         service.refresh(presented, 'csrf', 'csrf'),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
       expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('preserves the current token when organization eligibility lookup fails', async () => {
+      organizationResolver.resolveForUser.mockResolvedValue({
+        outcome: 'NO_ELIGIBLE_ORGANIZATION',
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+      expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('preserves the current token when access-token signing fails', async () => {
+      accessTokens.signAccessToken.mockImplementation(() => {
+        throw new Error('signing key unavailable');
+      });
+      await expect(service.refresh(presented, 'csrf', 'csrf')).rejects.toThrow(
+        'signing key unavailable',
+      );
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
     });
   });
 });

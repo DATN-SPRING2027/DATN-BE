@@ -38,7 +38,7 @@
             "description": "Authentication succeeded.",
             "headers": {
               "Set-Cookie": {
-                "description": "Three separate fields: continuum_access (HttpOnly; SameSite=Lax; Path=/; Max-Age=900; Secure in production), __Secure-refresh (Secure; HttpOnly; SameSite=Lax; Path=/api/v1/auth/refresh; Max-Age=604800; no Domain), and __Host-csrf (Secure; SameSite=Lax; Path=/; no Domain; not HttpOnly). Never combine fields with commas.",
+                "description": "Three separate fields: continuum_access (HttpOnly; SameSite=Lax; Path=/; Max-Age=900; Secure in production), __Secure-refresh (Secure; HttpOnly; SameSite=Lax; Path=/api/v1/auth; Max-Age=604800; no Domain), and __Host-csrf (Secure; SameSite=Lax; Path=/; no Domain; not HttpOnly). Never combine fields with commas.",
                 "schema": { "type": "string" }
               }
             },
@@ -84,7 +84,7 @@
             "description": "Refresh credential rotated once and replacement cookies issued after transaction commit.",
             "headers": {
               "Set-Cookie": {
-                "description": "Two separate fields, never comma-joined: continuum_access (Path=/; HttpOnly; SameSite=Lax; Max-Age=900; Secure in production) and __Secure-refresh (Path=/api/v1/auth/refresh; Secure; HttpOnly; SameSite=Lax; Max-Age=604800; no Domain).",
+                "description": "Two separate fields, never comma-joined: continuum_access (Path=/; HttpOnly; SameSite=Lax; Max-Age=900; Secure in production) and __Secure-refresh (Path=/api/v1/auth; Secure; HttpOnly; SameSite=Lax; Max-Age=604800; no Domain).",
                 "schema": { "type": "string" }
               },
               "Cache-Control": {
@@ -107,11 +107,20 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log out the current session",
-        "description": "Idempotently clears the access cookie and returns confirmation. Current runtime revokes a valid presented access token for its remaining lifetime and a matching presented refresh session where available. It does not yet clear a refresh cookie at its future path.",
+        "description": "Idempotently clears access and refresh cookies at their issued paths. A presented valid access token is revoked for its remaining lifetime; a presented refresh session is revoked by hash before confirmation.",
         "operationId": "logout",
         "responses": {
           "200": {
             "description": "Session logged out.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Separate clearing fields for continuum_access at Path=/ and __Secure-refresh at Path=/api/v1/auth.",
+                "schema": { "type": "string" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/LogoutResponse" }
@@ -773,7 +782,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "__Secure-refresh",
-        "description": "Opaque HttpOnly browser refresh credential; Secure; SameSite=Lax; Path=/api/v1/auth/refresh; no Domain."
+        "description": "Opaque HttpOnly browser refresh credential; Secure; SameSite=Lax; Path=/api/v1/auth so both refresh and logout receive it; no Domain."
       },
       "bearerAuth": {
         "type": "http",

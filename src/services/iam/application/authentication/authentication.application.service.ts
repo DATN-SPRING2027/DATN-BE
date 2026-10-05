@@ -124,11 +124,12 @@ export function extractAccessToken(
   return token && token.length <= 8192 ? token : undefined;
 }
 
-function extractRefreshToken(
-  cookieHeader: string | undefined,
-): string | undefined {
-  const token = readCookie(cookieHeader, 'continuum_refresh');
-  return token && token.length <= 4096 ? token : undefined;
+function extractRefreshTokens(cookieHeader: string | undefined): string[] {
+  const tokens = [
+    readCookie(cookieHeader, '__Secure-refresh'),
+    readCookie(cookieHeader, 'continuum_refresh'),
+  ];
+  return [...new Set(tokens.filter(validRefreshCredential))];
 }
 
 @Injectable()
@@ -312,11 +313,10 @@ export class AuthenticationApplicationService {
         if (!(error instanceof AccessTokenError)) throw error;
       }
     }
-    const refreshToken = extractRefreshToken(cookieHeader);
-    if (!refreshToken) return;
-
-    const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
-    await this.repository.revokeRefreshSessionByHash(tokenHash);
+    for (const refreshToken of extractRefreshTokens(cookieHeader)) {
+      const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
+      await this.repository.revokeRefreshSessionByHash(tokenHash);
+    }
   }
 
   async refresh(
@@ -329,32 +329,50 @@ export class AuthenticationApplicationService {
     if (!validRefreshCredential(refreshToken)) {
       throw unauthorized();
     }
-    const replacement = randomBytes(32).toString('base64url');
+    const currentHash = createHash('sha256').update(refreshToken).digest('hex');
+    const current =
+      await this.repository.findRefreshSessionForRotation(currentHash);
+    if (current.outcome === 'INVALID') throw unauthorized();
+
     const now = new Date();
+    const replacement = randomBytes(32).toString('base64url');
+    if (current.outcome === 'REVOKED') {
+      // Preserve the approved replay response: the repository atomically
+      // invalidates the user's remaining sessions and returns REPLAYED.
+      await this.repository.rotateRefreshSession(
+        currentHash,
+        createHash('sha256').update(replacement).digest('hex'),
+        new Date(now.getTime() + REFRESH_LIFETIME_MS),
+        now,
+      );
+      throw unauthorized();
+    }
+    if (current.expiresAt.getTime() <= now.getTime()) throw unauthorized();
+
+    const account = await this.repository.findAccountById(current.userId);
+    if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
+      throw unauthorized();
+    }
+    const organization = await this.organizationResolver.resolveForUser(
+      current.userId,
+      current.organizationId,
+    );
+    if (organization.outcome !== 'RESOLVED') throw unauthorized();
+    // Finish all fallible eligibility/context work and signing before token
+    // state changes. A later failure therefore cannot strand an unissued hash.
+    const accessToken = this.accessTokens.signAccessToken({
+      sub: current.userId,
+      email: account.email,
+      orgId: current.organizationId,
+      roles: organization.context.roles,
+    });
     const rotation = await this.repository.rotateRefreshSession(
-      createHash('sha256').update(refreshToken).digest('hex'),
+      currentHash,
       createHash('sha256').update(replacement).digest('hex'),
       new Date(now.getTime() + REFRESH_LIFETIME_MS),
       now,
     );
     if (rotation.outcome !== 'ROTATED') throw unauthorized();
-    const account = await this.repository.findAccountById(rotation.userId);
-    if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
-      throw unauthorized();
-    }
-    const organization = await this.organizationResolver.resolveForUser(
-      rotation.userId,
-      rotation.organizationId,
-    );
-    if (organization.outcome !== 'RESOLVED') throw unauthorized();
-    return {
-      accessToken: this.accessTokens.signAccessToken({
-        sub: rotation.userId,
-        email: account.email,
-        orgId: rotation.organizationId,
-        roles: organization.context.roles,
-      }),
-      refreshToken: replacement,
-    };
+    return { accessToken, refreshToken: replacement };
   }
 }

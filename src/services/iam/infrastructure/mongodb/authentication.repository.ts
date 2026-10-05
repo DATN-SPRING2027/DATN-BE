@@ -10,6 +10,7 @@ import type {
   OrganizationRoleAssignment,
   RefreshAccount,
   RefreshRotationResult,
+  RefreshSessionLookup,
 } from '../../application/authentication/authentication.repository';
 import { IAM_PERSISTENCE } from '../persistence';
 
@@ -254,6 +255,36 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       )
       .exec();
     return result.modifiedCount > 0;
+  }
+
+  async findRefreshSessionForRotation(
+    tokenHash: string,
+  ): Promise<RefreshSessionLookup> {
+    const model = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    const row = await model
+      .findOne({ tokenHash })
+      .select({ userId: 1, organizationId: 1, isRevoked: 1, expiresAt: 1 })
+      .lean()
+      .exec();
+    if (
+      !row ||
+      !(row.userId instanceof Types.ObjectId) ||
+      !(row.organizationId instanceof Types.ObjectId) ||
+      typeof row.isRevoked !== 'boolean' ||
+      !(row.expiresAt instanceof Date) ||
+      !Number.isFinite(row.expiresAt.getTime())
+    ) {
+      return { outcome: 'INVALID' };
+    }
+    return {
+      outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
+      userId: String(row.userId),
+      organizationId: String(row.organizationId),
+      expiresAt: row.expiresAt,
+    };
   }
 
   async rotateRefreshSession(

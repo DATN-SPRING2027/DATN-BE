@@ -314,6 +314,10 @@ describe('IAM OpenAPI contract', () => {
       },
     });
     expect(logout.responses['200']).toMatchObject({
+      headers: {
+        'Set-Cookie': { schema: { type: 'string' } },
+        'Cache-Control': { schema: { const: 'no-store' } },
+      },
       content: {
         'application/json': {
           schema: { $ref: '#/components/schemas/LogoutResponse' },
@@ -374,7 +378,7 @@ describe('IAM OpenAPI contract', () => {
     const refreshResponse = JSON.stringify(refresh.responses['200']);
     expect(refreshResponse).toContain('continuum_access');
     expect(refreshResponse).toContain('__Secure-refresh');
-    expect(refreshResponse).toContain('Path=/api/v1/auth/refresh');
+    expect(refreshResponse).toContain('Path=/api/v1/auth');
     expect(refreshResponse).toContain('comma-joined');
     expect(refreshResponse).not.toContain('accessToken');
     expect(refreshResponse).not.toContain('refreshToken');

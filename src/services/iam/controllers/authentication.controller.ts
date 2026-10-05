@@ -46,7 +46,7 @@ function serializeAccessCookie(token: string): string {
 function serializeRefreshCookie(token: string): string {
   return [
     `__Secure-refresh=${encodeURIComponent(token)}`,
-    'Path=/api/v1/auth/refresh',
+    'Path=/api/v1/auth',
     'Max-Age=604800',
     'HttpOnly',
     'SameSite=Lax',
@@ -79,6 +79,18 @@ function clearAccessCookie(): string {
     parts.push('Secure');
   }
   return parts.join('; ');
+}
+
+function clearRefreshCookie(): string {
+  return [
+    '__Secure-refresh=',
+    'Path=/api/v1/auth',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Secure',
+  ].join('; ');
 }
 
 async function parseLoginBody(body: unknown): Promise<LoginRequestDto> {
@@ -197,7 +209,10 @@ export class AuthenticationController {
       await this.service.logout(authorization, cookie);
       return { status: 'logged_out' };
     } finally {
-      response.setHeader('Set-Cookie', clearAccessCookie());
+      response.setHeader('Set-Cookie', [
+        clearAccessCookie(),
+        clearRefreshCookie(),
+      ]);
     }
   }
 }

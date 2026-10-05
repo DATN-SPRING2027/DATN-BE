@@ -90,6 +90,33 @@ integration('refresh session rotation on MongoDB replica set', () => {
       ).toBe(1);
       expect(await model.countDocuments({ tokenHash: 'never-issued' })).toBe(0);
 
+      const logoutHash = 'logout-refresh';
+      await create(logoutHash);
+      await expect(
+        repository.findRefreshSessionForRotation(logoutHash),
+      ).resolves.toMatchObject({
+        outcome: 'ACTIVE',
+        userId: String(userId),
+        organizationId: String(organizationId),
+      });
+      await expect(
+        repository.revokeRefreshSessionByHash(logoutHash),
+      ).resolves.toBe(true);
+      await expect(
+        repository.findRefreshSessionForRotation(logoutHash),
+      ).resolves.toMatchObject({ outcome: 'REVOKED' });
+      await expect(
+        repository.rotateRefreshSession(
+          logoutHash,
+          'logout-replacement',
+          expiresAt,
+          now,
+        ),
+      ).resolves.toEqual({ outcome: 'REPLAYED' });
+      expect(
+        await model.countDocuments({ tokenHash: 'logout-replacement' }),
+      ).toBe(0);
+
       await create('expired', new Date(now.getTime() - 1000));
       await expect(
         repository.rotateRefreshSession(

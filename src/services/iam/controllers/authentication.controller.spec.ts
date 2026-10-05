@@ -126,9 +126,7 @@ describe('AuthenticationController', () => {
     expect(response.headers['set-cookie']).toHaveLength(3);
     expect(response.headers['set-cookie'][0]).toContain('SameSite=Lax');
     expect(response.headers['set-cookie'][1]).toContain('__Secure-refresh=');
-    expect(response.headers['set-cookie'][1]).toContain(
-      'Path=/api/v1/auth/refresh',
-    );
+    expect(response.headers['set-cookie'][1]).toContain('Path=/api/v1/auth');
     expect(response.headers['set-cookie'][1]).toContain('Secure');
     expect(response.headers['set-cookie'][2]).toContain('__Host-csrf=');
     expect(response.headers['set-cookie'][2]).toContain('Path=/');
@@ -252,23 +250,26 @@ describe('AuthenticationController', () => {
       .expect(401);
   });
 
-  it('POST /api/v1/auth/logout is idempotent and clears the known access-cookie path', async () => {
+  it('POST /api/v1/auth/logout passes refresh cookie and clears access and refresh cookie paths', async () => {
     const response = await request(app.getHttpServer() as App)
       .post('/api/v1/auth/logout')
-      .set('Cookie', 'continuum_refresh=opaque-refresh')
+      .set('Cookie', '__Secure-refresh=opaque-refresh')
       .expect(200)
       .expect({ status: 'logged_out' });
 
     expect(service.logout).toHaveBeenCalledWith(
       undefined,
-      'continuum_refresh=opaque-refresh',
+      '__Secure-refresh=opaque-refresh',
     );
+    expect(response.headers['set-cookie']).toHaveLength(2);
     expect(response.headers['set-cookie'][0]).toContain('continuum_access=');
     expect(response.headers['set-cookie'][0]).toContain('Path=/');
     expect(response.headers['set-cookie'][0]).toContain('Max-Age=0');
-    expect(response.headers['set-cookie'][0]).not.toContain(
-      'continuum_refresh=',
-    );
+    expect(response.headers['set-cookie'][1]).toContain('__Secure-refresh=');
+    expect(response.headers['set-cookie'][1]).toContain('Path=/api/v1/auth');
+    expect(response.headers['set-cookie'][1]).toContain('Max-Age=0');
+    expect(response.headers['set-cookie'][1]).toContain('HttpOnly');
+    expect(response.headers['set-cookie'][1]).toContain('Secure');
   });
 
   it('POST /api/v1/auth/refresh returns 200 with two separate replacement cookies and no JSON tokens', async () => {
@@ -286,9 +287,7 @@ describe('AuthenticationController', () => {
     expect(response.headers['set-cookie'][0]).toContain('SameSite=Lax');
     expect(response.headers['set-cookie'][0]).toContain('Max-Age=900');
     expect(response.headers['set-cookie'][1]).toMatch(/^__Secure-refresh=/);
-    expect(response.headers['set-cookie'][1]).toContain(
-      'Path=/api/v1/auth/refresh',
-    );
+    expect(response.headers['set-cookie'][1]).toContain('Path=/api/v1/auth');
     expect(response.headers['set-cookie'][1]).toContain('Secure');
     expect(response.headers['set-cookie'][1]).toContain('HttpOnly');
     expect(response.headers['set-cookie'][1]).toContain('SameSite=Lax');

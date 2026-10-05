@@ -65,3 +65,15 @@ The replacement access cookie remains `continuum_access; Path=/; HttpOnly; SameS
 **Initial browser issuance (A-02 follow-up authorization):** Successful browser Login creates one hashed refresh session before returning credentials and sets the `__Secure-refresh` cookie and an independent random `__Host-csrf` cookie alongside the access cookie. The CSRF cookie is a browser session cookie because no persistent Max-Age was selected for it. This supplies the starting credentials for the decided refresh route without adding a JSON token-acquisition channel. A failed persistence write issues no credentials.
 
 **Research basis, not DATN decision authority:** The [HTTP cookie draft](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis) distinguishes `__Secure-` (requires `Secure`) from `__Host-` (also requires `Path=/` and no `Domain`). The [OWASP CSRF guidance](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) describes cookie-to-header double submit and warns about cookie injection in naive variants; the chosen `__Host-` CSRF cookie constrains host and path but is not a newly selected signed-CSRF scheme. [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) defines `application/problem+json`; its adoption here remains deferred as stated above.
+
+## 2026-10-05 amendment — refresh logout cookie delivery
+
+**Decision source:** A-02 PR review resolution on 2026-10-05. This follow-up changes only the refresh-cookie path from the A-02 amendment above so the browser presents the same session credential to both refresh and logout.
+
+| Boundary | Decision |
+| --- | --- |
+| Refresh cookie path | `__Secure-refresh` uses `Path=/api/v1/auth`, `Secure; HttpOnly; SameSite=Lax`, no `Domain`, and seven-day `Max-Age`. This path covers both `/api/v1/auth/refresh` and `/api/v1/auth/logout`. |
+| Logout | Logout hashes and revokes the presented `__Secure-refresh` session, clears `continuum_access` at `Path=/`, and expires `__Secure-refresh` at `Path=/api/v1/auth`. The legacy `continuum_refresh` name remains accepted for session revocation during transition. |
+| Refresh ordering | Refresh first resolves the persisted session owner, active account, and active organization context, then signs the replacement access credential. Only after all of those steps succeed does it atomically consume the old refresh session and persist its replacement. A failed eligibility lookup or signing step leaves the presented refresh session usable. |
+
+This follow-up does not change the refresh endpoint, response status/body, CSRF cookie/header, error status/body, token format, lifetime, hash persistence, replay handling, or refresh URL.
