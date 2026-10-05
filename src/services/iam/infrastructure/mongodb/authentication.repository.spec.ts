@@ -3,6 +3,74 @@ import type { Connection } from 'mongoose';
 import { AuthenticationRepository } from './authentication.repository';
 
 describe('AuthenticationRepository', () => {
+  it('looks up only complete refresh-session fields before rotation', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';
+    const expiresAt = new Date(Date.now() + 60_000);
+    const query = {
+      select: jest.fn(),
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue({
+        userId: new Types.ObjectId(userId),
+        organizationId: new Types.ObjectId(organizationId),
+        isRevoked: false,
+        expiresAt,
+      }),
+    };
+    query.select.mockReturnValue(query);
+    query.lean.mockReturnValue(query);
+    const model = { findOne: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_refresh_sessions: model },
+    } as unknown as Connection;
+    const repository = new AuthenticationRepository(connection);
+
+    await expect(
+      repository.findRefreshSessionForRotation('sha256-digest'),
+    ).resolves.toEqual({
+      outcome: 'ACTIVE',
+      userId,
+      organizationId,
+      expiresAt,
+    });
+    expect(model.findOne).toHaveBeenCalledWith({ tokenHash: 'sha256-digest' });
+    expect(query.select).toHaveBeenCalledWith({
+      userId: 1,
+      organizationId: 1,
+      isRevoked: 1,
+      expiresAt: 1,
+    });
+  });
+
+  it('loads only the account fields needed after a committed refresh rotation', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const query = {
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue({
+        email: 'person@example.com',
+        status: 'ACTIVE',
+        twoFactorEnabled: false,
+      }),
+    };
+    query.lean.mockReturnValue(query);
+    const model = { findById: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_users: model },
+    } as unknown as Connection;
+    await expect(
+      new AuthenticationRepository(connection).findAccountById(userId),
+    ).resolves.toEqual({
+      email: 'person@example.com',
+      status: 'ACTIVE',
+      twoFactorEnabled: false,
+    });
+    expect(model.findById).toHaveBeenCalledWith(new Types.ObjectId(userId), {
+      email: 1,
+      status: 1,
+      twoFactorEnabled: 1,
+    });
+  });
+
   it('loads only ACTIVE organization memberships', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
     const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';

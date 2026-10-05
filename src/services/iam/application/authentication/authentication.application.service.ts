@@ -5,7 +5,7 @@ import {
   HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
 import {
   AUTH_SECURITY_STORE,
@@ -39,7 +39,48 @@ export interface AuthenticatedIdentity {
 
 export interface LoginResult {
   accessToken: string;
+  refreshToken: string;
+  csrfToken: string;
   user: AuthenticatedIdentity;
+}
+
+export interface RefreshResult {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export class RefreshCsrfError extends Error {
+  constructor() {
+    super('Refresh CSRF comparison failed');
+    this.name = RefreshCsrfError.name;
+  }
+}
+
+const REFRESH_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+function validCsrfPair(
+  cookieValue: string | undefined,
+  headerValue: string | undefined,
+): boolean {
+  if (
+    !cookieValue ||
+    !headerValue ||
+    cookieValue.length > 4096 ||
+    headerValue.length > 4096
+  )
+    return false;
+  const cookieBytes = Buffer.from(cookieValue);
+  const headerBytes = Buffer.from(headerValue);
+  return (
+    cookieBytes.length === headerBytes.length &&
+    timingSafeEqual(cookieBytes, headerBytes)
+  );
+}
+
+function validRefreshCredential(value: string | undefined): value is string {
+  if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
+  const bytes = Buffer.from(value, 'base64url');
+  return bytes.length === 32 && bytes.toString('base64url') === value;
 }
 
 function unauthorized(): UnauthorizedException {
@@ -49,7 +90,7 @@ function unauthorized(): UnauthorizedException {
   });
 }
 
-function readCookie(
+export function readCookie(
   cookieHeader: string | undefined,
   name: string,
 ): string | undefined {
@@ -83,11 +124,12 @@ export function extractAccessToken(
   return token && token.length <= 8192 ? token : undefined;
 }
 
-function extractRefreshToken(
-  cookieHeader: string | undefined,
-): string | undefined {
-  const token = readCookie(cookieHeader, 'continuum_refresh');
-  return token && token.length <= 4096 ? token : undefined;
+function extractRefreshTokens(cookieHeader: string | undefined): string[] {
+  const tokens = [
+    readCookie(cookieHeader, '__Secure-refresh'),
+    readCookie(cookieHeader, 'continuum_refresh'),
+  ];
+  return [...new Set(tokens.filter(validRefreshCredential))];
 }
 
 @Injectable()
@@ -181,6 +223,14 @@ export class AuthenticationApplicationService {
       organizationId: organization.context.orgId,
       roles: organization.context.roles,
     };
+    const refreshToken = randomBytes(32).toString('base64url');
+    const csrfToken = randomBytes(32).toString('base64url');
+    await this.repository.createRefreshSession(
+      identity.id,
+      identity.organizationId,
+      createHash('sha256').update(refreshToken).digest('hex'),
+      new Date(Date.now() + REFRESH_LIFETIME_MS),
+    );
     const accessToken = this.accessTokens.signAccessToken({
       sub: identity.id,
       email: identity.email,
@@ -188,7 +238,7 @@ export class AuthenticationApplicationService {
       roles: identity.roles,
     });
 
-    return { accessToken, user: identity };
+    return { accessToken, refreshToken, csrfToken, user: identity };
   }
 
   private async rejectInvalidPassword(emailKey: string): Promise<never> {
@@ -263,10 +313,66 @@ export class AuthenticationApplicationService {
         if (!(error instanceof AccessTokenError)) throw error;
       }
     }
-    const refreshToken = extractRefreshToken(cookieHeader);
-    if (!refreshToken) return;
+    for (const refreshToken of extractRefreshTokens(cookieHeader)) {
+      const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
+      await this.repository.revokeRefreshSessionByHash(tokenHash);
+    }
+  }
 
-    const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
-    await this.repository.revokeRefreshSessionByHash(tokenHash);
+  async refresh(
+    refreshToken: string | undefined,
+    csrfCookie: string | undefined,
+    csrfHeader: string | undefined,
+  ): Promise<RefreshResult> {
+    // The HTTP response for a CSRF failure remains an A-01 TBD.
+    if (!validCsrfPair(csrfCookie, csrfHeader)) throw new RefreshCsrfError();
+    if (!validRefreshCredential(refreshToken)) {
+      throw unauthorized();
+    }
+    const currentHash = createHash('sha256').update(refreshToken).digest('hex');
+    const current =
+      await this.repository.findRefreshSessionForRotation(currentHash);
+    if (current.outcome === 'INVALID') throw unauthorized();
+
+    const now = new Date();
+    const replacement = randomBytes(32).toString('base64url');
+    if (current.outcome === 'REVOKED') {
+      // Preserve the approved replay response: the repository atomically
+      // invalidates the user's remaining sessions and returns REPLAYED.
+      await this.repository.rotateRefreshSession(
+        currentHash,
+        createHash('sha256').update(replacement).digest('hex'),
+        new Date(now.getTime() + REFRESH_LIFETIME_MS),
+        now,
+      );
+      throw unauthorized();
+    }
+    if (current.expiresAt.getTime() <= now.getTime()) throw unauthorized();
+
+    const account = await this.repository.findAccountById(current.userId);
+    if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
+      throw unauthorized();
+    }
+    const organization = await this.organizationResolver.resolveForUser(
+      current.userId,
+      current.organizationId,
+    );
+    if (organization.outcome !== 'RESOLVED') throw unauthorized();
+    // Finish all fallible eligibility/context work and signing before token
+    // state changes. A later failure therefore cannot strand an unissued hash.
+    const accessToken = this.accessTokens.signAccessToken({
+      sub: current.userId,
+      email: account.email,
+      orgId: current.organizationId,
+      roles: organization.context.roles,
+    });
+    const rotation = await this.repository.rotateRefreshSession(
+      currentHash,
+      createHash('sha256').update(replacement).digest('hex'),
+      new Date(now.getTime() + REFRESH_LIFETIME_MS),
+      now,
+    );
+    if (rotation.outcome !== 'ROTATED') throw unauthorized();
+    return { accessToken, refreshToken: replacement };
   }
 }

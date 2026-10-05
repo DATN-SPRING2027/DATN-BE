@@ -45,3 +45,35 @@ On successful refresh, the target emits **two separate `Set-Cookie` fields**: `c
 **A-02 consumes** the refresh route's NestJS capability, single-use atomic rotation, user-wide known-token replay response, seven-day expiry, hash-only persistence, backend CSRF comparison, and fail-closed behavior. It must not infer a family field or programmatic issuance flow. **A-03 consumes** the sole browser refresh URL, cookie attributes, readable CSRF value/header transport, independent `Set-Cookie` relay, and browser session recovery boundary. Neither task may claim completion solely from this contract.
 
 **UNKNOWN/TBD requiring explicit closure before the corresponding response can be advertised as final:** refresh success status/body; CSRF and transaction-failure status/body; CSRF cookie name; refresh-cookie clearing behavior across Logout and failed refresh; browser recovery trigger/retry policy; programmatic token acquisition/refresh; access-token revocation SLA; G-11 Auth Audit/Outbox policy; production secret provisioning/rotation; MongoDB 7.0 `rs0` transaction/index/legacy-row proof; and browser multi-cookie proof. Do not reuse the draft OpenAPI `AuthSession`/`TokenPair` JSON shape as an approved refresh response.
+
+## 2026-10-05 amendment — A-02 refresh HTTP contract closure
+
+**Decision source:** Explicit A-02 implementation instruction supplied on 2026-10-05. This amendment closes only the refresh-specific HTTP TBDs identified above. Earlier TBD statements remain as the historical A-01 snapshot. Other unresolved A-01 items remain unresolved.
+
+| Boundary | A-02 decision |
+| --- | --- |
+| Endpoint | `POST /api/v1/auth/refresh` on NestJS, reached through the same public Next.js BFF URL. |
+| Success | `200 {"status":"refreshed"}`; `Cache-Control: no-store`; two separate `Set-Cookie` fields for replacement access and refresh credentials. No token value in browser-readable JSON. |
+| Invalid refresh | Missing, malformed, unknown, expired, revoked, or replayed credential: generic `401 AUTH_REFRESH_INVALID`, without disclosing the reason. Known revoked replay retains the prior user-wide refresh-session invalidation decision. |
+| CSRF | Cookie `__Host-csrf`, header `X-CSRF-Token`; missing or mismatched values: `403 AUTH_CSRF_INVALID` before refresh-session mutation. Cookie is readable by browser JavaScript, `Secure; SameSite=Lax; Path=/`, with no `Domain`. |
+| Refresh cookie | `__Secure-refresh`, `Secure; HttpOnly; SameSite=Lax; Path=/api/v1/auth/refresh`, with no `Domain`; seven-day `Max-Age=604800`. This refresh-specific name and path supersede the earlier `continuum_refresh` and `/api/v1/auth` target for A-02. |
+| Internal/transaction failure | `500 AUTH_REFRESH_FAILED`, with no replacement credentials, no partial rotation, and no database details in the response. |
+| Error representation | Retain the existing scoped structured JSON error architecture (`code`, `message`, `details`, `requestId`). `application/problem+json` is deferred because the current global exception filter does not support it; no global error-format change is authorized here. |
+
+The replacement access cookie remains `continuum_access; Path=/; HttpOnly; SameSite=Lax; Max-Age=900`, with `Secure` in production, and the JWT lifetime remains 15 minutes. Refresh retains the previously approved opaque credential, SHA-256 hash-only persistence, atomic single-use rotation, seven-day application-enforced expiry, and user-wide known-token replay response. This amendment does not choose browser recovery, programmatic acquisition, logout clearing, or a new audit/blacklist policy.
+
+**Initial browser issuance (A-02 follow-up authorization):** Successful browser Login creates one hashed refresh session before returning credentials and sets the `__Secure-refresh` cookie and an independent random `__Host-csrf` cookie alongside the access cookie. The CSRF cookie is a browser session cookie because no persistent Max-Age was selected for it. This supplies the starting credentials for the decided refresh route without adding a JSON token-acquisition channel. A failed persistence write issues no credentials.
+
+**Research basis, not DATN decision authority:** The [HTTP cookie draft](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis) distinguishes `__Secure-` (requires `Secure`) from `__Host-` (also requires `Path=/` and no `Domain`). The [OWASP CSRF guidance](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) describes cookie-to-header double submit and warns about cookie injection in naive variants; the chosen `__Host-` CSRF cookie constrains host and path but is not a newly selected signed-CSRF scheme. [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) defines `application/problem+json`; its adoption here remains deferred as stated above.
+
+## 2026-10-05 amendment — refresh logout cookie delivery
+
+**Decision source:** A-02 PR review resolution on 2026-10-05. This follow-up changes only the refresh-cookie path from the A-02 amendment above so the browser presents the same session credential to both refresh and logout.
+
+| Boundary | Decision |
+| --- | --- |
+| Refresh cookie path | `__Secure-refresh` uses `Path=/api/v1/auth`, `Secure; HttpOnly; SameSite=Lax`, no `Domain`, and seven-day `Max-Age`. This path covers both `/api/v1/auth/refresh` and `/api/v1/auth/logout`. |
+| Logout | Logout hashes and revokes the presented `__Secure-refresh` session, clears `continuum_access` at `Path=/`, and expires `__Secure-refresh` at `Path=/api/v1/auth`. The legacy `continuum_refresh` name remains accepted for session revocation during transition. |
+| Refresh ordering | Refresh first resolves the persisted session owner, active account, and active organization context, then signs the replacement access credential. Only after all of those steps succeed does it atomically consume the old refresh session and persist its replacement. A failed eligibility lookup or signing step leaves the presented refresh session usable. |
+
+This follow-up does not change the refresh endpoint, response status/body, CSRF cookie/header, error status/body, token format, lifetime, hash persistence, replay handling, or refresh URL.

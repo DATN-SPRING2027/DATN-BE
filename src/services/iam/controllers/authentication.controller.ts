@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
   HttpCode,
   HttpStatus,
+  InternalServerErrorException,
   Post,
   Req,
   Res,
@@ -19,6 +21,8 @@ import { verifyGatewaySource } from '../../../common/http/gateway-source';
 import {
   AuthenticationApplicationService,
   type AuthenticatedIdentity,
+  readCookie,
+  RefreshCsrfError,
 } from '../application/authentication/authentication.application.service';
 import { LoginRequestDto } from '../application/authentication/login-request.dto';
 
@@ -28,7 +32,7 @@ function serializeAccessCookie(token: string): string {
     'Path=/',
     'Max-Age=900',
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
   ];
   if (
     process.env.NODE_ENV !== 'development' &&
@@ -39,6 +43,26 @@ function serializeAccessCookie(token: string): string {
   return parts.join('; ');
 }
 
+function serializeRefreshCookie(token: string): string {
+  return [
+    `__Secure-refresh=${encodeURIComponent(token)}`,
+    'Path=/api/v1/auth',
+    'Max-Age=604800',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Secure',
+  ].join('; ');
+}
+
+function serializeCsrfCookie(token: string): string {
+  return [
+    `__Host-csrf=${encodeURIComponent(token)}`,
+    'Path=/',
+    'SameSite=Lax',
+    'Secure',
+  ].join('; ');
+}
+
 function clearAccessCookie(): string {
   const parts = [
     'continuum_access=',
@@ -46,7 +70,7 @@ function clearAccessCookie(): string {
     'Max-Age=0',
     'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
   ];
   if (
     process.env.NODE_ENV !== 'development' &&
@@ -55,6 +79,18 @@ function clearAccessCookie(): string {
     parts.push('Secure');
   }
   return parts.join('; ');
+}
+
+function clearRefreshCookie(): string {
+  return [
+    '__Secure-refresh=',
+    'Path=/api/v1/auth',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Secure',
+  ].join('; ');
 }
 
 async function parseLoginBody(body: unknown): Promise<LoginRequestDto> {
@@ -104,8 +140,51 @@ export class AuthenticationController {
       }
     }
     const result = await this.service.login({ ...dto, sourceIp });
-    response.setHeader('Set-Cookie', serializeAccessCookie(result.accessToken));
+    response.setHeader('Set-Cookie', [
+      serializeAccessCookie(result.accessToken),
+      serializeRefreshCookie(result.refreshToken),
+      serializeCsrfCookie(result.csrfToken),
+    ]);
     return { user: result.user };
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refresh(
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ status: 'refreshed' }> {
+    response.setHeader('Cache-Control', 'no-store');
+    try {
+      const result = await this.service.refresh(
+        readCookie(cookie, '__Secure-refresh'),
+        readCookie(cookie, '__Host-csrf'),
+        csrfHeader,
+      );
+      response.setHeader('Set-Cookie', [
+        serializeAccessCookie(result.accessToken),
+        serializeRefreshCookie(result.refreshToken),
+      ]);
+      return { status: 'refreshed' };
+    } catch (error) {
+      if (error instanceof RefreshCsrfError) {
+        throw new ForbiddenException({
+          code: 'AUTH_CSRF_INVALID',
+          message: 'CSRF validation failed.',
+        });
+      }
+      if (error instanceof UnauthorizedException) {
+        throw new UnauthorizedException({
+          code: 'AUTH_REFRESH_INVALID',
+          message: 'Refresh credential is invalid.',
+        });
+      }
+      throw new InternalServerErrorException({
+        code: 'AUTH_REFRESH_FAILED',
+        message: 'Refresh failed.',
+      });
+    }
   }
 
   @Get('me')
@@ -130,7 +209,10 @@ export class AuthenticationController {
       await this.service.logout(authorization, cookie);
       return { status: 'logged_out' };
     } finally {
-      response.setHeader('Set-Cookie', clearAccessCookie());
+      response.setHeader('Set-Cookie', [
+        clearAccessCookie(),
+        clearRefreshCookie(),
+      ]);
     }
   }
 }

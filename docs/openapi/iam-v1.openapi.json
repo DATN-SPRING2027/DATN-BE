@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "Review-first IAM contract. Login, current identity and logout are implemented. Refresh browser transport, rotation, replay and CSRF boundaries are selected in the A-01 session contract, but refresh is not implemented and its success body/status and some error statuses remain TBD. Project create/list/detail and Project Access & Visibility V1 operations are accepted; other operations remain proposed or unresolved. Browser authentication uses HttpOnly cookies. Bearer consumption is supported, while programmatic token acquisition is deferred. Tokens are never returned in browser JSON responses."
+    "description": "Review-first IAM contract. Login, current identity, logout and the A-02 backend refresh HTTP route are implemented. The A-01 session contract's dated A-02 amendment closes refresh response and cookie details; browser BFF routing is tracked separately. Project create/list/detail and Project Access & Visibility V1 operations are accepted; other operations remain proposed or unresolved. Browser authentication uses HttpOnly cookies. Bearer consumption is supported, while programmatic token acquisition is deferred. Tokens are never returned in browser JSON responses."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -22,7 +22,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log in",
-        "description": "Authenticates an active user, sets continuum_access as an HttpOnly cookie and returns the selected user identity. If the verified account belongs to multiple organizations, returns 409 with eligible organization names and IDs. Invalid credentials use a generic response.",
+        "description": "Authenticates an active user, stores only a hash of the initial refresh credential, sets access and refresh HttpOnly cookies plus a readable CSRF cookie, and returns the selected user identity without tokens. If the verified account belongs to multiple organizations, returns 409 with eligible organization names and IDs. Invalid credentials use a generic response.",
         "operationId": "login",
         "security": [],
         "requestBody": {
@@ -38,7 +38,7 @@
             "description": "Authentication succeeded.",
             "headers": {
               "Set-Cookie": {
-                "description": "Target browser-cookie baseline: continuum_access; HttpOnly; SameSite=Lax; Path=/; Max-Age=900; Secure in production (localhost HTTP exception). Current WP-04A runtime still emits SameSite=Strict; A-02/A-03 integration must reconcile this documented difference.",
+                "description": "Three separate fields: continuum_access (HttpOnly; SameSite=Lax; Path=/; Max-Age=900; Secure in production), __Secure-refresh (Secure; HttpOnly; SameSite=Lax; Path=/api/v1/auth; Max-Age=604800; no Domain), and __Host-csrf (Secure; SameSite=Lax; Path=/; no Domain; not HttpOnly). Never combine fields with commas.",
                 "schema": { "type": "string" }
               }
             },
@@ -59,30 +59,47 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Rotate a browser refresh credential",
-        "description": "Approved MVP behavior, not implemented. The browser uses the Next.js BFF public URL at this path, which forwards to NestJS. Request credentials are the HttpOnly refresh cookie, a readable CSRF cookie, and matching X-CSRF-Token header; no JSON refresh-token request is selected. Successful rotation atomically consumes the old token and persists its replacement before issuing replacement cookies. Exact success status/body, CSRF failure status/body, and transaction-failure status/body are TBD; see docs/decisions/auth-session-contract-a-01.md.",
+        "description": "Backend A-02 refresh HTTP contract. The browser uses the Next.js BFF public URL at this same path. Request credentials are the HttpOnly __Secure-refresh cookie, readable __Host-csrf cookie, and matching X-CSRF-Token header; no JSON refresh-token request is accepted. Successful rotation commits before issuing replacement cookies. See the dated A-02 amendment in docs/decisions/auth-session-contract-a-01.md.",
         "operationId": "refreshSession",
-        "x-contract-status": "approved-behavior-response-shape-tbd-not-implemented",
+        "x-contract-status": "implemented-backend-a-02",
         "security": [{ "refreshCookie": [] }],
         "parameters": [
           {
             "name": "X-CSRF-Token",
             "in": "header",
             "required": true,
-            "description": "Matches the separate readable CSRF cookie. NestJS validates the pair. Cookie name and CSRF failure status remain TBD.",
+            "description": "Matches the readable __Host-csrf cookie. NestJS validates before refresh-session mutation.",
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "__Host-csrf",
+            "in": "cookie",
+            "required": true,
+            "description": "Readable double-submit CSRF cookie; Secure; SameSite=Lax; Path=/; no Domain.",
             "schema": { "type": "string", "minLength": 1 }
           }
         ],
         "responses": {
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "default": {
-            "description": "Success response status/body and CSRF or transaction-failure status/body are TBD. Successful rotation returns replacement access and refresh credentials through separate Set-Cookie fields, never JSON token fields. Errors do not set replacement credentials.",
+          "200": {
+            "description": "Refresh credential rotated once and replacement cookies issued after transaction commit.",
             "headers": {
               "Set-Cookie": {
-                "description": "On successful rotation only, emit two separate Set-Cookie fields: continuum_access (Path=/; HttpOnly; SameSite=Lax; Secure in production; Max-Age=900) and continuum_refresh (host-only, no Domain; Path=/api/v1/auth; HttpOnly; SameSite=Lax; Secure in production; Max-Age=604800). Never combine them into one comma-separated value. The CSRF cookie name and whether it is reissued remain TBD. See docs/decisions/auth-session-contract-a-01.md.",
+                "description": "Two separate fields, never comma-joined: continuum_access (Path=/; HttpOnly; SameSite=Lax; Max-Age=900; Secure in production) and __Secure-refresh (Path=/api/v1/auth; Secure; HttpOnly; SameSite=Lax; Max-Age=604800; no Domain).",
                 "schema": { "type": "string" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RefreshResponse" }
               }
             }
-          }
+          },
+          "401": { "$ref": "#/components/responses/RefreshInvalid" },
+          "403": { "$ref": "#/components/responses/RefreshCsrfInvalid" },
+          "500": { "$ref": "#/components/responses/RefreshFailed" }
         }
       }
     },
@@ -90,11 +107,20 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log out the current session",
-        "description": "Idempotently clears the access cookie and returns confirmation. Current runtime revokes a valid presented access token for its remaining lifetime and a matching presented refresh session where available. It does not yet clear a refresh cookie at its future path.",
+        "description": "Idempotently clears access and refresh cookies at their issued paths. A presented valid access token is revoked for its remaining lifetime; a presented refresh session is revoked by hash before confirmation.",
         "operationId": "logout",
         "responses": {
           "200": {
             "description": "Session logged out.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Separate clearing fields for continuum_access at Path=/ and __Secure-refresh at Path=/api/v1/auth.",
+                "schema": { "type": "string" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/LogoutResponse" }
@@ -755,8 +781,8 @@
       "refreshCookie": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "continuum_refresh",
-        "description": "Opaque HttpOnly browser refresh credential; Path=/api/v1/auth. Its acquisition and rotation runtime are pending A-02/A-03."
+        "name": "__Secure-refresh",
+        "description": "Opaque HttpOnly browser refresh credential; Secure; SameSite=Lax; Path=/api/v1/auth so both refresh and logout receive it; no Domain."
       },
       "bearerAuth": {
         "type": "http",
@@ -809,6 +835,30 @@
       }
     },
     "responses": {
+      "RefreshInvalid": {
+        "description": "Generic invalid refresh credential, including known revoked-token replay. No replacement cookies.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/RefreshInvalidError" }
+          }
+        }
+      },
+      "RefreshCsrfInvalid": {
+        "description": "Missing or mismatched CSRF values. No refresh-session mutation or replacement cookies.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/RefreshCsrfError" }
+          }
+        }
+      },
+      "RefreshFailed": {
+        "description": "Internal or transaction failure. No replacement cookies or database details.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/RefreshFailedError" }
+          }
+        }
+      },
       "Unauthorized": {
         "description": "Authentication is missing, invalid, expired or revoked.",
         "content": {
@@ -938,6 +988,24 @@
           "requestId": { "type": "string", "minLength": 1 }
         }
       },
+      "RefreshInvalidError": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ErrorResponse" },
+          { "type": "object", "properties": { "code": { "const": "AUTH_REFRESH_INVALID" } } }
+        ]
+      },
+      "RefreshCsrfError": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ErrorResponse" },
+          { "type": "object", "properties": { "code": { "const": "AUTH_CSRF_INVALID" } } }
+        ]
+      },
+      "RefreshFailedError": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ErrorResponse" },
+          { "type": "object", "properties": { "code": { "const": "AUTH_REFRESH_FAILED" } } }
+        ]
+      },
       "LoginRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -971,6 +1039,14 @@
         "required": ["user"],
         "properties": {
           "user": { "$ref": "#/components/schemas/CurrentUser" }
+        }
+      },
+      "RefreshResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "const": "refreshed" }
         }
       },
       "LogoutResponse": {

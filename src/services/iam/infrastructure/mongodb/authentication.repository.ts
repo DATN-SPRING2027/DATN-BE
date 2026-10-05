@@ -8,6 +8,9 @@ import type {
   AuthenticationRepositoryPort,
   LoginOrganizationOption,
   OrganizationRoleAssignment,
+  RefreshAccount,
+  RefreshRotationResult,
+  RefreshSessionLookup,
 } from '../../application/authentication/authentication.repository';
 import { IAM_PERSISTENCE } from '../persistence';
 
@@ -35,8 +38,12 @@ interface OrganizationDocument {
 }
 
 interface RefreshSessionDocument {
+  _id: Types.ObjectId;
+  userId: Types.ObjectId;
+  organizationId: Types.ObjectId;
   tokenHash: string;
   isRevoked: boolean;
+  expiresAt: Date;
 }
 
 export class AuthenticationRepositoryUnavailableError extends Error {
@@ -110,6 +117,28 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       name: user.fullName,
       passwordHash:
         typeof user.passwordHash === 'string' ? user.passwordHash : '',
+      status: user.status,
+      twoFactorEnabled: user.twoFactorEnabled === true,
+    };
+  }
+
+  async findAccountById(userId: string): Promise<RefreshAccount | null> {
+    if (!Types.ObjectId.isValid(userId)) return null;
+    const model = this.getModel<UserDocument>(
+      USERS_MODEL,
+      'USER_MODEL_UNAVAILABLE',
+    );
+    const user = await model
+      .findById(new Types.ObjectId(userId), {
+        email: 1,
+        status: 1,
+        twoFactorEnabled: 1,
+      })
+      .lean()
+      .exec();
+    if (!user) return null;
+    return {
+      email: user.email,
       status: user.status,
       twoFactorEnabled: user.twoFactorEnabled === true,
     };
@@ -226,6 +255,148 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       )
       .exec();
     return result.modifiedCount > 0;
+  }
+
+  async findRefreshSessionForRotation(
+    tokenHash: string,
+  ): Promise<RefreshSessionLookup> {
+    const model = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    const row = await model
+      .findOne({ tokenHash })
+      .select({ userId: 1, organizationId: 1, isRevoked: 1, expiresAt: 1 })
+      .lean()
+      .exec();
+    if (
+      !row ||
+      !(row.userId instanceof Types.ObjectId) ||
+      !(row.organizationId instanceof Types.ObjectId) ||
+      typeof row.isRevoked !== 'boolean' ||
+      !(row.expiresAt instanceof Date) ||
+      !Number.isFinite(row.expiresAt.getTime())
+    ) {
+      return { outcome: 'INVALID' };
+    }
+    return {
+      outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
+      userId: String(row.userId),
+      organizationId: String(row.organizationId),
+      expiresAt: row.expiresAt,
+    };
+  }
+
+  async rotateRefreshSession(
+    currentHash: string,
+    replacementHash: string,
+    expiresAt: Date,
+    now: Date,
+  ): Promise<RefreshRotationResult> {
+    const model = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    if (!this.connection) {
+      throw new AuthenticationRepositoryUnavailableError(
+        'CONNECTION_UNAVAILABLE',
+      );
+    }
+    const session = await this.connection.startSession();
+    try {
+      const result = await session.withTransaction(async () => {
+        const effectiveNow = new Date(Math.max(now.getTime(), Date.now()));
+        const row = await model
+          .findOne({ tokenHash: currentHash })
+          .session(session)
+          .lean()
+          .exec();
+        if (
+          !row ||
+          !(row.userId instanceof Types.ObjectId) ||
+          !(row.organizationId instanceof Types.ObjectId) ||
+          typeof row.isRevoked !== 'boolean' ||
+          !(row.expiresAt instanceof Date) ||
+          !Number.isFinite(row.expiresAt.getTime())
+        ) {
+          return { outcome: 'INVALID' } as const;
+        }
+        if (row.isRevoked) {
+          await model
+            .updateMany(
+              { userId: row.userId, isRevoked: false },
+              { $set: { isRevoked: true } },
+              { session },
+            )
+            .exec();
+          return { outcome: 'REPLAYED' } as const;
+        }
+        if (row.expiresAt.getTime() <= effectiveNow.getTime()) {
+          return { outcome: 'INVALID' } as const;
+        }
+        const consumed = await model
+          .updateOne(
+            {
+              _id: row._id,
+              tokenHash: currentHash,
+              isRevoked: false,
+              expiresAt: { $gt: effectiveNow },
+            },
+            { $set: { isRevoked: true } },
+            { session },
+          )
+          .exec();
+        if (consumed.modifiedCount !== 1) {
+          return { outcome: 'INVALID' } as const;
+        }
+        await model.create(
+          [
+            {
+              userId: row.userId,
+              organizationId: row.organizationId,
+              tokenHash: replacementHash,
+              isRevoked: false,
+              expiresAt,
+            },
+          ],
+          { session },
+        );
+        return {
+          outcome: 'ROTATED' as const,
+          userId: String(row.userId),
+          organizationId: String(row.organizationId),
+        };
+      });
+      if (!result) throw new Error('Refresh transaction returned no result');
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  async createRefreshSession(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    if (
+      !Types.ObjectId.isValid(userId) ||
+      !Types.ObjectId.isValid(organizationId)
+    ) {
+      throw new Error('Invalid refresh session owner');
+    }
+    const model = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    await model.create({
+      userId: new Types.ObjectId(userId),
+      organizationId: new Types.ObjectId(organizationId),
+      tokenHash,
+      isRevoked: false,
+      expiresAt,
+    });
   }
 
   private getModel<T>(
