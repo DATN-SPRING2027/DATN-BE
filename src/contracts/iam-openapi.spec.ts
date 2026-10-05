@@ -344,6 +344,17 @@ describe('IAM OpenAPI contract', () => {
     expect(refresh.responses['401']).toBeDefined();
     expect(refresh.responses['default']).toBeDefined();
     expect(refresh.responses['200']).toBeUndefined();
+    expect(refresh.responses['default']).toMatchObject({
+      headers: { 'Set-Cookie': { schema: { type: 'string' } } },
+    });
+    const refreshResponse = JSON.stringify(refresh.responses['default']);
+    expect(refreshResponse).toContain('continuum_access');
+    expect(refreshResponse).toContain('continuum_refresh');
+    expect(refreshResponse).toContain('Path=/api/v1/auth');
+    expect(refreshResponse).toContain('comma-separated');
+    expect(refreshResponse).toContain(
+      'Errors do not set replacement credentials',
+    );
     expect(contract.components.schemas).not.toHaveProperty('AuthSession');
     expect(contract.components.schemas).not.toHaveProperty('TokenPair');
   });

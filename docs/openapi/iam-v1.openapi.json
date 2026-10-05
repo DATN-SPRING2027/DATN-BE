@@ -75,7 +75,13 @@
         "responses": {
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "default": {
-            "description": "Success response status/body and CSRF or transaction-failure status/body are TBD. On success, replacement credentials are delivered through browser cookies, never JSON token fields."
+            "description": "Success response status/body and CSRF or transaction-failure status/body are TBD. Successful rotation returns replacement access and refresh credentials through separate Set-Cookie fields, never JSON token fields. Errors do not set replacement credentials.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "On successful rotation only, emit two separate Set-Cookie fields: continuum_access (Path=/; HttpOnly; SameSite=Lax; Secure in production; Max-Age=900) and continuum_refresh (host-only, no Domain; Path=/api/v1/auth; HttpOnly; SameSite=Lax; Secure in production; Max-Age=604800). Never combine them into one comma-separated value. The CSRF cookie name and whether it is reissued remain TBD. See docs/decisions/auth-session-contract-a-01.md.",
+                "schema": { "type": "string" }
+              }
+            }
           }
         }
       }
