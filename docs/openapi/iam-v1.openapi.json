@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "Contract for authentication, users and Project Foundation. Project create/list/detail remain accepted. Project Access & Visibility V1 additionally accepts Project visibility read, PRIVATE-to-PUBLIC mutation, Project member list/add/remove, and Project Leader assign/revoke. Other operations, including Project metadata update, member role changes, PUBLIC-to-PRIVATE, teams, and refresh remain proposed or unresolved. Browser authentication uses an HttpOnly access cookie; bearer access is supported for trusted clients. Access tokens are never returned in browser JSON responses."
+    "description": "Review-first IAM contract. Login, current identity and logout are implemented. Refresh browser transport, rotation, replay and CSRF boundaries are selected in the A-01 session contract, but refresh is not implemented and its success body/status and some error statuses remain TBD. Project create/list/detail and Project Access & Visibility V1 operations are accepted; other operations remain proposed or unresolved. Browser authentication uses HttpOnly cookies. Bearer consumption is supported, while programmatic token acquisition is deferred. Tokens are never returned in browser JSON responses."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -38,7 +38,7 @@
             "description": "Authentication succeeded.",
             "headers": {
               "Set-Cookie": {
-                "description": "continuum_access; HttpOnly; SameSite=Strict; Path=/; Max-Age=900 (Secure outside local development).",
+                "description": "Target browser-cookie baseline: continuum_access; HttpOnly; SameSite=Lax; Path=/; Max-Age=900; Secure in production (localhost HTTP exception). Current WP-04A runtime still emits SameSite=Strict; A-02/A-03 integration must reconcile this documented difference.",
                 "schema": { "type": "string" }
               }
             },
@@ -58,30 +58,25 @@
     "/api/v1/auth/refresh": {
       "post": {
         "tags": ["Auth"],
-        "summary": "Rotate a session token pair",
-        "description": "Proposed, not implemented. Session rotation is outside the current authentication slice and requires a separate contract review before implementation.",
+        "summary": "Rotate a browser refresh credential",
+        "description": "Approved MVP behavior, not implemented. The browser uses the Next.js BFF public URL at this path, which forwards to NestJS. Request credentials are the HttpOnly refresh cookie, a readable CSRF cookie, and matching X-CSRF-Token header; no JSON refresh-token request is selected. Successful rotation atomically consumes the old token and persists its replacement before issuing replacement cookies. Exact success status/body, CSRF failure status/body, and transaction-failure status/body are TBD; see docs/decisions/auth-session-contract-a-01.md.",
         "operationId": "refreshSession",
-        "security": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/RefreshSessionRequest" }
-            }
+        "x-contract-status": "approved-behavior-response-shape-tbd-not-implemented",
+        "security": [{ "refreshCookie": [] }],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "Matches the separate readable CSRF cookie. NestJS validates the pair. Cookie name and CSRF failure status remain TBD.",
+            "schema": { "type": "string", "minLength": 1 }
           }
-        },
+        ],
         "responses": {
-          "200": {
-            "description": "Token pair rotated.",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/AuthSession" }
-              }
-            }
-          },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" },
-          "429": { "$ref": "#/components/responses/TooManyRequests" }
+          "default": {
+            "description": "Success response status/body and CSRF or transaction-failure status/body are TBD. On success, replacement credentials are delivered through browser cookies, never JSON token fields."
+          }
         }
       }
     },
@@ -89,7 +84,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log out the current session",
-        "description": "Revokes the presented access token, clears the access cookie and returns an idempotent confirmation.",
+        "description": "Idempotently clears the access cookie and returns confirmation. Current runtime revokes a valid presented access token for its remaining lifetime and a matching presented refresh session where available. It does not yet clear a refresh cookie at its future path.",
         "operationId": "logout",
         "responses": {
           "200": {
@@ -751,11 +746,17 @@
         "name": "continuum_access",
         "description": "HttpOnly browser access cookie."
       },
+      "refreshCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "continuum_refresh",
+        "description": "Opaque HttpOnly browser refresh credential; Path=/api/v1/auth. Its acquisition and rotation runtime are pending A-02/A-03."
+      },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "Short-lived access token issued by the login or refresh operation."
+        "description": "Short-lived access JWT accepted for programmatic/API callers. A trusted programmatic acquisition and refresh flow is deferred; browser login returns no token JSON."
       }
     },
     "parameters": {
@@ -1001,54 +1002,6 @@
             }
           },
           "requestId": { "type": "string" }
-        }
-      },
-      "RefreshSessionRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["refreshToken"],
-        "properties": {
-          "refreshToken": {
-            "type": "string",
-            "minLength": 1,
-            "writeOnly": true
-          }
-        }
-      },
-      "LogoutRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["refreshToken"],
-        "properties": {
-          "refreshToken": {
-            "type": "string",
-            "minLength": 1,
-            "writeOnly": true
-          }
-        }
-      },
-      "TokenPair": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["accessToken", "refreshToken", "tokenType", "expiresIn"],
-        "properties": {
-          "accessToken": { "type": "string", "minLength": 1 },
-          "refreshToken": { "type": "string", "minLength": 1 },
-          "tokenType": { "type": "string", "const": "Bearer" },
-          "expiresIn": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Access-token lifetime in seconds."
-          }
-        }
-      },
-      "AuthSession": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["tokens", "user"],
-        "properties": {
-          "tokens": { "$ref": "#/components/schemas/TokenPair" },
-          "user": { "$ref": "#/components/schemas/User" }
         }
       },
       "User": {
