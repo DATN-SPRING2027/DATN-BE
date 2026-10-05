@@ -3,6 +3,35 @@ import type { Connection } from 'mongoose';
 import { AuthenticationRepository } from './authentication.repository';
 
 describe('AuthenticationRepository', () => {
+  it('loads only the account fields needed after a committed refresh rotation', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const query = {
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue({
+        email: 'person@example.com',
+        status: 'ACTIVE',
+        twoFactorEnabled: false,
+      }),
+    };
+    query.lean.mockReturnValue(query);
+    const model = { findById: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_users: model },
+    } as unknown as Connection;
+    await expect(
+      new AuthenticationRepository(connection).findAccountById(userId),
+    ).resolves.toEqual({
+      email: 'person@example.com',
+      status: 'ACTIVE',
+      twoFactorEnabled: false,
+    });
+    expect(model.findById).toHaveBeenCalledWith(new Types.ObjectId(userId), {
+      email: 1,
+      status: 1,
+      twoFactorEnabled: 1,
+    });
+  });
+
   it('loads only ACTIVE organization memberships', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
     const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';

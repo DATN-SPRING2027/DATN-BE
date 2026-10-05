@@ -5,7 +5,7 @@ import {
   HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
 import {
   AUTH_SECURITY_STORE,
@@ -40,6 +40,45 @@ export interface AuthenticatedIdentity {
 export interface LoginResult {
   accessToken: string;
   user: AuthenticatedIdentity;
+}
+
+export interface RefreshResult {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export class RefreshCsrfError extends Error {
+  constructor() {
+    super('Refresh CSRF comparison failed');
+    this.name = RefreshCsrfError.name;
+  }
+}
+
+const REFRESH_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+function validCsrfPair(
+  cookieValue: string | undefined,
+  headerValue: string | undefined,
+): boolean {
+  if (
+    !cookieValue ||
+    !headerValue ||
+    cookieValue.length > 4096 ||
+    headerValue.length > 4096
+  )
+    return false;
+  const cookieBytes = Buffer.from(cookieValue);
+  const headerBytes = Buffer.from(headerValue);
+  return (
+    cookieBytes.length === headerBytes.length &&
+    timingSafeEqual(cookieBytes, headerBytes)
+  );
+}
+
+function validRefreshCredential(value: string | undefined): value is string {
+  if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
+  const bytes = Buffer.from(value, 'base64url');
+  return bytes.length === 32 && bytes.toString('base64url') === value;
 }
 
 function unauthorized(): UnauthorizedException {
@@ -268,5 +307,44 @@ export class AuthenticationApplicationService {
 
     const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
     await this.repository.revokeRefreshSessionByHash(tokenHash);
+  }
+
+  async refresh(
+    refreshToken: string | undefined,
+    csrfCookie: string | undefined,
+    csrfHeader: string | undefined,
+  ): Promise<RefreshResult> {
+    // The HTTP response for a CSRF failure remains an A-01 TBD.
+    if (!validCsrfPair(csrfCookie, csrfHeader)) throw new RefreshCsrfError();
+    if (!validRefreshCredential(refreshToken)) {
+      throw unauthorized();
+    }
+    const replacement = randomBytes(32).toString('base64url');
+    const now = new Date();
+    const rotation = await this.repository.rotateRefreshSession(
+      createHash('sha256').update(refreshToken).digest('hex'),
+      createHash('sha256').update(replacement).digest('hex'),
+      new Date(now.getTime() + REFRESH_LIFETIME_MS),
+      now,
+    );
+    if (rotation.outcome !== 'ROTATED') throw unauthorized();
+    const account = await this.repository.findAccountById(rotation.userId);
+    if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
+      throw unauthorized();
+    }
+    const organization = await this.organizationResolver.resolveForUser(
+      rotation.userId,
+      rotation.organizationId,
+    );
+    if (organization.outcome !== 'RESOLVED') throw unauthorized();
+    return {
+      accessToken: this.accessTokens.signAccessToken({
+        sub: rotation.userId,
+        email: account.email,
+        orgId: rotation.organizationId,
+        roles: organization.context.roles,
+      }),
+      refreshToken: replacement,
+    };
   }
 }

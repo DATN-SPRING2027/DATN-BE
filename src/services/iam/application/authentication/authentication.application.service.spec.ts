@@ -8,6 +8,7 @@ import type {
 import {
   AuthenticationApplicationService,
   extractAccessToken,
+  RefreshCsrfError,
 } from './authentication.application.service';
 import type {
   LoginEligibilityDecision,
@@ -62,6 +63,8 @@ describe('AuthenticationApplicationService', () => {
         .mockResolvedValue({ name: 'Test Person', status: 'ACTIVE' }),
       replacePasswordHashIfCurrent: jest.fn().mockResolvedValue(undefined),
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
+      rotateRefreshSession: jest.fn(),
+      findAccountById: jest.fn().mockResolvedValue(account),
     };
     eligibilityPolicy = {
       evaluate: jest.fn(
@@ -438,5 +441,111 @@ describe('AuthenticationApplicationService', () => {
         'continuum_access=first.token; continuum_access=second.token',
       ),
     ).toBeUndefined();
+  });
+
+  describe('refresh rotation core', () => {
+    const presented = 'A'.repeat(43);
+
+    it('passes only hashes to persistence and issues credentials after rotation', async () => {
+      repository.rotateRefreshSession.mockResolvedValue({
+        outcome: 'ROTATED',
+        userId: USER_ID,
+        organizationId: ORG_ID,
+      });
+      const result = await service.refresh(
+        presented,
+        'csrf-value',
+        'csrf-value',
+      );
+      expect(result.accessToken).toBe('signed-access-token');
+      expect(result.refreshToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(result.refreshToken).not.toBe(presented);
+      expect(repository.rotateRefreshSession.mock.calls).toContainEqual([
+        createHash('sha256').update(presented).digest('hex'),
+        createHash('sha256').update(result.refreshToken).digest('hex'),
+        expect.any(Date),
+        expect.any(Date),
+      ]);
+      const [, , expiresAt, now] =
+        repository.rotateRefreshSession.mock.calls[0];
+      expect(expiresAt.getTime() - now.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
+      expect(organizationResolver.resolveForUser.mock.calls).toContainEqual([
+        USER_ID,
+        ORG_ID,
+      ]);
+      expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
+        sub: USER_ID,
+        email: account.email,
+        orgId: ORG_ID,
+        roles: ['ADMIN', 'MEMBER'],
+      });
+    });
+
+    it.each([
+      undefined,
+      '',
+      'bad',
+      'A'.repeat(44),
+      'A'.repeat(42) + '!',
+      'A'.repeat(42) + 'B',
+    ])(
+      'rejects missing or malformed credential %p before persistence',
+      async (token) => {
+        await expect(
+          service.refresh(token, 'csrf', 'csrf'),
+        ).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+      },
+    );
+
+    it.each(['INVALID', 'REPLAYED'] as const)(
+      'issues no credentials for %s rotation outcome',
+      async (outcome) => {
+        repository.rotateRefreshSession.mockResolvedValue({ outcome });
+        await expect(
+          service.refresh(presented, 'csrf', 'csrf'),
+        ).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+      },
+    );
+
+    it('issues no credentials when persistence fails', async () => {
+      repository.rotateRefreshSession.mockRejectedValue(
+        new Error('transaction failed'),
+      );
+      await expect(service.refresh(presented, 'csrf', 'csrf')).rejects.toThrow(
+        'transaction failed',
+      );
+      expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['missing', undefined, 'csrf'],
+      ['mismatch', 'csrf', 'other'],
+    ])(
+      'rejects %s CSRF before token-state access',
+      async (_case, cookie, header) => {
+        await expect(
+          service.refresh(presented, cookie, header),
+        ).rejects.toBeInstanceOf(RefreshCsrfError);
+        expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+      },
+    );
+
+    it('issues no credentials when user or membership is no longer eligible', async () => {
+      repository.rotateRefreshSession.mockResolvedValue({
+        outcome: 'ROTATED',
+        userId: USER_ID,
+        organizationId: ORG_ID,
+      });
+      repository.findAccountById.mockResolvedValue({
+        ...account,
+        status: 'SUSPENDED',
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
+    });
   });
 });

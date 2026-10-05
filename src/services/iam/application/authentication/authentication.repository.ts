@@ -24,6 +24,16 @@ export interface AuthenticationProfile {
   status: string;
 }
 
+export interface RefreshAccount {
+  email: string;
+  status: string;
+  twoFactorEnabled: boolean;
+}
+
+export type RefreshRotationResult =
+  | { outcome: 'ROTATED'; userId: string; organizationId: string }
+  | { outcome: 'REPLAYED' | 'INVALID' };
+
 export interface AuthenticationRepositoryPort {
   findAccountByEmail(email: string): Promise<AuthenticationAccount | null>;
   findActiveOrganizationMembershipIds(userId: string): Promise<string[]>;
@@ -38,4 +48,11 @@ export interface AuthenticationRepositoryPort {
     replacementHash: string,
   ): Promise<void>;
   revokeRefreshSessionByHash(tokenHash: string): Promise<boolean>;
+  rotateRefreshSession(
+    currentHash: string,
+    replacementHash: string,
+    expiresAt: Date,
+    now: Date,
+  ): Promise<RefreshRotationResult>;
+  findAccountById(userId: string): Promise<RefreshAccount | null>;
 }
