@@ -279,7 +279,12 @@ describe('IAM OpenAPI contract', () => {
             $ref:
               operation.operationId === 'login' && status === '409'
                 ? '#/components/responses/OrganizationSelectionRequired'
-                : reference,
+                : operation.operationId === 'refreshSession' && status === '401'
+                  ? '#/components/responses/RefreshInvalid'
+                  : operation.operationId === 'refreshSession' &&
+                      status === '403'
+                    ? '#/components/responses/RefreshCsrfInvalid'
+                    : reference,
           });
         }
       }
@@ -318,18 +323,16 @@ describe('IAM OpenAPI contract', () => {
     expect(logout.requestBody).toBeUndefined();
   });
 
-  it('keeps the approved browser refresh boundary distinct from an invented JSON token response', () => {
+  it('defines the closed A-02 refresh HTTP contract without JSON token fields', () => {
     const refresh = contract.paths['/api/v1/auth/refresh'].post!;
-    expect(refresh['x-contract-status']).toBe(
-      'approved-behavior-response-shape-tbd-not-implemented',
-    );
+    expect(refresh['x-contract-status']).toBe('implemented-backend-a-02');
     expect(refresh.requestBody).toBeUndefined();
     expect(refresh.security).toEqual([{ refreshCookie: [] }]);
     expect(contract.components.securitySchemes).toMatchObject({
       refreshCookie: {
         type: 'apiKey',
         in: 'cookie',
-        name: 'continuum_refresh',
+        name: '__Secure-refresh',
       },
     });
     expect(refresh.parameters).toEqual(
@@ -342,19 +345,39 @@ describe('IAM OpenAPI contract', () => {
       ]),
     );
     expect(refresh.responses['401']).toBeDefined();
-    expect(refresh.responses['default']).toBeDefined();
-    expect(refresh.responses['200']).toBeUndefined();
-    expect(refresh.responses['default']).toMatchObject({
-      headers: { 'Set-Cookie': { schema: { type: 'string' } } },
+    expect(refresh.responses['200']).toMatchObject({
+      headers: {
+        'Set-Cookie': { schema: { type: 'string' } },
+        'Cache-Control': { schema: { const: 'no-store' } },
+      },
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/RefreshResponse' },
+        },
+      },
     });
-    const refreshResponse = JSON.stringify(refresh.responses['default']);
+    expect(refresh.responses['401']).toEqual({
+      $ref: '#/components/responses/RefreshInvalid',
+    });
+    expect(refresh.responses['403']).toEqual({
+      $ref: '#/components/responses/RefreshCsrfInvalid',
+    });
+    expect(refresh.responses['500']).toEqual({
+      $ref: '#/components/responses/RefreshFailed',
+    });
+    expect(contract.components.schemas.RefreshResponse).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['status'],
+      properties: { status: { type: 'string', const: 'refreshed' } },
+    });
+    const refreshResponse = JSON.stringify(refresh.responses['200']);
     expect(refreshResponse).toContain('continuum_access');
-    expect(refreshResponse).toContain('continuum_refresh');
-    expect(refreshResponse).toContain('Path=/api/v1/auth');
-    expect(refreshResponse).toContain('comma-separated');
-    expect(refreshResponse).toContain(
-      'Errors do not set replacement credentials',
-    );
+    expect(refreshResponse).toContain('__Secure-refresh');
+    expect(refreshResponse).toContain('Path=/api/v1/auth/refresh');
+    expect(refreshResponse).toContain('comma-joined');
+    expect(refreshResponse).not.toContain('accessToken');
+    expect(refreshResponse).not.toContain('refreshToken');
     expect(contract.components.schemas).not.toHaveProperty('AuthSession');
     expect(contract.components.schemas).not.toHaveProperty('TokenPair');
   });
