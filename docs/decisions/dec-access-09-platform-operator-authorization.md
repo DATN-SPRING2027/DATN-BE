@@ -1,7 +1,7 @@
 # DEC-ACCESS-09 — Platform Operator Authorization
 
-**Status:** DECIDED — bounded A-04 authorization policy baseline
-**Decision gate:** A. DECISION CLOSED for the policy scope in this record
+**Status:** PARTIAL overall — A-04 Platform Operator policy sub-scope DECIDED
+**Decision gate:** B. PARTIALLY CLOSED — the A-04 policy sub-scope is decided; the remaining Organization/Project/Team matrix stays open
 **Decision date:** 2026-10-05
 **Approval authority:** Leader approval conveyed in the A-04 decision-closure request; the Leader's name was not provided
 **Backend source revision reviewed:** main at 1f28bb3143bd216b2a7a107b4ef527ee127baf58
@@ -10,6 +10,8 @@
 > Leader review approval received on 2026-10-05. This approval closes the A-04 authorization policy baseline described below and authorizes implementation work to proceed in a subsequent implementation PR. It does not approve implementation details or close DEC-ACCESS-10.
 
 This record closes the approved policy scope only. The implementation/persistence contract, assignment workflow mechanics, detailed audit event schema, and DEC-ACCESS-10 problem codes and response bodies remain follow-ups. A-04 authorization enforcement is not implemented by this documentation change.
+
+DEC-ACCESS-09 remains **PARTIAL overall** until the remaining Organization/Project/Team action matrix and its contracts are decided. Only the A-04 Platform Operator policy sub-scope is DECIDED here.
 
 ## 1. Approved decision
 
@@ -242,7 +244,8 @@ External research supports the architectural rationale only: separate platform f
 | [A-04 / Jira DATN-79](https://trankimthang0207.atlassian.net/browse/DATN-79) | requires | [DEC-ACCESS-09 readiness entry](../../../product_docs/research-docs/Workspace/00-organization-and-access-contract-readiness.md) |
 | DEC-ACCESS-09 | governed by | [Accepted actor baseline](../../../product_docs/research-docs/02_ACTORS_ROLES_AND_PERMISSIONS.md) and DEC-ORG-04 in that readiness register |
 | A-04 / DEC-ACCESS-09 | governed by | [DEC-002 default-DENY and supported explicit-DENY precedence](../../../docs/decisions/decision-register.md) |
-| Leader approval, 2026-10-05 | authorizes policy closure | Bounded approved policy in sections 1 and 4 of this record |
+| Leader approval, 2026-10-05 | authorizes A-04 policy sub-scope | Bounded approved policy in sections 1 and 4 of this record; DEC-ACCESS-09 overall remains PARTIAL |
+| DEC-ACCESS-09 readiness synchronization | tracks overall PARTIAL status and approved A-04 sub-scope | [Document repository PR #24](https://github.com/DATN-SPRING2027/Document/pull/24) links this policy record while keeping the remaining matrix open |
 | A-04 policy closure | documentation source for | Subsequent A-04 implementation work package / separate implementation PR |
 | This decision record | compares | Official external research in section 12; sources are non-authoritative |
 | Earlier A-04 proposal | historical evidence only | [Evidence-only proposal](a-04-platform-operator-authorization-proposal.md); it is not rewritten as approval |
@@ -264,6 +267,6 @@ External research supports the architectural rationale only: separate platform f
 - **Read scope:** SAGE project context and Governance Model; DEC-002; DEC-ORG-04, DEC-ACCESS-09 and DEC-ACCESS-10 readiness entries; accepted actor/authorization baseline; relevant DATN-BE decision and IAM evidence; official external references for comparison only.
 - **Write scope:** This decision artifact only. No source code, guards, controllers, services, schemas, indexes, seed, migration, FE, production data, other decisions, SAGE historical record, or product authority document was edited.
 - **Historical evidence review:** Earlier A-04 proposal and historical SAGE review records were retained as non-approving evidence.
-- **Decision result:** DECIDED for the bounded policy scope in sections 1 and 4. Remaining matters are individually classified as FUTURE DECISION, IMPLEMENTATION DESIGN FOLLOW-UP, or DEC-ACCESS-10 dependency.
+- **Decision result:** The A-04 policy sub-scope in sections 1 and 4 is DECIDED. DEC-ACCESS-09 overall remains PARTIAL until the remaining Organization/Project/Team matrix is decided. Other matters are individually classified as FUTURE DECISION, IMPLEMENTATION DESIGN FOLLOW-UP, or DEC-ACCESS-10 dependency.
 - **Implementation status:** Not started by this documentation change. No implementation commit is recorded.
 - **Validation and delivery:** Documentation-only validation and Git/PR details are recorded in the PR and final handoff.
