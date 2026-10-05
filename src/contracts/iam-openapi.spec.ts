@@ -22,6 +22,7 @@ interface OpenApiDocument extends JsonObject {
   openapi: string;
   paths: Record<string, OpenApiPathItem>;
   components: {
+    securitySchemes: Record<string, JsonObject>;
     schemas: Record<string, JsonObject>;
     parameters: Record<string, JsonObject>;
     responses: Record<string, JsonObject>;
@@ -317,6 +318,47 @@ describe('IAM OpenAPI contract', () => {
     expect(logout.requestBody).toBeUndefined();
   });
 
+  it('keeps the approved browser refresh boundary distinct from an invented JSON token response', () => {
+    const refresh = contract.paths['/api/v1/auth/refresh'].post!;
+    expect(refresh['x-contract-status']).toBe(
+      'approved-behavior-response-shape-tbd-not-implemented',
+    );
+    expect(refresh.requestBody).toBeUndefined();
+    expect(refresh.security).toEqual([{ refreshCookie: [] }]);
+    expect(contract.components.securitySchemes).toMatchObject({
+      refreshCookie: {
+        type: 'apiKey',
+        in: 'cookie',
+        name: 'continuum_refresh',
+      },
+    });
+    expect(refresh.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'X-CSRF-Token',
+          in: 'header',
+          required: true,
+        }),
+      ]),
+    );
+    expect(refresh.responses['401']).toBeDefined();
+    expect(refresh.responses['default']).toBeDefined();
+    expect(refresh.responses['200']).toBeUndefined();
+    expect(refresh.responses['default']).toMatchObject({
+      headers: { 'Set-Cookie': { schema: { type: 'string' } } },
+    });
+    const refreshResponse = JSON.stringify(refresh.responses['default']);
+    expect(refreshResponse).toContain('continuum_access');
+    expect(refreshResponse).toContain('continuum_refresh');
+    expect(refreshResponse).toContain('Path=/api/v1/auth');
+    expect(refreshResponse).toContain('comma-separated');
+    expect(refreshResponse).toContain(
+      'Errors do not set replacement credentials',
+    );
+    expect(contract.components.schemas).not.toHaveProperty('AuthSession');
+    expect(contract.components.schemas).not.toHaveProperty('TokenPair');
+  });
+
   it('uses camelCase schema properties and parameter names', () => {
     const camelCase = /^[a-z][A-Za-z0-9]*$/;
 
@@ -348,9 +390,6 @@ describe('IAM OpenAPI contract', () => {
     expect(loginProperties.password).not.toHaveProperty('example');
     expect(loginProperties.password).not.toHaveProperty('default');
 
-    const tokenPair = contract.components.schemas.TokenPair;
-    const tokenProperties = tokenPair.properties as JsonObject;
-    expect(tokenProperties.accessToken).not.toHaveProperty('example');
-    expect(tokenProperties.refreshToken).not.toHaveProperty('example');
+    expect(JSON.stringify(contract)).not.toContain('refreshToken');
   });
 });
