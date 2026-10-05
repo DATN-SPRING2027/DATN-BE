@@ -1,6 +1,8 @@
 import type {
   ExplicitDenyAssessment,
   OrganizationMembershipEvidence,
+  PlatformAuthorityAssignmentEvidence,
+  PlatformPermission,
   ProjectAccessAssignmentEvidence,
   ProjectAccessProjectEvidence,
 } from './authorization.policy';
@@ -27,6 +29,10 @@ export interface ProjectAccessEvidence {
   explicitDeny: ExplicitDenyAssessment;
 }
 
+export interface PlatformPermissionEvidence {
+  assignments: readonly PlatformAuthorityAssignmentEvidence[];
+}
+
 export interface AuthorizationEvidenceProvider {
   loadProjectCreate(
     userId: string,
@@ -37,4 +43,8 @@ export interface AuthorizationEvidenceProvider {
     organizationId: string,
     projectId: string,
   ): Promise<ProjectAccessEvidence | null>;
+  loadPlatformPermission(
+    userId: string,
+    permission: PlatformPermission,
+  ): Promise<PlatformPermissionEvidence | null>;
 }

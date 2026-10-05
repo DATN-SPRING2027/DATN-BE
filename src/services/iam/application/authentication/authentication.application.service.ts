@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
+import type { AccessTokenClaims } from './access-token.types';
 import {
   AUTH_SECURITY_STORE,
   type AuthSecurityStore,
@@ -35,6 +36,12 @@ export interface AuthenticatedIdentity {
   name: string;
   organizationId: string;
   roles: string[];
+}
+
+export interface AuthenticatedPlatformSubject {
+  id: string;
+  email: string;
+  name: string;
 }
 
 export interface LoginResult {
@@ -260,10 +267,54 @@ export class AuthenticationApplicationService {
     authorization: string | undefined,
     cookieHeader: string | undefined,
   ): Promise<AuthenticatedIdentity> {
+    const { claims, profile } = await this.getVerifiedActiveSubject(
+      authorization,
+      cookieHeader,
+    );
+
+    const activeMembershipIds =
+      await this.repository.findActiveOrganizationMembershipIds(claims.sub);
+    if (!activeMembershipIds.includes(claims.orgId)) throw unauthorized();
+
+    return {
+      id: claims.sub,
+      email: claims.email,
+      name: profile.name,
+      organizationId: claims.orgId,
+      roles: claims.roles,
+    };
+  }
+
+  /**
+   * Authenticates the Human User for PLATFORM-scoped APIs without treating an
+   * Organization membership or role claim as part of platform authority.
+   * Permission and lifecycle evidence is evaluated separately by the platform
+   * authorization guard on every request.
+   */
+  async getCurrentPlatformSubject(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<AuthenticatedPlatformSubject> {
+    const { claims, profile } = await this.getVerifiedActiveSubject(
+      authorization,
+      cookieHeader,
+    );
+    return { id: claims.sub, email: claims.email, name: profile.name };
+  }
+
+  private async getVerifiedActiveSubject(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<{
+    claims: AccessTokenClaims;
+    profile: NonNullable<
+      Awaited<ReturnType<AuthenticationRepositoryPort['findProfileById']>>
+    >;
+  }> {
     const token = extractAccessToken(authorization, cookieHeader);
     if (!token) throw unauthorized();
 
-    let claims;
+    let claims: AccessTokenClaims;
     try {
       claims = this.accessTokens.verifyAccessToken(token);
     } catch (error) {
@@ -281,17 +332,7 @@ export class AuthenticationApplicationService {
 
     const profile = await this.repository.findProfileById(claims.sub);
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
-    const activeMembershipIds =
-      await this.repository.findActiveOrganizationMembershipIds(claims.sub);
-    if (!activeMembershipIds.includes(claims.orgId)) throw unauthorized();
-
-    return {
-      id: claims.sub,
-      email: claims.email,
-      name: profile.name,
-      organizationId: claims.orgId,
-      roles: claims.roles,
-    };
+    return { claims, profile };
   }
 
   async logout(

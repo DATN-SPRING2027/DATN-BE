@@ -199,3 +199,84 @@ describe('MongoAuthorizationEvidenceProvider for Project access', () => {
     );
   });
 });
+
+describe('MongoAuthorizationEvidenceProvider for platform permission', () => {
+  it('loads a fresh exact-user assignment snapshot on every authorization check', async () => {
+    const assignments = {
+      find: jest
+        .fn()
+        .mockReturnValueOnce(
+          query([
+            {
+              subjectUserId: new Types.ObjectId(userId),
+              grantedAt: new Date('2026-10-05T11:00:00.000Z'),
+              grantedBy: new Types.ObjectId('ffffffffffffffffffffffff'),
+              permission: 'platform.health.read',
+              scope: 'PLATFORM',
+              status: 'ACTIVE',
+              expiresAt: null,
+              revokedAt: null,
+            },
+          ]),
+        )
+        .mockReturnValueOnce(
+          query([
+            {
+              subjectUserId: new Types.ObjectId(userId),
+              grantedAt: new Date('2026-10-05T11:00:00.000Z'),
+              grantedBy: new Types.ObjectId('ffffffffffffffffffffffff'),
+              permission: 'platform.health.read',
+              scope: 'PLATFORM',
+              status: 'REVOKED',
+              expiresAt: null,
+              revokedAt: new Date('2026-10-05T12:00:00.000Z'),
+            },
+          ]),
+        ),
+    };
+    const connection = {
+      models: {
+        continuum_iam_platform_authority_assignments: assignments,
+      },
+    } as unknown as Connection;
+    const provider = new MongoAuthorizationEvidenceProvider(connection);
+
+    const beforeRevoke = await provider.loadPlatformPermission(
+      userId,
+      'platform.health.read',
+    );
+    const afterRevoke = await provider.loadPlatformPermission(
+      userId,
+      'platform.health.read',
+    );
+
+    expect(beforeRevoke?.assignments[0]).toMatchObject({
+      subjectUserId: userId,
+      grantedAt: new Date('2026-10-05T11:00:00.000Z'),
+      grantedBy: 'ffffffffffffffffffffffff',
+      permission: 'platform.health.read',
+      scope: 'PLATFORM',
+      status: 'ACTIVE',
+      expiresAt: null,
+      revokedAt: null,
+    });
+    expect(afterRevoke?.assignments[0].status).toBe('REVOKED');
+    expect(assignments.find).toHaveBeenCalledTimes(2);
+    expect(assignments.find).toHaveBeenCalledWith(
+      {
+        subjectUserId: new Types.ObjectId(userId),
+        permission: 'platform.health.read',
+      },
+      {
+        subjectUserId: 1,
+        grantedAt: 1,
+        grantedBy: 1,
+        permission: 1,
+        scope: 1,
+        status: 1,
+        expiresAt: 1,
+        revokedAt: 1,
+      },
+    );
+  });
+});

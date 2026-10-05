@@ -166,6 +166,32 @@ const iamSchemas: Record<string, Schema> = {
       strict: true,
     },
   ),
+  platform_authority_assignments: new Schema(
+    {
+      subjectUserId: { type: Schema.Types.ObjectId, required: true },
+      permission: {
+        type: String,
+        enum: [
+          'organization.create',
+          'platform.health.read',
+          'platform.audit.read',
+        ],
+        required: true,
+      },
+      scope: { type: String, enum: ['PLATFORM'], required: true },
+      status: { type: String, enum: ['ACTIVE', 'REVOKED'], required: true },
+      grantedAt: { type: Date, required: true },
+      grantedBy: { type: Schema.Types.ObjectId, required: true },
+      expiresAt: Date,
+      revokedAt: Date,
+      revokedBy: Schema.Types.ObjectId,
+    },
+    {
+      collection: 'platform_authority_assignments',
+      timestamps: true,
+      strict: true,
+    },
+  ),
   refresh_sessions: new Schema(
     {
       userId: { type: Schema.Types.ObjectId, required: true },

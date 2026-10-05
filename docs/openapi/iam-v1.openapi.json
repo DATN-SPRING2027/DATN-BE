@@ -8,6 +8,7 @@
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
     { "name": "Users", "description": "Organization user directory." },
+    { "name": "Platform", "description": "A-04 PLATFORM-scoped operations." },
     { "name": "Projects", "description": "Organization projects." },
     {
       "name": "Project Memberships",
@@ -236,6 +237,85 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/organizations": {
+      "post": {
+        "tags": ["Platform"],
+        "summary": "Provision an Organization and its first ADMIN",
+        "description": "Requires the exact A-04 permission organization.create at PLATFORM scope. Creates only the Organization and its first active ADMIN membership/role assignment in one transaction. The Platform Operator is not made an Organization member or ADMIN. This operation does not grant ongoing membership/role management or content access.",
+        "operationId": "createOrganizationAsPlatformOperator",
+        "x-platform-permission": "organization.create",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlatformOrganizationCreateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Organization created with first ADMIN bootstrap and audit record committed atomically.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProvisionedOrganization" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/health": {
+      "get": {
+        "tags": ["Platform"],
+        "summary": "Read platform health metadata",
+        "description": "Requires platform.health.read at PLATFORM scope. Reuses the existing IAM health response and exposes only operational status metadata. It does not return configuration, secrets, credentials, or Organization content.",
+        "operationId": "readPlatformHealth",
+        "x-platform-permission": "platform.health.read",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Current IAM health status.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PlatformHealth" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/audit": {
+      "get": {
+        "tags": ["Platform"],
+        "summary": "Read platform operational audit metadata",
+        "description": "Requires platform.audit.read at PLATFORM scope. Returns a bounded, projected subset of Organization provisioning and Platform authority lifecycle metadata only. It excludes mixed metadata, Organization security events, Project records, tokens, secrets, credentials, and private content.",
+        "operationId": "readPlatformOperationalAudit",
+        "x-platform-permission": "platform.audit.read",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "At most 100 newest safe platform operational audit records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/PlatformOperationalAuditRecord" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
         }
       }
     },
@@ -961,6 +1041,52 @@
       "MembershipStatus": {
         "type": "string",
         "enum": ["ACTIVE", "INACTIVE"]
+      },
+      "PlatformPermission": {
+        "type": "string",
+        "enum": ["organization.create", "platform.health.read", "platform.audit.read"]
+      },
+      "PlatformOrganizationCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "slug", "plan", "firstAdminUserId"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "slug": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "plan": { "type": "string", "enum": ["FREE", "ENTERPRISE"] },
+          "firstAdminUserId": { "$ref": "#/components/schemas/ResourceId" }
+        }
+      },
+      "ProvisionedOrganization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "slug", "plan", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "name": { "type": "string", "minLength": 1 },
+          "slug": { "type": "string", "minLength": 1 },
+          "plan": { "type": "string", "enum": ["FREE", "ENTERPRISE"] },
+          "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "PlatformHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "const": "ok" } }
+      },
+      "PlatformOperationalAuditRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "targetResource", "targetResourceId", "actorUserId", "occurredAt"],
+        "properties": {
+          "action": { "type": "string", "enum": ["organization.create", "platform.authority.granted", "platform.authority.revoked"] },
+          "targetResource": { "type": "string", "enum": ["ORGANIZATION", "PLATFORM_AUTHORITY"] },
+          "targetResourceId": { "$ref": "#/components/schemas/ResourceId" },
+          "actorUserId": { "$ref": "#/components/schemas/ResourceId" },
+          "occurredAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
       },
       "Pagination": {
         "type": "object",

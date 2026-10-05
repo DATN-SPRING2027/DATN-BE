@@ -6,8 +6,10 @@ import type {
   AuthorizationEvidenceProvider,
   ProjectAccessEvidence,
   ProjectCreateEvidence,
+  PlatformPermissionEvidence,
 } from '../../application/authorization/authorization-evidence.provider';
 import { IAM_PERSISTENCE } from '../persistence';
+import type { PlatformPermission } from '../../application/authorization/authorization.policy';
 
 interface MembershipDocument {
   userId: Types.ObjectId;
@@ -41,6 +43,17 @@ interface RoleDocument {
   _id: Types.ObjectId;
   code: string;
   permissions: string[];
+}
+
+interface PlatformAuthorityAssignmentDocument {
+  subjectUserId: Types.ObjectId;
+  grantedAt: Date;
+  grantedBy: Types.ObjectId;
+  permission: string;
+  scope: string;
+  status: string;
+  expiresAt?: Date | null;
+  revokedAt?: Date | null;
 }
 
 const modelName = (collection: string): string =>
@@ -208,6 +221,47 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
         };
       }),
       explicitDeny: 'CLEAR',
+    };
+  }
+
+  async loadPlatformPermission(
+    userId: string,
+    permission: PlatformPermission,
+  ): Promise<PlatformPermissionEvidence | null> {
+    if (!validId(userId)) return null;
+    const assignments = await this.model<PlatformAuthorityAssignmentDocument>(
+      'platform_authority_assignments',
+    )
+      .find(
+        {
+          subjectUserId: new Types.ObjectId(userId),
+          permission,
+        },
+        {
+          subjectUserId: 1,
+          grantedAt: 1,
+          grantedBy: 1,
+          permission: 1,
+          scope: 1,
+          status: 1,
+          expiresAt: 1,
+          revokedAt: 1,
+        },
+      )
+      .lean()
+      .exec();
+
+    return {
+      assignments: assignments.map((assignment) => ({
+        subjectUserId: String(assignment.subjectUserId),
+        grantedAt: assignment.grantedAt,
+        grantedBy: String(assignment.grantedBy),
+        permission: assignment.permission,
+        scope: assignment.scope,
+        status: assignment.status,
+        expiresAt: assignment.expiresAt ?? null,
+        revokedAt: assignment.revokedAt ?? null,
+      })),
     };
   }
 

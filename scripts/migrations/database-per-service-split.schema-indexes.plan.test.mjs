@@ -6,17 +6,14 @@ import {
   schemaAuthoritySha256,
 } from './database-per-service-split.schema-indexes.mjs';
 
-test('schema index manifest covers every mapped collection exactly once', () => {
-  assert.deepEqual(
-    Object.keys(SERVICE_SCHEMA_INDEX_MANIFEST).sort(),
-    Object.keys(DATABASE_PER_SERVICE_INVENTORY).sort(),
-  );
-
+test('current schema manifest retains indexes for every historical mapped collection', () => {
   for (const [databaseName, collections] of Object.entries(
     DATABASE_PER_SERVICE_INVENTORY,
   )) {
     assert.deepEqual(
-      Object.keys(SERVICE_SCHEMA_INDEX_MANIFEST[databaseName]).sort(),
+      Object.keys(SERVICE_SCHEMA_INDEX_MANIFEST[databaseName])
+        .filter((name) => collections.includes(name))
+        .sort(),
       [...collections].sort(),
     );
   }

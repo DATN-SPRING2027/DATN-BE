@@ -85,6 +85,33 @@ describe('IAM OpenAPI contract', () => {
     expect(new Set(operationIds).size).toBe(operationIds.length);
   });
 
+  it('documents only the three approved A-04 platform permissions and boundaries', () => {
+    const organization =
+      contract.paths['/api/v1/iam/platform/organizations'].post;
+    const health = contract.paths['/api/v1/iam/platform/health'].get;
+    const audit = contract.paths['/api/v1/iam/platform/audit'].get;
+    expect(organization?.['x-platform-permission']).toBe('organization.create');
+    expect(organization?.description).toContain('first active ADMIN');
+    expect(organization?.description).toContain(
+      'not made an Organization member or ADMIN',
+    );
+    expect(health?.['x-platform-permission']).toBe('platform.health.read');
+    expect(health?.description).toContain('does not return configuration');
+    expect(audit?.['x-platform-permission']).toBe('platform.audit.read');
+    expect(audit?.description).toContain('Project records');
+    expect(contract.components.schemas.PlatformPermission).toEqual({
+      type: 'string',
+      enum: [
+        'organization.create',
+        'platform.health.read',
+        'platform.audit.read',
+      ],
+    });
+    expect(
+      JSON.stringify(contract.components.schemas.PlatformPermission),
+    ).not.toContain('platform.configuration');
+  });
+
   it('documents ACTIVE Organization Membership as the project.create boundary', () => {
     const createProject = contract.paths['/api/v1/iam/projects'].post;
     expect(createProject?.description).toContain(

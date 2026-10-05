@@ -1,5 +1,8 @@
 # Organization Membership legacy backfill
 
+The A-04 platform authority assignment collection and index migration is
+documented in [20261005-platform-authority-assignments.README.md](20261005-platform-authority-assignments.README.md).
+
 `20260928-organization-memberships.mjs` reports the exact `ACTIVE` memberships
 proposed from organization-level `role_assignments`. It reads only rows with a
 null or absent `projectId` and valid `userId` and `organizationId`. Multiple

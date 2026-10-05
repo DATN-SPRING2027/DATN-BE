@@ -378,6 +378,21 @@ describe('AuthenticationApplicationService', () => {
     expect(repository.findProfileById.mock.calls).toContainEqual([USER_ID]);
   });
 
+  it('authenticates a Human User for platform APIs without requiring Organization membership', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
+
+    await expect(
+      service.getCurrentPlatformSubject('Bearer any.valid-token', undefined),
+    ).resolves.toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: 'Test Person',
+    });
+    expect(
+      repository.findActiveOrganizationMembershipIds.mock.calls,
+    ).toHaveLength(0);
+  });
+
   it('rejects a still-valid token after the user is suspended', async () => {
     repository.findProfileById.mockResolvedValue({
       name: 'Test Person',

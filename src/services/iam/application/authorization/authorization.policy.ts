@@ -2,6 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 export type DocumentedPermission = 'project.create';
+export type PlatformPermission =
+  'organization.create' | 'platform.health.read' | 'platform.audit.read';
+export const PLATFORM_PERMISSIONS: readonly PlatformPermission[] = [
+  'organization.create',
+  'platform.health.read',
+  'platform.audit.read',
+];
 export type ProjectAccessPermission =
   | 'project.visibility.manage'
   | 'project.leader.manage'
@@ -16,6 +23,29 @@ const enabledProjectAccessPermissions: ReadonlySet<string> = new Set([
   'project.members.remove',
 ]);
 export type ExplicitDenyAssessment = 'CLEAR' | 'DENY' | 'UNKNOWN';
+
+export interface PlatformAuthorizationSubject {
+  userId: string;
+  status: string;
+}
+
+export interface PlatformAuthorityAssignmentEvidence {
+  subjectUserId: string;
+  grantedAt: Date;
+  grantedBy: string;
+  permission: string;
+  scope: string;
+  status: string;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface PlatformAuthorizationEvaluationInput {
+  permission: string;
+  subject: PlatformAuthorizationSubject | null;
+  assignments: readonly PlatformAuthorityAssignmentEvidence[];
+  now: Date;
+}
 
 export interface AuthorizationSubject {
   userId: string;
@@ -116,6 +146,42 @@ const sameObjectId = (left: string, right: string): boolean =>
 
 @Injectable()
 export class AuthorizationPolicy {
+  evaluatePlatformPermission(
+    input: PlatformAuthorizationEvaluationInput,
+  ): AuthorizationDecision {
+    if (!PLATFORM_PERMISSIONS.includes(input.permission as PlatformPermission))
+      return { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
+    if (
+      !input.subject ||
+      !validObjectId(input.subject.userId) ||
+      input.subject.status !== 'ACTIVE' ||
+      !Number.isFinite(input.now.getTime())
+    )
+      return { allowed: false, reason: 'INVALID_CONTEXT' };
+
+    const validAssignments = input.assignments.filter(
+      (assignment) =>
+        sameObjectId(assignment.subjectUserId, input.subject!.userId) &&
+        assignment.grantedAt instanceof Date &&
+        Number.isFinite(assignment.grantedAt.getTime()) &&
+        assignment.grantedAt.getTime() <= input.now.getTime() &&
+        validObjectId(assignment.grantedBy) &&
+        !sameObjectId(assignment.grantedBy, input.subject!.userId) &&
+        assignment.permission === input.permission &&
+        assignment.scope === 'PLATFORM' &&
+        assignment.status === 'ACTIVE' &&
+        assignment.revokedAt === null &&
+        (assignment.expiresAt === null ||
+          (Number.isFinite(assignment.expiresAt.getTime()) &&
+            assignment.expiresAt.getTime() > input.now.getTime())),
+    );
+
+    // Duplicate active evidence is ambiguous and therefore cannot authorize.
+    return validAssignments.length === 1
+      ? { allowed: true }
+      : { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };
+  }
+
   projectReadScope(input: ProjectReadScopeInput): ProjectReadScope {
     const deny: ProjectReadScope = {
       all: false,
