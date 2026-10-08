@@ -21,10 +21,17 @@ import { verifyGatewaySource } from '../../../common/http/gateway-source';
 import {
   AuthenticationApplicationService,
   type AuthenticatedIdentity,
+  type AuthenticatedPlatformSubject,
+  type PlatformLoginResult,
+  type LoginResult,
   readCookie,
   RefreshCsrfError,
 } from '../application/authentication/authentication.application.service';
-import { LoginRequestDto } from '../application/authentication/login-request.dto';
+import {
+  LoginCredentialsDto,
+  LoginRequestDto,
+  PlatformLoginRequestDto,
+} from '../application/authentication/login-request.dto';
 
 function serializeAccessCookie(token: string): string {
   const parts = [
@@ -93,8 +100,11 @@ function clearRefreshCookie(): string {
   ].join('; ');
 }
 
-async function parseLoginBody(body: unknown): Promise<LoginRequestDto> {
-  const dto = plainToInstance(LoginRequestDto, body);
+async function parseLoginBody<T extends LoginCredentialsDto>(
+  body: unknown,
+  dtoType: new () => T,
+): Promise<T> {
+  const dto = plainToInstance(dtoType, body);
   const errors = await validate(dto, {
     whitelist: true,
     forbidNonWhitelisted: true,
@@ -107,6 +117,42 @@ async function parseLoginBody(body: unknown): Promise<LoginRequestDto> {
     });
   }
   return dto;
+}
+
+function setLoginCookies(
+  response: Response,
+  result: LoginResult | PlatformLoginResult,
+): void {
+  response.setHeader('Set-Cookie', [
+    serializeAccessCookie(result.accessToken),
+    serializeRefreshCookie(result.refreshToken),
+    serializeCsrfCookie(result.csrfToken),
+  ]);
+}
+
+function loginSourceIp(request: Request, config: ConfigService): string {
+  if (!request.originalUrl.startsWith('/internal/'))
+    return request.ip ?? request.socket.remoteAddress ?? 'unknown';
+  return (
+    verifyGatewaySource(
+      request.headers,
+      config.get<string>('IAM_GATEWAY_SECRET') ?? '',
+    ) ?? ''
+  );
+}
+
+function ensureTrustedLoginSource(
+  request: Request,
+  config: ConfigService,
+): string {
+  const sourceIp = loginSourceIp(request, config);
+  if (!sourceIp) {
+    throw new UnauthorizedException({
+      code: 'INVALID_GATEWAY_SOURCE',
+      message: 'Gateway source proof is invalid.',
+    });
+  }
+  return sourceIp;
 }
 
 @Controller('auth')
@@ -124,28 +170,26 @@ export class AuthenticationController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ user: AuthenticatedIdentity }> {
     response.setHeader('Cache-Control', 'no-store');
-    const dto = await parseLoginBody(body);
-    let sourceIp = request.ip ?? request.socket.remoteAddress ?? 'unknown';
-    if (request.originalUrl.startsWith('/internal/')) {
-      sourceIp =
-        verifyGatewaySource(
-          request.headers,
-          this.config.get<string>('IAM_GATEWAY_SECRET') ?? '',
-        ) ?? '';
-      if (!sourceIp) {
-        throw new UnauthorizedException({
-          code: 'INVALID_GATEWAY_SOURCE',
-          message: 'Gateway source proof is invalid.',
-        });
-      }
-    }
+    const dto = await parseLoginBody(body, LoginRequestDto);
+    const sourceIp = ensureTrustedLoginSource(request, this.config);
     const result = await this.service.login({ ...dto, sourceIp });
-    response.setHeader('Set-Cookie', [
-      serializeAccessCookie(result.accessToken),
-      serializeRefreshCookie(result.refreshToken),
-      serializeCsrfCookie(result.csrfToken),
-    ]);
+    setLoginCookies(response, result);
     return { user: result.user };
+  }
+
+  @Post('platform/login')
+  @HttpCode(HttpStatus.OK)
+  async loginPlatform(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ context: 'PLATFORM'; user: AuthenticatedPlatformSubject }> {
+    response.setHeader('Cache-Control', 'no-store');
+    const dto = await parseLoginBody(body, PlatformLoginRequestDto);
+    const sourceIp = ensureTrustedLoginSource(request, this.config);
+    const result = await this.service.loginPlatform({ ...dto, sourceIp });
+    setLoginCookies(response, result);
+    return { context: 'PLATFORM', user: result.user };
   }
 
   @Post('refresh')

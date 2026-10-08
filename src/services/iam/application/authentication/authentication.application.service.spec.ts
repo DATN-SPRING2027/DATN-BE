@@ -19,6 +19,8 @@ import type { OrganizationContextResolver } from './organization-context.resolve
 import { PasswordCredentialService } from '../credentials/password-credential.service';
 import { PasswordHashFormatError } from '../credentials/password-credential.service';
 import { LeaderDirectedLoginEligibilityPolicy } from './leader-directed-login-eligibility.policy';
+import { AuthorizationPolicy } from '../authorization/authorization.policy';
+import type { AuthorizationEvidenceProvider } from '../authorization/authorization-evidence.provider';
 
 const USER_ID = '651a2b3c4d5e6f7a8b9c0d1e';
 const ORG_ID = '651a2b3c4d5e6f7a8b9c0d1f';
@@ -48,6 +50,10 @@ describe('AuthenticationApplicationService', () => {
     isTokenRevoked: jest.Mock;
     revokeToken: jest.Mock;
   };
+  let authorizationEvidence: {
+    loadPlatformPermission: jest.Mock;
+  };
+  let authorizationPolicy: AuthorizationPolicy;
   let service: AuthenticationApplicationService;
 
   beforeEach(() => {
@@ -66,6 +72,7 @@ describe('AuthenticationApplicationService', () => {
       findRefreshSessionForRotation: jest.fn().mockResolvedValue({
         outcome: 'ACTIVE',
         userId: USER_ID,
+        context: 'ORGANIZATION',
         organizationId: ORG_ID,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       }),
@@ -110,6 +117,10 @@ describe('AuthenticationApplicationService', () => {
       isTokenRevoked: jest.fn().mockResolvedValue(false),
       revokeToken: jest.fn().mockResolvedValue(undefined),
     };
+    authorizationEvidence = {
+      loadPlatformPermission: jest.fn().mockResolvedValue({ assignments: [] }),
+    };
+    authorizationPolicy = new AuthorizationPolicy();
     service = new AuthenticationApplicationService(
       repository,
       eligibilityPolicy,
@@ -117,6 +128,8 @@ describe('AuthenticationApplicationService', () => {
       credentials,
       accessTokens as never,
       securityStore,
+      authorizationEvidence as unknown as AuthorizationEvidenceProvider,
+      authorizationPolicy,
     );
   });
 
@@ -138,13 +151,15 @@ describe('AuthenticationApplicationService', () => {
     expect(result.refreshToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(result.csrfToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(result.csrfToken).not.toBe(result.refreshToken);
-    expect(repository.createRefreshSession.mock.calls).toContainEqual([
-      USER_ID,
-      ORG_ID,
-      createHash('sha256').update(result.refreshToken).digest('hex'),
-      expect.any(Date),
-    ]);
-    const issuedExpiry = repository.createRefreshSession.mock.calls[0][3];
+    expect(repository.createRefreshSession.mock.calls[0][0]).toMatchObject({
+      userId: USER_ID,
+      context: 'ORGANIZATION',
+      organizationId: ORG_ID,
+      tokenHash: createHash('sha256').update(result.refreshToken).digest('hex'),
+    });
+    const issuedExpiry =
+      repository.createRefreshSession.mock.calls[0][0].expiresAt;
+    expect(issuedExpiry).toBeInstanceOf(Date);
     expect(issuedExpiry.getTime() - Date.now()).toBeGreaterThan(604799000);
     expect(issuedExpiry.getTime() - Date.now()).toBeLessThanOrEqual(604800000);
     expect(organizationResolver.resolveForUser.mock.calls).toContainEqual([
@@ -160,6 +175,63 @@ describe('AuthenticationApplicationService', () => {
     expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
       expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
     );
+  });
+
+  it('issues a Platform session for an ACTIVE assigned user without Organization membership', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
+    authorizationEvidence.loadPlatformPermission.mockResolvedValue({
+      assignments: [
+        {
+          subjectUserId: USER_ID,
+          permission: 'organization.create',
+          scope: 'PLATFORM',
+          status: 'ACTIVE',
+          grantedAt: new Date(Date.now() - 1000),
+          grantedBy: OTHER_ORG_ID,
+          expiresAt: null,
+          revokedAt: null,
+        },
+      ],
+    });
+
+    const result = await service.loginPlatform({
+      email: account.email,
+      password: 'correct-password',
+    });
+
+    expect(result.user).toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: account.name,
+    });
+    expect(
+      repository.findActiveOrganizationMembershipIds.mock.calls,
+    ).toHaveLength(0);
+    expect(organizationResolver.resolveForUser.mock.calls).toHaveLength(0);
+    expect(repository.createRefreshSession.mock.calls[0][0]).toMatchObject({
+      userId: USER_ID,
+      context: 'PLATFORM',
+      tokenHash: createHash('sha256').update(result.refreshToken).digest('hex'),
+    });
+    expect(
+      repository.createRefreshSession.mock.calls[0][0].expiresAt,
+    ).toBeInstanceOf(Date);
+    expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
+      sub: USER_ID,
+      email: account.email,
+      context: 'PLATFORM',
+    });
+  });
+
+  it('does not issue a Platform session without a current approved assignment', async () => {
+    await expect(
+      service.loginPlatform({
+        email: account.email,
+        password: 'correct-password',
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
+    expect(accessTokens.signAccessToken.mock.calls).toHaveLength(0);
   });
 
   it('issues no Login credentials when initial refresh-session persistence fails', async () => {
@@ -378,6 +450,38 @@ describe('AuthenticationApplicationService', () => {
     expect(repository.findProfileById.mock.calls).toContainEqual([USER_ID]);
   });
 
+  it('does not let a Platform-context token become an Organization identity', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'PLATFORM',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
+    await expect(
+      service.getCurrentIdentity('Bearer platform-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(
+      repository.findActiveOrganizationMembershipIds.mock.calls,
+    ).toHaveLength(0);
+  });
+
+  it('authenticates a Human User for platform APIs without requiring Organization membership', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
+
+    await expect(
+      service.getCurrentPlatformSubject('Bearer any.valid-token', undefined),
+    ).resolves.toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: 'Test Person',
+    });
+    expect(
+      repository.findActiveOrganizationMembershipIds.mock.calls,
+    ).toHaveLength(0);
+  });
+
   it('rejects a still-valid token after the user is suspended', async () => {
     repository.findProfileById.mockResolvedValue({
       name: 'Test Person',
@@ -462,6 +566,7 @@ describe('AuthenticationApplicationService', () => {
     repository.rotateRefreshSession.mockResolvedValueOnce({
       outcome: 'ROTATED',
       userId: USER_ID,
+      context: 'ORGANIZATION',
       organizationId: ORG_ID,
     });
     const refreshed = await service.refresh(
@@ -481,6 +586,7 @@ describe('AuthenticationApplicationService', () => {
     repository.findRefreshSessionForRotation.mockResolvedValueOnce({
       outcome: 'REVOKED',
       userId: USER_ID,
+      context: 'ORGANIZATION',
       organizationId: ORG_ID,
       expiresAt: new Date(Date.now() + 60_000),
     });
@@ -520,6 +626,7 @@ describe('AuthenticationApplicationService', () => {
       repository.rotateRefreshSession.mockResolvedValue({
         outcome: 'ROTATED',
         userId: USER_ID,
+        context: 'ORGANIZATION',
         organizationId: ORG_ID,
       });
       const result = await service.refresh(
@@ -573,6 +680,61 @@ describe('AuthenticationApplicationService', () => {
       errorSpy.mockRestore();
     });
 
+    it('refreshes a Platform session only while an approved assignment remains active', async () => {
+      repository.findRefreshSessionForRotation.mockResolvedValueOnce({
+        outcome: 'ACTIVE',
+        userId: USER_ID,
+        context: 'PLATFORM',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      repository.rotateRefreshSession.mockResolvedValueOnce({
+        outcome: 'ROTATED',
+        userId: USER_ID,
+        context: 'PLATFORM',
+      });
+      authorizationEvidence.loadPlatformPermission.mockResolvedValue({
+        assignments: [
+          {
+            subjectUserId: USER_ID,
+            permission: 'platform.health.read',
+            scope: 'PLATFORM',
+            status: 'ACTIVE',
+            grantedAt: new Date(Date.now() - 1000),
+            grantedBy: OTHER_ORG_ID,
+            expiresAt: null,
+            revokedAt: null,
+          },
+        ],
+      });
+
+      const result = await service.refresh(presented, 'csrf', 'csrf');
+
+      expect(result.accessToken).toBe('signed-access-token');
+      expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
+        sub: USER_ID,
+        email: account.email,
+        context: 'PLATFORM',
+      });
+      expect(organizationResolver.resolveForUser.mock.calls).toHaveLength(0);
+      expect(
+        authorizationEvidence.loadPlatformPermission.mock.calls.length,
+      ).toBeGreaterThan(0);
+    });
+
+    it('does not rotate a Platform session after all assignments are revoked', async () => {
+      repository.findRefreshSessionForRotation.mockResolvedValueOnce({
+        outcome: 'ACTIVE',
+        userId: USER_ID,
+        context: 'PLATFORM',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+      expect(accessTokens.signAccessToken.mock.calls).toHaveLength(0);
+    });
+
     it.each([
       undefined,
       '',
@@ -607,6 +769,7 @@ describe('AuthenticationApplicationService', () => {
       repository.findRefreshSessionForRotation.mockResolvedValue({
         outcome: 'REVOKED',
         userId: USER_ID,
+        context: 'ORGANIZATION',
         organizationId: ORG_ID,
         expiresAt: new Date(Date.now() + 60_000),
       });
@@ -625,6 +788,7 @@ describe('AuthenticationApplicationService', () => {
       repository.findRefreshSessionForRotation.mockResolvedValue({
         outcome: 'ACTIVE',
         userId: USER_ID,
+        context: 'ORGANIZATION',
         organizationId: ORG_ID,
         expiresAt: new Date(Date.now() - 1000),
       });

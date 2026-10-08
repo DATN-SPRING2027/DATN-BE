@@ -49,12 +49,13 @@ integration('refresh session rotation on MongoDB replica set', () => {
         });
 
       const initialHash = 'a'.repeat(64);
-      await repository.createRefreshSession(
-        String(userId),
-        String(organizationId),
-        initialHash,
+      await repository.createRefreshSession({
+        userId: String(userId),
+        context: 'ORGANIZATION',
+        organizationId: String(organizationId),
+        tokenHash: initialHash,
         expiresAt,
-      );
+      });
       const initialRow = await model.findOne({ tokenHash: initialHash }).lean();
       expect(initialRow?.tokenHash).toBe(initialHash);
 
@@ -64,6 +65,7 @@ integration('refresh session rotation on MongoDB replica set', () => {
       ).resolves.toEqual({
         outcome: 'ROTATED',
         userId: String(userId),
+        context: 'ORGANIZATION',
         organizationId: String(organizationId),
       });
       expect(
@@ -89,6 +91,57 @@ integration('refresh session rotation on MongoDB replica set', () => {
         await model.countDocuments({ userId: otherUserId, isRevoked: false }),
       ).toBe(1);
       expect(await model.countDocuments({ tokenHash: 'never-issued' })).toBe(0);
+
+      await repository.createRefreshSession({
+        userId: String(userId),
+        context: 'PLATFORM',
+        tokenHash: 'platform-initial',
+        expiresAt,
+      });
+      const platformSession = await model
+        .findOne({ tokenHash: 'platform-initial' })
+        .lean();
+      expect(platformSession?.context).toBe('PLATFORM');
+      expect(platformSession).not.toHaveProperty('organizationId');
+      await expect(
+        repository.findRefreshSessionForRotation('platform-initial'),
+      ).resolves.toEqual({
+        outcome: 'ACTIVE',
+        userId: String(userId),
+        context: 'PLATFORM',
+        expiresAt,
+      });
+      await expect(
+        repository.rotateRefreshSession(
+          'platform-initial',
+          'platform-replacement',
+          expiresAt,
+          now,
+        ),
+      ).resolves.toEqual({
+        outcome: 'ROTATED',
+        userId: String(userId),
+        context: 'PLATFORM',
+      });
+      const platformReplacement = await model
+        .findOne({ tokenHash: 'platform-replacement' })
+        .lean();
+      expect(platformReplacement?.context).toBe('PLATFORM');
+      expect(platformReplacement).not.toHaveProperty('organizationId');
+      await create('org-active-after-platform-rotation');
+      await repository.revokeRefreshSessionByHash('platform-replacement');
+      await expect(
+        repository.rotateRefreshSession(
+          'platform-replacement',
+          'platform-replay-not-issued',
+          expiresAt,
+          now,
+        ),
+      ).resolves.toEqual({ outcome: 'REPLAYED' });
+      expect(await model.countDocuments({ userId, isRevoked: false })).toBe(0);
+      expect(
+        await model.countDocuments({ tokenHash: 'platform-replay-not-issued' }),
+      ).toBe(0);
 
       const logoutHash = 'logout-refresh';
       await create(logoutHash);

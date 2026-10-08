@@ -61,6 +61,20 @@ describe('UserDirectoryService', () => {
     expect(repository.list.mock.calls).toHaveLength(0);
   });
 
+  it('does not let Platform Operator display state manage Organization users', async () => {
+    const platformOperator = { ...actor, roles: ['PLATFORM_OPERATOR'] };
+    repository.isAdmin.mockResolvedValue(false);
+
+    await expect(
+      service.list(platformOperator, { page: 1, pageSize: 20 }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.update(platformOperator, user.id, { status: 'SUSPENDED' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(repository.list.mock.calls).toHaveLength(0);
+    expect(repository.update.mock.calls).toHaveLength(0);
+  });
+
   it('allows self profile changes but rejects self status changes', async () => {
     repository.isAdmin.mockResolvedValue(false);
     repository.find.mockResolvedValue({ ...user, id: actor.id });

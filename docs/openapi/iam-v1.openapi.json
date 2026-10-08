@@ -8,6 +8,7 @@
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
     { "name": "Users", "description": "Organization user directory." },
+    { "name": "Platform", "description": "A-04 PLATFORM-scoped operations." },
     { "name": "Projects", "description": "Organization projects." },
     {
       "name": "Project Memberships",
@@ -49,7 +50,48 @@
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "409": { "$ref": "#/components/responses/OrganizationSelectionRequired" },
+          "409": {
+            "$ref": "#/components/responses/OrganizationSelectionRequired"
+          },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/platform/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Log in to Platform context",
+        "description": "Authenticates an active Human DATN User with the existing password, account-eligibility, and MFA checks. The server verifies at least one current approved PLATFORM assignment before issuing a Platform-context access and refresh session. The token has no Organization or role claims; the refresh session preserves Platform context and rechecks current assignments on rotation. This session does not grant Organization membership or permit Organization-scoped APIs. Tokens are returned only in cookies, never in JSON.",
+        "operationId": "loginPlatform",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlatformLoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Platform authentication succeeded.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Three separate fields: continuum_access and __Secure-refresh are HttpOnly; __Host-csrf is readable by the browser. Cookie attributes match the Organization login route.",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformLoginResponse"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
         }
@@ -239,6 +281,91 @@
         }
       }
     },
+    "/api/v1/iam/platform/organizations": {
+      "post": {
+        "tags": ["Platform"],
+        "summary": "Provision an Organization and its first ADMIN",
+        "description": "Requires the exact A-04 permission organization.create at PLATFORM scope. Creates only the Organization and its first active ADMIN membership/role assignment in one transaction. The Platform Operator is not made an Organization member or ADMIN. This operation does not grant ongoing membership/role management or content access.",
+        "operationId": "createOrganizationAsPlatformOperator",
+        "x-platform-permission": "organization.create",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformOrganizationCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Organization created with first ADMIN bootstrap and audit record committed atomically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisionedOrganization"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/health": {
+      "get": {
+        "tags": ["Platform"],
+        "summary": "Read IAM process liveness",
+        "description": "Requires platform.health.read at PLATFORM scope. Returns the existing IAM process liveness response only; a status of ok means the IAM health handler responded. It does not report MongoDB, Redis, BullMQ, or other dependency readiness. It does not return configuration, secrets, credentials, or Organization content.",
+        "operationId": "readPlatformHealth",
+        "x-platform-permission": "platform.health.read",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "IAM process liveness response; dependency readiness is not included.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PlatformHealth" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/audit": {
+      "get": {
+        "tags": ["Platform"],
+        "summary": "Read platform operational audit metadata",
+        "description": "Requires platform.audit.read at PLATFORM scope. Returns a bounded, projected subset of Organization provisioning and Platform authority lifecycle metadata only. It excludes mixed metadata, Organization security events, Project records, tokens, secrets, credentials, and private content.",
+        "operationId": "readPlatformOperationalAudit",
+        "x-platform-permission": "platform.audit.read",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "At most 100 newest safe platform operational audit records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlatformOperationalAuditRecord"
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
     "/api/v1/iam/projects": {
       "get": {
         "tags": ["Projects"],
@@ -363,7 +490,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/MakeProjectPublicRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/MakeProjectPublicRequest"
+              }
             }
           }
         },
@@ -522,7 +651,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/AssignProjectLeaderRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/AssignProjectLeaderRequest"
+              }
             }
           }
         },
@@ -546,7 +677,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ChangeProjectLeaderRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ChangeProjectLeaderRequest"
+              }
             }
           }
         },
@@ -895,7 +1028,9 @@
         "description": "The password was verified, but an organization must be selected. The details.organizations array contains only organizations assigned to this account.",
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/OrganizationSelectionError" }
+            "schema": {
+              "$ref": "#/components/schemas/OrganizationSelectionError"
+            }
           }
         }
       },
@@ -962,6 +1097,72 @@
         "type": "string",
         "enum": ["ACTIVE", "INACTIVE"]
       },
+      "PlatformPermission": {
+        "type": "string",
+        "enum": [
+          "organization.create",
+          "platform.health.read",
+          "platform.audit.read"
+        ]
+      },
+      "PlatformOrganizationCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "slug", "plan", "firstAdminUserId"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "slug": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "plan": { "type": "string", "enum": ["FREE", "ENTERPRISE"] },
+          "firstAdminUserId": { "$ref": "#/components/schemas/ResourceId" }
+        }
+      },
+      "ProvisionedOrganization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "slug", "plan", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "name": { "type": "string", "minLength": 1 },
+          "slug": { "type": "string", "minLength": 1 },
+          "plan": { "type": "string", "enum": ["FREE", "ENTERPRISE"] },
+          "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "PlatformHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "const": "ok" } }
+      },
+      "PlatformOperationalAuditRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "targetResource",
+          "targetResourceId",
+          "actorUserId",
+          "occurredAt"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "organization.create",
+              "platform.authority.granted",
+              "platform.authority.revoked"
+            ]
+          },
+          "targetResource": {
+            "type": "string",
+            "enum": ["ORGANIZATION", "PLATFORM_AUTHORITY"]
+          },
+          "targetResourceId": { "$ref": "#/components/schemas/ResourceId" },
+          "actorUserId": { "$ref": "#/components/schemas/ResourceId" },
+          "occurredAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
       "Pagination": {
         "type": "object",
         "additionalProperties": false,
@@ -991,19 +1192,28 @@
       "RefreshInvalidError": {
         "allOf": [
           { "$ref": "#/components/schemas/ErrorResponse" },
-          { "type": "object", "properties": { "code": { "const": "AUTH_REFRESH_INVALID" } } }
+          {
+            "type": "object",
+            "properties": { "code": { "const": "AUTH_REFRESH_INVALID" } }
+          }
         ]
       },
       "RefreshCsrfError": {
         "allOf": [
           { "$ref": "#/components/schemas/ErrorResponse" },
-          { "type": "object", "properties": { "code": { "const": "AUTH_CSRF_INVALID" } } }
+          {
+            "type": "object",
+            "properties": { "code": { "const": "AUTH_CSRF_INVALID" } }
+          }
         ]
       },
       "RefreshFailedError": {
         "allOf": [
           { "$ref": "#/components/schemas/ErrorResponse" },
-          { "type": "object", "properties": { "code": { "const": "AUTH_REFRESH_FAILED" } } }
+          {
+            "type": "object",
+            "properties": { "code": { "const": "AUTH_REFRESH_FAILED" } }
+          }
         ]
       },
       "LoginRequest": {
@@ -1021,6 +1231,20 @@
           }
         }
       },
+      "PlatformLoginRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "password"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "writeOnly": true
+          }
+        }
+      },
       "CurrentUser": {
         "type": "object",
         "additionalProperties": false,
@@ -1030,7 +1254,11 @@
           "email": { "type": "string", "format": "email" },
           "name": { "type": "string", "minLength": 1 },
           "organizationId": { "$ref": "#/components/schemas/ResourceId" },
-          "roles": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+          "roles": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true
+          }
         }
       },
       "LoginResponse": {
@@ -1039,6 +1267,25 @@
         "required": ["user"],
         "properties": {
           "user": { "$ref": "#/components/schemas/CurrentUser" }
+        }
+      },
+      "PlatformLoginSubject": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "name"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string", "minLength": 1 }
+        }
+      },
+      "PlatformLoginResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["context", "user"],
+        "properties": {
+          "context": { "type": "string", "const": "PLATFORM" },
+          "user": { "$ref": "#/components/schemas/PlatformLoginSubject" }
         }
       },
       "RefreshResponse": {
@@ -1062,7 +1309,10 @@
         "additionalProperties": false,
         "required": ["code", "message", "details", "requestId"],
         "properties": {
-          "code": { "type": "string", "const": "ORGANIZATION_SELECTION_REQUIRED" },
+          "code": {
+            "type": "string",
+            "const": "ORGANIZATION_SELECTION_REQUIRED"
+          },
           "message": { "type": "string" },
           "details": {
             "type": "object",

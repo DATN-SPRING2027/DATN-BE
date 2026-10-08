@@ -85,6 +85,38 @@ describe('IAM OpenAPI contract', () => {
     expect(new Set(operationIds).size).toBe(operationIds.length);
   });
 
+  it('documents only the three approved A-04 platform permissions and boundaries', () => {
+    const organization =
+      contract.paths['/api/v1/iam/platform/organizations'].post;
+    const health = contract.paths['/api/v1/iam/platform/health'].get;
+    const audit = contract.paths['/api/v1/iam/platform/audit'].get;
+    expect(organization?.['x-platform-permission']).toBe('organization.create');
+    expect(organization?.description).toContain('first active ADMIN');
+    expect(organization?.description).toContain(
+      'not made an Organization member or ADMIN',
+    );
+    expect(health?.['x-platform-permission']).toBe('platform.health.read');
+    expect(health?.description).toContain('does not return configuration');
+    expect(health?.summary).toBe('Read IAM process liveness');
+    expect(health?.description).toContain('liveness response only');
+    expect(health?.description).toContain(
+      'does not report MongoDB, Redis, BullMQ',
+    );
+    expect(audit?.['x-platform-permission']).toBe('platform.audit.read');
+    expect(audit?.description).toContain('Project records');
+    expect(contract.components.schemas.PlatformPermission).toEqual({
+      type: 'string',
+      enum: [
+        'organization.create',
+        'platform.health.read',
+        'platform.audit.read',
+      ],
+    });
+    expect(
+      JSON.stringify(contract.components.schemas.PlatformPermission),
+    ).not.toContain('platform.configuration');
+  });
+
   it('documents ACTIVE Organization Membership as the project.create boundary', () => {
     const createProject = contract.paths['/api/v1/iam/projects'].post;
     expect(createProject?.description).toContain(
@@ -325,6 +357,42 @@ describe('IAM OpenAPI contract', () => {
       },
     });
     expect(logout.requestBody).toBeUndefined();
+  });
+
+  it('documents a separate Platform login without Organization claims', () => {
+    const login = contract.paths['/api/v1/auth/platform/login'].post!;
+    expect(login.operationId).toBe('loginPlatform');
+    expect(login.security).toEqual([]);
+    expect(login.description).toContain('current approved PLATFORM assignment');
+    expect(login.description).toContain('no Organization or role claims');
+    expect(login.description).toContain(
+      'rechecks current assignments on rotation',
+    );
+    expect(login.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/PlatformLoginRequest' },
+        },
+      },
+    });
+    expect(login.responses['200']).toMatchObject({
+      headers: { 'Set-Cookie': { schema: { type: 'string' } } },
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/PlatformLoginResponse' },
+        },
+      },
+    });
+    expect(contract.components.schemas.PlatformLoginResponse).toMatchObject({
+      required: ['context', 'user'],
+      properties: {
+        context: { const: 'PLATFORM' },
+        user: { $ref: '#/components/schemas/PlatformLoginSubject' },
+      },
+    });
+    expect(contract.components.schemas.PlatformLoginSubject).toMatchObject({
+      required: ['id', 'email', 'name'],
+    });
   });
 
   it('defines the closed A-02 refresh HTTP contract without JSON token fields', () => {

@@ -58,6 +58,13 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
+      name: 'platform_authority_assignments',
+      indexes: [
+        index({ subjectUserId: 1, permission: 1, scope: 1 }, { unique: true }),
+        index({ subjectUserId: 1, status: 1, permission: 1 }),
+      ],
+    },
+    {
       name: 'refresh_sessions',
       indexes: [
         index({ tokenHash: 1 }, { unique: true }),

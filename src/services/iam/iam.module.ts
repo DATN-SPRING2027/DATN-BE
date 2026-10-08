@@ -12,6 +12,7 @@ import { PasswordCredentialService } from './application/credentials/password-cr
 import { AUTHORIZATION_EVIDENCE_PROVIDER } from './application/authorization/authorization-evidence.provider';
 import { AuthorizationPolicy } from './application/authorization/authorization.policy';
 import { ProjectCreateAuthorizationGuard } from './application/authorization/project-create-authorization.guard';
+import { PlatformAuthorizationGuard } from './application/authorization/platform-authorization.guard';
 import { IamApplicationService } from './application/iam.service';
 import { AuthenticationController } from './controllers/authentication.controller';
 import { IamController } from './controllers/iam.controller';
@@ -32,6 +33,13 @@ import { ProjectAccessAuthorizationGuard } from './application/authorization/pro
 import { ProjectAccessService } from './application/projects/project-access.service';
 import { PROJECT_ACCESS_REPOSITORY } from './application/projects/project-access.repository';
 import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-access.repository';
+import { PlatformController } from './controllers/platform.controller';
+import { OrganizationProvisioningService } from './application/organizations/organization-provisioning.service';
+import { ORGANIZATION_PROVISIONING_REPOSITORY } from './application/organizations/organization-provisioning.repository';
+import { MongoOrganizationProvisioningRepository } from './infrastructure/mongodb/organization-provisioning.repository';
+import { PlatformAuditService } from './application/platform/platform-audit.service';
+import { PLATFORM_AUDIT_REPOSITORY } from './application/platform/platform-audit.repository';
+import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-audit.repository';
 
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
@@ -41,6 +49,7 @@ import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-a
     UserDirectoryController,
     ProjectController,
     ProjectAccessController,
+    PlatformController,
   ],
   providers: [
     IamApplicationService,
@@ -65,6 +74,7 @@ import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-a
     AuthorizationPolicy,
     ProjectCreateAuthorizationGuard,
     ProjectAccessAuthorizationGuard,
+    PlatformAuthorizationGuard,
     {
       provide: AUTHORIZATION_EVIDENCE_PROVIDER,
       useClass: MongoAuthorizationEvidenceProvider,
@@ -72,6 +82,8 @@ import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-a
     UserDirectoryService,
     ProjectService,
     ProjectAccessService,
+    OrganizationProvisioningService,
+    PlatformAuditService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
       provide: PROJECT_ACCESS_REPOSITORY,
@@ -80,6 +92,14 @@ import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-a
     {
       provide: USER_DIRECTORY_REPOSITORY,
       useClass: MongoUserDirectoryRepository,
+    },
+    {
+      provide: ORGANIZATION_PROVISIONING_REPOSITORY,
+      useClass: MongoOrganizationProvisioningRepository,
+    },
+    {
+      provide: PLATFORM_AUDIT_REPOSITORY,
+      useClass: MongoPlatformAuditRepository,
     },
   ],
 })

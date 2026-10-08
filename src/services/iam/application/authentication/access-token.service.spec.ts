@@ -66,6 +66,51 @@ describe('AccessTokenService', () => {
     expect(service.verifyAccessToken(token)).toEqual(payload);
   });
 
+  it('issues a Platform-context token without Organization or role claims', () => {
+    const service = new AccessTokenService(createConfig(SECRET));
+    const token = service.signAccessToken({
+      sub: 'user-123',
+      email: 'person@example.com',
+      context: 'PLATFORM',
+    });
+    const payload = JSON.parse(
+      Buffer.from(token.split('.')[1], 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      sub: 'user-123',
+      email: 'person@example.com',
+      context: 'PLATFORM',
+    });
+    expect(payload).not.toHaveProperty('orgId');
+    expect(payload).not.toHaveProperty('roles');
+    expect(service.verifyAccessToken(token)).toMatchObject({
+      sub: 'user-123',
+      context: 'PLATFORM',
+    });
+    expect(service.verifyAccessToken(token)).not.toHaveProperty('orgId');
+    expect(service.verifyAccessToken(token)).not.toHaveProperty('roles');
+  });
+
+  it('rejects a Platform token that carries Organization or role claims', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-26T00:00:00.000Z'));
+    const now = Math.floor(Date.now() / 1000);
+    const token = signRawToken({
+      sub: 'user-123',
+      email: 'person@example.com',
+      context: 'PLATFORM',
+      orgId: 'org-456',
+      roles: ['ADMIN'],
+      iat: now,
+      exp: now + 60,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
+
+    expect(() =>
+      new AccessTokenService(createConfig(SECRET)).verifyAccessToken(token),
+    ).toThrow(new AccessTokenError('INVALID_CLAIMS'));
+  });
+
   it('[DESIGN] verifies the HS256 signature before trusting token claims', () => {
     const service = new AccessTokenService(createConfig(SECRET));
     const token = service.signAccessToken({
