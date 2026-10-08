@@ -7,7 +7,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-export class LoginRequestDto {
+export class LoginCredentialsDto {
   @IsEmail()
   @MaxLength(320)
   email!: string;
@@ -16,8 +16,12 @@ export class LoginRequestDto {
   @MinLength(1)
   @MaxLength(1024)
   password!: string;
+}
 
+export class LoginRequestDto extends LoginCredentialsDto {
   @IsOptional()
   @IsMongoId()
   organizationId?: string;
 }
+
+export class PlatformLoginRequestDto extends LoginCredentialsDto {}

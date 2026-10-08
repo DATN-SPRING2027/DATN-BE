@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   HttpException,
@@ -14,7 +15,10 @@ import {
 } from './auth-security.store';
 import {
   AUTHENTICATION_REPOSITORY,
+  type AuthenticationAccount,
   type AuthenticationRepositoryPort,
+  type NewRefreshSession,
+  type RefreshSessionContext,
 } from './authentication.repository';
 import { LOGIN_ELIGIBILITY_POLICY } from './login-eligibility.policy';
 import type { LoginEligibilityPolicy } from './login-eligibility.policy';
@@ -22,6 +26,14 @@ import { ORGANIZATION_CONTEXT_RESOLVER } from './organization-context.resolver';
 import type { OrganizationContextResolver } from './organization-context.resolver';
 import { PasswordCredentialService } from '../credentials/password-credential.service';
 import { PasswordHashFormatError } from '../credentials/password-credential.service';
+import {
+  AUTHORIZATION_EVIDENCE_PROVIDER,
+  type AuthorizationEvidenceProvider,
+} from '../authorization/authorization-evidence.provider';
+import {
+  AuthorizationPolicy,
+  PLATFORM_PERMISSIONS,
+} from '../authorization/authorization.policy';
 
 export interface LoginInput {
   email: string;
@@ -49,6 +61,13 @@ export interface LoginResult {
   refreshToken: string;
   csrfToken: string;
   user: AuthenticatedIdentity;
+}
+
+export interface PlatformLoginResult {
+  accessToken: string;
+  refreshToken: string;
+  csrfToken: string;
+  user: AuthenticatedPlatformSubject;
 }
 
 export interface RefreshResult {
@@ -152,9 +171,74 @@ export class AuthenticationApplicationService {
     private readonly accessTokens: AccessTokenService,
     @Inject(AUTH_SECURITY_STORE)
     private readonly securityStore: AuthSecurityStore,
+    @Inject(AUTHORIZATION_EVIDENCE_PROVIDER)
+    private readonly authorizationEvidence: AuthorizationEvidenceProvider,
+    private readonly authorizationPolicy: AuthorizationPolicy,
   ) {}
 
   async login(input: LoginInput): Promise<LoginResult> {
+    const { account, needsRehash } = await this.authenticateCredentials(input);
+    const organization = await this.organizationResolver.resolveForUser(
+      account.userId,
+      input.organizationId,
+    );
+    if (organization.outcome === 'ORGANIZATION_SELECTION_REQUIRED') {
+      throw new ConflictException({
+        code: 'ORGANIZATION_SELECTION_REQUIRED',
+        message: 'Select an organization to continue.',
+        details: { organizations: organization.organizations },
+      });
+    }
+    if (organization.outcome !== 'RESOLVED') throw unauthorized();
+
+    await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
+    const identity: AuthenticatedIdentity = {
+      id: account.userId,
+      email: account.email,
+      name: account.name,
+      organizationId: organization.context.orgId,
+      roles: organization.context.roles,
+    };
+    const credentials = await this.issueSession(
+      account.userId,
+      'ORGANIZATION',
+      {
+        sub: identity.id,
+        email: identity.email,
+        orgId: identity.organizationId,
+        roles: identity.roles,
+      },
+    );
+    return { ...credentials, user: identity };
+  }
+
+  async loginPlatform(input: LoginInput): Promise<PlatformLoginResult> {
+    const { account, needsRehash } = await this.authenticateCredentials(input);
+    if (
+      !(await this.hasActivePlatformAssignment(account.userId, account.status))
+    )
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Insufficient authorization.',
+      });
+
+    await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
+    const identity: AuthenticatedPlatformSubject = {
+      id: account.userId,
+      email: account.email,
+      name: account.name,
+    };
+    const credentials = await this.issueSession(account.userId, 'PLATFORM', {
+      sub: identity.id,
+      email: identity.email,
+      context: 'PLATFORM',
+    });
+    return { ...credentials, user: identity };
+  }
+
+  private async authenticateCredentials(
+    input: LoginInput,
+  ): Promise<{ account: AuthenticationAccount; needsRehash: boolean }> {
     const emailKey = createHash('sha256')
       .update(input.email.trim().toLowerCase())
       .digest('hex');
@@ -199,53 +283,84 @@ export class AuthenticationApplicationService {
       throw unauthorized();
     }
 
-    const organization = await this.organizationResolver.resolveForUser(
+    return { account, needsRehash: verification.needsRehash };
+  }
+
+  private async rehashPasswordIfNeeded(
+    account: AuthenticationAccount,
+    password: string,
+    needsRehash: boolean,
+  ): Promise<void> {
+    if (!needsRehash) return;
+    const replacementHash = await this.credentials.hashPassword(password);
+    await this.repository.replacePasswordHashIfCurrent(
       account.userId,
-      input.organizationId,
+      account.passwordHash,
+      replacementHash,
     );
-    if (organization.outcome === 'ORGANIZATION_SELECTION_REQUIRED') {
-      throw new ConflictException({
-        code: 'ORGANIZATION_SELECTION_REQUIRED',
-        message: 'Select an organization to continue.',
-        details: { organizations: organization.organizations },
-      });
-    }
-    if (organization.outcome !== 'RESOLVED') throw unauthorized();
+  }
 
-    if (verification.needsRehash) {
-      const replacementHash = await this.credentials.hashPassword(
-        input.password,
-      );
-      await this.repository.replacePasswordHashIfCurrent(
-        account.userId,
-        account.passwordHash,
-        replacementHash,
-      );
-    }
-
-    const identity: AuthenticatedIdentity = {
-      id: account.userId,
-      email: account.email,
-      name: account.name,
-      organizationId: organization.context.orgId,
-      roles: organization.context.roles,
-    };
+  private async issueSession(
+    userId: string,
+    context: RefreshSessionContext,
+    claims:
+      | { sub: string; email: string; orgId: string; roles: string[] }
+      | { sub: string; email: string; context: 'PLATFORM' },
+  ): Promise<{ accessToken: string; refreshToken: string; csrfToken: string }> {
     const refreshToken = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
-    await this.repository.createRefreshSession(
-      identity.id,
-      identity.organizationId,
-      createHash('sha256').update(refreshToken).digest('hex'),
-      new Date(Date.now() + REFRESH_LIFETIME_MS),
-    );
-    const accessToken = this.accessTokens.signAccessToken({
-      sub: identity.id,
-      email: identity.email,
-      orgId: identity.organizationId,
-      roles: identity.roles,
-    });
+    const sessionTokenHash = createHash('sha256')
+      .update(refreshToken)
+      .digest('hex');
+    const expiresAt = new Date(Date.now() + REFRESH_LIFETIME_MS);
+    let session: NewRefreshSession;
+    if (context === 'ORGANIZATION') {
+      if (!('orgId' in claims))
+        throw new Error('Organization login has no Organization claims');
+      session = {
+        userId,
+        context,
+        organizationId: claims.orgId,
+        tokenHash: sessionTokenHash,
+        expiresAt,
+      };
+    } else {
+      if (!('context' in claims) || claims.context !== 'PLATFORM')
+        throw new Error('Platform login has no Platform token context');
+      session = {
+        userId,
+        context,
+        tokenHash: sessionTokenHash,
+        expiresAt,
+      };
+    }
+    await this.repository.createRefreshSession(session);
+    const accessToken = this.accessTokens.signAccessToken(claims);
+    return { accessToken, refreshToken, csrfToken };
+  }
 
-    return { accessToken, refreshToken, csrfToken, user: identity };
+  private async hasActivePlatformAssignment(
+    userId: string,
+    status: string,
+  ): Promise<boolean> {
+    const now = new Date();
+    for (const permission of PLATFORM_PERMISSIONS) {
+      const evidence = await this.authorizationEvidence.loadPlatformPermission(
+        userId,
+        permission,
+      );
+      if (
+        evidence &&
+        this.authorizationPolicy.evaluatePlatformPermission({
+          permission,
+          subject: { userId, status },
+          assignments: evidence.assignments,
+          now,
+        }).allowed
+      )
+        return true;
+    }
+    return false;
   }
 
   private async rejectInvalidPassword(emailKey: string): Promise<never> {
@@ -271,6 +386,7 @@ export class AuthenticationApplicationService {
       authorization,
       cookieHeader,
     );
+    if (claims.context === 'PLATFORM') throw unauthorized();
 
     const activeMembershipIds =
       await this.repository.findActiveOrganizationMembershipIds(claims.sub);
@@ -394,19 +510,35 @@ export class AuthenticationApplicationService {
     if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
       throw unauthorized();
     }
-    const organization = await this.organizationResolver.resolveForUser(
-      current.userId,
-      current.organizationId,
-    );
-    if (organization.outcome !== 'RESOLVED') throw unauthorized();
-    // Finish all fallible eligibility/context work and signing before token
-    // state changes. A later failure therefore cannot strand an unissued hash.
-    const accessToken = this.accessTokens.signAccessToken({
-      sub: current.userId,
-      email: account.email,
-      orgId: current.organizationId,
-      roles: organization.context.roles,
-    });
+    let accessToken: string;
+    if (current.context === 'PLATFORM') {
+      if (
+        !(await this.hasActivePlatformAssignment(
+          current.userId,
+          account.status,
+        ))
+      )
+        throw unauthorized();
+      accessToken = this.accessTokens.signAccessToken({
+        sub: current.userId,
+        email: account.email,
+        context: 'PLATFORM',
+      });
+    } else {
+      const organization = await this.organizationResolver.resolveForUser(
+        current.userId,
+        current.organizationId,
+      );
+      if (organization.outcome !== 'RESOLVED') throw unauthorized();
+      // Finish all fallible eligibility/context work and signing before token
+      // state changes. A later failure therefore cannot strand an unissued hash.
+      accessToken = this.accessTokens.signAccessToken({
+        sub: current.userId,
+        email: account.email,
+        orgId: current.organizationId,
+        roles: organization.context.roles,
+      });
+    }
     const rotation = await this.repository.rotateRefreshSession(
       currentHash,
       createHash('sha256').update(replacement).digest('hex'),

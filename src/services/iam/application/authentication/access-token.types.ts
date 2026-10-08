@@ -1,19 +1,41 @@
-export interface AccessTokenClaims {
+interface AccessTokenBaseClaims {
   sub: string;
   email: string;
-  orgId: string;
-  roles: string[];
-  activeProjectId?: string;
   iat: number;
   exp: number;
   jti: string;
 }
 
-export type AccessTokenClaimsInput = Pick<
-  AccessTokenClaims,
-  'sub' | 'email' | 'orgId' | 'roles'
-> &
-  Partial<Pick<AccessTokenClaims, 'activeProjectId'>>;
+export type AccessTokenClaims =
+  | (AccessTokenBaseClaims & {
+      context: 'PLATFORM';
+      orgId?: never;
+      roles?: never;
+      activeProjectId?: never;
+    })
+  | (AccessTokenBaseClaims & {
+      /** Missing context remains an Organization token for legacy sessions. */
+      context?: 'ORGANIZATION';
+      orgId: string;
+      roles: string[];
+      activeProjectId?: string;
+    });
+
+export type AccessTokenClaimsInput =
+  | {
+      sub: string;
+      email: string;
+      context: 'PLATFORM';
+    }
+  | {
+      sub: string;
+      email: string;
+      /** Missing context keeps the existing Organization token contract. */
+      context?: 'ORGANIZATION';
+      orgId: string;
+      roles: string[];
+      activeProjectId?: string;
+    };
 
 export type AccessTokenClaimsFailure =
   'MALFORMED' | 'EXPIRED' | 'INVALID_CLAIMS';
@@ -28,6 +50,7 @@ export class AccessTokenClaimsError extends Error {
 const ALLOWED_CLAIM_NAMES = new Set([
   'sub',
   'email',
+  'context',
   'orgId',
   'roles',
   'activeProjectId',
@@ -50,11 +73,15 @@ export function validateAccessTokenClaims(
 
   const claims = value as Record<string, unknown>;
   const keys = Object.keys(claims);
+  const context = claims.context;
   if (
     keys.some((key) => !ALLOWED_CLAIM_NAMES.has(key)) ||
-    !['sub', 'email', 'orgId', 'roles', 'iat', 'exp', 'jti'].every((key) =>
+    !['sub', 'email', 'iat', 'exp', 'jti'].every((key) =>
       Object.hasOwn(claims, key),
-    )
+    ) ||
+    (context !== undefined &&
+      context !== 'ORGANIZATION' &&
+      context !== 'PLATFORM')
   ) {
     throw new AccessTokenClaimsError('INVALID_CLAIMS');
   }
@@ -64,15 +91,28 @@ export function validateAccessTokenClaims(
   if (
     !nonEmptyString(claims.sub) ||
     !nonEmptyString(claims.email) ||
-    !nonEmptyString(claims.orgId) ||
-    !Array.isArray(claims.roles) ||
-    !claims.roles.every(nonEmptyString) ||
-    (Object.hasOwn(claims, 'activeProjectId') &&
-      !nonEmptyString(claims.activeProjectId)) ||
     !Number.isSafeInteger(claims.iat) ||
     !Number.isSafeInteger(claims.exp) ||
     typeof claims.jti !== 'string' ||
     !UUID_PATTERN.test(claims.jti)
+  ) {
+    throw new AccessTokenClaimsError('INVALID_CLAIMS');
+  }
+
+  if (context === 'PLATFORM') {
+    if (
+      ['orgId', 'roles', 'activeProjectId'].some((key) =>
+        Object.hasOwn(claims, key),
+      )
+    ) {
+      throw new AccessTokenClaimsError('INVALID_CLAIMS');
+    }
+  } else if (
+    !nonEmptyString(claims.orgId) ||
+    !Array.isArray(claims.roles) ||
+    !claims.roles.every(nonEmptyString) ||
+    (Object.hasOwn(claims, 'activeProjectId') &&
+      !nonEmptyString(claims.activeProjectId))
   ) {
     throw new AccessTokenClaimsError('INVALID_CLAIMS');
   }
@@ -90,16 +130,22 @@ export function validateAccessTokenClaims(
     throw new AccessTokenClaimsError('INVALID_CLAIMS');
   }
 
-  return {
+  const common = {
     sub: claims.sub,
     email: claims.email,
-    orgId: claims.orgId,
-    roles: [...claims.roles],
-    ...(typeof claims.activeProjectId === 'string'
-      ? { activeProjectId: claims.activeProjectId }
-      : {}),
     iat: issuedAt,
     exp: expiresAt,
     jti: claims.jti,
+  };
+
+  if (context === 'PLATFORM') return { ...common, context: 'PLATFORM' };
+  return {
+    ...common,
+    ...(context === 'ORGANIZATION' ? { context: 'ORGANIZATION' as const } : {}),
+    orgId: claims.orgId as string,
+    roles: [...(claims.roles as string[])],
+    ...(typeof claims.activeProjectId === 'string'
+      ? { activeProjectId: claims.activeProjectId }
+      : {}),
   };
 }

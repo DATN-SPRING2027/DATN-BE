@@ -30,15 +30,49 @@ export interface RefreshAccount {
   twoFactorEnabled: boolean;
 }
 
+export type RefreshSessionContext = 'ORGANIZATION' | 'PLATFORM';
+
+export type NewRefreshSession =
+  | {
+      userId: string;
+      context: 'ORGANIZATION';
+      organizationId: string;
+      tokenHash: string;
+      expiresAt: Date;
+    }
+  | {
+      userId: string;
+      context: 'PLATFORM';
+      tokenHash: string;
+      expiresAt: Date;
+    };
+
 export type RefreshRotationResult =
-  | { outcome: 'ROTATED'; userId: string; organizationId: string }
+  | {
+      outcome: 'ROTATED';
+      userId: string;
+      context: 'ORGANIZATION';
+      organizationId: string;
+    }
+  | {
+      outcome: 'ROTATED';
+      userId: string;
+      context: 'PLATFORM';
+    }
   | { outcome: 'REPLAYED' | 'INVALID' };
 
 export type RefreshSessionLookup =
   | {
       outcome: 'ACTIVE' | 'REVOKED';
       userId: string;
+      context: 'ORGANIZATION';
       organizationId: string;
+      expiresAt: Date;
+    }
+  | {
+      outcome: 'ACTIVE' | 'REVOKED';
+      userId: string;
+      context: 'PLATFORM';
       expiresAt: Date;
     }
   | { outcome: 'INVALID' };
@@ -67,10 +101,5 @@ export interface AuthenticationRepositoryPort {
     now: Date,
   ): Promise<RefreshRotationResult>;
   findAccountById(userId: string): Promise<RefreshAccount | null>;
-  createRefreshSession(
-    userId: string,
-    organizationId: string,
-    tokenHash: string,
-    expiresAt: Date,
-  ): Promise<void>;
+  createRefreshSession(session: NewRefreshSession): Promise<void>;
 }

@@ -22,6 +22,7 @@ describe('AuthenticationController', () => {
   let app: INestApplication;
   let service: {
     login: jest.Mock;
+    loginPlatform: jest.Mock;
     getCurrentIdentity: jest.Mock;
     logout: jest.Mock;
     refresh: jest.Mock;
@@ -39,6 +40,16 @@ describe('AuthenticationController', () => {
           name: 'Test Person',
           organizationId: '651a2b3c4d5e6f7a8b9c0d1f',
           roles: ['MEMBER'],
+        },
+      }),
+      loginPlatform: jest.fn().mockResolvedValue({
+        accessToken: 'platform.private.jwt.value',
+        refreshToken: 'platform-refresh',
+        csrfToken: 'platform-csrf',
+        user: {
+          id: '651a2b3c4d5e6f7a8b9c0d1e',
+          email: 'person@example.com',
+          name: 'Test Person',
         },
       }),
       getCurrentIdentity: jest
@@ -99,6 +110,16 @@ describe('AuthenticationController', () => {
         roles: ['MEMBER'],
       },
     });
+    service.loginPlatform.mockResolvedValue({
+      accessToken: 'platform.private.jwt.value',
+      refreshToken: 'platform-refresh',
+      csrfToken: 'platform-csrf',
+      user: {
+        id: '651a2b3c4d5e6f7a8b9c0d1e',
+        email: 'person@example.com',
+        name: 'Test Person',
+      },
+    });
     service.refresh.mockResolvedValue({
       accessToken: 'replacement.access.value',
       refreshToken: 'replacement-refresh-value',
@@ -142,6 +163,47 @@ describe('AuthenticationController', () => {
     };
     expect(loginInput.email).toBe('person@example.com');
     expect(typeof loginInput.sourceIp).toBe('string');
+  });
+
+  it('POST /api/v1/auth/platform/login sets the Platform session cookies and omits tenant identity', async () => {
+    const response = await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/platform/login')
+      .send({ email: 'person@example.com', password: 'password' })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      context: 'PLATFORM',
+      user: {
+        id: '651a2b3c4d5e6f7a8b9c0d1e',
+        email: 'person@example.com',
+        name: 'Test Person',
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(
+      'platform.private.jwt.value',
+    );
+    expect(response.headers['set-cookie']).toHaveLength(3);
+    expect(response.headers['set-cookie'][0]).toContain('continuum_access=');
+    expect(response.headers['set-cookie'][1]).toContain('__Secure-refresh=');
+    expect(response.headers['set-cookie'][2]).toContain('__Host-csrf=');
+    expect(response.headers['cache-control']).toBe('no-store');
+    const calls = service.loginPlatform.mock.calls as unknown[][];
+    expect(calls[0][0]).toMatchObject({
+      email: 'person@example.com',
+      password: 'password',
+    });
+  });
+
+  it('rejects Organization selectors on the Platform login route', async () => {
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/platform/login')
+      .send({
+        email: 'person@example.com',
+        password: 'password',
+        organizationId: '651a2b3c4d5e6f7a8b9c0d1f',
+      })
+      .expect(422);
+    expect(service.loginPlatform).not.toHaveBeenCalled();
   });
 
   it('accepts a signed source on the internal route and rejects an unsigned one', async () => {

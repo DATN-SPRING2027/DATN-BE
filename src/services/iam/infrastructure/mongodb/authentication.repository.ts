@@ -7,7 +7,9 @@ import type {
   AuthenticationProfile,
   AuthenticationRepositoryPort,
   LoginOrganizationOption,
+  NewRefreshSession,
   OrganizationRoleAssignment,
+  RefreshSessionContext,
   RefreshAccount,
   RefreshRotationResult,
   RefreshSessionLookup,
@@ -40,10 +42,24 @@ interface OrganizationDocument {
 interface RefreshSessionDocument {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
-  organizationId: Types.ObjectId;
+  organizationId?: Types.ObjectId | null;
+  context?: string;
   tokenHash: string;
   isRevoked: boolean;
   expiresAt: Date;
+}
+
+function refreshSessionContext(
+  row: RefreshSessionDocument,
+): { context: RefreshSessionContext; organizationId?: Types.ObjectId } | null {
+  const context = row.context === undefined ? 'ORGANIZATION' : row.context;
+  if (
+    context === 'ORGANIZATION' &&
+    row.organizationId instanceof Types.ObjectId
+  )
+    return { context, organizationId: row.organizationId };
+  if (context === 'PLATFORM' && row.organizationId == null) return { context };
+  return null;
 }
 
 export class AuthenticationRepositoryUnavailableError extends Error {
@@ -266,25 +282,40 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     );
     const row = await model
       .findOne({ tokenHash })
-      .select({ userId: 1, organizationId: 1, isRevoked: 1, expiresAt: 1 })
+      .select({
+        userId: 1,
+        organizationId: 1,
+        context: 1,
+        isRevoked: 1,
+        expiresAt: 1,
+      })
       .lean()
       .exec();
+    const sessionContext = row ? refreshSessionContext(row) : null;
     if (
       !row ||
       !(row.userId instanceof Types.ObjectId) ||
-      !(row.organizationId instanceof Types.ObjectId) ||
+      !sessionContext ||
       typeof row.isRevoked !== 'boolean' ||
       !(row.expiresAt instanceof Date) ||
       !Number.isFinite(row.expiresAt.getTime())
     ) {
       return { outcome: 'INVALID' };
     }
-    return {
-      outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
-      userId: String(row.userId),
-      organizationId: String(row.organizationId),
-      expiresAt: row.expiresAt,
-    };
+    return sessionContext.context === 'ORGANIZATION'
+      ? {
+          outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
+          userId: String(row.userId),
+          context: sessionContext.context,
+          organizationId: String(sessionContext.organizationId),
+          expiresAt: row.expiresAt,
+        }
+      : {
+          outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
+          userId: String(row.userId),
+          context: sessionContext.context,
+          expiresAt: row.expiresAt,
+        };
   }
 
   async rotateRefreshSession(
@@ -311,10 +342,11 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
           .session(session)
           .lean()
           .exec();
+        const sessionContext = row ? refreshSessionContext(row) : null;
         if (
           !row ||
           !(row.userId instanceof Types.ObjectId) ||
-          !(row.organizationId instanceof Types.ObjectId) ||
+          !sessionContext ||
           typeof row.isRevoked !== 'boolean' ||
           !(row.expiresAt instanceof Date) ||
           !Number.isFinite(row.expiresAt.getTime())
@@ -353,7 +385,10 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
           [
             {
               userId: row.userId,
-              organizationId: row.organizationId,
+              ...(sessionContext.context === 'ORGANIZATION'
+                ? { organizationId: sessionContext.organizationId }
+                : {}),
+              context: sessionContext.context,
               tokenHash: replacementHash,
               isRevoked: false,
               expiresAt,
@@ -361,11 +396,18 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
           ],
           { session },
         );
-        return {
-          outcome: 'ROTATED' as const,
-          userId: String(row.userId),
-          organizationId: String(row.organizationId),
-        };
+        return sessionContext.context === 'ORGANIZATION'
+          ? {
+              outcome: 'ROTATED' as const,
+              userId: String(row.userId),
+              context: sessionContext.context,
+              organizationId: String(sessionContext.organizationId),
+            }
+          : {
+              outcome: 'ROTATED' as const,
+              userId: String(row.userId),
+              context: sessionContext.context,
+            };
       });
       if (!result) throw new Error('Refresh transaction returned no result');
       return result;
@@ -374,28 +416,29 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     }
   }
 
-  async createRefreshSession(
-    userId: string,
-    organizationId: string,
-    tokenHash: string,
-    expiresAt: Date,
-  ): Promise<void> {
-    if (
-      !Types.ObjectId.isValid(userId) ||
-      !Types.ObjectId.isValid(organizationId)
-    ) {
+  async createRefreshSession(session: NewRefreshSession): Promise<void> {
+    if (!Types.ObjectId.isValid(session.userId)) {
       throw new Error('Invalid refresh session owner');
+    }
+    if (
+      session.context === 'ORGANIZATION' &&
+      !Types.ObjectId.isValid(session.organizationId)
+    ) {
+      throw new Error('Invalid Organization refresh session context');
     }
     const model = this.getModel<RefreshSessionDocument>(
       REFRESH_SESSIONS_MODEL,
       'REFRESH_SESSION_MODEL_UNAVAILABLE',
     );
     await model.create({
-      userId: new Types.ObjectId(userId),
-      organizationId: new Types.ObjectId(organizationId),
-      tokenHash,
+      userId: new Types.ObjectId(session.userId),
+      ...(session.context === 'ORGANIZATION'
+        ? { organizationId: new Types.ObjectId(session.organizationId) }
+        : {}),
+      context: session.context,
+      tokenHash: session.tokenHash,
       isRevoked: false,
-      expiresAt,
+      expiresAt: session.expiresAt,
     });
   }
 

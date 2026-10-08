@@ -8,7 +8,9 @@ import {
   UnprocessableEntityException,
   UseGuards,
 } from '@nestjs/common';
+import { ApiOkResponse, ApiOperation } from '@nestjs/swagger';
 import type { Response } from 'express';
+import { HealthResponse } from '../../../health/health.response';
 import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import type { AuthenticatedPlatformSubject } from '../application/authentication/authentication.application.service';
 import { PlatformAuthorizationGuard } from '../application/authorization/platform-authorization.guard';
@@ -88,6 +90,12 @@ export class PlatformController {
 
   @Get('health')
   @RequirePlatformPermission('platform.health.read')
+  @ApiOperation({
+    summary: 'Read IAM process liveness',
+    description:
+      'Returns the existing IAM process liveness response only. It does not report MongoDB, Redis, BullMQ, or other dependency readiness.',
+  })
+  @ApiOkResponse({ type: HealthResponse })
   getHealth(@Res({ passthrough: true }) response: Response) {
     response.setHeader('Cache-Control', 'no-store');
     return this.health.getHealth();

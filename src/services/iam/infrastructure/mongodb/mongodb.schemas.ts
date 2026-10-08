@@ -195,7 +195,8 @@ const iamSchemas: Record<string, Schema> = {
   refresh_sessions: new Schema(
     {
       userId: { type: Schema.Types.ObjectId, required: true },
-      organizationId: { type: Schema.Types.ObjectId, required: true },
+      organizationId: Schema.Types.ObjectId,
+      context: { type: String, enum: ['ORGANIZATION', 'PLATFORM'] },
       tokenHash: { type: String, required: true },
       ipAddress: String,
       userAgent: String,

@@ -30,6 +30,7 @@ describe('AuthenticationRepository', () => {
     ).resolves.toEqual({
       outcome: 'ACTIVE',
       userId,
+      context: 'ORGANIZATION',
       organizationId,
       expiresAt,
     });
@@ -37,8 +38,41 @@ describe('AuthenticationRepository', () => {
     expect(query.select).toHaveBeenCalledWith({
       userId: 1,
       organizationId: 1,
+      context: 1,
       isRevoked: 1,
       expiresAt: 1,
+    });
+  });
+
+  it('looks up Platform refresh sessions without requiring an Organization ID', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const expiresAt = new Date(Date.now() + 60_000);
+    const query = {
+      select: jest.fn(),
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue({
+        userId: new Types.ObjectId(userId),
+        context: 'PLATFORM',
+        isRevoked: false,
+        expiresAt,
+      }),
+    };
+    query.select.mockReturnValue(query);
+    query.lean.mockReturnValue(query);
+    const model = { findOne: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_refresh_sessions: model },
+    } as unknown as Connection;
+
+    await expect(
+      new AuthenticationRepository(connection).findRefreshSessionForRotation(
+        'platform-session-hash',
+      ),
+    ).resolves.toEqual({
+      outcome: 'ACTIVE',
+      userId,
+      context: 'PLATFORM',
+      expiresAt,
     });
   });
 
