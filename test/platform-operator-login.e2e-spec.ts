@@ -17,6 +17,7 @@ import { AuthorizationPolicy } from '../src/services/iam/application/authorizati
 import { PlatformAuthorizationGuard } from '../src/services/iam/application/authorization/platform-authorization.guard';
 import { IamApplicationService } from '../src/services/iam/application/iam.service';
 import { OrganizationProvisioningService } from '../src/services/iam/application/organizations/organization-provisioning.service';
+import { ORGANIZATION_PROVISIONING_REPOSITORY } from '../src/services/iam/application/organizations/organization-provisioning.repository';
 import { PlatformAuditService } from '../src/services/iam/application/platform/platform-audit.service';
 import { AuthenticationController } from '../src/services/iam/controllers/authentication.controller';
 import { PlatformController } from '../src/services/iam/controllers/platform.controller';
@@ -135,8 +136,9 @@ describe('Platform Operator login and provisioning (e2e)', () => {
             loadProjectAccess: jest.fn(),
           },
         },
+        OrganizationProvisioningService,
         {
-          provide: OrganizationProvisioningService,
+          provide: ORGANIZATION_PROVISIONING_REPOSITORY,
           useValue: { create: createOrganization },
         },
         {
@@ -221,19 +223,12 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       .expect(201);
 
     expect(provision.body).toMatchObject({ id: '651a2b3c4d5e6f7a8b9c0d21' });
-    expect(createOrganization).toHaveBeenCalledWith(
-      {
-        id: USER_ID,
-        email: 'operator@example.test',
-        name: 'Platform Operator',
-      },
-      {
-        name: 'First Organization',
-        slug: 'first-organization',
-        plan: 'FREE',
-        firstAdminUserId: ADMIN_ID,
-      },
-    );
+    expect(createOrganization).toHaveBeenCalledWith(USER_ID, {
+      name: 'First Organization',
+      slug: 'first-organization',
+      plan: 'FREE',
+      firstAdminUserId: ADMIN_ID,
+    });
     expect(loadPlatformPermission).toHaveBeenCalledWith(
       USER_ID,
       'organization.create',
@@ -289,4 +284,101 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       'platform.health.read',
     );
   });
+
+  const validInput = {
+    name: 'First Organization',
+    slug: 'first-organization',
+    plan: 'FREE',
+    firstAdminUserId: ADMIN_ID,
+  };
+
+  function operatorToken() {
+    return app.get(AccessTokenService).signAccessToken({
+      sub: USER_ID,
+      email: 'operator@example.test',
+      context: 'PLATFORM',
+    });
+  }
+
+  it.each([
+    ['empty body', {}],
+    ['array body', []],
+    ['blank name', { ...validInput, name: '  ' }],
+    ['long name', { ...validInput, name: 'n'.repeat(201) }],
+    ['non-string name', { ...validInput, name: 123 }],
+    ['blank slug', { ...validInput, slug: '  ' }],
+    ['long slug', { ...validInput, slug: 's'.repeat(101) }],
+    ['invalid plan', { ...validInput, plan: 'PAID' }],
+    ['invalid admin ID', { ...validInput, firstAdminUserId: 'invalid' }],
+    ['missing admin ID', { name: 'Organization', slug: 'org', plan: 'FREE' }],
+    ['injected role', { ...validInput, roleCode: 'ADMIN' }],
+    ['injected membership', { ...validInput, status: 'ACTIVE' }],
+    ['injected tenant', { ...validInput, organizationId: ADMIN_ID }],
+  ])('rejects %s before persistence', async (_label, body) => {
+    const response = await request(app.getHttpServer() as App)
+      .post('/api/v1/iam/platform/organizations')
+      .set('Authorization', `Bearer ${operatorToken()}`)
+      .send(body)
+      .expect(422);
+    expect(response.body).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: {},
+      requestId: expect.any(String) as string,
+    });
+    expect(createOrganization).not.toHaveBeenCalled();
+  });
+
+  it('normalizes input and accepts documented length limits', async () => {
+    const body = {
+      ...validInput,
+      name: 'n'.repeat(200),
+      slug: 'S'.repeat(100),
+    };
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/iam/platform/organizations')
+      .set('Authorization', `Bearer ${operatorToken()}`)
+      .send({ ...body, name: ` ${body.name} `, slug: ` ${body.slug} ` })
+      .expect(201);
+    expect(createOrganization).toHaveBeenCalledWith(USER_ID, {
+      ...body,
+      slug: body.slug.toLowerCase(),
+    });
+  });
+
+  it('rejects operator self-bootstrap without calling persistence', async () => {
+    const response = await request(app.getHttpServer() as App)
+      .post('/api/v1/iam/platform/organizations')
+      .set('Authorization', `Bearer ${operatorToken()}`)
+      .send({ ...validInput, firstAdminUserId: USER_ID.toUpperCase() })
+      .expect(409);
+    expect(response.body).toMatchObject({
+      code: 'PLATFORM_OPERATOR_CANNOT_BE_FIRST_ADMIN',
+    });
+    expect(createOrganization).not.toHaveBeenCalled();
+  });
+
+  it.each(['platform.health.read', 'platform.audit.read'])(
+    'does not allow provisioning with only %s',
+    async (permission) => {
+      assignedPermission = permission;
+      await request(app.getHttpServer() as App)
+        .post('/api/v1/iam/platform/organizations')
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .send(validInput)
+        .expect(403);
+      expect(createOrganization).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, 'Bearer malformed'])(
+    'rejects missing or invalid credentials (%s) before persistence',
+    async (authorization) => {
+      const pending = request(app.getHttpServer() as App).post(
+        '/api/v1/iam/platform/organizations',
+      );
+      if (authorization) pending.set('Authorization', authorization);
+      await pending.send(validInput).expect(401);
+      expect(createOrganization).not.toHaveBeenCalled();
+    },
+  );
 });
