@@ -61,8 +61,18 @@ The A-05 fixture does not load `.env`, uses random `datn80_*` databases, drops o
 
 ## Operational follow-ups and tracking
 
+### CI review follow-up — 2026-10-12
+
+[Review P2](https://github.com/DATN-SPRING2027/DATN-BE/pull/22#discussion_r4245753008) identified that the MongoDB integration job selected only the Project spec. The 17 A-05 tests above had passed locally but were skipped in default unit runs and were not selected by that CI job. The requester approved the CI fix before editing.
+
+The [MongoDB integration job](../../.github/workflows/ci.yml) now uses `--runTestsByPath` with both `project.repository.mongodb.spec.ts` and `organization-provisioning.mongodb.spec.ts`. It retains the existing Project suite and MongoDB 7 replica-set environment. Parsing the workflow and running Jest's `--listTests` with its actual command selected exactly those two suites. Running that command against a dedicated loopback MongoDB 7.0.41 replica set passed **2 suites / 18 tests**, including all **17 A-05 tests**. This establishes local command coverage; a fresh GitHub Actions run must confirm the pushed revision.
+
+The full check retry used `INFRA_ENABLED=false` and `TS_NODE_TRANSPILE_ONLY=true`: lint, independent `tsc --noEmit`, 25 smoke-safety tests, 317 unit tests (21 skipped), 53 E2E tests (4 skipped), and build passed. The default run and isolated retry hit the existing bootstrap subprocess's 15-second timeout; the same subprocess with a longer diagnostic timeout exited successfully with the expected fixture URI in 15.9 seconds. No test/source was edited to change that timeout. The environment override avoids repeated ts-node typechecking inside that subprocess; full typechecking remains a separate gate. GitHub CI keeps its original environment without that override.
+
+Latest Jira read on 2026-10-12: DATN-80 **In Review**, DATN-195–200 **Done**, DATN-79 **Done**. Those status changes were made externally; the agent has not changed statuses. The existing [DATN-BE PR #22](https://github.com/DATN-SPRING2027/DATN-BE/pull/22) remains subject to human review/approval and merge.
+
 No production code, OpenAPI, schema/index, package dependency or historical migration changes. Test-only audit validator changes are confined to the disposable database. No DB rollout or team notification is required for this delta.
 
 Deployment still requires the already documented A-04 authority collection/index migration, controlled operator assignment, existing active target account and appropriately provisioned current ADMIN Role.permissions. This verification does not apply those operations or claim deployed environment acceptance. DEC-ACCESS-09 remains PARTIAL overall; DEC-ACCESS-10 and ongoing Membership/invitation API details remain separate decisions and are not changed by A-05.
 
-Latest Jira read: DATN-80 To Do; DATN-195–200 In Progress; DATN-79 Done. Agent has not changed status. Recommend In Review for the parent and all six checkpoints once the final checks/review evidence is available; user controls status and acceptance. PR creation remains pending the user's inspection and explicit request; no merge is authorized.
+Historical Jira/PR snapshot on 2026-10-11: DATN-80 To Do; DATN-195–200 In Progress; DATN-79 Done. The agent recommended In Review and waited for the user's inspection before PR creation. Current tracking and the existing PR are recorded in the follow-up above; no merge is authorized.
