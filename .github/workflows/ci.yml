@@ -125,4 +125,8 @@ jobs:
           done
           echo 'MongoDB replica set did not elect a primary.' >&2
           exit 1
-      - run: npm test -- --runInBand project.repository.mongodb.spec.ts
+      - name: Run Project and A-05 MongoDB integration suites
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/services/iam/infrastructure/mongodb/project.repository.mongodb.spec.ts
+          src/services/iam/infrastructure/mongodb/organization-provisioning.mongodb.spec.ts
