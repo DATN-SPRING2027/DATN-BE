@@ -2,6 +2,8 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
@@ -84,8 +86,9 @@ const orgRole = {
 @Injectable()
 export class MongoOrganizationInvitationRepository implements OrganizationInvitationRepositoryPort {
   constructor(
+    @Optional()
     @InjectConnection(IAM_PERSISTENCE.databaseName)
-    private readonly connection: Connection,
+    private readonly connection?: Connection,
   ) {}
 
   async isOrganizationAdmin(
@@ -113,7 +116,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
       throw new ForbiddenException({ code: 'ORGANIZATION_CONTEXT_REQUIRED' });
     const organizationObjectId = new Types.ObjectId(input.organizationId);
     const inviterObjectId = new Types.ObjectId(input.invitedBy);
-    const session = await this.connection.startSession();
+    const session = await this.connectionOrThrow().startSession();
     let invitation: InvitationWithOrganization | null = null;
     try {
       await session.withTransaction(async () => {
@@ -242,7 +245,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
       return false;
     const organizationId = new Types.ObjectId(input.organizationId);
     const actorUserId = new Types.ObjectId(input.actorUserId);
-    const session = await this.connection.startSession();
+    const session = await this.connectionOrThrow().startSession();
     let revoked = false;
     try {
       await session.withTransaction(async () => {
@@ -300,7 +303,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
     )
       return null;
     const userId = new Types.ObjectId(input.userId);
-    const session = await this.connection.startSession();
+    const session = await this.connectionOrThrow().startSession();
     let result: { organizationId: string; organizationName: string } | null =
       null;
     try {
@@ -539,7 +542,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
   }
 
   private model<T>(name: string): Model<T> {
-    const model = this.connection.models[modelName(name)] as
+    const model = this.connectionOrThrow().models[modelName(name)] as
       Model<T> | undefined;
     if (!model)
       throw new Error(
@@ -567,11 +570,20 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
     return this.model('organizations');
   }
   private audit(): Collection<AuditDocument> {
-    return this.connection
+    return this.connectionOrThrow()
       .useDb(AUDIT_DATABASE_NAME, { useCache: true })
       .collection(
         IAM_AUDIT_COLLECTION_NAME,
       ) as unknown as Collection<AuditDocument>;
+  }
+
+  private connectionOrThrow(): Connection {
+    if (!this.connection) {
+      throw new ServiceUnavailableException({
+        code: 'IAM_PERSISTENCE_UNAVAILABLE',
+      });
+    }
+    return this.connection;
   }
 }
 

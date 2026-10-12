@@ -81,6 +81,21 @@ describe('MongoOrganizationInvitationRepository.accept', () => {
     repository = new MongoOrganizationInvitationRepository(connection as never);
   });
 
+  it('reports unavailable persistence when the IAM connection is disabled', async () => {
+    const repositoryWithoutConnection =
+      new MongoOrganizationInvitationRepository(undefined);
+
+    await expect(
+      repositoryWithoutConnection.isOrganizationAdmin(
+        String(organizationId),
+        String(userId),
+      ),
+    ).rejects.toMatchObject({
+      status: 503,
+      response: { code: 'IAM_PERSISTENCE_UNAVAILABLE' },
+    });
+  });
+
   it('atomically activates membership, assigns the invited role, consumes the invite and audits acceptance', async () => {
     const result = await repository.accept({
       invitationId: String(invitationId),
