@@ -42,7 +42,7 @@ interface RoleAssignmentDocument {
 interface RoleDocument {
   _id: Types.ObjectId;
   code: string;
-  permissions: string[];
+  permissions?: unknown;
 }
 
 interface PlatformAuthorityAssignmentDocument {
@@ -59,6 +59,9 @@ interface PlatformAuthorityAssignmentDocument {
 const modelName = (collection: string): string =>
   `${IAM_PERSISTENCE.databaseName}_${collection}`;
 const validId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.every((permission) => typeof permission === 'string');
 
 @Injectable()
 export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidenceProvider {
@@ -210,6 +213,7 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
         : null,
       assignments: assignments.map((assignment) => {
         const role = rolesById.get(String(assignment.roleId));
+        const permissions = role?.permissions;
         return {
           userId: String(assignment.userId),
           organizationId: String(assignment.organizationId),
@@ -217,7 +221,7 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
             assignment.projectId == null ? null : String(assignment.projectId),
           roleCode: assignment.roleCode,
           resolvedRoleCode: role?.code ?? null,
-          permissions: role?.permissions ?? [],
+          permissions: isStringArray(permissions) ? permissions : [],
         };
       }),
       explicitDeny: 'CLEAR',

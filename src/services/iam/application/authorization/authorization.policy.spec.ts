@@ -156,6 +156,18 @@ describe('AuthorizationPolicy: Project metadata read scope', () => {
       });
     },
   );
+
+  it('does not substring-match malformed permission evidence for project.read', () => {
+    const facts = readBase();
+    facts.assignments[0].permissions =
+      'prefixproject.read' as unknown as readonly string[];
+
+    expect(policy.projectReadScope(facts)).toEqual({
+      all: false,
+      projectIds: [],
+      includePublicProjects: true,
+    });
+  });
 });
 
 describe('AuthorizationPolicy: active-membership project.create rule', () => {
@@ -284,6 +296,38 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
         'project.members.role.change',
       ]),
     ];
+    expect(policy.evaluateProjectAccess(facts)).toEqual({
+      allowed: false,
+      reason: 'NO_DOCUMENTED_PERMISSION',
+    });
+  });
+
+  it('denies scalar-string permission evidence instead of substring matching', () => {
+    const facts = projectAccessBase('project.members.list');
+    facts.assignments = [
+      projectAssignment(
+        projectId,
+        'TEAM_LEADER',
+        'TEAM_LEADER',
+        'prefixproject.members.list' as unknown as string[],
+      ),
+    ];
+
+    expect(policy.evaluateProjectAccess(facts)).toEqual({
+      allowed: false,
+      reason: 'NO_DOCUMENTED_PERMISSION',
+    });
+  });
+
+  it('denies permission arrays containing non-string evidence', () => {
+    const facts = projectAccessBase('project.members.list');
+    facts.assignments = [
+      projectAssignment(projectId, 'TEAM_LEADER', 'TEAM_LEADER', [
+        'project.members.list',
+        null,
+      ] as unknown as string[]),
+    ];
+
     expect(policy.evaluateProjectAccess(facts)).toEqual({
       allowed: false,
       reason: 'NO_DOCUMENTED_PERMISSION',

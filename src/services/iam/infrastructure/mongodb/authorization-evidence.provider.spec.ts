@@ -11,6 +11,57 @@ function query<T>(value: T) {
   return result;
 }
 
+async function loadProjectAccessWithRolePermissions(permissions: unknown) {
+  const projectId = 'cccccccccccccccccccccccc';
+  const roleId = new Types.ObjectId('dddddddddddddddddddddddd');
+  const connection = {
+    models: {
+      continuum_iam_projects: {
+        findOne: jest.fn().mockReturnValue(
+          query({
+            _id: new Types.ObjectId(projectId),
+            organizationId: new Types.ObjectId(orgId),
+            status: 'ACTIVE',
+            visibility: 'PRIVATE',
+          }),
+        ),
+      },
+      continuum_iam_organization_memberships: {
+        findOne: jest.fn().mockReturnValue(query(null)),
+      },
+      continuum_iam_project_memberships: {
+        findOne: jest.fn().mockReturnValue(query(null)),
+      },
+      continuum_iam_role_assignments: {
+        find: jest.fn().mockReturnValue(
+          query([
+            {
+              organizationId: new Types.ObjectId(orgId),
+              userId: new Types.ObjectId(userId),
+              projectId: new Types.ObjectId(projectId),
+              roleId,
+              roleCode: 'TEAM_LEADER',
+            },
+          ]),
+        ),
+      },
+      continuum_iam_roles: {
+        find: jest
+          .fn()
+          .mockReturnValue(
+            query([{ _id: roleId, code: 'TEAM_LEADER', permissions }]),
+          ),
+      },
+    },
+  } as unknown as Connection;
+
+  return new MongoAuthorizationEvidenceProvider(connection).loadProjectAccess(
+    userId,
+    orgId,
+    projectId,
+  );
+}
+
 describe('MongoAuthorizationEvidenceProvider for project.create', () => {
   it('loads only ACTIVE Organization Membership evidence', async () => {
     const memberships = {
@@ -197,6 +248,22 @@ describe('MongoAuthorizationEvidenceProvider for Project access', () => {
         projectId: 1,
       },
     );
+  });
+
+  it('fails closed when Role.permissions is not an array of strings', async () => {
+    const scalarEvidence = await loadProjectAccessWithRolePermissions(
+      'prefixproject.members.list',
+    );
+    const mixedEvidence = await loadProjectAccessWithRolePermissions([
+      'project.members.list',
+      null,
+    ]);
+    const missingEvidence =
+      await loadProjectAccessWithRolePermissions(undefined);
+
+    expect(scalarEvidence?.assignments[0].permissions).toEqual([]);
+    expect(mixedEvidence?.assignments[0].permissions).toEqual([]);
+    expect(missingEvidence?.assignments[0].permissions).toEqual([]);
   });
 });
 
