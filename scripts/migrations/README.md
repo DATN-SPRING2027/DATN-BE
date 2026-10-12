@@ -90,6 +90,18 @@ all invitation records so an application rollback cannot erase audit history.
 Resolve or allow pending invitations to expire before rollback; retain the
 report and coordinate API rollback with the backend release.
 
+## Project Access permission provisioning
+
+`20261012-project-access-permission-provisioning.mjs` is the additive DB
+work package for [Project Access & Visibility V1](../../docs/decisions/project-access-visibility-v1.md).
+It adds only the accepted permission codes to existing system `ADMIN` and
+`TEAM_LEADER` Roles in the IAM database. The full target mapping, report-first
+apply and rollback procedure, MongoDB behavior, and test evidence are in
+[`docs/work-packages/project-access-permission-provisioning-v1.md`](../../docs/work-packages/project-access-permission-provisioning-v1.md).
+
+The script is dry-run by default. It does not load `.env`, create Roles, alter
+other permission values, or apply data as part of this work package.
+
 `20260928-organization-memberships.mjs` reports the exact `ACTIVE` memberships
 proposed from organization-level `role_assignments`. It reads only rows with a
 null or absent `projectId` and valid `userId` and `organizationId`. Multiple

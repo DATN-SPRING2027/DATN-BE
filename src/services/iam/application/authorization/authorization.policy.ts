@@ -143,6 +143,10 @@ const sameObjectId = (left: string, right: string): boolean =>
   validObjectId(left) &&
   validObjectId(right) &&
   new Types.ObjectId(left).equals(new Types.ObjectId(right));
+const hasPermission = (permissions: unknown, permission: string): boolean =>
+  Array.isArray(permissions) &&
+  permissions.every((candidate) => typeof candidate === 'string') &&
+  permissions.includes(permission);
 
 @Injectable()
 export class AuthorizationPolicy {
@@ -232,7 +236,7 @@ export class AuthorizationPolicy {
               (assignment.roleCode === 'TEAM_LEADER' ||
                 assignment.roleCode === 'MEMBER') &&
               assignment.resolvedRoleCode === assignment.roleCode &&
-              assignment.permissions.includes('project.read') &&
+              hasPermission(assignment.permissions, 'project.read') &&
               objectIdKey(assignment.projectId) !== null &&
               active.has(objectIdKey(assignment.projectId) as string),
           )
@@ -312,7 +316,7 @@ export class AuthorizationPolicy {
             sameObjectId(assignment.projectId, expectedProjectId)) &&
         assignment.roleCode === expectedRole &&
         assignment.resolvedRoleCode === expectedRole &&
-        assignment.permissions.includes(permission),
+        hasPermission(assignment.permissions, permission),
     );
     return allowed
       ? { allowed: true }

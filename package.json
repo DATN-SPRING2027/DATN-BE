@@ -38,6 +38,7 @@
     "test:dev-db-init": "node --test scripts/dev/initialize-service-owned-databases.test.mjs",
     "test:dev-db-smoke-safety": "node --test scripts/dev/smoke-service-owned-runtime.test.mjs",
     "test:migrations:plan": "node --test scripts/migrations/*.plan.test.mjs",
+    "test:project-access-permissions:integration": "node --test scripts/migrations/20261012-project-access-permission-provisioning.mongodb.test.mjs",
     "migrate:google-identity-index": "node scripts/migrations/20261011-google-identity-index.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
