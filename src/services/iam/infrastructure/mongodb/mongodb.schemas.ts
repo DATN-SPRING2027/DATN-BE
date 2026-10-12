@@ -40,7 +40,13 @@ const iamSchemas: Record<string, Schema> = {
   users: new Schema(
     {
       email: { type: String, required: true, lowercase: true, trim: true },
-      passwordHash: { type: String, required: true },
+      passwordHash: {
+        type: String,
+        required: function (this: { googleSubject?: string }) {
+          return !this.googleSubject;
+        },
+      },
+      googleSubject: String,
       fullName: { type: String, required: true, trim: true },
       avatarUrl: String,
       status: {
@@ -74,6 +80,29 @@ const iamSchemas: Record<string, Schema> = {
       },
     },
     { collection: 'organization_memberships', timestamps: true, strict: true },
+  ),
+  organization_invitations: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      email: { type: String, required: true, lowercase: true, trim: true },
+      roleCode: {
+        type: String,
+        enum: ['ADMIN', 'TEAM_LEADER', 'MEMBER'],
+        required: true,
+      },
+      status: {
+        type: String,
+        enum: ['PENDING', 'ACCEPTED', 'REVOKED', 'EXPIRED'],
+        required: true,
+      },
+      invitedBy: { type: Schema.Types.ObjectId, required: true },
+      expiresAt: { type: Date, required: true },
+      acceptedAt: Date,
+      acceptedBy: Schema.Types.ObjectId,
+      revokedAt: Date,
+      revokedBy: Schema.Types.ObjectId,
+    },
+    { collection: 'organization_invitations', timestamps: true, strict: true },
   ),
   projects: new Schema(
     {
@@ -196,7 +225,7 @@ const iamSchemas: Record<string, Schema> = {
     {
       userId: { type: Schema.Types.ObjectId, required: true },
       organizationId: Schema.Types.ObjectId,
-      context: { type: String, enum: ['ORGANIZATION', 'PLATFORM'] },
+      context: { type: String, enum: ['ORGANIZATION', 'PLATFORM', 'ACCOUNT'] },
       tokenHash: { type: String, required: true },
       ipAddress: String,
       userAgent: String,
