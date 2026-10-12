@@ -1,6 +1,7 @@
 import {
   ConflictException,
   INestApplication,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -13,6 +14,7 @@ import {
   RefreshCsrfError,
 } from '../application/authentication/authentication.application.service';
 import { AuthenticationController } from './authentication.controller';
+import { GoogleOAuthService } from '../application/authentication/google-oauth.service';
 import { configureApplication } from '../../../bootstrap';
 import { signGatewaySource } from '../../../common/http/gateway-source';
 
@@ -22,10 +24,18 @@ describe('AuthenticationController', () => {
   let app: INestApplication;
   let service: {
     login: jest.Mock;
+    loginWithGoogle: jest.Mock;
     loginPlatform: jest.Mock;
     getCurrentIdentity: jest.Mock;
+    getCurrentSessionIdentity: jest.Mock;
+    listOrganizationOptions: jest.Mock;
+    selectOrganization: jest.Mock;
     logout: jest.Mock;
     refresh: jest.Mock;
+  };
+  let googleOAuth: {
+    begin: jest.Mock;
+    verifyCallback: jest.Mock;
   };
 
   beforeAll(async () => {
@@ -52,6 +62,18 @@ describe('AuthenticationController', () => {
           name: 'Test Person',
         },
       }),
+      loginWithGoogle: jest.fn().mockResolvedValue({
+        accessToken: 'google.private.jwt.value',
+        refreshToken: 'google-refresh',
+        csrfToken: 'google-csrf',
+        user: {
+          id: '651a2b3c4d5e6f7a8b9c0d1e',
+          email: 'person@example.com',
+          name: 'Test Person',
+          organizationId: '651a2b3c4d5e6f7a8b9c0d1f',
+          roles: ['MEMBER'],
+        },
+      }),
       getCurrentIdentity: jest
         .fn()
         .mockImplementation((authorization, cookie) => {
@@ -71,13 +93,53 @@ describe('AuthenticationController', () => {
             roles: ['MEMBER'],
           });
         }),
+      getCurrentSessionIdentity: jest
+        .fn()
+        .mockImplementation((authorization, cookie) => {
+          if (!authorization && !cookie)
+            return Promise.reject(
+              new UnauthorizedException({ code: 'AUTHENTICATION_FAILED' }),
+            );
+          return Promise.resolve({
+            id: '651a2b3c4d5e6f7a8b9c0d1e',
+            email: 'person@example.com',
+            name: 'Test Person',
+            context: 'ACCOUNT',
+          });
+        }),
+      listOrganizationOptions: jest.fn().mockResolvedValue([]),
+      selectOrganization: jest.fn().mockResolvedValue({
+        accessToken: 'selected-access',
+        refreshToken: 'selected-refresh',
+        csrfToken: 'selected-csrf',
+        user: {
+          id: 'user-id',
+          email: 'person@example.com',
+          name: 'Person',
+          organizationId: '651a2b3c4d5e6f7a8b9c0d1f',
+          roles: ['ADMIN'],
+        },
+      }),
       logout: jest.fn().mockResolvedValue(undefined),
       refresh: jest.fn(),
+    };
+    googleOAuth = {
+      begin: jest.fn().mockResolvedValue({
+        authorizationUrl: 'https://accounts.google.com/oauth2/auth',
+        stateCookie: 'encrypted-google-state',
+      }),
+      verifyCallback: jest.fn().mockResolvedValue({
+        subject: 'google-subject-123',
+        email: 'person@example.com',
+        emailVerified: true,
+        name: 'Test Person',
+      }),
     };
     const module = await Test.createTestingModule({
       controllers: [AuthenticationController],
       providers: [
         { provide: AuthenticationApplicationService, useValue: service },
+        { provide: GoogleOAuthService, useValue: googleOAuth },
         {
           provide: ConfigService,
           useValue: {
@@ -124,6 +186,28 @@ describe('AuthenticationController', () => {
       accessToken: 'replacement.access.value',
       refreshToken: 'replacement-refresh-value',
     });
+    service.loginWithGoogle.mockResolvedValue({
+      accessToken: 'google.private.jwt.value',
+      refreshToken: 'google-refresh',
+      csrfToken: 'google-csrf',
+      user: {
+        id: '651a2b3c4d5e6f7a8b9c0d1e',
+        email: 'person@example.com',
+        name: 'Test Person',
+        organizationId: '651a2b3c4d5e6f7a8b9c0d1f',
+        roles: ['MEMBER'],
+      },
+    });
+    googleOAuth.begin.mockResolvedValue({
+      authorizationUrl: 'https://accounts.google.com/oauth2/auth',
+      stateCookie: 'encrypted-google-state',
+    });
+    googleOAuth.verifyCallback.mockResolvedValue({
+      subject: 'google-subject-123',
+      email: 'person@example.com',
+      emailVerified: true,
+      name: 'Test Person',
+    });
   });
 
   it('POST /api/v1/auth/login sets an HttpOnly cookie and never returns the token body', async () => {
@@ -163,6 +247,106 @@ describe('AuthenticationController', () => {
     };
     expect(loginInput.email).toBe('person@example.com');
     expect(typeof loginInput.sourceIp).toBe('string');
+  });
+
+  it('GET /api/v1/auth/google starts provider navigation with a browser-bound cookie', async () => {
+    const response = await request(app.getHttpServer() as App)
+      .get('/api/v1/auth/google?organizationId=651a2b3c4d5e6f7a8b9c0d1f')
+      .expect(302);
+
+    expect(response.headers.location).toBe(
+      'https://accounts.google.com/oauth2/auth',
+    );
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.headers['set-cookie'][0]).toContain(
+      '__Host-continuum-google-oauth-state=encrypted-google-state',
+    );
+    expect(response.headers['set-cookie'][0]).toContain('HttpOnly');
+    expect(response.headers['set-cookie'][0]).toContain('SameSite=Lax');
+    expect(response.headers['set-cookie'][0]).toContain('Path=/');
+    expect(response.headers['set-cookie'][0]).toContain('Secure');
+    expect(response.headers['set-cookie'][0]).not.toContain('Domain=');
+    expect(googleOAuth.begin).toHaveBeenCalledWith('651a2b3c4d5e6f7a8b9c0d1f');
+  });
+
+  it('GET /api/v1/auth/google/callback issues normal session cookies and clears OAuth state', async () => {
+    const requestId = 'b127a512-4b27-4a62-96a3-587ae4d2e4b0';
+    const log = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    const response = await request(app.getHttpServer() as App)
+      .get('/api/v1/auth/google/callback?code=auth-code&state=oauth-state')
+      .set('X-Request-ID', requestId)
+      .set(
+        'Cookie',
+        '__Host-continuum-google-oauth-state=encrypted-google-state',
+      )
+      .expect(302);
+
+    expect(response.headers.location).toBe('/');
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(googleOAuth.verifyCallback).toHaveBeenCalledWith(
+      {
+        code: 'auth-code',
+        state: 'oauth-state',
+        stateCookie: 'encrypted-google-state',
+      },
+      requestId,
+    );
+    expect(service.loginWithGoogle).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: 'google-subject-123' }),
+      undefined,
+      requestId,
+    );
+    expect(response.headers['set-cookie']).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('continuum_access=google.private.jwt.value'),
+        expect.stringContaining('__Secure-refresh=google-refresh'),
+        expect.stringContaining('__Host-csrf=google-csrf'),
+        expect.stringContaining('__Host-continuum-google-oauth-state=;'),
+      ]),
+    );
+    const callbackLogs = log.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('google_oauth.callback'));
+    expect(callbackLogs.join('\n')).toContain('"stage":"callback_received"');
+    expect(callbackLogs.join('\n')).toContain('"stage":"callback_completed"');
+    expect(callbackLogs.join('\n')).not.toContain('google.private.jwt.value');
+    expect(callbackLogs.join('\n')).not.toContain('google-refresh');
+    log.mockRestore();
+  });
+
+  it('GET /api/v1/auth/google/callback returns organization selection to the BFF without a session', async () => {
+    service.loginWithGoogle.mockRejectedValueOnce(
+      new ConflictException({
+        code: 'ORGANIZATION_SELECTION_REQUIRED',
+        message: 'Select an organization to continue.',
+        details: {
+          organizations: [
+            { id: '651a2b3c4d5e6f7a8b9c0d1f', name: 'Alpha' },
+            { id: '651a2b3c4d5e6f7a8b9c0d20', name: 'Beta' },
+          ],
+        },
+      }),
+    );
+
+    const response = await request(app.getHttpServer() as App)
+      .get('/api/v1/auth/google/callback?code=auth-code&state=oauth-state')
+      .set(
+        'Cookie',
+        '__Host-continuum-google-oauth-state=encrypted-google-state',
+      )
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      code: 'ORGANIZATION_SELECTION_REQUIRED',
+    });
+    expect(response.headers['set-cookie']).toContainEqual(
+      expect.stringContaining('__Host-continuum-google-oauth-state=;'),
+    );
+    expect(response.headers['set-cookie']).not.toContainEqual(
+      expect.stringContaining('continuum_access='),
+    );
   });
 
   it('POST /api/v1/auth/platform/login sets the Platform session cookies and omits tenant identity', async () => {
@@ -211,6 +395,7 @@ describe('AuthenticationController', () => {
       controllers: [AuthenticationController],
       providers: [
         { provide: AuthenticationApplicationService, useValue: service },
+        { provide: GoogleOAuthService, useValue: googleOAuth },
         { provide: ConfigService, useValue: { get: () => gatewaySecret } },
       ],
     }).compile();
@@ -291,7 +476,7 @@ describe('AuthenticationController', () => {
       .get('/api/v1/auth/me')
       .set('Authorization', 'Bearer access-token')
       .expect(200);
-    expect(service.getCurrentIdentity).toHaveBeenCalledWith(
+    expect(service.getCurrentSessionIdentity).toHaveBeenCalledWith(
       'Bearer access-token',
       undefined,
     );
@@ -300,16 +485,24 @@ describe('AuthenticationController', () => {
       .get('/api/v1/auth/me')
       .set('Cookie', 'continuum_access=cookie-token')
       .expect(200);
-    expect(service.getCurrentIdentity).toHaveBeenLastCalledWith(
+    expect(service.getCurrentSessionIdentity).toHaveBeenLastCalledWith(
       undefined,
       'continuum_access=cookie-token',
     );
   });
 
   it('GET /api/v1/auth/me returns 401 when unauthenticated', async () => {
+    const warning = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
     await request(app.getHttpServer() as App)
       .get('/api/v1/auth/me')
       .expect(401);
+    const callbackEvents = warning.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('google_oauth.callback'));
+    expect(callbackEvents).toHaveLength(0);
+    warning.mockRestore();
   });
 
   it('POST /api/v1/auth/logout passes refresh cookie and clears access and refresh cookie paths', async () => {

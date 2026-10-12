@@ -8,6 +8,12 @@ interface AccessTokenBaseClaims {
 
 export type AccessTokenClaims =
   | (AccessTokenBaseClaims & {
+      context: 'ACCOUNT';
+      orgId?: never;
+      roles?: never;
+      activeProjectId?: never;
+    })
+  | (AccessTokenBaseClaims & {
       context: 'PLATFORM';
       orgId?: never;
       roles?: never;
@@ -22,6 +28,11 @@ export type AccessTokenClaims =
     });
 
 export type AccessTokenClaimsInput =
+  | {
+      sub: string;
+      email: string;
+      context: 'ACCOUNT';
+    }
   | {
       sub: string;
       email: string;
@@ -81,7 +92,8 @@ export function validateAccessTokenClaims(
     ) ||
     (context !== undefined &&
       context !== 'ORGANIZATION' &&
-      context !== 'PLATFORM')
+      context !== 'PLATFORM' &&
+      context !== 'ACCOUNT')
   ) {
     throw new AccessTokenClaimsError('INVALID_CLAIMS');
   }
@@ -99,7 +111,7 @@ export function validateAccessTokenClaims(
     throw new AccessTokenClaimsError('INVALID_CLAIMS');
   }
 
-  if (context === 'PLATFORM') {
+  if (context === 'PLATFORM' || context === 'ACCOUNT') {
     if (
       ['orgId', 'roles', 'activeProjectId'].some((key) =>
         Object.hasOwn(claims, key),
@@ -139,6 +151,7 @@ export function validateAccessTokenClaims(
   };
 
   if (context === 'PLATFORM') return { ...common, context: 'PLATFORM' };
+  if (context === 'ACCOUNT') return { ...common, context: 'ACCOUNT' };
   return {
     ...common,
     ...(context === 'ORGANIZATION' ? { context: 'ORGANIZATION' as const } : {}),

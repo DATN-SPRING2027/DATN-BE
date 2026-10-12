@@ -4,7 +4,13 @@ import type { QueueName } from './queues/queue.names';
 
 const index = (
   fields: Record<string, 1 | -1>,
-  options?: { unique?: boolean; expireAfterSeconds?: number },
+  options?: {
+    unique?: boolean;
+    sparse?: boolean;
+    expireAfterSeconds?: number;
+    name?: string;
+    partialFilterExpression?: Record<string, unknown>;
+  },
 ) => ({ fields, options });
 
 export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
@@ -15,6 +21,7 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       name: 'users',
       indexes: [
         index({ email: 1 }, { unique: true }),
+        index({ googleSubject: 1 }, { unique: true, sparse: true }),
         index({ status: 1, createdAt: 1 }),
       ],
     },
@@ -24,6 +31,21 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       indexes: [
         index({ organizationId: 1, userId: 1 }, { unique: true }),
         index({ userId: 1, status: 1, organizationId: 1 }),
+      ],
+    },
+    {
+      name: 'organization_invitations',
+      indexes: [
+        index(
+          { organizationId: 1, email: 1 },
+          {
+            name: 'uniq_pending_org_email',
+            unique: true,
+            partialFilterExpression: { status: 'PENDING' },
+          },
+        ),
+        index({ email: 1, status: 1, expiresAt: 1 }),
+        index({ organizationId: 1, status: 1, expiresAt: 1 }),
       ],
     },
     {

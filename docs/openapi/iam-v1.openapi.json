@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "Review-first IAM contract. Login, current identity, logout and the A-02 backend refresh HTTP route are implemented. The A-01 session contract's dated A-02 amendment closes refresh response and cookie details; browser BFF routing is tracked separately. Project create/list/detail and Project Access & Visibility V1 operations are accepted; other operations remain proposed or unresolved. Browser authentication uses HttpOnly cookies. Bearer consumption is supported, while programmatic token acquisition is deferred. Tokens are never returned in browser JSON responses."
+    "description": "IAM contract. Password login, Google OAuth login/signup, account-only sessions, Organization onboarding, current identity, logout and refresh are implemented. Authentication establishes a User identity; Organization APIs require a separate current ACTIVE membership. Browser authentication uses HttpOnly cookies through the FE BFF."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -23,7 +23,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log in",
-        "description": "Authenticates an active user, stores only a hash of the initial refresh credential, sets access and refresh HttpOnly cookies plus a readable CSRF cookie, and returns the selected user identity without tokens. If the verified account belongs to multiple organizations, returns 409 with eligible organization names and IDs. Invalid credentials use a generic response.",
+        "description": "Authenticates an eligible user and stores only a hash of the initial refresh credential. A user with no ACTIVE Organization Membership receives an ACCOUNT session without Organization or role claims. A user with one membership receives an Organization session; multiple memberships return 409. Invalid credentials use a generic response.",
         "operationId": "login",
         "security": [],
         "requestBody": {
@@ -55,6 +55,92 @@
           },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/google": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Start Google sign-in or signup",
+        "description": "Starts Google OAuth authorization-code flow with PKCE, state and nonce. The backend issues a short-lived encrypted HttpOnly state cookie through the FE BFF. The OAuth callback URI is GOOGLE_CALLBACK_URL and must point to the FE /api/auth/google/callback route. Only openid, email and profile scopes are requested. If no ACTIVE membership exists the verified identity receives an ACCOUNT session.",
+        "operationId": "startGoogleLogin",
+        "security": [],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "query",
+            "required": false,
+            "description": "Optional Organization selected after an earlier OAuth identity check; the backend verifies current ACTIVE membership again.",
+            "schema": {
+              "type": "string",
+              "minLength": 24,
+              "maxLength": 24,
+              "pattern": "^[a-fA-F0-9]{24}$"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Google authorization.",
+            "headers": {
+              "Location": { "schema": { "type": "string", "format": "uri" } },
+              "Set-Cookie": {
+                "description": "Short-lived encrypted __Host- OAuth transaction cookie; Secure; HttpOnly; SameSite=Lax; Path=/; no Domain.",
+                "schema": { "type": "string" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/auth/google/callback": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Complete Google sign-in or signup",
+        "description": "Accepts the Google authorization response at the FE callback route. The backend checks the browser-bound state cookie, PKCE verifier, nonce, ID-token signature, audience, issuer, expiry, stable sub and verified email before creating or linking an account. A matching normalized verified email links to its existing internal User; Google sub remains the provider identity key. Active-account and MFA checks still apply. One active Organization may be selected automatically; multiple active Organizations return 409 for explicit selection; zero active Organizations receive an ACCOUNT session with no Organization or role claims. Google signup creates no Organization, membership, role or platform authority.",
+        "operationId": "finishGoogleLogin",
+        "security": [],
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 4096 }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 512 }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the app after login, cancellation, or a generic OAuth failure.",
+            "headers": {
+              "Location": { "schema": { "type": "string" } },
+              "Set-Cookie": {
+                "description": "On success, separate continuum_access, __Secure-refresh and __Host-csrf cookies; always clears the OAuth transaction cookie.",
+                "schema": { "type": "string" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" }
         }
       }
     },
@@ -176,7 +262,7 @@
       "get": {
         "tags": ["Auth"],
         "summary": "Get the current user",
-        "description": "Loads the active user from a valid cookie or bearer access token.",
+        "description": "Loads the active User from a valid cookie or bearer token. ACCOUNT context returns identity without Organization or role fields; it grants no Organization or Platform authority.",
         "operationId": "getCurrentIdentity",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
@@ -189,6 +275,142 @@
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/auth/organizations": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "List Organizations available to the signed-in account",
+        "description": "Returns only Organizations with a current ACTIVE membership for the authenticated non-Platform User. The response is not itself an authorization grant.",
+        "operationId": "listAccountOrganizations",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Available Organizations.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/OrganizationOption" } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/auth/invitations": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "List invitations for the signed-in account",
+        "description": "Returns only pending, unexpired invitations whose normalized email matches the active authenticated account. No bearer token is stored; the account email is checked again on acceptance. The UI must not imply that email delivery occurred.",
+        "operationId": "listMyInvitations",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Invitations addressed to the current account.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/OrganizationInvitation" } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/auth/invitations/{invitationId}/accept": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Accept an Organization invitation",
+        "description": "Requires an active authenticated account, matching CSRF cookie/header and an unexpired pending invitation addressed to the account's normalized email. The server atomically activates the Organization Membership, assigns only the inviter-authorized role, consumes the invitation and records audit. The account must then select the Organization to receive an Organization session.",
+        "operationId": "acceptInvitation",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "invitationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+        ],
+        "responses": {
+          "200": { "description": "Invitation accepted; membership is active. Organization session has not yet been selected.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AcceptedOrganizationInvitation" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/v1/auth/select-organization": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Enter an Organization from an account session",
+        "description": "Requires a valid ACCOUNT session and matching CSRF cookie/header. The server rechecks the user's ACTIVE membership for the requested Organization before issuing new session cookies with Organization context.",
+        "operationId": "selectOrganization",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["organizationId"], "properties": { "organizationId": { "$ref": "#/components/schemas/ResourceId" } } } } } },
+        "responses": {
+          "200": { "description": "Organization session issued in HttpOnly cookies.", "headers": { "Set-Cookie": { "schema": { "type": "string" } }, "Cache-Control": { "schema": { "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginResponse" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/api/v1/iam/organizations": {
+      "post": {
+        "tags": ["Organizations"],
+        "summary": "Create an Organization for the current account",
+        "description": "Requires an authenticated active Human User session and valid CSRF cookie/header. Creates a FREE Organization, ACTIVE first-admin membership, ADMIN role assignment and audit record atomically. The account can bootstrap only itself; it receives no Platform authority. Rate limited to three creation attempts per hour per account.",
+        "operationId": "createOwnOrganization",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["name", "slug"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 200 }, "slug": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" } } } } } },
+        "responses": {
+          "201": { "description": "Organization created; the caller is its first ADMIN.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProvisionedOrganization" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/invitations": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "List pending Organization invitations",
+        "description": "Returns pending, unexpired invitations for this Organization. Requires the caller's current Organization context and a current active ADMIN membership and role assignment.",
+        "operationId": "listOrganizationInvitations",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } }
+        ],
+        "responses": {
+          "200": { "description": "Pending invitations in the caller's Organization.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/OrganizationInvitation" } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "tags": ["Users"],
+        "summary": "Invite an account to an Organization",
+        "description": "Requires a current active Organization ADMIN membership and role assignment, matching Organization context and CSRF. Creates one pending invitation bound to the normalized email and selected Organization role for seven days. Limited to 30 invitations per Organization/admin per hour. No email is sent; notify the recipient out of band.",
+        "operationId": "createOrganizationInvitation",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateOrganizationInvitationRequest" } } } },
+        "responses": {
+          "201": { "description": "Invitation recorded; no email delivery was attempted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrganizationInvitation" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}": {
+      "delete": {
+        "tags": ["Users"],
+        "summary": "Revoke a pending Organization invitation",
+        "description": "Requires current Organization ADMIN authority, matching Organization context and CSRF. Only an unexpired pending invitation in this Organization can be revoked. The transition is audited.",
+        "operationId": "revokeOrganizationInvitation",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "invitationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+        ],
+        "responses": {
+          "204": { "description": "Invitation revoked." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" }
         }
       }
     },
@@ -1008,6 +1230,14 @@
           }
         }
       },
+      "ServiceUnavailable": {
+        "description": "Google OAuth is disabled until all required provider settings are configured.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
       "NotFound": {
         "description": "The addressed resource does not exist or is not visible to the caller.",
         "content": {
@@ -1248,17 +1478,62 @@
       "CurrentUser": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "email", "name", "organizationId", "roles"],
+        "description": "An authenticated account identity. ACCOUNT context has no organizationId or roles; Organization sessions include both.",
+        "required": ["id", "email", "name"],
         "properties": {
           "id": { "$ref": "#/components/schemas/ResourceId" },
           "email": { "type": "string", "format": "email" },
           "name": { "type": "string", "minLength": 1 },
+          "context": { "type": "string", "const": "ACCOUNT" },
           "organizationId": { "$ref": "#/components/schemas/ResourceId" },
           "roles": {
             "type": "array",
             "items": { "type": "string" },
             "uniqueItems": true
           }
+        }
+      },
+      "OrganizationOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": { "id": { "$ref": "#/components/schemas/ResourceId" }, "name": { "type": "string", "minLength": 1 } }
+      },
+      "InvitationRoleCode": {
+        "type": "string",
+        "enum": ["ADMIN", "TEAM_LEADER", "MEMBER"]
+      },
+      "OrganizationInvitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "organizationId", "organizationName", "email", "roleCode", "status", "expiresAt", "createdAt"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "organizationName": { "type": "string", "minLength": 1 },
+          "email": { "type": "string", "format": "email" },
+          "roleCode": { "$ref": "#/components/schemas/InvitationRoleCode" },
+          "status": { "type": "string", "const": "PENDING" },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateOrganizationInvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "roleCode"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 254 },
+          "roleCode": { "$ref": "#/components/schemas/InvitationRoleCode" }
+        }
+      },
+      "AcceptedOrganizationInvitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["organizationId", "organizationName"],
+        "properties": {
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "organizationName": { "type": "string", "minLength": 1 }
         }
       },
       "LoginResponse": {

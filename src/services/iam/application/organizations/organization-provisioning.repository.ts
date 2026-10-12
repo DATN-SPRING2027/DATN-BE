@@ -22,6 +22,7 @@ export interface ProvisionedOrganization {
 
 export interface OrganizationProvisioningRepository {
   create(
+    this: void,
     actorUserId: string,
     input: OrganizationProvisioningInput,
   ): Promise<ProvisionedOrganization>;

@@ -7,6 +7,7 @@ import { configureApplication } from '../src/bootstrap';
 import { AUTH_SECURITY_STORE } from '../src/services/iam/application/authentication/auth-security.store';
 import type { AuthenticationRepositoryPort } from '../src/services/iam/application/authentication/authentication.repository';
 import { AuthenticationApplicationService } from '../src/services/iam/application/authentication/authentication.application.service';
+import { GoogleOAuthService } from '../src/services/iam/application/authentication/google-oauth.service';
 import { AccessTokenService } from '../src/services/iam/application/authentication/access-token.service';
 import { LOGIN_ELIGIBILITY_POLICY } from '../src/services/iam/application/authentication/login-eligibility.policy';
 import { ORGANIZATION_CONTEXT_RESOLVER } from '../src/services/iam/application/authentication/organization-context.resolver';
@@ -47,6 +48,9 @@ describe('Platform Operator login and provisioning (e2e)', () => {
         status: 'ACTIVE',
         twoFactorEnabled: false,
       }),
+      findAccountByGoogleSubject: jest.fn().mockResolvedValue(null),
+      linkGoogleSubjectIfMissing: jest.fn().mockResolvedValue(false),
+      createGoogleAccount: jest.fn(),
       findActiveOrganizationMembershipIds: jest.fn().mockResolvedValue([]),
       findOrganizationRoleAssignments: jest.fn(),
       findOrganizationOptions: jest.fn(),
@@ -95,6 +99,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       controllers: [AuthenticationController, PlatformController],
       providers: [
         AuthenticationApplicationService,
+        { provide: GoogleOAuthService, useValue: {} },
         AccessTokenService,
         AuthorizationPolicy,
         PlatformAuthorizationGuard,
@@ -156,7 +161,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) await app.close();
   });
 
   beforeEach(() => {

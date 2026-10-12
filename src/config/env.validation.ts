@@ -10,6 +10,9 @@ export type NodeEnvironment = 'development' | 'test' | 'production';
 export interface EnvironmentVariables {
   NODE_ENV: NodeEnvironment;
   JWT_SECRET?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_CALLBACK_URL?: string;
   PORT: number;
   GATEWAY_PORT: number;
   SERVICE_PORT: number;
@@ -40,6 +43,12 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .valid('development', 'test', 'production')
     .default('development'),
   JWT_SECRET: Joi.string().min(32).optional(),
+  GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
+  GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
+  GOOGLE_CALLBACK_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .allow('')
+    .optional(),
   PORT: Joi.number().integer().min(1).max(65535).default(3001),
   GATEWAY_PORT: Joi.number().integer().min(1).max(65535).default(3000),
   SERVICE_PORT: Joi.number().integer().min(1).max(65535).default(3001),
@@ -96,6 +105,29 @@ export function validateEnvironment(
 
   if (result.error) {
     throw new Error(`Environment validation failed: ${result.error.message}`);
+  }
+
+  const googleSettings = [
+    result.value.GOOGLE_CLIENT_ID,
+    result.value.GOOGLE_CLIENT_SECRET,
+    result.value.GOOGLE_CALLBACK_URL,
+  ];
+  const configuredGoogleSettings = googleSettings.filter(
+    (value) => typeof value === 'string' && value.length > 0,
+  ).length;
+  if (configuredGoogleSettings > 0 && configuredGoogleSettings < 3) {
+    throw new Error(
+      'Environment validation failed: Google OAuth requires client ID, client secret, and callback URL.',
+    );
+  }
+  if (
+    result.value.NODE_ENV === 'production' &&
+    configuredGoogleSettings === 3 &&
+    !result.value.GOOGLE_CALLBACK_URL?.startsWith('https://')
+  ) {
+    throw new Error(
+      'Environment validation failed: GOOGLE_CALLBACK_URL must use HTTPS in production.',
+    );
   }
 
   return result.value;
