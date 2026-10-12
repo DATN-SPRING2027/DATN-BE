@@ -19,6 +19,7 @@ const forwardedRequestHeaders = [
   'authorization',
   'content-type',
   'cookie',
+  'x-csrf-token',
   'x-organization-id',
   'x-request-id',
 ] as const;
@@ -28,6 +29,7 @@ const forwardedResponseHeaders = [
   'location',
   'retry-after',
   'www-authenticate',
+  'referrer-policy',
 ] as const;
 
 @Controller()
@@ -41,8 +43,56 @@ export class GatewayIamController {
     }
   }
 
+  @Get('auth/google')
+  beginGoogleLogin(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('auth/google/callback')
+  finishGoogleLogin(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Post('auth/login')
   login(@Req() request: Request, @Res() response: Response): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('auth/select-organization')
+  selectOrganization(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('auth/organizations')
+  listAccountOrganizations(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('auth/invitations')
+  listMyInvitations(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('auth/invitations/:invitationId/accept')
+  acceptInvitation(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
     return this.forward(request, response);
   }
 
@@ -71,6 +121,38 @@ export class GatewayIamController {
 
   @Post('iam/projects')
   createProject(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations')
+  createOwnOrganization(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/organizations/:organizationId/invitations')
+  listOrganizationInvitations(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations/:organizationId/invitations')
+  createOrganizationInvitation(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Delete('iam/organizations/:organizationId/invitations/:invitationId')
+  revokeOrganizationInvitation(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {
@@ -175,12 +257,16 @@ export class GatewayIamController {
 
     let upstream: globalThis.Response;
     try {
+      const isGoogleOAuthRoute =
+        request.path === '/api/v1/auth/google' ||
+        request.path === '/api/v1/auth/google/callback';
       upstream = await fetch(url, {
         method: request.method,
         headers,
         ...(request.body === undefined
           ? {}
           : { body: JSON.stringify(request.body) }),
+        ...(isGoogleOAuthRoute ? { redirect: 'manual' as const } : {}),
         signal: AbortSignal.timeout(
           this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
         ),

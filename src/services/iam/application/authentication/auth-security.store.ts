@@ -2,6 +2,7 @@ export const AUTH_SECURITY_STORE = Symbol('AUTH_SECURITY_STORE');
 
 export interface AuthSecurityStore {
   consumeRateLimit(
+    this: void,
     key: string,
     limit: number,
     windowSeconds: number,

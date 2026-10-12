@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { Logger, UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { AccessTokenError } from './access-token.service';
 import type {
@@ -59,6 +59,9 @@ describe('AuthenticationApplicationService', () => {
   beforeEach(() => {
     repository = {
       findAccountByEmail: jest.fn().mockResolvedValue(account),
+      findAccountByGoogleSubject: jest.fn().mockResolvedValue(null),
+      linkGoogleSubjectIfMissing: jest.fn().mockResolvedValue(true),
+      createGoogleAccount: jest.fn(),
       findActiveOrganizationMembershipIds: jest
         .fn()
         .mockResolvedValue([ORG_ID]),
@@ -175,6 +178,197 @@ describe('AuthenticationApplicationService', () => {
     expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
       expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
     );
+  });
+
+  describe('Google login', () => {
+    const googleIdentity = {
+      subject: 'google-subject-123',
+      email: 'person@example.com',
+      emailVerified: true,
+      name: 'Google Person',
+    };
+
+    it('logs a Mongoose validation failure at user persistence without logging error details', async () => {
+      const validationError = Object.assign(
+        new Error('Mongoose validation failed'),
+        { name: 'ValidationError' },
+      );
+      repository.findAccountByGoogleSubject.mockResolvedValue(null);
+      repository.findAccountByEmail.mockResolvedValue(null);
+      repository.createGoogleAccount.mockRejectedValue(validationError);
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+
+      await expect(service.loginWithGoogle(googleIdentity)).rejects.toBe(
+        validationError,
+      );
+
+      const event = warn.mock.calls
+        .map(
+          ([message]) => JSON.parse(String(message)) as Record<string, unknown>,
+        )
+        .find((entry) => entry.stage === 'user_persistence');
+      expect(event).toMatchObject({
+        event: 'google_oauth.callback',
+        stage: 'user_persistence',
+        status: 'failed',
+        errorCode: 'MONGOOSE_VALIDATION_ERROR',
+      });
+      expect(event?.requestId).toEqual(
+        expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      );
+      expect(JSON.stringify(event)).not.toContain('passwordHash');
+      warn.mockRestore();
+    });
+
+    it('links a verified Google identity to the existing email account and issues the normal session', async () => {
+      repository.findAccountByGoogleSubject.mockResolvedValue(null);
+      repository.findAccountByEmail.mockResolvedValue(account);
+      repository.linkGoogleSubjectIfMissing.mockResolvedValue(true);
+
+      const result = await service.loginWithGoogle(googleIdentity);
+
+      expect(repository.linkGoogleSubjectIfMissing.mock.calls).toContainEqual([
+        USER_ID,
+        googleIdentity.subject,
+      ]);
+      expect(result.user).toMatchObject({ id: USER_ID, email: account.email });
+      expect(repository.createRefreshSession.mock.calls).toHaveLength(1);
+    });
+
+    it('creates a passwordless user for a new verified Google identity without granting an Organization', async () => {
+      const googleAccount = {
+        ...account,
+        userId: '651a2b3c4d5e6f7a8b9c0d21',
+        email: googleIdentity.email,
+        name: googleIdentity.name,
+        passwordHash: '',
+        googleSubject: googleIdentity.subject,
+      };
+      repository.findAccountByGoogleSubject.mockResolvedValue(null);
+      repository.findAccountByEmail.mockResolvedValue(null);
+      repository.createGoogleAccount.mockResolvedValue(googleAccount);
+      organizationResolver.resolveForUser.mockResolvedValue({
+        outcome: 'NO_ELIGIBLE_ORGANIZATION',
+      });
+
+      const result = await service.loginWithGoogle(googleIdentity);
+      expect(result.user).toEqual({
+        id: googleAccount.userId,
+        email: googleAccount.email,
+        name: googleAccount.name,
+        context: 'ACCOUNT',
+      });
+
+      expect(repository.createGoogleAccount.mock.calls).toContainEqual([
+        {
+          email: googleIdentity.email,
+          name: googleIdentity.name,
+          googleSubject: googleIdentity.subject,
+        },
+      ]);
+      expect(repository.createRefreshSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: googleAccount.userId,
+          context: 'ACCOUNT',
+        }),
+      );
+      expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
+        sub: googleAccount.userId,
+        email: googleAccount.email,
+        context: 'ACCOUNT',
+      });
+    });
+
+    it('signs in an existing Google-only account in ACCOUNT context', async () => {
+      const googleAccount = {
+        ...account,
+        userId: '651a2b3c4d5e6f7a8b9c0d21',
+        email: googleIdentity.email,
+        name: googleIdentity.name,
+        passwordHash: '',
+        googleSubject: googleIdentity.subject,
+      };
+      repository.findAccountByGoogleSubject.mockResolvedValue(googleAccount);
+      organizationResolver.resolveForUser.mockResolvedValue({
+        outcome: 'NO_ELIGIBLE_ORGANIZATION',
+      });
+
+      const result = await service.loginWithGoogle(googleIdentity);
+
+      expect(result.user).toEqual({
+        id: googleAccount.userId,
+        email: googleAccount.email,
+        name: googleAccount.name,
+        context: 'ACCOUNT',
+      });
+      expect(repository.findAccountByGoogleSubject.mock.calls).toContainEqual([
+        googleIdentity.subject,
+      ]);
+      expect(repository.findAccountByEmail.mock.calls).toHaveLength(0);
+      expect(repository.createGoogleAccount.mock.calls).toHaveLength(0);
+      expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+        userId: googleAccount.userId,
+        context: 'ACCOUNT',
+      });
+    });
+
+    it('does not resolve or create an account when Google email is unverified', async () => {
+      await expect(
+        service.loginWithGoogle({ ...googleIdentity, emailVerified: false }),
+      ).rejects.toMatchObject({ status: 401 });
+
+      expect(repository.findAccountByGoogleSubject.mock.calls).toHaveLength(0);
+      expect(repository.findAccountByEmail.mock.calls).toHaveLength(0);
+      expect(repository.createGoogleAccount.mock.calls).toHaveLength(0);
+      expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
+    });
+
+    it('requires an explicit Organization when the linked account has multiple active memberships', async () => {
+      repository.findAccountByGoogleSubject.mockResolvedValue({
+        ...account,
+        googleSubject: googleIdentity.subject,
+      });
+      organizationResolver.resolveForUser.mockResolvedValue({
+        outcome: 'ORGANIZATION_SELECTION_REQUIRED',
+        organizations: [
+          { id: ORG_ID, name: 'Alpha' },
+          { id: OTHER_ORG_ID, name: 'Beta' },
+        ],
+      });
+
+      await expect(
+        service.loginWithGoogle(googleIdentity),
+      ).rejects.toMatchObject({
+        response: {
+          code: 'ORGANIZATION_SELECTION_REQUIRED',
+          details: {
+            organizations: [
+              { id: ORG_ID, name: 'Alpha' },
+              { id: OTHER_ORG_ID, name: 'Beta' },
+            ],
+          },
+        },
+      });
+      expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
+    });
+
+    it('does not link a verified email to an account already linked to another Google subject', async () => {
+      repository.findAccountByGoogleSubject.mockResolvedValue(null);
+      repository.findAccountByEmail.mockResolvedValue({
+        ...account,
+        googleSubject: 'different-google-subject',
+      });
+
+      await expect(
+        service.loginWithGoogle(googleIdentity),
+      ).rejects.toMatchObject({
+        status: 401,
+      });
+      expect(repository.linkGoogleSubjectIfMissing.mock.calls).toHaveLength(0);
+      expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
+    });
   });
 
   it('issues a Platform session for an ACTIVE assigned user without Organization membership', async () => {
@@ -324,13 +518,6 @@ describe('AuthenticationApplicationService', () => {
           outcome: 'INVALID_ORGANIZATION_SELECTION',
         }),
     ],
-    [
-      'zero eligible organizations',
-      () =>
-        organizationResolver.resolveForUser.mockResolvedValue({
-          outcome: 'NO_ELIGIBLE_ORGANIZATION',
-        }),
-    ],
   ])('returns the same generic failure for %s', async (_case, arrange) => {
     arrange();
     let thrown: unknown;
@@ -351,6 +538,52 @@ describe('AuthenticationApplicationService', () => {
     });
     expect(JSON.stringify(body)).not.toContain('supplied-secret');
     expect(JSON.stringify(body)).not.toContain(account.passwordHash);
+  });
+
+  it('lets an eligible password user sign in without an Organization', async () => {
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'NO_ELIGIBLE_ORGANIZATION',
+    });
+    const result = await service.login({
+      email: account.email,
+      password: 'correct',
+    });
+    expect(result.user).toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: account.name,
+      context: 'ACCOUNT',
+    });
+    expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
+      sub: USER_ID,
+      email: account.email,
+      context: 'ACCOUNT',
+    });
+  });
+
+  it('does not allow a Google-only account to sign in with an empty password', async () => {
+    repository.findAccountByEmail.mockResolvedValue({
+      ...account,
+      passwordHash: '',
+      googleSubject: 'google-subject-123',
+    });
+    const realCredentials = new PasswordCredentialService();
+    credentials.verifyPassword.mockImplementation((hash, password) =>
+      realCredentials.verifyPassword(hash, password),
+    );
+
+    await expect(
+      service.login({ email: account.email, password: '' }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'AUTHENTICATION_FAILED',
+        message: 'Authentication failed.',
+      },
+    });
+
+    expect(credentials.verifyPassword.mock.calls).toContainEqual(['', '']);
+    expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
+    expect(accessTokens.signAccessToken).not.toHaveBeenCalled();
   });
 
   it('does not use password-only login for an account whose MFA flag is enabled', async () => {
@@ -465,6 +698,31 @@ describe('AuthenticationApplicationService', () => {
     expect(
       repository.findActiveOrganizationMembershipIds.mock.calls,
     ).toHaveLength(0);
+  });
+
+  it('returns the Account identity at /me but denies Organization identity', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'ACCOUNT',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
+    await expect(
+      service.getCurrentSessionIdentity('Bearer account-token', undefined),
+    ).resolves.toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: account.name,
+      context: 'ACCOUNT',
+    });
+    await expect(
+      service.getCurrentIdentity('Bearer account-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(
+      repository.findActiveOrganizationMembershipIds,
+    ).not.toHaveBeenCalled();
   });
 
   it('authenticates a Human User for platform APIs without requiring Organization membership', async () => {
@@ -618,6 +876,29 @@ describe('AuthenticationApplicationService', () => {
 
   describe('refresh rotation core', () => {
     const presented = 'A'.repeat(43);
+
+    it('refreshes an Account session without resolving Organization membership', async () => {
+      repository.findRefreshSessionForRotation.mockResolvedValueOnce({
+        outcome: 'ACTIVE',
+        userId: USER_ID,
+        context: 'ACCOUNT',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      repository.rotateRefreshSession.mockResolvedValueOnce({
+        outcome: 'ROTATED',
+        userId: USER_ID,
+        context: 'ACCOUNT',
+      });
+      await expect(
+        service.refresh(presented, 'csrf', 'csrf'),
+      ).resolves.toHaveProperty('accessToken', 'signed-access-token');
+      expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
+        sub: USER_ID,
+        email: account.email,
+        context: 'ACCOUNT',
+      });
+      expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
+    });
 
     it('passes only hashes to persistence and issues credentials after rotation', async () => {
       const logSpy = jest.spyOn(console, 'log').mockImplementation();

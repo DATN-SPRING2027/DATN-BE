@@ -3,6 +3,7 @@ import { RuntimeConfigModule } from '../../config/runtime-config.module';
 import { AccessTokenService } from './application/authentication/access-token.service';
 import { AUTH_SECURITY_STORE } from './application/authentication/auth-security.store';
 import { AuthenticationApplicationService } from './application/authentication/authentication.application.service';
+import { GoogleOAuthService } from './application/authentication/google-oauth.service';
 import { AUTHENTICATION_REPOSITORY } from './application/authentication/authentication.repository';
 import { LeaderDirectedLoginEligibilityPolicy } from './application/authentication/leader-directed-login-eligibility.policy';
 import { LOGIN_ELIGIBILITY_POLICY } from './application/authentication/login-eligibility.policy';
@@ -34,12 +35,20 @@ import { ProjectAccessService } from './application/projects/project-access.serv
 import { PROJECT_ACCESS_REPOSITORY } from './application/projects/project-access.repository';
 import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-access.repository';
 import { PlatformController } from './controllers/platform.controller';
+import { AccountOrganizationController } from './controllers/account-organization.controller';
 import { OrganizationProvisioningService } from './application/organizations/organization-provisioning.service';
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from './application/organizations/organization-provisioning.repository';
 import { MongoOrganizationProvisioningRepository } from './infrastructure/mongodb/organization-provisioning.repository';
 import { PlatformAuditService } from './application/platform/platform-audit.service';
 import { PLATFORM_AUDIT_REPOSITORY } from './application/platform/platform-audit.repository';
 import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-audit.repository';
+import {
+  OrganizationInvitationController,
+  AccountInvitationController,
+} from './controllers/organization-invitation.controller';
+import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
+import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
+import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
 
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
@@ -50,11 +59,15 @@ import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-
     ProjectController,
     ProjectAccessController,
     PlatformController,
+    AccountOrganizationController,
+    OrganizationInvitationController,
+    AccountInvitationController,
   ],
   providers: [
     IamApplicationService,
     AccessTokenService,
     AuthenticationApplicationService,
+    GoogleOAuthService,
     { provide: AUTH_SECURITY_STORE, useExisting: RedisService },
     LeaderDirectedLoginEligibilityPolicy,
     MembershipOrganizationContextResolver,
@@ -83,6 +96,7 @@ import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-
     ProjectService,
     ProjectAccessService,
     OrganizationProvisioningService,
+    OrganizationInvitationService,
     PlatformAuditService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
@@ -96,6 +110,10 @@ import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-
     {
       provide: ORGANIZATION_PROVISIONING_REPOSITORY,
       useClass: MongoOrganizationProvisioningRepository,
+    },
+    {
+      provide: ORGANIZATION_INVITATION_REPOSITORY,
+      useClass: MongoOrganizationInvitationRepository,
     },
     {
       provide: PLATFORM_AUDIT_REPOSITORY,

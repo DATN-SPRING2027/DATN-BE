@@ -92,6 +92,21 @@ describe('AccessTokenService', () => {
     expect(service.verifyAccessToken(token)).not.toHaveProperty('roles');
   });
 
+  it('issues an Account token without Organization or Platform authority', () => {
+    const service = new AccessTokenService(createConfig(SECRET));
+    const token = service.signAccessToken({
+      sub: 'user-123',
+      email: 'person@example.com',
+      context: 'ACCOUNT',
+    });
+    expect(service.verifyAccessToken(token)).toMatchObject({
+      sub: 'user-123',
+      context: 'ACCOUNT',
+    });
+    expect(service.verifyAccessToken(token)).not.toHaveProperty('orgId');
+    expect(service.verifyAccessToken(token)).not.toHaveProperty('roles');
+  });
+
   it('rejects a Platform token that carries Organization or role claims', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-26T00:00:00.000Z'));
     const now = Math.floor(Date.now() / 1000);

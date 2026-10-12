@@ -5,8 +5,15 @@ export interface AuthenticationAccount {
   email: string;
   name: string;
   passwordHash: string;
+  googleSubject?: string;
   status: string;
   twoFactorEnabled: boolean;
+}
+
+export interface NewGoogleAccount {
+  email: string;
+  name: string;
+  googleSubject: string;
 }
 
 export interface OrganizationRoleAssignment {
@@ -30,9 +37,15 @@ export interface RefreshAccount {
   twoFactorEnabled: boolean;
 }
 
-export type RefreshSessionContext = 'ORGANIZATION' | 'PLATFORM';
+export type RefreshSessionContext = 'ORGANIZATION' | 'PLATFORM' | 'ACCOUNT';
 
 export type NewRefreshSession =
+  | {
+      userId: string;
+      context: 'ACCOUNT';
+      tokenHash: string;
+      expiresAt: Date;
+    }
   | {
       userId: string;
       context: 'ORGANIZATION';
@@ -51,6 +64,11 @@ export type RefreshRotationResult =
   | {
       outcome: 'ROTATED';
       userId: string;
+      context: 'ACCOUNT';
+    }
+  | {
+      outcome: 'ROTATED';
+      userId: string;
       context: 'ORGANIZATION';
       organizationId: string;
     }
@@ -62,6 +80,12 @@ export type RefreshRotationResult =
   | { outcome: 'REPLAYED' | 'INVALID' };
 
 export type RefreshSessionLookup =
+  | {
+      outcome: 'ACTIVE' | 'REVOKED';
+      userId: string;
+      context: 'ACCOUNT';
+      expiresAt: Date;
+    }
   | {
       outcome: 'ACTIVE' | 'REVOKED';
       userId: string;
@@ -79,7 +103,18 @@ export type RefreshSessionLookup =
 
 export interface AuthenticationRepositoryPort {
   findAccountByEmail(email: string): Promise<AuthenticationAccount | null>;
-  findActiveOrganizationMembershipIds(userId: string): Promise<string[]>;
+  findAccountByGoogleSubject(
+    googleSubject: string,
+  ): Promise<AuthenticationAccount | null>;
+  linkGoogleSubjectIfMissing(
+    userId: string,
+    googleSubject: string,
+  ): Promise<boolean>;
+  createGoogleAccount(input: NewGoogleAccount): Promise<AuthenticationAccount>;
+  findActiveOrganizationMembershipIds(
+    this: void,
+    userId: string,
+  ): Promise<string[]>;
   findOrganizationRoleAssignments(
     userId: string,
   ): Promise<OrganizationRoleAssignment[]>;
@@ -101,5 +136,5 @@ export interface AuthenticationRepositoryPort {
     now: Date,
   ): Promise<RefreshRotationResult>;
   findAccountById(userId: string): Promise<RefreshAccount | null>;
-  createRefreshSession(session: NewRefreshSession): Promise<void>;
+  createRefreshSession(this: void, session: NewRefreshSession): Promise<void>;
 }

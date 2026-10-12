@@ -17,6 +17,7 @@ import {
   AUTHENTICATION_REPOSITORY,
   type AuthenticationAccount,
   type AuthenticationRepositoryPort,
+  type LoginOrganizationOption,
   type NewRefreshSession,
   type RefreshSessionContext,
 } from './authentication.repository';
@@ -26,6 +27,11 @@ import { ORGANIZATION_CONTEXT_RESOLVER } from './organization-context.resolver';
 import type { OrganizationContextResolver } from './organization-context.resolver';
 import { PasswordCredentialService } from '../credentials/password-credential.service';
 import { PasswordHashFormatError } from '../credentials/password-credential.service';
+import {
+  classifyGoogleOAuthError,
+  createGoogleOAuthRequestId,
+  logGoogleOAuthStage,
+} from './google-oauth.observability';
 import {
   AUTHORIZATION_EVIDENCE_PROVIDER,
   type AuthorizationEvidenceProvider,
@@ -42,12 +48,26 @@ export interface LoginInput {
   sourceIp?: string;
 }
 
+export interface GoogleIdentityInput {
+  subject: string;
+  email: string;
+  emailVerified: boolean;
+  name?: string;
+}
+
 export interface AuthenticatedIdentity {
   id: string;
   email: string;
   name: string;
   organizationId: string;
   roles: string[];
+}
+
+export interface AuthenticatedAccountIdentity {
+  id: string;
+  email: string;
+  name: string;
+  context: 'ACCOUNT';
 }
 
 export interface AuthenticatedPlatformSubject {
@@ -60,7 +80,7 @@ export interface LoginResult {
   accessToken: string;
   refreshToken: string;
   csrfToken: string;
-  user: AuthenticatedIdentity;
+  user: AuthenticatedIdentity | AuthenticatedAccountIdentity;
 }
 
 export interface PlatformLoginResult {
@@ -84,7 +104,7 @@ export class RefreshCsrfError extends Error {
 
 const REFRESH_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
-function validCsrfPair(
+export function validCsrfPair(
   cookieValue: string | undefined,
   headerValue: string | undefined,
 ): boolean {
@@ -189,6 +209,23 @@ export class AuthenticationApplicationService {
         details: { organizations: organization.organizations },
       });
     }
+    if (organization.outcome === 'NO_ELIGIBLE_ORGANIZATION') {
+      const user: AuthenticatedAccountIdentity = {
+        id: account.userId,
+        email: account.email,
+        name: account.name,
+        context: 'ACCOUNT',
+      };
+      await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
+      return {
+        ...(await this.issueSession(account.userId, 'ACCOUNT', {
+          sub: user.id,
+          email: user.email,
+          context: 'ACCOUNT',
+        })),
+        user,
+      };
+    }
     if (organization.outcome !== 'RESOLVED') throw unauthorized();
 
     await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
@@ -210,6 +247,181 @@ export class AuthenticationApplicationService {
       },
     );
     return { ...credentials, user: identity };
+  }
+
+  async loginWithGoogle(
+    identity: GoogleIdentityInput,
+    requestedOrganizationId?: string,
+    requestId?: string,
+  ): Promise<LoginResult> {
+    const correlationId = createGoogleOAuthRequestId(requestId);
+    logGoogleOAuthStage({
+      requestId: correlationId,
+      stage: 'verified_identity_validation',
+      status: 'started',
+    });
+    if (
+      identity.emailVerified !== true ||
+      !identity.subject.trim() ||
+      !identity.email.trim()
+    ) {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'verified_identity_validation',
+        status: 'failed',
+        errorCode: 'GOOGLE_IDENTITY_INVALID',
+      });
+      throw unauthorized();
+    }
+    logGoogleOAuthStage({
+      requestId: correlationId,
+      stage: 'verified_identity_validation',
+      status: 'succeeded',
+    });
+
+    logGoogleOAuthStage({
+      requestId: correlationId,
+      stage: 'account_resolution',
+      status: 'started',
+    });
+    let account: AuthenticationAccount;
+    try {
+      account = await this.resolveGoogleAccount(identity, correlationId);
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'account_resolution',
+        status: 'succeeded',
+      });
+    } catch (error) {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'account_resolution',
+        status: 'failed',
+        errorCode: classifyGoogleOAuthError(
+          error,
+          'GOOGLE_ACCOUNT_RESOLUTION_FAILED',
+        ),
+      });
+      throw error;
+    }
+
+    const eligibility = this.eligibilityPolicy.evaluate({
+      userStatus: account.status,
+    });
+    if (eligibility.outcome !== 'ELIGIBLE' || account.twoFactorEnabled) {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'account_eligibility',
+        status: 'failed',
+        errorCode: 'GOOGLE_ACCOUNT_NOT_ELIGIBLE',
+      });
+      throw unauthorized();
+    }
+    logGoogleOAuthStage({
+      requestId: correlationId,
+      stage: 'account_eligibility',
+      status: 'succeeded',
+    });
+
+    logGoogleOAuthStage({
+      requestId: correlationId,
+      stage: 'organization_resolution',
+      status: 'started',
+    });
+    let organization: Awaited<
+      ReturnType<OrganizationContextResolver['resolveForUser']>
+    >;
+    try {
+      organization = await this.organizationResolver.resolveForUser(
+        account.userId,
+        requestedOrganizationId,
+      );
+    } catch (error) {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'organization_resolution',
+        status: 'failed',
+        errorCode: classifyGoogleOAuthError(
+          error,
+          'ORGANIZATION_RESOLUTION_FAILED',
+        ),
+      });
+      throw error;
+    }
+
+    if (organization.outcome === 'ORGANIZATION_SELECTION_REQUIRED') {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'organization_resolution',
+        status: 'failed',
+        errorCode: 'ORGANIZATION_SELECTION_REQUIRED',
+      });
+      throw new ConflictException({
+        code: 'ORGANIZATION_SELECTION_REQUIRED',
+        message: 'Select an organization to continue.',
+        details: { organizations: organization.organizations },
+      });
+    }
+    if (organization.outcome === 'NO_ELIGIBLE_ORGANIZATION') {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'organization_resolution',
+        status: 'succeeded',
+      });
+      const user: AuthenticatedAccountIdentity = {
+        id: account.userId,
+        email: account.email,
+        name: account.name,
+        context: 'ACCOUNT',
+      };
+      return {
+        ...(await this.issueSession(
+          account.userId,
+          'ACCOUNT',
+          {
+            sub: user.id,
+            email: user.email,
+            context: 'ACCOUNT',
+          },
+          correlationId,
+        )),
+        user,
+      };
+    }
+    if (organization.outcome !== 'RESOLVED') {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'organization_resolution',
+        status: 'failed',
+        errorCode: 'ORGANIZATION_RESOLUTION_FAILED',
+      });
+      throw unauthorized();
+    }
+    logGoogleOAuthStage({
+      requestId: correlationId,
+      stage: 'organization_resolution',
+      status: 'succeeded',
+    });
+
+    const user: AuthenticatedIdentity = {
+      id: account.userId,
+      email: account.email,
+      name: account.name,
+      organizationId: organization.context.orgId,
+      roles: organization.context.roles,
+    };
+    const credentials = await this.issueSession(
+      account.userId,
+      'ORGANIZATION',
+      {
+        sub: user.id,
+        email: user.email,
+        orgId: user.organizationId,
+        roles: user.roles,
+      },
+      correlationId,
+    );
+    return { ...credentials, user };
   }
 
   async loginPlatform(input: LoginInput): Promise<PlatformLoginResult> {
@@ -286,6 +498,123 @@ export class AuthenticationApplicationService {
     return { account, needsRehash: verification.needsRehash };
   }
 
+  private async resolveGoogleAccount(
+    identity: GoogleIdentityInput,
+    requestId: string,
+  ): Promise<AuthenticationAccount> {
+    const googleSubject = identity.subject.trim();
+    const email = identity.email.trim().toLowerCase();
+    const linkedAccount =
+      await this.repository.findAccountByGoogleSubject(googleSubject);
+    if (linkedAccount) return linkedAccount;
+
+    const emailAccount = await this.repository.findAccountByEmail(email);
+    if (emailAccount)
+      return this.linkGoogleIdentity(emailAccount, googleSubject, requestId);
+
+    logGoogleOAuthStage({
+      requestId,
+      stage: 'user_persistence',
+      status: 'started',
+    });
+    try {
+      const account = await this.repository.createGoogleAccount({
+        email,
+        name: identity.name?.trim().slice(0, 120) || email.split('@')[0],
+        googleSubject,
+      });
+      logGoogleOAuthStage({
+        requestId,
+        stage: 'user_persistence',
+        status: 'succeeded',
+      });
+      return account;
+    } catch (error) {
+      logGoogleOAuthStage({
+        requestId,
+        stage: 'user_persistence',
+        status: 'failed',
+        errorCode: classifyGoogleOAuthError(
+          error,
+          'GOOGLE_USER_PERSISTENCE_FAILED',
+        ),
+      });
+
+      // Concurrent first sign-ins may race on the unique email or subject index.
+      const accountBySubject =
+        await this.repository.findAccountByGoogleSubject(googleSubject);
+      if (accountBySubject) return accountBySubject;
+      const accountByEmail = await this.repository.findAccountByEmail(email);
+      if (accountByEmail)
+        return this.linkGoogleIdentity(
+          accountByEmail,
+          googleSubject,
+          requestId,
+        );
+      throw error;
+    }
+  }
+
+  private async linkGoogleIdentity(
+    account: AuthenticationAccount,
+    googleSubject: string,
+    requestId: string,
+  ): Promise<AuthenticationAccount> {
+    logGoogleOAuthStage({
+      requestId,
+      stage: 'account_linking',
+      status: 'started',
+    });
+    try {
+      if (account.googleSubject && account.googleSubject !== googleSubject)
+        throw unauthorized();
+      if (account.googleSubject === googleSubject) {
+        logGoogleOAuthStage({
+          requestId,
+          stage: 'account_linking',
+          status: 'succeeded',
+        });
+        return account;
+      }
+
+      const linked = await this.repository.linkGoogleSubjectIfMissing(
+        account.userId,
+        googleSubject,
+      );
+      if (linked) {
+        logGoogleOAuthStage({
+          requestId,
+          stage: 'account_linking',
+          status: 'succeeded',
+        });
+        return { ...account, googleSubject };
+      }
+
+      const racedAccount =
+        await this.repository.findAccountByGoogleSubject(googleSubject);
+      if (racedAccount) {
+        logGoogleOAuthStage({
+          requestId,
+          stage: 'account_linking',
+          status: 'succeeded',
+        });
+        return racedAccount;
+      }
+      throw unauthorized();
+    } catch (error) {
+      logGoogleOAuthStage({
+        requestId,
+        stage: 'account_linking',
+        status: 'failed',
+        errorCode: classifyGoogleOAuthError(
+          error,
+          'GOOGLE_ACCOUNT_LINK_FAILED',
+        ),
+      });
+      throw error;
+    }
+  }
+
   private async rehashPasswordIfNeeded(
     account: AuthenticationAccount,
     password: string,
@@ -305,7 +634,8 @@ export class AuthenticationApplicationService {
     context: RefreshSessionContext,
     claims:
       | { sub: string; email: string; orgId: string; roles: string[] }
-      | { sub: string; email: string; context: 'PLATFORM' },
+      | { sub: string; email: string; context: 'PLATFORM' | 'ACCOUNT' },
+    googleOAuthRequestId?: string,
   ): Promise<{ accessToken: string; refreshToken: string; csrfToken: string }> {
     const refreshToken = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
@@ -325,8 +655,8 @@ export class AuthenticationApplicationService {
         expiresAt,
       };
     } else {
-      if (!('context' in claims) || claims.context !== 'PLATFORM')
-        throw new Error('Platform login has no Platform token context');
+      if (!('context' in claims) || claims.context !== context)
+        throw new Error('Session token context mismatch');
       session = {
         userId,
         context,
@@ -334,8 +664,62 @@ export class AuthenticationApplicationService {
         expiresAt,
       };
     }
-    await this.repository.createRefreshSession(session);
-    const accessToken = this.accessTokens.signAccessToken(claims);
+
+    if (googleOAuthRequestId) {
+      logGoogleOAuthStage({
+        requestId: googleOAuthRequestId,
+        stage: 'session_persistence',
+        status: 'started',
+      });
+    }
+    try {
+      await this.repository.createRefreshSession(session);
+      if (googleOAuthRequestId) {
+        logGoogleOAuthStage({
+          requestId: googleOAuthRequestId,
+          stage: 'session_persistence',
+          status: 'succeeded',
+        });
+      }
+    } catch (error) {
+      if (googleOAuthRequestId) {
+        logGoogleOAuthStage({
+          requestId: googleOAuthRequestId,
+          stage: 'session_persistence',
+          status: 'failed',
+          errorCode: classifyGoogleOAuthError(
+            error,
+            'GOOGLE_SESSION_PERSISTENCE_FAILED',
+          ),
+        });
+      }
+      throw error;
+    }
+
+    let accessToken: string;
+    try {
+      accessToken = this.accessTokens.signAccessToken(claims);
+    } catch (error) {
+      if (googleOAuthRequestId) {
+        logGoogleOAuthStage({
+          requestId: googleOAuthRequestId,
+          stage: 'access_token_signing',
+          status: 'failed',
+          errorCode: classifyGoogleOAuthError(
+            error,
+            'GOOGLE_ACCESS_TOKEN_SIGNING_FAILED',
+          ),
+        });
+      }
+      throw error;
+    }
+    if (googleOAuthRequestId) {
+      logGoogleOAuthStage({
+        requestId: googleOAuthRequestId,
+        stage: 'access_token_signing',
+        status: 'succeeded',
+      });
+    }
     return { accessToken, refreshToken, csrfToken };
   }
 
@@ -382,11 +766,31 @@ export class AuthenticationApplicationService {
     authorization: string | undefined,
     cookieHeader: string | undefined,
   ): Promise<AuthenticatedIdentity> {
+    const identity = await this.getCurrentSessionIdentity(
+      authorization,
+      cookieHeader,
+    );
+    if (!('organizationId' in identity)) throw unauthorized();
+    return identity;
+  }
+
+  async getCurrentSessionIdentity(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<AuthenticatedIdentity | AuthenticatedAccountIdentity> {
     const { claims, profile } = await this.getVerifiedActiveSubject(
       authorization,
       cookieHeader,
     );
     if (claims.context === 'PLATFORM') throw unauthorized();
+    if (claims.context === 'ACCOUNT') {
+      return {
+        id: claims.sub,
+        email: claims.email,
+        name: profile.name,
+        context: 'ACCOUNT',
+      };
+    }
 
     const activeMembershipIds =
       await this.repository.findActiveOrganizationMembershipIds(claims.sub);
@@ -399,6 +803,54 @@ export class AuthenticationApplicationService {
       organizationId: claims.orgId,
       roles: claims.roles,
     };
+  }
+
+  async selectOrganization(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+    organizationId: string,
+  ): Promise<LoginResult> {
+    const { claims, profile } = await this.getVerifiedActiveSubject(
+      authorization,
+      cookieHeader,
+    );
+    if (claims.context !== 'ACCOUNT') throw unauthorized();
+    const organization = await this.organizationResolver.resolveForUser(
+      claims.sub,
+      organizationId,
+    );
+    if (organization.outcome !== 'RESOLVED') throw unauthorized();
+    const user: AuthenticatedIdentity = {
+      id: claims.sub,
+      email: claims.email,
+      name: profile.name,
+      organizationId: organization.context.orgId,
+      roles: organization.context.roles,
+    };
+    return {
+      ...(await this.issueSession(user.id, 'ORGANIZATION', {
+        sub: user.id,
+        email: user.email,
+        orgId: user.organizationId,
+        roles: user.roles,
+      })),
+      user,
+    };
+  }
+
+  async listOrganizationOptions(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<LoginOrganizationOption[]> {
+    const { claims } = await this.getVerifiedActiveSubject(
+      authorization,
+      cookieHeader,
+    );
+    if (claims.context === 'PLATFORM') throw unauthorized();
+    const ids = await this.repository.findActiveOrganizationMembershipIds(
+      claims.sub,
+    );
+    return this.repository.findOrganizationOptions(ids);
   }
 
   /**
@@ -511,7 +963,13 @@ export class AuthenticationApplicationService {
       throw unauthorized();
     }
     let accessToken: string;
-    if (current.context === 'PLATFORM') {
+    if (current.context === 'ACCOUNT') {
+      accessToken = this.accessTokens.signAccessToken({
+        sub: current.userId,
+        email: account.email,
+        context: 'ACCOUNT',
+      });
+    } else if (current.context === 'PLATFORM') {
       if (
         !(await this.hasActivePlatformAssignment(
           current.userId,
