@@ -49,4 +49,46 @@ describe('validateEnvironment', () => {
       INFRA_ENABLED: false,
     });
   });
+
+  it('allows Google OAuth to remain disabled when all provider settings are blank', () => {
+    expect(
+      validateEnvironment({
+        GOOGLE_CLIENT_ID: '',
+        GOOGLE_CLIENT_SECRET: '',
+        GOOGLE_CALLBACK_URL: '',
+      }),
+    ).toMatchObject({
+      GOOGLE_CLIENT_ID: '',
+      GOOGLE_CLIENT_SECRET: '',
+      GOOGLE_CALLBACK_URL: '',
+    });
+  });
+
+  it('requires all Google OAuth settings and a valid HTTP callback URL', () => {
+    expect(() =>
+      validateEnvironment({
+        GOOGLE_CLIENT_ID: 'client-id',
+        GOOGLE_CLIENT_SECRET: '',
+        GOOGLE_CALLBACK_URL: 'http://localhost:5000/api/auth/google/callback',
+      }),
+    ).toThrow('Google OAuth requires');
+    expect(() =>
+      validateEnvironment({
+        GOOGLE_CLIENT_ID: 'client-id',
+        GOOGLE_CLIENT_SECRET: 'client-secret-placeholder',
+        GOOGLE_CALLBACK_URL: 'javascript:alert(1)',
+      }),
+    ).toThrow('GOOGLE_CALLBACK_URL');
+  });
+
+  it('requires an HTTPS Google callback in production', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'production',
+        GOOGLE_CLIENT_ID: 'client-id',
+        GOOGLE_CLIENT_SECRET: 'client-secret-placeholder',
+        GOOGLE_CALLBACK_URL: 'http://app.example.test/api/auth/google/callback',
+      }),
+    ).toThrow('must use HTTPS in production');
+  });
 });

@@ -76,6 +76,40 @@ describe('AuthenticationRepository', () => {
     });
   });
 
+  it('looks up Account refresh sessions without requiring an Organization ID', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const expiresAt = new Date(Date.now() + 60_000);
+    const query = {
+      select: jest.fn(),
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue({
+        userId: new Types.ObjectId(userId),
+        context: 'ACCOUNT',
+        isRevoked: false,
+        expiresAt,
+      }),
+    };
+    query.select.mockReturnValue(query);
+    query.lean.mockReturnValue(query);
+    const connection = {
+      models: {
+        continuum_iam_refresh_sessions: {
+          findOne: jest.fn().mockReturnValue(query),
+        },
+      },
+    } as unknown as Connection;
+    await expect(
+      new AuthenticationRepository(connection).findRefreshSessionForRotation(
+        'account-hash',
+      ),
+    ).resolves.toEqual({
+      outcome: 'ACTIVE',
+      userId,
+      context: 'ACCOUNT',
+      expiresAt,
+    });
+  });
+
   it('loads only the account fields needed after a committed refresh rotation', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
     const query = {
@@ -170,6 +204,7 @@ describe('AuthenticationRepository', () => {
         email: 1,
         fullName: 1,
         passwordHash: 1,
+        googleSubject: 1,
         status: 1,
         twoFactorEnabled: 1,
       },
@@ -310,5 +345,102 @@ describe('AuthenticationRepository', () => {
       { tokenHash: 'sha256-digest', isRevoked: { $ne: true } },
       { $set: { isRevoked: true } },
     );
+  });
+
+  it('finds a passwordless account by its stable Google subject', async () => {
+    const query = {
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue({
+        _id: new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1e'),
+        email: 'person@example.com',
+        fullName: 'Google Person',
+        googleSubject: 'google-subject-123',
+        status: 'ACTIVE',
+        twoFactorEnabled: false,
+      }),
+    };
+    query.lean.mockReturnValue(query);
+    const model = { findOne: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_users: model },
+    } as unknown as Connection;
+
+    await expect(
+      new AuthenticationRepository(connection).findAccountByGoogleSubject(
+        'google-subject-123',
+      ),
+    ).resolves.toEqual({
+      userId: '651a2b3c4d5e6f7a8b9c0d1e',
+      email: 'person@example.com',
+      name: 'Google Person',
+      passwordHash: '',
+      googleSubject: 'google-subject-123',
+      status: 'ACTIVE',
+      twoFactorEnabled: false,
+    });
+    expect(model.findOne).toHaveBeenCalledWith(
+      { googleSubject: 'google-subject-123' },
+      expect.objectContaining({ googleSubject: 1 }),
+    );
+  });
+
+  it('links a Google subject only when the existing account has no subject', async () => {
+    const query = {
+      exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const model = { updateOne: jest.fn().mockReturnValue(query) };
+    const connection = {
+      models: { continuum_iam_users: model },
+    } as unknown as Connection;
+
+    await expect(
+      new AuthenticationRepository(connection).linkGoogleSubjectIfMissing(
+        '651a2b3c4d5e6f7a8b9c0d1e',
+        'google-subject-123',
+      ),
+    ).resolves.toBe(true);
+    expect(model.updateOne).toHaveBeenCalledWith(
+      {
+        _id: new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1e'),
+        $or: [{ googleSubject: { $exists: false } }, { googleSubject: null }],
+      },
+      { $set: { googleSubject: 'google-subject-123' } },
+    );
+  });
+
+  it('creates a Google account without persisting a password hash', async () => {
+    const created = {
+      toObject: () => ({
+        _id: new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1e'),
+        email: 'person@example.com',
+        fullName: 'Google Person',
+        googleSubject: 'google-subject-123',
+        status: 'ACTIVE',
+        twoFactorEnabled: false,
+      }),
+    };
+    const model = { create: jest.fn().mockResolvedValue(created) };
+    const connection = {
+      models: { continuum_iam_users: model },
+    } as unknown as Connection;
+
+    await expect(
+      new AuthenticationRepository(connection).createGoogleAccount({
+        email: 'person@example.com',
+        name: 'Google Person',
+        googleSubject: 'google-subject-123',
+      }),
+    ).resolves.toMatchObject({
+      userId: '651a2b3c4d5e6f7a8b9c0d1e',
+      googleSubject: 'google-subject-123',
+      passwordHash: '',
+    });
+    expect(model.create).toHaveBeenCalledWith({
+      email: 'person@example.com',
+      fullName: 'Google Person',
+      googleSubject: 'google-subject-123',
+      status: 'ACTIVE',
+      twoFactorEnabled: false,
+    });
   });
 });

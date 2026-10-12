@@ -7,6 +7,7 @@ import type {
   AuthenticationProfile,
   AuthenticationRepositoryPort,
   LoginOrganizationOption,
+  NewGoogleAccount,
   NewRefreshSession,
   OrganizationRoleAssignment,
   RefreshSessionContext,
@@ -19,7 +20,8 @@ import { IAM_PERSISTENCE } from '../persistence';
 interface UserDocument {
   _id: Types.ObjectId;
   email: string;
-  passwordHash: string;
+  passwordHash?: string;
+  googleSubject?: string;
   fullName: string;
   status: string;
   twoFactorEnabled?: boolean;
@@ -58,7 +60,11 @@ function refreshSessionContext(
     row.organizationId instanceof Types.ObjectId
   )
     return { context, organizationId: row.organizationId };
-  if (context === 'PLATFORM' && row.organizationId == null) return { context };
+  if (
+    (context === 'PLATFORM' || context === 'ACCOUNT') &&
+    row.organizationId == null
+  )
+    return { context };
   return null;
 }
 
@@ -118,6 +124,7 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
           email: 1,
           fullName: 1,
           passwordHash: 1,
+          googleSubject: 1,
           status: 1,
           twoFactorEnabled: 1,
         },
@@ -127,15 +134,70 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
 
     if (!user) return null;
 
-    return {
-      userId: String(user._id),
-      email: user.email,
-      name: user.fullName,
-      passwordHash:
-        typeof user.passwordHash === 'string' ? user.passwordHash : '',
-      status: user.status,
-      twoFactorEnabled: user.twoFactorEnabled === true,
-    };
+    return this.toAuthenticationAccount(user);
+  }
+
+  async findAccountByGoogleSubject(
+    googleSubject: string,
+  ): Promise<AuthenticationAccount | null> {
+    const model = this.getModel<UserDocument>(
+      USERS_MODEL,
+      'USER_MODEL_UNAVAILABLE',
+    );
+    const user = await model
+      .findOne(
+        { googleSubject },
+        {
+          _id: 1,
+          email: 1,
+          fullName: 1,
+          passwordHash: 1,
+          googleSubject: 1,
+          status: 1,
+          twoFactorEnabled: 1,
+        },
+      )
+      .lean()
+      .exec();
+    return user ? this.toAuthenticationAccount(user) : null;
+  }
+
+  async linkGoogleSubjectIfMissing(
+    userId: string,
+    googleSubject: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(userId)) return false;
+    const model = this.getModel<UserDocument>(
+      USERS_MODEL,
+      'USER_MODEL_UNAVAILABLE',
+    );
+    const result = await model
+      .updateOne(
+        {
+          _id: new Types.ObjectId(userId),
+          $or: [{ googleSubject: { $exists: false } }, { googleSubject: null }],
+        },
+        { $set: { googleSubject } },
+      )
+      .exec();
+    return result.modifiedCount === 1;
+  }
+
+  async createGoogleAccount(
+    input: NewGoogleAccount,
+  ): Promise<AuthenticationAccount> {
+    const model = this.getModel<UserDocument>(
+      USERS_MODEL,
+      'USER_MODEL_UNAVAILABLE',
+    );
+    const user = await model.create({
+      email: input.email.trim().toLowerCase(),
+      fullName: input.name.trim(),
+      googleSubject: input.googleSubject,
+      status: 'ACTIVE',
+      twoFactorEnabled: false,
+    });
+    return this.toAuthenticationAccount(user.toObject());
   }
 
   async findAccountById(userId: string): Promise<RefreshAccount | null> {
@@ -440,6 +502,21 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       isRevoked: false,
       expiresAt: session.expiresAt,
     });
+  }
+
+  private toAuthenticationAccount(user: UserDocument): AuthenticationAccount {
+    return {
+      userId: String(user._id),
+      email: user.email,
+      name: user.fullName,
+      passwordHash:
+        typeof user.passwordHash === 'string' ? user.passwordHash : '',
+      ...(typeof user.googleSubject === 'string'
+        ? { googleSubject: user.googleSubject }
+        : {}),
+      status: user.status,
+      twoFactorEnabled: user.twoFactorEnabled === true,
+    };
   }
 
   private getModel<T>(

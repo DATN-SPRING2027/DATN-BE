@@ -11,6 +11,9 @@ describe('MembershipOrganizationContextResolver', () => {
   beforeEach(() => {
     repository = {
       findAccountByEmail: jest.fn(),
+      findAccountByGoogleSubject: jest.fn(),
+      linkGoogleSubjectIfMissing: jest.fn(),
+      createGoogleAccount: jest.fn(),
       findActiveOrganizationMembershipIds: jest.fn().mockResolvedValue([]),
       findOrganizationRoleAssignments: jest.fn().mockResolvedValue([]),
       findOrganizationOptions: jest

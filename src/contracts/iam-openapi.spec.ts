@@ -359,6 +359,90 @@ describe('IAM OpenAPI contract', () => {
     expect(logout.requestBody).toBeUndefined();
   });
 
+  it('documents Google OAuth code flow, verified identity, and membership boundary', () => {
+    const start = contract.paths['/api/v1/auth/google'].get!;
+    const callback = contract.paths['/api/v1/auth/google/callback'].get!;
+
+    expect(start.security).toEqual([]);
+    expect(start.parameters?.[0]?.schema).toMatchObject({
+      minLength: 24,
+      maxLength: 24,
+      pattern: '^[a-fA-F0-9]{24}$',
+    });
+    expect(start.description).toContain('authorization-code flow with PKCE');
+    expect(start.description).toContain('state and nonce');
+    expect(start.description).toContain('openid, email and profile');
+    expect(start.responses['302']).toMatchObject({
+      headers: {
+        Location: { schema: { type: 'string', format: 'uri' } },
+        'Set-Cookie': { schema: { type: 'string' } },
+      },
+    });
+    expect(start.responses['422']).toEqual({
+      $ref: '#/components/responses/ValidationFailed',
+    });
+
+    expect(callback.description).toContain('ID-token signature, audience');
+    expect(callback.description).toContain('stable sub and verified email');
+    expect(callback.description).toContain(
+      'zero active Organizations receive an ACCOUNT session',
+    );
+    expect(callback.description).toContain(
+      'Google signup creates no Organization, membership, role or platform authority',
+    );
+    expect(callback.responses['302']).toHaveProperty('headers.Set-Cookie');
+    expect(callback.responses['403']).toEqual({
+      $ref: '#/components/responses/Forbidden',
+    });
+    expect(callback.responses['409']).toEqual({
+      $ref: '#/components/responses/Conflict',
+    });
+    expect(callback.parameters?.map((parameter) => parameter.name)).toEqual([
+      'code',
+      'state',
+      'error',
+    ]);
+  });
+
+  it('documents email-bound Organization invitations and matching access checks', () => {
+    const accountList = contract.paths['/api/v1/auth/invitations'].get!;
+    const accept =
+      contract.paths['/api/v1/auth/invitations/{invitationId}/accept'].post!;
+    const orgPath =
+      contract.paths['/api/v1/iam/organizations/{organizationId}/invitations'];
+    const revoke =
+      contract.paths[
+        '/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}'
+      ].delete!;
+
+    expect(accountList.operationId).toBe('listMyInvitations');
+    expect(accountList.description).toContain('normalized email matches');
+    expect(accept.description).toContain('normalized email');
+    expect(accept.parameters?.map((parameter) => parameter.name)).toEqual([
+      'invitationId',
+      'X-CSRF-Token',
+    ]);
+    expect(orgPath.get?.description).toContain('current active ADMIN');
+    expect(orgPath.post?.description).toContain('Limited to 30 invitations');
+    expect(orgPath.post?.description).toContain('No email is sent');
+    expect(orgPath.post?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/CreateOrganizationInvitationRequest',
+          },
+        },
+      },
+    });
+    expect(revoke.responses['204']).toBeDefined();
+    expect(contract.components.schemas.InvitationRoleCode).toMatchObject({
+      enum: ['ADMIN', 'TEAM_LEADER', 'MEMBER'],
+    });
+    expect(
+      contract.components.schemas.OrganizationInvitation.additionalProperties,
+    ).toBe(false);
+  });
+
   it('documents a separate Platform login without Organization claims', () => {
     const login = contract.paths['/api/v1/auth/platform/login'].post!;
     expect(login.operationId).toBe('loginPlatform');

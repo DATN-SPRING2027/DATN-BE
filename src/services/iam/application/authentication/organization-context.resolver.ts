@@ -22,6 +22,7 @@ export type OrganizationContextResolution =
 
 export interface OrganizationContextResolver {
   resolveForUser(
+    this: void,
     userId: string,
     organizationId?: string,
   ): Promise<OrganizationContextResolution>;
