@@ -290,6 +290,24 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
     });
   });
 
+  it.each(['DENY', 'UNKNOWN'] as const)(
+    'denies Project Access when explicit deny assessment is %s despite a matching permission',
+    (explicitDeny) => {
+      const facts = projectAccessBase('project.members.list');
+      facts.assignments = [
+        projectAssignment(projectId, 'TEAM_LEADER', 'TEAM_LEADER', [
+          'project.members.list',
+        ]),
+      ];
+      facts.explicitDeny = explicitDeny;
+
+      expect(policy.evaluateProjectAccess(facts)).toEqual({
+        allowed: false,
+        reason: 'EXPLICIT_DENY_OR_UNKNOWN',
+      });
+    },
+  );
+
   it.each([
     'project.members.list',
     'project.members.add',

@@ -16,6 +16,12 @@ import {
 const targetRoleCodes = PROJECT_ACCESS_PERMISSION_PROVISIONING.roles.map(
   ({ code }) => code,
 );
+const projectAccessPermissionCodes = [
+  ...PROJECT_ACCESS_PERMISSION_PROVISIONING.roles.flatMap(
+    ({ permissions }) => permissions,
+  ),
+  PROJECT_ACCESS_PERMISSION_PROVISIONING.disabledPermission,
+];
 
 function resolveDatabaseName() {
   return resolveIamDatabaseName({
@@ -41,7 +47,12 @@ async function inspectDatabase(db, uri) {
     ? await db
         .collection(PROJECT_ACCESS_PERMISSION_PROVISIONING.collectionName)
         .find(
-          { code: { $in: targetRoleCodes } },
+          {
+            $or: [
+              { code: { $in: targetRoleCodes } },
+              { permissions: { $in: projectAccessPermissionCodes } },
+            ],
+          },
           {
             projection: {
               _id: 1,

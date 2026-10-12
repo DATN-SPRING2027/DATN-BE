@@ -29,6 +29,9 @@ const projectAccessPermissions = new Set([
   ),
   PROJECT_ACCESS_PERMISSION_PROVISIONING.disabledPermission,
 ]);
+const targetRoleCodes = new Set(
+  PROJECT_ACCESS_PERMISSION_PROVISIONING.roles.map(({ code }) => code),
+);
 
 function serializedId(value) {
   const id =
@@ -69,6 +72,18 @@ export function planProjectAccessPermissionProvisioning({
   const issues = [];
   if (!collectionExists || objectType !== 'collection')
     issues.push('ROLE_COLLECTION_UNAVAILABLE');
+
+  for (const role of roles) {
+    if (targetRoleCodes.has(role.code)) continue;
+    const rolePermissions = Array.isArray(role.permissions)
+      ? role.permissions
+      : [role.permissions];
+    const stringPermissions = rolePermissions.filter(
+      (permission) => typeof permission === 'string',
+    );
+    if (misplacedProjectPermissions(role.code, stringPermissions).length > 0)
+      issues.push(`PROJECT_PERMISSION_MAPPING_INVALID:${role.code}`);
+  }
 
   const plannedRoles = PROJECT_ACCESS_PERMISSION_PROVISIONING.roles.map(
     ({ code, permissions }) => {

@@ -129,6 +129,40 @@ integration(
       assert.equal(reviewedReport.roles[0].missingPermissions.length, 2);
       assert.equal(reviewedReport.roles[1].missingPermissions.length, 3);
 
+      await roles.updateOne(
+        { code: 'MEMBER' },
+        { $addToSet: { permissions: 'project.members.add' } },
+      );
+      const misplacedNonTargetReport =
+        await runProjectAccessPermissionProvisioning({
+          uri: process.env.MONGODB_URI,
+          databaseName,
+        });
+      assert.equal(misplacedNonTargetReport.clean, false);
+      assert.ok(
+        misplacedNonTargetReport.issues.includes(
+          'PROJECT_PERMISSION_MAPPING_INVALID:MEMBER',
+        ),
+      );
+      await assert.rejects(
+        runProjectAccessPermissionProvisioning({
+          uri: process.env.MONGODB_URI,
+          databaseName,
+          mode: 'apply',
+          expectedReportSha256: misplacedNonTargetReport.reportSha256,
+        }),
+        /PROJECT_PERMISSION_MAPPING_INVALID:MEMBER/,
+        'misplaced permission on a non-target Role must block before writes',
+      );
+      assert.deepEqual((await roles.findOne({ code: 'MEMBER' })).permissions, [
+        'project.read',
+        'project.members.add',
+      ]);
+      await roles.updateOne(
+        { code: 'MEMBER' },
+        { $pull: { permissions: 'project.members.add' } },
+      );
+
       await roles.insertOne({
         _id: new ObjectId(),
         code: 'TEAM_LEADER',
@@ -301,7 +335,7 @@ integration(
       assert.deepEqual(await unrelated.find().toArray(), unrelatedBefore);
 
       t.diagnostic(
-        `MongoDB ${buildInfo.version}: missing Role blocked before writes; exact five permission additions applied once; rerun was NOOP; disabled role-change permission blocked; rollback removed only migration additions.`,
+        `MongoDB ${buildInfo.version}: missing Role and misplaced non-target Role permission blocked before writes; exact five permission additions applied once; rerun was NOOP; disabled role-change permission blocked; rollback removed only migration additions.`,
       );
     } finally {
       if (testDatabaseCreated) await client.db(databaseName).dropDatabase();

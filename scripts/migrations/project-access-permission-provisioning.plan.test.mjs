@@ -196,6 +196,24 @@ test('blocks misplaced and disabled Project permissions instead of moving or gra
   assert.equal(plan.action, 'BLOCKED');
 });
 
+test('blocks a known Project Access permission on a non-target Role', () => {
+  const plan = planProjectAccessPermissionProvisioning({
+    ...base,
+    roles: [
+      ...completeRoles(),
+      role('MEMBER', ['project.members.add']),
+      role('OBSERVER', 'project.visibility.manage'),
+    ],
+  });
+
+  assert.equal(plan.clean, false);
+  assert.ok(plan.issues.includes('PROJECT_PERMISSION_MAPPING_INVALID:MEMBER'));
+  assert.ok(
+    plan.issues.includes('PROJECT_PERMISSION_MAPPING_INVALID:OBSERVER'),
+  );
+  assert.equal(plan.action, 'BLOCKED');
+});
+
 test('allows the existing project.read permission on TEAM_LEADER without changing it', () => {
   const plan = planProjectAccessPermissionProvisioning({
     ...base,

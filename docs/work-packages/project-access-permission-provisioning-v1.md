@@ -65,10 +65,12 @@ and missing permissions, preflight findings, and `reportSha256`.
 Preflight blocks when the `roles` collection is absent or not a collection;
 either target Role is missing or duplicated; an ID is not an ObjectId; a target
 Role is not marked `isSystem`; the permission field is not an array of unique
-strings; or a known Project Access permission is misplaced/disabled. A missing
-`permissions` field is treated as an empty value because the Role schema
-defaults it to an empty array; apply creates the field through `$addToSet`.
-No normalization or cleanup is attempted.
+strings; or a known Project Access permission is misplaced/disabled. It checks
+the two target Roles and any other Role carrying a known Project Access code,
+so a misplaced code on a non-target Role also blocks apply. A missing
+`permissions` field on a target Role is treated as an empty value because the
+Role schema defaults it to an empty array; apply creates the field through
+`$addToSet`. No normalization or cleanup is attempted.
 
 From the repository root, set the same database-selection flags used by the
 target IAM runtime and retain the complete dry-run report:
@@ -121,12 +123,12 @@ process before applying an environment-specific report.
 
 - Planner tests assert the exact accepted mapping, missing-code plan,
   idempotent `NOOP`, no duplicate permission values, Role placement,
-  fail-closed malformed/missing/duplicate evidence, report binding, and
-  constrained rollback.
+  fail-closed malformed/missing/duplicate evidence, non-target Role placement,
+  report binding, and constrained rollback.
 - Disposable MongoDB integration asserts missing/duplicate Role and disabled
-  permission preflights, stale-report refusal, exact `$addToSet` behavior,
-  rerun idempotence, preservation of unrelated Roles/permissions, and rollback
-  of only migration additions.
+  permission preflights, non-target Role placement, stale-report refusal, exact
+  `$addToSet` behavior, rerun idempotence, preservation of unrelated
+  Roles/permissions, and rollback of only migration additions.
 - Existing IAM Project Access policy and guard tests remain the regression
   checks for explicit scope and deny-by-default behavior.
 
