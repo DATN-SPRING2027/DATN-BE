@@ -125,6 +125,11 @@ export interface AuthenticationRepositoryPort {
     currentHash: string,
     replacementHash: string,
   ): Promise<void>;
+  resetPassword(
+    this: void,
+    userId: string,
+    replacementHash: string,
+  ): Promise<boolean>;
   revokeRefreshSessionByHash(tokenHash: string): Promise<boolean>;
   findRefreshSessionForRotation(
     tokenHash: string,

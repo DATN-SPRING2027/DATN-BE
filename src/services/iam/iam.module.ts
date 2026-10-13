@@ -3,6 +3,9 @@ import { RuntimeConfigModule } from '../../config/runtime-config.module';
 import { AccessTokenService } from './application/authentication/access-token.service';
 import { AUTH_SECURITY_STORE } from './application/authentication/auth-security.store';
 import { AuthenticationApplicationService } from './application/authentication/authentication.application.service';
+import { PASSWORD_RESET_TOKEN_STORE } from './application/authentication/password-reset.store';
+import { PASSWORD_RESET_MAILER } from './application/authentication/password-reset.mailer';
+import { PasswordResetService } from './application/authentication/password-reset.service';
 import { GoogleOAuthService } from './application/authentication/google-oauth.service';
 import { AUTHENTICATION_REPOSITORY } from './application/authentication/authentication.repository';
 import { LeaderDirectedLoginEligibilityPolicy } from './application/authentication/leader-directed-login-eligibility.policy';
@@ -25,6 +28,7 @@ import { USER_DIRECTORY_REPOSITORY } from './application/users/user-directory.re
 import { MongoUserDirectoryRepository } from './infrastructure/mongodb/user-directory.repository';
 import { MongoAuthorizationEvidenceProvider } from './infrastructure/mongodb/authorization-evidence.provider';
 import { RedisService } from './infrastructure/redis/redis.service';
+import { SmtpPasswordResetMailer } from './infrastructure/email/smtp-password-reset.mailer';
 import { ProjectController } from './controllers/project.controller';
 import { ProjectAccessController } from './controllers/project-access.controller';
 import { ProjectService } from './application/projects/project.service';
@@ -67,8 +71,11 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     IamApplicationService,
     AccessTokenService,
     AuthenticationApplicationService,
+    PasswordResetService,
     GoogleOAuthService,
     { provide: AUTH_SECURITY_STORE, useExisting: RedisService },
+    { provide: PASSWORD_RESET_TOKEN_STORE, useExisting: RedisService },
+    { provide: PASSWORD_RESET_MAILER, useClass: SmtpPasswordResetMailer },
     LeaderDirectedLoginEligibilityPolicy,
     MembershipOrganizationContextResolver,
     {

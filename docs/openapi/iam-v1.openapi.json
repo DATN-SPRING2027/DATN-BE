@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "IAM contract. Password login, Google OAuth login/signup, account-only sessions, Organization onboarding, current identity, logout and refresh are implemented. Authentication establishes a User identity; Organization APIs require a separate current ACTIVE membership. Browser authentication uses HttpOnly cookies through the FE BFF."
+    "description": "IAM contract. Password login and reset, Google OAuth login/signup, account-only sessions, Organization onboarding, current identity, logout and refresh are implemented. Authentication establishes a User identity; Organization APIs require a separate current ACTIVE membership. Browser authentication uses HttpOnly cookies through the FE BFF."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -52,6 +52,72 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "409": {
             "$ref": "#/components/responses/OrganizationSelectionRequired"
+          },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/request": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Request a password reset email",
+        "description": "Always returns the same 202 response for a valid email, whether or not an ACTIVE account exists or email delivery succeeds. The backend rate-limits by trusted source IP and normalized email. ACTIVE accounts, including Google-only accounts that do not yet have a local password, receive a single-use link that expires after 30 minutes. The token is stored only as a SHA-256 digest in Redis; no account or delivery details are returned.",
+        "operationId": "requestPasswordReset",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PasswordResetRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "A generic acknowledgement. It does not confirm account existence or email delivery.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PasswordResetAccepted" }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/confirm": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Set a new password with a reset link",
+        "description": "Accepts a single-use 256-bit random reset token with a 30-minute lifetime. The token must still be the current token for the account. In one MongoDB transaction, the backend changes the password for an ACTIVE account and revokes all of its refresh sessions. Invalid, expired, superseded and used tokens share one error. Existing short-lived access JWTs can remain valid until their 15-minute expiry.",
+        "operationId": "confirmPasswordReset",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PasswordResetConfirm" }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Password changed; all refresh sessions were revoked.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } },
+              "Set-Cookie": { "description": "Clears the current browser's access, refresh and CSRF cookies. Other active access JWTs can remain valid until their 15-minute expiry.", "schema": { "type": "string" } }
+            }
+          },
+          "400": {
+            "description": "The reset link is invalid, expired, superseded or already used.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
@@ -1460,6 +1526,29 @@
             "writeOnly": true
           }
         }
+      },
+      "PasswordResetRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 320 }
+        }
+      },
+      "PasswordResetConfirm": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["token", "password"],
+        "properties": {
+          "token": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$", "writeOnly": true },
+          "password": { "type": "string", "minLength": 12, "maxLength": 72, "writeOnly": true }
+        }
+      },
+      "PasswordResetAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "const": "accepted" } }
       },
       "PlatformLoginRequest": {
         "type": "object",

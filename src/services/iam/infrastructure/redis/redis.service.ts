@@ -4,9 +4,40 @@ import {
   createRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
+import type { PasswordResetTokenStore } from '../../application/authentication/password-reset.store';
+
+const SAVE_PASSWORD_RESET_TOKEN = `
+  redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[3])
+  redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
+  return 1
+`;
+
+const CONSUME_PASSWORD_RESET_TOKEN = `
+  local value = redis.call('get', KEYS[1])
+  if not value then return false end
+  local userScope, userId = string.match(value, '^([0-9a-f]+)|([0-9a-f]+)$')
+  if not userScope or not userId then
+    redis.call('del', KEYS[1])
+    return false
+  end
+  local userKey = 'auth:{password-reset}:user:' .. userScope
+  if redis.call('get', userKey) ~= ARGV[1] then
+    redis.call('del', KEYS[1])
+    return false
+  end
+  redis.call('del', KEYS[1], userKey)
+  return userId
+`;
+
+const DISCARD_PASSWORD_RESET_TOKEN = `
+  local userKey = 'auth:{password-reset}:user:' .. ARGV[1]
+  if redis.call('get', userKey) ~= ARGV[2] then return 0 end
+  redis.call('del', userKey, KEYS[1])
+  return 1
+`;
 
 @Injectable()
-export class RedisService implements OnModuleDestroy {
+export class RedisService implements OnModuleDestroy, PasswordResetTokenStore {
   private readonly client: RedisConnection;
 
   constructor(config: ConfigService) {
@@ -40,6 +71,49 @@ export class RedisService implements OnModuleDestroy {
   async delete(key: string): Promise<void> {
     await this.connect();
     await this.client.del(key);
+  }
+
+  async savePasswordResetToken(
+    userScopeHash: string,
+    tokenHash: string,
+    userId: string,
+    ttlSeconds: number,
+  ): Promise<void> {
+    await this.connect();
+    await this.client.eval(
+      SAVE_PASSWORD_RESET_TOKEN,
+      2,
+      `auth:{password-reset}:user:${userScopeHash}`,
+      `auth:{password-reset}:token:${tokenHash}`,
+      tokenHash,
+      `${userScopeHash}|${userId}`,
+      ttlSeconds,
+    );
+  }
+
+  async consumePasswordResetToken(tokenHash: string): Promise<string | null> {
+    await this.connect();
+    const userId = await this.client.eval(
+      CONSUME_PASSWORD_RESET_TOKEN,
+      1,
+      `auth:{password-reset}:token:${tokenHash}`,
+      tokenHash,
+    );
+    return typeof userId === 'string' ? userId : null;
+  }
+
+  async discardPasswordResetToken(
+    userScopeHash: string,
+    tokenHash: string,
+  ): Promise<void> {
+    await this.connect();
+    await this.client.eval(
+      DISCARD_PASSWORD_RESET_TOKEN,
+      1,
+      `auth:{password-reset}:token:${tokenHash}`,
+      userScopeHash,
+      tokenHash,
+    );
   }
 
   revokeToken(tokenHash: string, ttlSeconds: number): Promise<void> {
