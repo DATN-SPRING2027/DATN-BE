@@ -8,9 +8,11 @@ jest.mock('../../../../common/redis/redis-connection', () => ({
 
 describe('IAM RedisService password reset tokens', () => {
   const evalScript = jest.fn();
+  const getValue = jest.fn();
   const client = {
     status: 'ready',
     eval: evalScript,
+    get: getValue,
     disconnect: jest.fn(),
   };
   let redis: RedisService;
@@ -19,6 +21,7 @@ describe('IAM RedisService password reset tokens', () => {
     jest.clearAllMocks();
     jest.mocked(createRedisConnection).mockReturnValue(client as never);
     evalScript.mockResolvedValue(1);
+    getValue.mockReset();
     redis = new RedisService({} as ConfigService);
   });
 
@@ -27,30 +30,86 @@ describe('IAM RedisService password reset tokens', () => {
     const tokenHash = 'b'.repeat(64);
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
 
-    await redis.savePasswordResetToken(scopeHash, tokenHash, userId, 1800);
+    await expect(
+      redis.savePasswordResetToken(scopeHash, tokenHash, userId, 1800),
+    ).resolves.toBe(true);
 
     expect(evalScript).toHaveBeenCalledWith(
-      expect.stringContaining("redis.call('set', KEYS[1]"),
-      2,
+      expect.stringContaining("redis.call('exists', KEYS[3])"),
+      3,
       `auth:{password-reset}:user:${scopeHash}`,
       `auth:{password-reset}:token:${tokenHash}`,
+      `auth:{password-reset}:claim:${scopeHash}`,
       tokenHash,
       `${scopeHash}|${userId}`,
       1800,
     );
   });
 
-  it('atomically consumes only the current hashed token and returns its account ID', async () => {
+  it('atomically claims only the current token and binds the claim to its TTL', async () => {
+    const scopeHash = 'a'.repeat(64);
     const tokenHash = 'b'.repeat(64);
-    evalScript.mockResolvedValue('651a2b3c4d5e6f7a8b9c0d1e');
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const tokenValue = `${scopeHash}|${userId}`;
+    const claimId = 'c'.repeat(43);
+    getValue.mockResolvedValue(tokenValue);
+    evalScript.mockResolvedValue(tokenValue);
 
-    await expect(redis.consumePasswordResetToken(tokenHash)).resolves.toBe(
-      '651a2b3c4d5e6f7a8b9c0d1e',
-    );
+    await expect(
+      redis.claimPasswordResetToken(tokenHash, claimId),
+    ).resolves.toEqual({ userScopeHash: scopeHash, userId });
     expect(evalScript).toHaveBeenCalledWith(
-      expect.stringContaining("redis.call('del', KEYS[1], userKey)"),
+      expect.stringContaining("redis.call('pttl', KEYS[1])"),
+      3,
+      `auth:{password-reset}:token:${tokenHash}`,
+      `auth:{password-reset}:user:${scopeHash}`,
+      `auth:{password-reset}:claim:${scopeHash}`,
+      tokenHash,
+      claimId,
+      tokenValue,
+      scopeHash,
+    );
+  });
+
+  it('does not claim a token that was superseded after its scope lookup', async () => {
+    const scopeHash = 'a'.repeat(64);
+    const tokenHash = 'b'.repeat(64);
+    const tokenValue = `${scopeHash}|651a2b3c4d5e6f7a8b9c0d1e`;
+    getValue.mockResolvedValue(tokenValue);
+    evalScript.mockResolvedValue(false);
+
+    await expect(
+      redis.claimPasswordResetToken(tokenHash, 'c'.repeat(43)),
+    ).resolves.toBeNull();
+  });
+
+  it('releases only the matching in-flight claim without deleting the token', async () => {
+    const scopeHash = 'a'.repeat(64);
+    const claimId = 'c'.repeat(43);
+
+    await redis.releasePasswordResetTokenClaim(scopeHash, claimId);
+
+    expect(evalScript).toHaveBeenCalledWith(
+      expect.stringContaining("redis.call('get', KEYS[1]) ~= ARGV[1]"),
+      1,
+      `auth:{password-reset}:claim:${scopeHash}`,
+      claimId,
+    );
+  });
+
+  it('discards only the matching current token when no claim is active', async () => {
+    const scopeHash = 'a'.repeat(64);
+    const tokenHash = 'b'.repeat(64);
+
+    await redis.discardPasswordResetToken(scopeHash, tokenHash);
+
+    expect(evalScript).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "local claimKey = 'auth:{password-reset}:claim:'",
+      ),
       1,
       `auth:{password-reset}:token:${tokenHash}`,
+      scopeHash,
       tokenHash,
     );
   });

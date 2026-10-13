@@ -106,12 +106,13 @@ export class PasswordResetService {
       ? digest(account.userId)
       : digest(`no-active-account:${emailDigest}`);
     const userId = eligible ? account.userId : '000000000000000000000000';
-    await this.tokens.savePasswordResetToken(
+    const saved = await this.tokens.savePasswordResetToken(
       userScopeHash,
       tokenHash,
       userId,
       RESET_TOKEN_TTL_SECONDS,
     );
+    if (!saved) return { status: 'accepted' };
 
     if (!eligible || !account) {
       await this.tokens.discardPasswordResetToken(userScopeHash, tokenHash);
@@ -155,13 +156,37 @@ export class PasswordResetService {
     if (!RESET_TOKEN_PATTERN.test(input.token))
       throw new PasswordResetInvalidTokenError();
 
-    const userId = await this.tokens.consumePasswordResetToken(
-      digest(input.token),
-    );
-    if (!userId) throw new PasswordResetInvalidTokenError();
+    const tokenHash = digest(input.token);
+    const claimId = randomBytes(32).toString('base64url');
+    const claim = await this.tokens.claimPasswordResetToken(tokenHash, claimId);
+    if (!claim) throw new PasswordResetInvalidTokenError();
 
-    const passwordHash = await this.credentials.hashPassword(input.password);
-    const updated = await this.repository.resetPassword(userId, passwordHash);
+    let updated: boolean;
+    try {
+      const passwordHash = await this.credentials.hashPassword(input.password);
+      updated = await this.repository.resetPassword(claim.userId, passwordHash);
+    } catch (error) {
+      try {
+        await this.tokens.releasePasswordResetTokenClaim(
+          claim.userScopeHash,
+          claimId,
+        );
+      } catch {
+        this.logger.warn('password_reset_token_claim_release_failed');
+      }
+      throw error;
+    }
+
+    // The Mongo transaction has committed (or confirmed the account inactive)
+    // before the one-time token is removed. A Redis error here leaves the
+    // claim in place until the token's original TTL, preventing replay.
+    const consumed = await this.tokens.consumeClaimedPasswordResetToken(
+      tokenHash,
+      claim.userScopeHash,
+      claimId,
+    );
+    if (!consumed)
+      this.logger.warn('password_reset_token_consume_after_commit_failed');
     if (!updated) throw new PasswordResetInvalidTokenError();
   }
 

@@ -25,9 +25,14 @@
 - The API Gateway forwards both reset endpoints to IAM and signs the trusted
   source-IP proof required by IAM for internal authentication routes.
 - A successful confirmation updates the password for an ACTIVE account and
-  revokes all refresh sessions in one MongoDB transaction, then clears the
-  current browser's access, refresh, and CSRF cookies. Access JWTs in other
-  browsers remain valid until their existing 15-minute expiry.
+  revokes all refresh sessions in one MongoDB transaction. The reset token is
+  claimed before hashing, remains available if hashing or the MongoDB
+  transaction fails, and is consumed only after the transaction completes (or
+  the account is confirmed inactive). The claim expires with the token and
+  blocks duplicate confirmation and replacement requests while in flight. The
+  endpoint then clears the current browser's access, refresh, and CSRF cookies.
+  Access JWTs in other browsers remain valid until their existing 15-minute
+  expiry.
 - Both endpoints return `Cache-Control: no-store` and `Referrer-Policy:
   no-referrer`. Tokens, email addresses, and SMTP errors are not logged. The FE
   also suppresses incoming-request logs on the reset page as defense in depth.
@@ -45,5 +50,10 @@ FE origin used to form the reset link. Production requires an HTTPS `WEB_APP_URL
   request operation.
 - If email delivery fails, the issued token is discarded when possible and
   the API still returns the generic 202 acknowledgement.
-- A database failure while confirming a token returns the normal server error;
-  the token remains consumed, so the user can request another reset link.
+- A password-hash or database-transaction failure returns the normal server
+  error and releases the claim while preserving the token until its original
+  expiry, allowing the same link to be retried when claim release succeeds. If
+  Redis cannot release the claim, it remains until token expiry. If Redis
+  cannot finalize token consumption after the MongoDB transaction succeeds,
+  the claim remains until token expiry to prevent replay; these cross-store
+  recovery cases still need runtime validation.

@@ -41,8 +41,13 @@ describe('PasswordResetService', () => {
     };
     security = { consumeRateLimit: jest.fn().mockResolvedValue(true) };
     tokens = {
-      savePasswordResetToken: jest.fn().mockResolvedValue(undefined),
-      consumePasswordResetToken: jest.fn().mockResolvedValue(USER_ID),
+      savePasswordResetToken: jest.fn().mockResolvedValue(true),
+      claimPasswordResetToken: jest.fn().mockResolvedValue({
+        userScopeHash: createHash('sha256').update(USER_ID).digest('hex'),
+        userId: USER_ID,
+      }),
+      consumeClaimedPasswordResetToken: jest.fn().mockResolvedValue(true),
+      releasePasswordResetTokenClaim: jest.fn().mockResolvedValue(undefined),
       discardPasswordResetToken: jest.fn().mockResolvedValue(undefined),
     };
     credentials = { hashPassword: jest.fn().mockResolvedValue('new-hash') };
@@ -152,7 +157,7 @@ describe('PasswordResetService', () => {
     );
   });
 
-  it('consumes a valid token once, hashes the new password and revokes refresh sessions atomically', async () => {
+  it('claims a valid token, commits the password reset, then consumes the token', async () => {
     await expect(
       service.completeReset({
         token: 'a'.repeat(43),
@@ -160,13 +165,95 @@ describe('PasswordResetService', () => {
         sourceIp: '203.0.113.8',
       }),
     ).resolves.toBeUndefined();
-    expect(tokens.consumePasswordResetToken).toHaveBeenCalledWith(
-      createHash('sha256').update('a'.repeat(43)).digest('hex'),
+
+    const tokenHash = createHash('sha256').update('a'.repeat(43)).digest('hex');
+    const claimId = tokens.claimPasswordResetToken.mock.calls[0][1];
+    expect(tokens.claimPasswordResetToken).toHaveBeenCalledWith(
+      tokenHash,
+      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
     );
+    expect(tokens.consumeClaimedPasswordResetToken).toHaveBeenCalledWith(
+      tokenHash,
+      createHash('sha256').update(USER_ID).digest('hex'),
+      claimId,
+    );
+    expect(
+      tokens.consumeClaimedPasswordResetToken.mock.invocationCallOrder[0],
+    ).toBeGreaterThan(repository.resetPassword.mock.invocationCallOrder[0]);
+    expect(tokens.releasePasswordResetTokenClaim).not.toHaveBeenCalled();
     expect(credentials.hashPassword).toHaveBeenCalledWith(
       'A-long-password-123',
     );
     expect(repository.resetPassword).toHaveBeenCalledWith(USER_ID, 'new-hash');
+  });
+
+  it('releases the claim and preserves the token when password hashing fails', async () => {
+    credentials.hashPassword.mockRejectedValueOnce(new Error('hash failure'));
+
+    await expect(
+      service.completeReset({
+        token: 'd'.repeat(43),
+        password: 'A-long-password-123',
+        sourceIp: '203.0.113.8',
+      }),
+    ).rejects.toThrow('hash failure');
+
+    const claimId = tokens.claimPasswordResetToken.mock.calls[0][1];
+    expect(tokens.releasePasswordResetTokenClaim).toHaveBeenCalledWith(
+      createHash('sha256').update(USER_ID).digest('hex'),
+      claimId,
+    );
+    expect(tokens.consumeClaimedPasswordResetToken).not.toHaveBeenCalled();
+    expect(repository.resetPassword).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim and preserves the token when the database transaction fails', async () => {
+    repository.resetPassword.mockRejectedValueOnce(
+      new Error('transaction failure'),
+    );
+
+    await expect(
+      service.completeReset({
+        token: 'e'.repeat(43),
+        password: 'A-long-password-123',
+        sourceIp: '203.0.113.8',
+      }),
+    ).rejects.toThrow('transaction failure');
+
+    const claimId = tokens.claimPasswordResetToken.mock.calls[0][1];
+    expect(tokens.releasePasswordResetTokenClaim).toHaveBeenCalledWith(
+      createHash('sha256').update(USER_ID).digest('hex'),
+      claimId,
+    );
+    expect(tokens.consumeClaimedPasswordResetToken).not.toHaveBeenCalled();
+  });
+
+  it('does not hash or update the password when the token cannot be claimed', async () => {
+    tokens.claimPasswordResetToken.mockResolvedValue(null);
+
+    await expect(
+      service.completeReset({
+        token: 'b'.repeat(43),
+        password: 'A-long-password-123',
+        sourceIp: '203.0.113.8',
+      }),
+    ).rejects.toBeInstanceOf(PasswordResetInvalidTokenError);
+    expect(credentials.hashPassword).not.toHaveBeenCalled();
+    expect(repository.resetPassword).not.toHaveBeenCalled();
+  });
+
+  it('consumes the claimed token if the account is no longer active', async () => {
+    repository.resetPassword.mockResolvedValue(false);
+
+    await expect(
+      service.completeReset({
+        token: 'c'.repeat(43),
+        password: 'A-long-password-123',
+        sourceIp: '203.0.113.8',
+      }),
+    ).rejects.toBeInstanceOf(PasswordResetInvalidTokenError);
+    expect(tokens.consumeClaimedPasswordResetToken).toHaveBeenCalledTimes(1);
+    expect(tokens.releasePasswordResetTokenClaim).not.toHaveBeenCalled();
   });
 
   it('rejects passwords shorter than 12 characters or longer than 72 UTF-8 bytes', async () => {
@@ -181,7 +268,7 @@ describe('PasswordResetService', () => {
     }
 
     expect(security.consumeRateLimit).not.toHaveBeenCalled();
-    expect(tokens.consumePasswordResetToken).not.toHaveBeenCalled();
+    expect(tokens.claimPasswordResetToken).not.toHaveBeenCalled();
     expect(credentials.hashPassword).not.toHaveBeenCalled();
     expect(repository.resetPassword).not.toHaveBeenCalled();
   });
@@ -198,7 +285,7 @@ describe('PasswordResetService', () => {
   });
 
   it('rejects an absent, expired, superseded or already used token without changing a password', async () => {
-    tokens.consumePasswordResetToken.mockResolvedValue(null);
+    tokens.claimPasswordResetToken.mockResolvedValue(null);
 
     await expect(
       service.completeReset({

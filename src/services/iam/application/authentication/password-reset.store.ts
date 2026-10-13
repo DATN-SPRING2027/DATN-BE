@@ -1,5 +1,10 @@
 export const PASSWORD_RESET_TOKEN_STORE = Symbol('PASSWORD_RESET_TOKEN_STORE');
 
+export interface PasswordResetTokenClaim {
+  userScopeHash: string;
+  userId: string;
+}
+
 export interface PasswordResetTokenStore {
   savePasswordResetToken(
     this: void,
@@ -7,11 +12,23 @@ export interface PasswordResetTokenStore {
     tokenHash: string,
     userId: string,
     ttlSeconds: number,
-  ): Promise<void>;
-  consumePasswordResetToken(
+  ): Promise<boolean>;
+  claimPasswordResetToken(
     this: void,
     tokenHash: string,
-  ): Promise<string | null>;
+    claimId: string,
+  ): Promise<PasswordResetTokenClaim | null>;
+  consumeClaimedPasswordResetToken(
+    this: void,
+    tokenHash: string,
+    userScopeHash: string,
+    claimId: string,
+  ): Promise<boolean>;
+  releasePasswordResetTokenClaim(
+    this: void,
+    userScopeHash: string,
+    claimId: string,
+  ): Promise<void>;
   discardPasswordResetToken(
     this: void,
     userScopeHash: string,
