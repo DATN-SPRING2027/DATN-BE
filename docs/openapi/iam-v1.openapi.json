@@ -1541,7 +1541,7 @@
         "required": ["token", "password"],
         "properties": {
           "token": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$", "writeOnly": true },
-          "password": { "type": "string", "minLength": 12, "maxLength": 72, "writeOnly": true }
+          "password": { "type": "string", "description": "12 to 72 characters, limited to 72 UTF-8 bytes because passwords are stored with bcrypt.", "minLength": 12, "maxLength": 72, "writeOnly": true }
         }
       },
       "PasswordResetAccepted": {

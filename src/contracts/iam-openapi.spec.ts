@@ -114,6 +114,7 @@ describe('IAM OpenAPI contract', () => {
       additionalProperties: false,
       required: ['token', 'password'],
     });
+    expect(JSON.stringify(confirmSchema)).toContain('72 UTF-8 bytes');
   });
 
   it('documents only the three approved A-04 platform permissions and boundaries', () => {

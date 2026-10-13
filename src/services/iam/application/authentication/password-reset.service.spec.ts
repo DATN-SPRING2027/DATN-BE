@@ -9,6 +9,7 @@ import type { PasswordResetTokenStore } from './password-reset.store';
 import type { PasswordResetMailer } from './password-reset.mailer';
 import {
   PasswordResetInvalidTokenError,
+  PasswordResetPasswordPolicyError,
   PasswordResetRateLimitError,
   PasswordResetService,
 } from './password-reset.service';
@@ -69,7 +70,9 @@ describe('PasswordResetService', () => {
     const [userScope, tokenHash, userId, ttlSeconds] =
       tokens.savePasswordResetToken.mock.calls[0];
     const resetLink = mailer.sendPasswordResetEmail.mock.calls[0][1];
-    const token = new URL(resetLink).searchParams.get('token');
+    const token = new URLSearchParams(new URL(resetLink).hash.slice(1)).get(
+      'token',
+    );
     expect(userScope).toBe(createHash('sha256').update(USER_ID).digest('hex'));
     expect(userId).toBe(USER_ID);
     expect(ttlSeconds).toBe(30 * 60);
@@ -77,9 +80,11 @@ describe('PasswordResetService', () => {
     expect(tokenHash).toBe(createHash('sha256').update(token!).digest('hex'));
     expect(tokenHash).not.toBe(token);
     expect(mailer.sendPasswordResetEmail.mock.calls[0][0]).toBe(account.email);
-    expect(resetLink).toMatch(
-      /^https:\/\/app\.example\.test\/reset-password\?/,
-    );
+    const parsedResetLink = new URL(resetLink);
+    expect(parsedResetLink.origin).toBe('https://app.example.test');
+    expect(parsedResetLink.pathname).toBe('/reset-password');
+    expect(parsedResetLink.search).toBe('');
+    expect(parsedResetLink.hash).toMatch(/^#token=[A-Za-z0-9_-]{43}$/);
   });
 
   it.each<[string, AuthenticationAccount | null]>([
@@ -162,6 +167,34 @@ describe('PasswordResetService', () => {
       'A-long-password-123',
     );
     expect(repository.resetPassword).toHaveBeenCalledWith(USER_ID, 'new-hash');
+  });
+
+  it('rejects passwords shorter than 12 characters or longer than 72 UTF-8 bytes', async () => {
+    for (const password of ['é'.repeat(11), 'é'.repeat(37)]) {
+      await expect(
+        service.completeReset({
+          token: 'a'.repeat(43),
+          password,
+          sourceIp: '203.0.113.8',
+        }),
+      ).rejects.toBeInstanceOf(PasswordResetPasswordPolicyError);
+    }
+
+    expect(security.consumeRateLimit).not.toHaveBeenCalled();
+    expect(tokens.consumePasswordResetToken).not.toHaveBeenCalled();
+    expect(credentials.hashPassword).not.toHaveBeenCalled();
+    expect(repository.resetPassword).not.toHaveBeenCalled();
+  });
+
+  it('allows a 12-character password exactly at the 72-byte UTF-8 limit', async () => {
+    await expect(
+      service.completeReset({
+        token: 'a'.repeat(43),
+        password: '😀'.repeat(18),
+        sourceIp: '203.0.113.8',
+      }),
+    ).resolves.toBeUndefined();
+    expect(credentials.hashPassword).toHaveBeenCalledWith('😀'.repeat(18));
   });
 
   it('rejects an absent, expired, superseded or already used token without changing a password', async () => {

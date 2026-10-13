@@ -32,7 +32,7 @@ describe('SmtpPasswordResetMailer', () => {
 
     await mailer.sendPasswordResetEmail(
       'person@example.test',
-      'https://app.example.test/reset-password?token=opaque-token',
+      'https://app.example.test/reset-password#token=opaque-token',
     );
 
     expect(createTransport).toHaveBeenCalledWith(
@@ -72,7 +72,7 @@ describe('SmtpPasswordResetMailer', () => {
     await expect(
       mailer.sendPasswordResetEmail(
         'person@example.test',
-        'https://app.example.test/reset-password?token=opaque-token',
+        'https://app.example.test/reset-password#token=opaque-token',
       ),
     ).rejects.toThrow('SMTP_CONFIGURATION_INVALID');
     expect(createTransport).not.toHaveBeenCalled();

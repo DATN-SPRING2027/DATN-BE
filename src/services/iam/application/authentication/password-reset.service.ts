@@ -24,7 +24,8 @@ const RESET_SOURCE_LIMIT = 20;
 const RESET_EMAIL_LIMIT = 3;
 const RESET_RATE_WINDOW_SECONDS = 15 * 60;
 const RESET_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const BCRYPT_MAX_PASSWORD_BYTES = 72;
+const MAX_PASSWORD_UTF8_BYTES = 72;
+const MIN_PASSWORD_CHARACTERS = 12;
 
 export class PasswordResetRateLimitError extends Error {
   constructor() {
@@ -134,7 +135,10 @@ export class PasswordResetService {
   }
 
   async completeReset(input: CompletePasswordResetInput): Promise<void> {
-    if (Buffer.byteLength(input.password, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES)
+    if (
+      Array.from(input.password).length < MIN_PASSWORD_CHARACTERS ||
+      Buffer.byteLength(input.password, 'utf8') > MAX_PASSWORD_UTF8_BYTES
+    )
       throw new PasswordResetPasswordPolicyError();
 
     const sourceDigest = digest(input.sourceIp || 'unknown');
@@ -175,7 +179,7 @@ export class PasswordResetService {
       throw new Error('WEB_APP_URL must use HTTPS outside localhost');
 
     const resetUrl = new URL('/reset-password', baseUrl);
-    resetUrl.searchParams.set('token', token);
+    resetUrl.hash = new URLSearchParams({ token }).toString();
     return resetUrl.toString();
   }
 
