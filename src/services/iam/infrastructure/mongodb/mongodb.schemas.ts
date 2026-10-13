@@ -1,5 +1,11 @@
 import { Schema } from 'mongoose';
 import type { ServiceCollectionDefinition } from './mongodb.types';
+import {
+  membershipInvitationSchema,
+  membershipOperationSchema,
+  membershipVersion,
+  mutationFence,
+} from './membership-lifecycle.schemas';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
 
@@ -57,6 +63,7 @@ const iamSchemas: Record<string, Schema> = {
       twoFactorEnabled: { type: Boolean, default: false },
       twoFactorSecretEncrypted: String,
       lastLoginAt: Date,
+      mutationFence: mutationFence(),
     },
     { collection: 'users', timestamps: true, strict: true },
   ),
@@ -66,6 +73,7 @@ const iamSchemas: Record<string, Schema> = {
       slug: { type: String, required: true, lowercase: true, trim: true },
       plan: { type: String, enum: ['FREE', 'ENTERPRISE'], required: true },
       settings: Schema.Types.Mixed,
+      membershipAdminRevision: mutationFence(),
     },
     { collection: 'organizations', timestamps: true, strict: true },
   ),
@@ -73,6 +81,8 @@ const iamSchemas: Record<string, Schema> = {
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
       userId: { type: Schema.Types.ObjectId, required: true },
+      version: membershipVersion(),
+      mutationFence: mutationFence(),
       status: {
         type: String,
         enum: ['PENDING_INVITE', 'ACTIVE', 'SUSPENDED', 'REMOVED'],
@@ -81,29 +91,8 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'organization_memberships', timestamps: true, strict: true },
   ),
-  organization_invitations: new Schema(
-    {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      email: { type: String, required: true, lowercase: true, trim: true },
-      roleCode: {
-        type: String,
-        enum: ['ADMIN', 'TEAM_LEADER', 'MEMBER'],
-        required: true,
-      },
-      status: {
-        type: String,
-        enum: ['PENDING', 'ACCEPTED', 'REVOKED', 'EXPIRED'],
-        required: true,
-      },
-      invitedBy: { type: Schema.Types.ObjectId, required: true },
-      expiresAt: { type: Date, required: true },
-      acceptedAt: Date,
-      acceptedBy: Schema.Types.ObjectId,
-      revokedAt: Date,
-      revokedBy: Schema.Types.ObjectId,
-    },
-    { collection: 'organization_invitations', timestamps: true, strict: true },
-  ),
+  organization_invitations: membershipInvitationSchema,
+  membership_operations: membershipOperationSchema,
   projects: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
@@ -161,6 +150,7 @@ const iamSchemas: Record<string, Schema> = {
       name: { type: String, required: true },
       permissions: { type: [String], default: [] },
       isSystem: { type: Boolean, default: true },
+      mutationFence: mutationFence(),
     },
     { collection: 'roles', strict: true },
   ),
@@ -176,6 +166,7 @@ const iamSchemas: Record<string, Schema> = {
         required: true,
       },
       assignedBy: { type: Schema.Types.ObjectId, required: true },
+      mutationFence: mutationFence(),
     },
     { collection: 'role_assignments', timestamps: true, strict: true },
   ),

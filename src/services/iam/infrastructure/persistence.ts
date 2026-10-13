@@ -31,6 +31,14 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       indexes: [
         index({ organizationId: 1, userId: 1 }, { unique: true }),
         index({ userId: 1, status: 1, organizationId: 1 }),
+        index(
+          { organizationId: 1, createdAt: -1, _id: -1 },
+          { name: 'membership_list' },
+        ),
+        index(
+          { organizationId: 1, status: 1, createdAt: -1, _id: -1 },
+          { name: 'membership_status_list' },
+        ),
       ],
     },
     {
@@ -46,6 +54,35 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
         ),
         index({ email: 1, status: 1, expiresAt: 1 }),
         index({ organizationId: 1, status: 1, expiresAt: 1 }),
+        index(
+          { membershipId: 1 },
+          {
+            name: 'uniq_pending_membership_v2',
+            unique: true,
+            partialFilterExpression: { contractVersion: 2, status: 'PENDING' },
+          },
+        ),
+        index(
+          { membershipId: 1, createdAt: -1, _id: -1 },
+          { name: 'membership_invitation_history' },
+        ),
+      ],
+    },
+    {
+      name: 'membership_operations',
+      indexes: [
+        index(
+          { actorUserId: 1, organizationId: 1, keyHash: 1 },
+          { name: 'membership_operation_key', unique: true },
+        ),
+        index(
+          { expiresAt: 1 },
+          { name: 'membership_operation_expiry', expireAfterSeconds: 0 },
+        ),
+        index(
+          { organizationId: 1, actorUserId: 1, committedAt: 1 },
+          { name: 'membership_invitation_quota' },
+        ),
       ],
     },
     {
