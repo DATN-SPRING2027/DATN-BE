@@ -63,6 +63,12 @@ systemADMIN receives read/manage; PR #25 and other permissions are retained.
 Malformed/orphan/conflicting records are reported, never silently repaired.
 Any TTL index on retained Invitation/Membership records blocks preflight regardless
 of its name; the script reports the conflict and never drops it automatically.
+Historical acceptedBy/revokedBy are explicitly normalized from BSON ObjectId to
+hex before hashing/cloning. Absent/null optional metadata stays unchanged;
+present non-null references with a wrong BSON type block preflight. They do not
+become current recipient or authorization evidence. The locked runtime uses
+Mongoose8.24.4/MongoDB driver6.20.0/BSON6.10.4; BSON round-trip, structuredClone,
+JSON report round-trip and actual Mongo apply/rollback cover that supported stack.
 
 Record the original clean dry-run report and reviewed hash before apply:
 
@@ -80,6 +86,11 @@ tracking rows; larger backfills require a reviewed follow-up, not partial apply.
 Index DDL precedes the transaction and is **not rolled back with metadata**. On
 failure, preserve data/indexes, inspect the cause, re-run dry-run and review the
 new hash before retry. Never advertise DDL+metadata as one atomic migration.
+CLI stderr includes only a known migration error code from an explicit allowlist;
+unknown/driver errors use MEMBERSHIP_LIFECYCLE_MIGRATION_FAILED without raw text or
+stack. POST_APPLY_VERIFICATION_FAILED_FORWARD_RECOVERY_REQUIRED distinguishes a
+post-commit verification failure: inspect the target and use forward recovery,
+not an assumption that metadata rolled back. Exit status remains1 on failure.
 
 Rollback requires the saved **original dry-run**, a newly reviewed current hash,
 writers stopped, unchanged projected business/tracking/permission fingerprints,

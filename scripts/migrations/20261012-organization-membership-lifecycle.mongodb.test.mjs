@@ -102,14 +102,28 @@ integration(
           roleCode: 'MEMBER',
         },
       ]);
-      await db.collection('organization_invitations').insertOne({
-        organizationId: org,
-        email: 'unknown@example.test',
-        roleCode: 'MEMBER',
-        status: 'REVOKED',
-        expiresAt: new Date('2026-01-08T00:00:00.000Z'),
-        createdAt: at,
-      });
+      await db.collection('organization_invitations').insertMany([
+        {
+          organizationId: org,
+          email: 'unknown@example.test',
+          roleCode: 'MEMBER',
+          status: 'REVOKED',
+          revokedAt: at,
+          revokedBy: user,
+          expiresAt: new Date('2026-01-08T00:00:00.000Z'),
+          createdAt: at,
+        },
+        {
+          organizationId: org,
+          email: 'member@example.test',
+          roleCode: 'MEMBER',
+          status: 'ACCEPTED',
+          acceptedAt: at,
+          acceptedBy: target,
+          expiresAt: new Date('2026-01-08T00:00:00.000Z'),
+          createdAt: at,
+        },
+      ]);
       await db
         .collection('sentinel')
         .insertOne({ _id: 'preserve', privateData: 'unchanged' });
@@ -139,6 +153,47 @@ integration(
           ...options,
         });
       let reviewed = await run();
+      await t.test(
+        'malformed legacy history actor BSON types block apply and preserve records',
+        async () => {
+          for (const field of ['acceptedBy', 'revokedBy']) {
+            const source = await db
+              .collection('organization_invitations')
+              .findOne({ [field]: { $type: 'objectId' } });
+            try {
+              await db
+                .collection('organization_invitations')
+                .updateOne(
+                  { _id: source._id },
+                  { $set: { [field]: source[field].toHexString() } },
+                );
+              const blocked = await run();
+              assert.equal(blocked.clean, false);
+              assert.ok(
+                blocked.issues.includes(
+                  `INVITATION_ACTOR_REFERENCE_INVALID:${source._id}:${field}`,
+                ),
+              );
+              await assert.rejects(
+                run({
+                  mode: 'apply',
+                  writersStopped: true,
+                  expectedReportSha256: blocked.reportSha256,
+                }),
+                /MIGRATION_PREFLIGHT_BLOCKED/,
+              );
+            } finally {
+              await db
+                .collection('organization_invitations')
+                .updateOne(
+                  { _id: source._id },
+                  { $set: { [field]: source[field] } },
+                );
+            }
+            assert.deepEqual(await read(), before);
+          }
+        },
+      );
       await t.test(
         'unexpected history TTL blocks apply without dropping the index or changing records',
         async () => {
@@ -432,7 +487,7 @@ integration(
               mode: 'rollback',
               writersStopped: true,
               expectedReportSha256: current.reportSha256,
-              rollbackReport: reviewed,
+              rollbackReport: JSON.parse(JSON.stringify(reviewed)),
             }),
             /ROLLBACK/,
           );
@@ -444,7 +499,7 @@ integration(
             mode: 'rollback',
             writersStopped: true,
             expectedReportSha256: current.reportSha256,
-            rollbackReport: reviewed,
+            rollbackReport: JSON.parse(JSON.stringify(reviewed)),
           });
           assert.deepEqual(await read(), before);
           current = await run();
@@ -452,7 +507,7 @@ integration(
             mode: 'rollback',
             writersStopped: true,
             expectedReportSha256: current.reportSha256,
-            rollbackReport: reviewed,
+            rollbackReport: JSON.parse(JSON.stringify(reviewed)),
           });
           assert.deepEqual(await read(), before);
         },

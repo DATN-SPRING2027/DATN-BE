@@ -16,6 +16,36 @@ import {
   planMembershipLifecycle,
 } from './organization-membership-lifecycle.plan.mjs';
 const { MongoClient, ObjectId, BSON } = mongoose.mongo;
+const safeFailureCodes = new Set([
+  'ROLLBACK_REPORT_INVALID',
+  'ROLLBACK_AFTER_V2_USAGE_FORBIDDEN',
+  'ROLLBACK_NEW_RECORDS_REQUIRE_RECOVERY',
+  'ROLLBACK_TRACKING_CHANGED',
+  'ROLLBACK_PERMISSIONS_CHANGED',
+  'ROLLBACK_BUSINESS_OR_AUTHORITY_CHANGED',
+  'ROLLBACK_RECORDS_MISSING',
+  'IAM_TARGET_REQUIRED_NO_LEGACY_FALLBACK',
+  'INVALID_MIGRATION_MODE',
+  'IAM_WRITERS_MUST_BE_STOPPED',
+  'REVIEWED_REPORT_HASH_REQUIRED',
+  'REVIEWED_REPORT_HASH_CHANGED',
+  'MIGRATION_PREFLIGHT_BLOCKED',
+  'MONGO7_WRITABLE_REPLICA_SET_REQUIRED',
+  'REVIEWED_REPORT_HASH_CHANGED_DURING_APPLY',
+  'TRACKING_CAS_CONFLICT',
+  'ADMIN_PERMISSION_CAS_CONFLICT',
+  'ROLLBACK_CAS_CONFLICT',
+  'POST_APPLY_VERIFICATION_FAILED_FORWARD_RECOVERY_REQUIRED',
+  'POST_ROLLBACK_VERIFICATION_FAILED',
+  'INVALID_ARGUMENTS',
+]);
+export function membershipLifecycleFailureMessage(error) {
+  const code =
+    error instanceof Error && safeFailureCodes.has(error.message)
+      ? error.message
+      : 'MEMBERSHIP_LIFECYCLE_MIGRATION_FAILED';
+  return `Membership lifecycle migration failed [${code}]; verify IAM target, writers stopped, clean reviewed hash and recovery prerequisites. DDL or metadata may already be committed; inspect the target before retry. No credentials or documents logged.`;
+}
 const projections = {
   users: ['status', 'mutationFence'],
   organizations: ['membershipAdminRevision'],
@@ -56,7 +86,7 @@ const projections = {
   ],
 };
 const names = [...Object.keys(projections), 'membership_operations'];
-function normalizedRow(row) {
+export function normalizedRow(row) {
   const result = {};
   for (const [key, value] of Object.entries(row)) {
     if (key === 'email') {
@@ -66,7 +96,12 @@ function normalizedRow(row) {
         value === value.trim().toLowerCase() &&
         value.length <= 254 &&
         /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-    } else if (key === '_id' || key.endsWith('Id'))
+    } else if (
+      key === '_id' ||
+      key.endsWith('Id') ||
+      key === 'acceptedBy' ||
+      key === 'revokedBy'
+    )
       result[key] =
         value instanceof ObjectId
           ? value.toHexString()
@@ -426,10 +461,8 @@ if (
         : undefined,
     });
     console.log(JSON.stringify(result, null, 2));
-  } catch {
-    console.error(
-      'Membership lifecycle migration failed; verify IAM target, writers stopped, clean reviewed hash and recovery prerequisites. No credentials or documents logged.',
-    );
+  } catch (error) {
+    console.error(membershipLifecycleFailureMessage(error));
     process.exitCode = 1;
   }
 }

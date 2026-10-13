@@ -198,6 +198,23 @@ test('refuses a live operation cache while a tracking/permission/index migration
     ),
   );
 });
+for (const field of ['acceptedBy', 'revokedBy'])
+  test(`fails closed for a malformed optional Invitation ${field} reference`, () => {
+    const snapshot = fixture();
+    snapshot.rows.organization_invitations[0][field] = 'INVALID_BSON_OBJECTID';
+    const invalid = planMembershipLifecycle(snapshot);
+    assert.equal(invalid.clean, false);
+    assert.ok(
+      invalid.issues.some(
+        (issue) =>
+          issue === `INVITATION_ACTOR_REFERENCE_INVALID:${id(6)}:${field}`,
+      ),
+    );
+    snapshot.rows.organization_invitations[0][field] = id(1);
+    assert.equal(planMembershipLifecycle(snapshot).clean, true);
+    snapshot.rows.organization_invitations[0][field] = null;
+    assert.equal(planMembershipLifecycle(snapshot).clean, true);
+  });
 for (const collection of [
   'organization_invitations',
   'organization_memberships',

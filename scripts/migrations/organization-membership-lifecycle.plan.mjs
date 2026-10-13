@@ -265,6 +265,11 @@ export function planMembershipLifecycle(snapshot) {
     legacyPendingInvitations = [];
   for (const invite of rows.organization_invitations) {
     const profile = invite.contractVersion ?? 1;
+    for (const field of ['acceptedBy', 'revokedBy'])
+      if (own(invite, field) && invite[field] !== null && !id(invite[field]))
+        issues.push(
+          `INVITATION_ACTOR_REFERENCE_INVALID:${invite._id}:${field}`,
+        );
     if (
       !organizations.has(invite.organizationId) ||
       !invite.emailNormalized ||
