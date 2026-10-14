@@ -1,104 +1,54 @@
-# DATN-254 — selected Team metadata and read-only preflight
+# DATN-254 — proposed Team foundation preflight (read-only)
 
-The [DATN-89 decision table](https://trankimthang0207.atlassian.net/browse/DATN-89)
-on 2026-10-14 selects TQ-01–04 and the version contract in TQ-09, with the
-remaining gates preserved by [Document PR #33](https://github.com/DATN-SPRING2027/Document/pull/33)
-(merged `2b737e862e6eb4169d342750324bef15808128a2`). Exact field/lifecycle text is
-in [R2 comment 10141](https://trankimthang0207.atlassian.net/browse/DATN-89?focusedCommentId=10141),
-sections 3–4. This DB slice is based on BE main
-`e6849212093b8ab38da63c0a43e5f50de4277d40` (PR #32).
+As of 2026-10-14, [DATN-89 comment 10151](https://trankimthang0207.atlassian.net/browse/DATN-89?focusedCommentId=10151) states that TQ-01–10 remain `PROPOSED`; no Team policy/implementation sign-off is recorded. `DATN-89` being Done and the merged [Document PR #33](https://github.com/DATN-SPRING2027/Document/pull/33) complete the decision-gap deliverable, not policy approval. This PR does not enable the proposed Team schema at runtime.
 
-## Persistence contract
+This slice keeps the existing Team Mongoose schema and adds a bounded, read-only inventory that compares existing IAM records with candidate metadata rules from [DATN-89 comment 10141, §§3–4](https://trankimthang0207.atlassian.net/browse/DATN-89?focusedCommentId=10141). The report is evidence for later owner review only. A clean report means the scanned data matches those candidate rules; it does **not** mean the rules are approved, the schema is enabled, or rollout is ready. The report includes `assessmentBasis.policyStatus: PROPOSED`, `runtimeSchemaEnforced: false`, `rolloutReady: false`, and `applySupported: false`.
 
-Owner: IAM, logical database `continuum_iam`, collection `teams`.
+## Candidate rules assessed by the report
 
-- Immutable BSON ObjectId `organizationId` and `projectId`; immutable code,
-  trimmed and ASCII uppercased, matching `^[A-Z][A-Z0-9_-]{1,31}$`.
-- Required name, NFC + trim, 1–200 Unicode code points, no C0/DEL controls;
-  names are not unique. Description is explicitly nullable (including an empty
-  string), at most 2,000 code points, preserves whitespace, permits tab/LF,
-  and rejects other C0/DEL.
-- Required explicit `ACTIVE`/`ARCHIVED` and integer version >=1. There is no
-  lifecycle/version default, including on hydration. Future create commands
-  must explicitly supply ACTIVE/version 1 and convert omitted description to
-  null; this change adds no create command.
-- Explicit nullable `archivedAt`, `archivedBy`, and internal `archivedReason`.
-  ARCHIVED requires date/actor and reason (trimmed, 1–500 code points, no
-  C0/DEL); ACTIVE requires null archive metadata. Timestamp storage remains
-  BSON Date under the existing Mongoose timestamps pattern.
-- Preserve the existing full unique `(organizationId, projectId, code)` index,
-  including archived records. No new query index or cardinality cap.
+These remain proposals pending approval by the appropriate owners:
 
-Document validation and Mongoose immutable fields are persistence safeguards;
-they do not prove raw-writer coverage, cross-document parent checks, command
-CAS, audit atomicity, or authorization. Query updates can strip immutable
-fields; HTTP rejection/error semantics remain in the conditional API contract.
+- Organization and Project parents are BSON ObjectIds; each Team has one Project parent, and the Project belongs to the same Organization.
+- Name is NFC + trimmed, 1–200 Unicode code points, with no C0/DEL controls. Name is not unique.
+- Code is trimmed and ASCII uppercased, matches `^[A-Z][A-Z0-9_-]{1,31}$`, and is unique by `(organizationId, projectId, code)` including archived rows.
+- Description is nullable, preserves whitespace, allows tab/LF, and is at most 2,000 Unicode code points.
+- Candidate lifecycle is `ACTIVE`/`ARCHIVED`; candidate version is an explicit safe integer >=1. Archived rows require date, actor and a trimmed 1–500 code-point reason; active rows require explicit null archive metadata.
 
-## Preflight, compatibility and recovery
+No Team schema, API, role/grant, membership, generation, command-result, audit, or production write behavior is added. The existing full unique code index remains defined in the IAM persistence inventory and is only observed by this preflight; the script does not create, repair, or drop indexes.
 
-`20261014-team-foundation-preflight.mjs` is a new, bounded, **read-only** data
-script. Historical migrations are unchanged. It reads only Team metadata,
-Organization IDs, Project IDs/Organization parents, and collection/index
-inventory from IAM. It emits counts, issues, index drift and SHA-256 fingerprints
-without names, descriptions, archive reasons, credentials or URIs.
+## Preflight and safety
 
-It rejects missing/invalid state, version, nullable metadata, dates and IDs;
-noncanonical values; missing/mismatched parents; stored or normalized code
-collisions; views; non-simple collation; and absent/drifted full unique indexes.
-It never backfills ACTIVE, normalizes, deduplicates, deletes or repairs indexes.
-Even a clean report has `applySupported:false` and no proposed document writes.
-Counts/fingerprints are an inventory across reads, **not** an atomic snapshot or
-cutover/all-writer proof. Run with an explicitly authorized read-only target:
+`20261014-team-foundation-preflight.mjs` reads only Team metadata, Organization IDs, Project IDs/Organization parents, and collection/index inventory from `continuum_iam`. It reports counts, issue codes/IDs, index drift and SHA-256 fingerprints without names, descriptions, archive reasons, credentials or URIs. The scan is bounded to 100,000 documents, 64 MiB of scanned EJSON, 32 MiB of report output, and 512 MiB of V8 heap. Reads span multiple queries and are not an atomic snapshot or all-writer/cutover proof.
+
+Run only against an explicitly authorized read-only target:
 
 ```sh
 node scripts/migrations/20261014-team-foundation-preflight.mjs --dry-run --database continuum_iam
 ```
 
-Supply `MONGODB_URI` through the authorized environment; no `.env` is loaded
-implicitly. Exit 0: clean inventory; 2: conflicts/mapping required; 1: invalid
-arguments, target, connection or scan failure. `--apply` fails before connection.
-Do not run against a shared database without its separate authorization.
+Supply `MONGODB_URI` through the authorized environment; no `.env` is loaded implicitly. Exit 0 means no conflicts against the candidate rules in this scan; exit 2 means conflicts/mapping evidence is present; exit 1 means invalid arguments, target, connection or scan failure. `--apply` fails before connection. Do not run against a shared database without separate authorization.
 
-Legacy Teams may lack the new fields. Such records remain untouched and fail
-the new document contract: rollout requires an owner-selected mapping/recovery
-plan, reviewed clean inventory, verified backup and separately authorized
-cutover. This branch supplies no guessed mapping or writable migration. Dry-run
-is repeatable and needs no rollback because it changes neither data nor DDL.
-Code rollback preserves stored data; do not use older validation to enable
-unreviewed Team writes or erase archive/version fields.
+The preflight never backfills `ACTIVE`, normalizes, deduplicates, deletes or repairs indexes. Legacy Teams remain untouched. Any future schema enablement or data migration requires approved contract rules, owner-selected mapping/recovery, reviewed evidence, verified backup, and separately authorized rollout. This read-only change has no data/DDL impact and needs no rollback.
 
-## Verification and remaining dependencies
+## Verification and remaining gates
 
 ```sh
-npm test -- --runInBand --runTestsByPath src/services/iam/infrastructure/mongodb/team-foundation.schema.spec.ts
 node --test scripts/migrations/team-foundation.plan.test.mjs
 npm run check
 ```
 
-`team-foundation.mongodb.test.mjs` requires opt-in
-`DATN254_MONGODB_TEST=true`, URI exactly
-`mongodb://127.0.0.1:28954/?directConnection=true`, MongoDB 7, and a fresh
-disposable `continuum_iam.__datn254_fixture` marker `{_id:'owner',token:...}`
-matching `DATN254_FIXTURE_TOKEN`. Its setup/test writes and deliberate index
-drift are confined to that fixture. It proves scoped uniqueness (including
-archived conflicts), immutable-field preservation, repeatable clean/conflict
-reports and unchanged documents/indexes after inspection. It tests no Team API,
-transaction, audit, provider or parent revocation race.
+`team-foundation.mongodb.test.mjs` is opt-in through `DATN254_MONGODB_TEST=true`; it requires URI exactly `mongodb://127.0.0.1:28954/?directConnection=true`, MongoDB 7, and a fresh disposable `continuum_iam.__datn254_fixture` marker `{_id:'owner',token:...}` matching `DATN254_FIXTURE_TOKEN`. Fixture setup writes and deliberate index drift are confined to that disposable fixture. It verifies the preflight leaves rows/indexes unchanged, flags candidate-rule conflicts, and observes retained scoped uniqueness. It does not enable or test runtime Team schema/API behavior, transactions, audit, providers, or parent races.
 
-No TeamMembership, admission/generation, Role/grant, command-result persistence,
-audit event/index, Gateway/BFF, OpenAPI or frontend change is included. TQ-05,
-06, 07, 08, 09 readiness and TQ-10 keep dependent APIs disabled. After this DB
-PR is reviewed/merged, DATN-257 is next, subject to its exact read contract and
-providers; mutations DATN-255/256/258 remain gated. DATN-92/91 retain their scope.
+TQ-01–10 remain proposed; dependent APIs and mutations stay gated on owner approval and their DB/provider/all-writer/audit/transport evidence. DATN-257 and DATN-255/256/258 are not enabled by this preflight. DATN-92 Membership BE and DATN-91 FE remain separate scopes. DATN-259 tests can continue independently.
 
 Pending team notification (prepare only):
 
 ```text
 [DATABASE CHANGE]
 Collection/Entity: continuum_iam.teams
-Thay đổi: selected metadata validation, immutable parent/code, explicit lifecycle/version/archive metadata; existing unique index retained.
-Ảnh hưởng dữ liệu: legacy missing/invalid fields block rollout; no inferred backfill, normalization or dedupe.
-Migration: 20261014-team-foundation-preflight.mjs, read-only dry-run; mapping/apply/cutover deferred, no shared DB execution.
-PR type: Database
-PR: pending explicit requester instruction to create PR
+Thay đổi: read-only inventory against proposed Team Foundation metadata rules; runtime schema unchanged; no DDL or document writes.
+Ảnh hưởng dữ liệu: none from this script; conflicts are reported without inferred backfill, normalization or dedupe.
+Migration: 20261014-team-foundation-preflight.mjs, explicitly targeted dry-run only; no apply/shared DB execution.
+PR type: Database preflight
+PR: https://github.com/DATN-SPRING2027/DATN-BE/pull/33
 ```

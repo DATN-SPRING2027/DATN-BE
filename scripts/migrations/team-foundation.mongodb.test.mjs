@@ -30,7 +30,7 @@ test('apply and ambiguous target are rejected before any connection', async () =
 });
 
 integration(
-  'MongoDB7 Team metadata, retained uniqueness and read-only preflight',
+  'MongoDB7 proposed-contract preflight is read-only and preserves scoped uniqueness',
   async () => {
     const uri = process.env.DATN254_TEST_URI;
     assert.equal(uri, 'mongodb://127.0.0.1:28954/?directConnection=true');
@@ -71,11 +71,11 @@ integration(
       const definition = IAM_PERSISTENCE.collections.find(
         (item) => item.name === 'teams',
       );
-      const Team = connection.model(
+      const TeamIndexes = connection.model(
         'TeamFoundationDisposableTest',
         createCollectionSchema(definition),
       );
-      await Team.createIndexes();
+      await TeamIndexes.createIndexes();
       const input = {
         organizationId: org,
         projectId: project,
@@ -88,9 +88,9 @@ integration(
         archivedBy: null,
         archivedReason: null,
       };
-      const first = await Team.create(input);
+      await db.collection('teams').insertOne(input);
       await assert.rejects(
-        Team.create({
+        db.collection('teams').insertOne({
           ...input,
           status: 'ARCHIVED',
           archivedAt: new Date(),
@@ -102,17 +102,9 @@ integration(
           JSON.stringify(error.keyPattern) ===
             JSON.stringify({ organizationId: 1, projectId: 1, code: 1 }),
       );
-      await Team.create({ ...input, projectId: otherProject });
-      await Team.updateOne(
-        { _id: first._id },
-        { $set: { code: 'NEW', projectId: otherProject } },
-        { runValidators: true },
-      );
-      const unchanged = await db
+      await db
         .collection('teams')
-        .findOne({ _id: first._id });
-      assert.equal(unchanged.code, 'EX');
-      assert.ok(unchanged.projectId.equals(project));
+        .insertOne({ ...input, projectId: otherProject });
       const state = async () => ({
         rows: await db.collection('teams').find().sort({ _id: 1 }).toArray(),
         indexes: await db.collection('teams').listIndexes().toArray(),
@@ -120,6 +112,8 @@ integration(
       const before = await state();
       const clean = await inspectTeamFoundation(db, 'synthetic-fixture');
       assert.equal(clean.clean, true);
+      assert.equal(clean.assessmentBasis.policyStatus, 'PROPOSED');
+      assert.equal(clean.assessmentBasis.rolloutReady, false);
       assert.deepEqual(await state(), before);
       assert.deepEqual(
         await inspectTeamFoundation(db, 'synthetic-fixture'),

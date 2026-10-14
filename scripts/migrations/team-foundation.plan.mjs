@@ -106,6 +106,12 @@ export function planTeamFoundation(snapshot) {
     migration: '20261014-team-foundation-preflight-v1',
     databaseName: snapshot.databaseName,
     targetFingerprint: snapshot.targetFingerprint,
+    assessmentBasis: {
+      source: 'DATN-89 Team Foundation proposal',
+      policyStatus: 'PROPOSED',
+      runtimeSchemaEnforced: false,
+      rolloutReady: false,
+    },
     sourceSha256: lifecycleHash(
       BSON.EJSON.serialize(snapshot, { relaxed: false }),
     ),

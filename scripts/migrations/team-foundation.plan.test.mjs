@@ -52,6 +52,12 @@ test('clean metadata produces a deterministic read-only report', () => {
   const before = mongoose.mongo.BSON.EJSON.stringify(input);
   const report = planTeamFoundation(input);
   assert.equal(report.clean, true);
+  assert.deepEqual(report.assessmentBasis, {
+    source: 'DATN-89 Team Foundation proposal',
+    policyStatus: 'PROPOSED',
+    runtimeSchemaEnforced: false,
+    rolloutReady: false,
+  });
   assert.equal(report.applySupported, false);
   assert.deepEqual(report.proposedDocumentWrites, []);
   assert.equal(mongoose.mongo.BSON.EJSON.stringify(input), before);
