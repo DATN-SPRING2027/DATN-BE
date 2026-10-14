@@ -205,8 +205,18 @@ describe('IAM OpenAPI contract', () => {
     const leaders = contract.paths['/api/v1/iam/projects/{projectId}/leaders'];
     expect(visibility?.description).toContain('project.visibility.manage');
     expect(visibility?.description).toContain('PRIVATE to PUBLIC');
+    expect(visibility?.description).toContain('PUBLIC to PRIVATE');
+    expect(
+      contract.paths['/api/v1/iam/projects/{projectId}/visibility'].get
+        ?.responses['403'],
+    ).toEqual({ $ref: '#/components/responses/Forbidden' });
+    expect(
+      contract.components.schemas.MakeProjectPublicRequest.properties,
+    ).toEqual({
+      visibility: { $ref: '#/components/schemas/ProjectVisibility' },
+    });
     expect(visibility?.description).toContain(
-      'already-PUBLIC active Project returns 409 after authorization succeeds',
+      'current visibility returns 409 after authorization succeeds',
     );
     expect(visibility?.responses['409']).toEqual({
       $ref: '#/components/responses/Conflict',

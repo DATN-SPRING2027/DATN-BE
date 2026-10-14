@@ -18,9 +18,11 @@ const replacementId = 'eeeeeeeeeeeeeeeeeeeeeeee';
 
 function fixture() {
   const auth = { getCurrentIdentity: jest.fn().mockResolvedValue(actor) };
-  const makePublic = jest.fn().mockResolvedValue({ visibility: 'PUBLIC' });
+  const changeVisibility = jest
+    .fn()
+    .mockResolvedValue({ visibility: 'PUBLIC' });
   const access = {
-    makePublic,
+    changeVisibility,
     listMembers: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
     addMember: jest.fn().mockResolvedValue({ id: 'membership' }),
     removeMember: jest.fn().mockResolvedValue(undefined),
@@ -34,13 +36,14 @@ function fixture() {
     auth as unknown as AuthenticationApplicationService,
     access as unknown as ProjectAccessService,
   );
-  return { auth, access, makePublic, setHeader, response, controller };
+  return { auth, access, changeVisibility, setHeader, response, controller };
 }
 
 describe('ProjectAccessController contract validation', () => {
   it('guards each enabled route with its exact V1 permission and exposes no role-change route', () => {
     const expected = {
-      makePublic: 'project.visibility.manage',
+      changeVisibility: 'project.visibility.manage',
+      getVisibilityAccess: 'project.visibility.manage',
       listMembers: 'project.members.list',
       addMember: 'project.members.add',
       removeMember: 'project.members.remove',
@@ -69,29 +72,53 @@ describe('ProjectAccessController contract validation', () => {
     }
   });
 
-  it('allows only the approved PRIVATE to PUBLIC request shape', async () => {
-    const { controller, makePublic, setHeader, response } = fixture();
-    await controller.makePublic(
-      undefined,
-      undefined,
-      { visibility: 'PUBLIC' },
-      response,
-      projectId,
-    );
-    expect(makePublic.mock.calls).toEqual([[actor, projectId]]);
-    expect(setHeader.mock.calls).toContainEqual(['Cache-Control', 'no-store']);
-
-    for (const body of [
-      { visibility: 'PRIVATE' },
-      { visibility: 'PUBLIC', organizationId: actor.organizationId },
-      {},
-    ]) {
-      await expect(
-        controller.makePublic(undefined, undefined, body, response, projectId),
-      ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    }
-    expect(makePublic.mock.calls).toHaveLength(1);
+  it('checks access through a read-only guarded route without mutation', () => {
+    const { controller, response, setHeader, access } = fixture();
+    expect(controller.getVisibilityAccess(response)).toEqual({
+      canManageVisibility: true,
+    });
+    expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(access.changeVisibility).not.toHaveBeenCalled();
   });
+
+  it.each(['PUBLIC', 'PRIVATE'])(
+    'accepts a visibility-only %s request',
+    async (visibility) => {
+      const { controller, changeVisibility, setHeader, response } = fixture();
+      await controller.changeVisibility(
+        undefined,
+        undefined,
+        { visibility },
+        response,
+        projectId,
+      );
+      expect(changeVisibility.mock.calls).toEqual([
+        [actor, projectId, visibility],
+      ]);
+      expect(setHeader.mock.calls).toContainEqual([
+        'Cache-Control',
+        'no-store',
+      ]);
+
+      for (const body of [
+        { visibility: 'INTERNAL' },
+        { visibility: null },
+        { visibility: 'PUBLIC', organizationId: actor.organizationId },
+        {},
+      ]) {
+        await expect(
+          controller.changeVisibility(
+            undefined,
+            undefined,
+            body,
+            response,
+            projectId,
+          ),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      }
+      expect(changeVisibility.mock.calls).toHaveLength(1);
+    },
+  );
 
   it('accepts scoped member pagination and rejects unsupported status values', async () => {
     const { controller, access, response } = fixture();

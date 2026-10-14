@@ -270,7 +270,12 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
         restore: () => Promise<unknown>,
       ) => {
         const gate = pauseNextAuthorizationFence(connection, collection);
-        const pending = repository.makePublic(organization, admin, project);
+        const pending = repository.changeVisibility(
+          organization,
+          admin,
+          project,
+          'PUBLIC',
+        );
         try {
           await gate.reached;
           await revoke();
@@ -331,24 +336,56 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
           ),
       );
 
-      const published = await repository.makePublic(
+      const published = await repository.changeVisibility(
         organization,
         admin,
         project.toUpperCase(),
+        'PUBLIC',
       );
       expect(published.visibility).toBe('PUBLIC');
       expect(published.id).toBe(project);
       await expect(
-        repository.makePublic(organization, admin, project),
+        repository.changeVisibility(organization, admin, project, 'PUBLIC'),
       ).rejects.toMatchObject({ status: 409 });
       await expect(
-        repository.makePublic(organization, ordinaryMember, project),
+        repository.changeVisibility(
+          organization,
+          ordinaryMember,
+          project,
+          'PUBLIC',
+        ),
       ).rejects.toMatchObject({ status: 403 });
       expect(
         await auditDb
           .collection('audit_logs_iam')
           .countDocuments({ action: 'PROJECT_VISIBILITY_CHANGED' }),
       ).toBe(1);
+      await expect(
+        repository.changeVisibility(
+          organization,
+          ordinaryMember,
+          project,
+          'PRIVATE',
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      const privatized = await repository.changeVisibility(
+        organization,
+        admin,
+        project,
+        'PRIVATE',
+      );
+      expect(privatized.visibility).toBe('PRIVATE');
+      expect(
+        (await projectDocument.findOne({ _id: projectId }))?.visibility,
+      ).toBe('PRIVATE');
+      await expect(
+        repository.changeVisibility(organization, admin, project, 'PRIVATE'),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        await auditDb
+          .collection('audit_logs_iam')
+          .countDocuments({ action: 'PROJECT_VISIBILITY_CHANGED' }),
+      ).toBe(2);
       await repository.assignLeader(organization, admin, project, firstLeader);
       const added = await repository.addMember(
         organization,
@@ -767,7 +804,7 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
       ).not.toBeNull();
       const audit = auditDb.collection('audit_logs_iam');
       for (const [action, count] of [
-        ['PROJECT_VISIBILITY_CHANGED', 1],
+        ['PROJECT_VISIBILITY_CHANGED', 2],
         ['PROJECT_MEMBER_ADDED', 1],
         ['PROJECT_LEADER_ASSIGNED', 1],
         ['PROJECT_LEADER_CHANGED', 2],
@@ -776,7 +813,7 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
       ] as const) {
         expect(await audit.countDocuments({ action })).toBe(count);
       }
-      expect(await audit.countDocuments()).toBe(7);
+      expect(await audit.countDocuments()).toBe(8);
     } finally {
       if (
         createdDatabase &&
