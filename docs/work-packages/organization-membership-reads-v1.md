@@ -46,6 +46,16 @@ does not apply shared data. Missing version/dates or malformed projected metadat
 returns503 IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE, rather than fabricating a valid
 DTO. This work does not authorize shared migration apply or writer cutover.
 
+PR28 review correction (2026-10-14): validate projected email with the existing
+IAM class-validator email validator; malformed stored strings return the same
+sanitized 503. Recognized MongoDB network/server-selection/client-closed/operation
+timeouts (including server code50 MaxTimeMSExpired) and disconnected connections
+return dependency503. Unexpected application/query errors remain sanitized500.
+The HTTP fault-injection suite covers authority/list/detail failures separately;
+real MongoDB tests cover malformed and valid stored emails on list/detail.
+Owning Document read-error clarification is prepared on its separate review
+branch; the GET500 text correction changes no lifecycle/authorization decision.
+
 Existing invitation reads/writes/accept, sessions, grants and audit behavior are
 unchanged. Invitation wire changes need coordinated A8 cutover and remain a
 separate deliverable. Membership invite/accept/suspend/remove/resume/reinvite/

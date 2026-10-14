@@ -389,6 +389,33 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
     );
     expect((response.body as { details: unknown }).details).toEqual({});
   });
+  it.each(['not-an-email', ''])(
+    'rejects stored invalid email %j on list and detail',
+    async (email) => {
+      await connection!
+        .collection('users')
+        .updateOne({ _id: memberUserIds[0] }, { $set: { email } });
+      for (const path of [url, `${url}/${String(memberIds[0])}`]) {
+        const response = await get(path).expect(503);
+        expect(response.body).toMatchObject({
+          code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          details: {},
+        });
+        expect(response.headers['cache-control']).toBe('no-store');
+        expect(JSON.stringify(response.body)).not.toContain('not-an-email');
+      }
+    },
+  );
+  it('preserves a valid tagged stored email on list and detail', async () => {
+    const email = 'Mixed.Case+tag@sub.example.test';
+    await connection!
+      .collection('users')
+      .updateOne({ _id: memberUserIds[0] }, { $set: { email } });
+    for (const path of [url, `${url}/${String(memberIds[0])}`]) {
+      const response = await get(path).expect(200);
+      expect(JSON.stringify(response.body)).toContain(email);
+    }
+  });
   it('uses existing scoped sort indexes with no blocking sort or global scan', async () => {
     for (const status of [undefined, 'REMOVED']) {
       const plan = await connection!

@@ -1283,19 +1283,19 @@
             }
           },
           "401": {
-            "$ref": "#/components/responses/Unauthorized"
+            "$ref": "#/components/responses/C02MembershipUnauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "$ref": "#/components/responses/C02MembershipForbidden"
           },
           "404": {
-            "$ref": "#/components/responses/NotFound"
+            "$ref": "#/components/responses/C02MembershipNotFound"
           },
           "422": {
-            "$ref": "#/components/responses/ValidationFailed"
+            "$ref": "#/components/responses/C02MembershipValidationFailed"
           },
           "500": {
-            "description": "Required persistence/audit/result/outbox failure; no success ack and transaction rollback.",
+            "description": "Unexpected internal failure while reading Organization Memberships.",
             "headers": {
               "Cache-Control": {
                 "schema": {
@@ -1398,19 +1398,19 @@
             }
           },
           "401": {
-            "$ref": "#/components/responses/Unauthorized"
+            "$ref": "#/components/responses/C02MembershipUnauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "$ref": "#/components/responses/C02MembershipForbidden"
           },
           "404": {
-            "$ref": "#/components/responses/NotFound"
+            "$ref": "#/components/responses/C02MembershipNotFound"
           },
           "422": {
-            "$ref": "#/components/responses/ValidationFailed"
+            "$ref": "#/components/responses/C02MembershipValidationFailed"
           },
           "500": {
-            "description": "Required persistence/audit/result/outbox failure; no success ack and transaction rollback.",
+            "description": "Unexpected internal failure while reading Organization Memberships.",
             "headers": {
               "Cache-Control": {
                 "schema": {
@@ -1527,6 +1527,78 @@
       }
     },
     "responses": {
+      "C02MembershipUnauthorized": {
+        "description": "Authentication is missing, invalid, expired or revoked.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "C02MembershipForbidden": {
+        "description": "The authenticated caller lacks permission for the requested scope.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "C02MembershipNotFound": {
+        "description": "The addressed resource does not exist or is not visible to the caller.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "C02MembershipValidationFailed": {
+        "description": "The JSON request is understood but violates field or business validation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
       "RefreshInvalid": {
         "description": "Generic invalid refresh credential, including known revoked-token replay. No replacement cookies.",
         "content": {

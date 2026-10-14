@@ -4,7 +4,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
+import { isEmail } from 'class-validator';
 import {
+  ConnectionStates,
+  mongo,
   Types,
   type Connection,
   type Model,
@@ -87,6 +90,7 @@ function summary(row: MembershipDocument): OrganizationMembershipSummary {
     (!(user._id instanceof Types.ObjectId) ||
       typeof user.fullName !== 'string' ||
       typeof user.email !== 'string' ||
+      !isEmail(user.email) ||
       !['ACTIVE', 'SUSPENDED', 'PENDING_INVITE'].includes(user.status))
   )
     unavailable();
@@ -126,59 +130,58 @@ export class MongoOrganizationMembershipReadRepository implements OrganizationMe
     )
       return false;
     const scope = new Types.ObjectId(organizationId);
-    const [evidence] = await this.model('users')
-      .aggregate<{ assignments: { permissions?: unknown }[] }>([
-        { $match: { _id: new Types.ObjectId(actorId), status: 'ACTIVE' } },
-        {
-          $lookup: {
-            from: 'organization_memberships',
-            localField: '_id',
-            foreignField: 'userId',
-            pipeline: [
-              { $match: { organizationId: scope, status: 'ACTIVE' } },
-              { $limit: 1 },
-              { $project: { _id: 1 } },
-            ],
-            as: 'membership',
-          },
+    const [evidence] = await this.aggregate<{
+      assignments: { permissions?: unknown }[];
+    }>('users', [
+      { $match: { _id: new Types.ObjectId(actorId), status: 'ACTIVE' } },
+      {
+        $lookup: {
+          from: 'organization_memberships',
+          localField: '_id',
+          foreignField: 'userId',
+          pipeline: [
+            { $match: { organizationId: scope, status: 'ACTIVE' } },
+            { $limit: 1 },
+            { $project: { _id: 1 } },
+          ],
+          as: 'membership',
         },
-        { $match: { 'membership.0': { $exists: true } } },
-        {
-          $lookup: {
-            from: 'role_assignments',
-            localField: '_id',
-            foreignField: 'userId',
-            pipeline: [
-              {
-                $match: {
-                  organizationId: scope,
-                  projectId: null,
-                  roleCode: 'ADMIN',
-                  $expr: { $eq: [{ $type: '$roleId' }, 'objectId'] },
-                },
+      },
+      { $match: { 'membership.0': { $exists: true } } },
+      {
+        $lookup: {
+          from: 'role_assignments',
+          localField: '_id',
+          foreignField: 'userId',
+          pipeline: [
+            {
+              $match: {
+                organizationId: scope,
+                projectId: null,
+                roleCode: 'ADMIN',
+                $expr: { $eq: [{ $type: '$roleId' }, 'objectId'] },
               },
-              {
-                $lookup: {
-                  from: 'roles',
-                  localField: 'roleId',
-                  foreignField: '_id',
-                  pipeline: [
-                    { $match: { code: 'ADMIN' } },
-                    { $project: { permissions: 1 } },
-                  ],
-                  as: 'role',
-                },
+            },
+            {
+              $lookup: {
+                from: 'roles',
+                localField: 'roleId',
+                foreignField: '_id',
+                pipeline: [
+                  { $match: { code: 'ADMIN' } },
+                  { $project: { permissions: 1 } },
+                ],
+                as: 'role',
               },
-              { $unwind: '$role' },
-              { $project: { _id: 0, permissions: '$role.permissions' } },
-            ],
-            as: 'assignments',
-          },
+            },
+            { $unwind: '$role' },
+            { $project: { _id: 0, permissions: '$role.permissions' } },
+          ],
+          as: 'assignments',
         },
-        { $project: { _id: 0, assignments: 1 } },
-      ])
-      .option({ maxTimeMS: queryTimeoutMs })
-      .exec();
+      },
+      { $project: { _id: 0, assignments: 1 } },
+    ]);
     // No explicit-deny source exists in the current IAM role model. Only a
     // well-formed, currently resolved ADMIN permission supplies positive evidence.
     return Boolean(
@@ -191,28 +194,28 @@ export class MongoOrganizationMembershipReadRepository implements OrganizationMe
     );
   }
   async list(organizationId: string, query: OrganizationMembershipListQuery) {
-    const [facet] = await this.model('organization_memberships')
-      .aggregate<{ data: MembershipDocument[]; total: { count: number }[] }>([
-        {
-          $match: {
-            organizationId: new Types.ObjectId(organizationId),
-            ...(query.status ? { status: query.status } : {}),
-          },
+    const [facet] = await this.aggregate<{
+      data: MembershipDocument[];
+      total: { count: number }[];
+    }>('organization_memberships', [
+      {
+        $match: {
+          organizationId: new Types.ObjectId(organizationId),
+          ...(query.status ? { status: query.status } : {}),
         },
-        { $sort: { createdAt: -1, _id: -1 } },
-        {
-          $facet: {
-            data: [
-              { $skip: (query.page - 1) * query.pageSize },
-              { $limit: query.pageSize },
-              ...userLookup,
-            ],
-            total: [{ $count: 'count' }],
-          },
+      },
+      { $sort: { createdAt: -1, _id: -1 } },
+      {
+        $facet: {
+          data: [
+            { $skip: (query.page - 1) * query.pageSize },
+            { $limit: query.pageSize },
+            ...userLookup,
+          ],
+          total: [{ $count: 'count' }],
         },
-      ])
-      .option({ maxTimeMS: queryTimeoutMs })
-      .exec();
+      },
+    ]);
     return {
       data: (facet?.data ?? []).map(summary),
       totalItems: facet?.total[0]?.count ?? 0,
@@ -222,8 +225,9 @@ export class MongoOrganizationMembershipReadRepository implements OrganizationMe
     organizationId: string,
     membershipId: string,
   ): Promise<OrganizationMembershipSummary | null> {
-    const [row] = await this.model('organization_memberships')
-      .aggregate<MembershipDocument>([
+    const [row] = await this.aggregate<MembershipDocument>(
+      'organization_memberships',
+      [
         {
           $match: {
             organizationId: new Types.ObjectId(organizationId),
@@ -232,12 +236,37 @@ export class MongoOrganizationMembershipReadRepository implements OrganizationMe
         },
         { $limit: 1 },
         ...userLookup,
-      ])
-      .option({ maxTimeMS: queryTimeoutMs })
-      .exec();
+      ],
+    );
     return row ? summary(row) : null;
   }
+  private async aggregate<T>(
+    collection: string,
+    pipeline: PipelineStage[],
+  ): Promise<T[]> {
+    try {
+      return await this.model(collection)
+        .aggregate<T>(pipeline)
+        .option({ maxTimeMS: queryTimeoutMs })
+        .exec();
+    } catch (error) {
+      if (
+        error instanceof mongo.MongoNetworkError ||
+        error instanceof mongo.MongoServerSelectionError ||
+        error instanceof mongo.MongoOperationTimeoutError ||
+        error instanceof mongo.MongoNotConnectedError ||
+        error instanceof mongo.MongoClientClosedError ||
+        error instanceof mongo.MongoServerClosedError ||
+        error instanceof mongo.MongoTopologyClosedError ||
+        (error instanceof mongo.MongoServerError && error.code === 50)
+      )
+        unavailable();
+      throw error;
+    }
+  }
   private model(collection: string): Model<unknown> {
+    if (this.connection?.readyState !== ConnectionStates.connected)
+      unavailable();
     const model = this.connection?.models[
       `${IAM_PERSISTENCE.databaseName}_${collection}`
     ] as Model<unknown> | undefined;
