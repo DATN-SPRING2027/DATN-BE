@@ -10,12 +10,8 @@ import {
   type AuthSecurityStore,
 } from './auth-security.store';
 import {
-  PASSWORD_RESET_MAILER,
-  type PasswordResetMailer,
-} from './password-reset.mailer';
-import {
-  PASSWORD_RESET_TOKEN_STORE,
-  type PasswordResetTokenStore,
+  PASSWORD_RESET_OUTBOX,
+  type PasswordResetOutboxStore,
 } from './password-reset.store';
 import { PasswordCredentialService } from '../credentials/password-credential.service';
 
@@ -48,6 +44,13 @@ export class PasswordResetPasswordPolicyError extends Error {
   }
 }
 
+export class PasswordResetRequestUnavailableError extends Error {
+  constructor() {
+    super('Password reset request could not be durably queued');
+    this.name = PasswordResetRequestUnavailableError.name;
+  }
+}
+
 export interface RequestPasswordResetInput {
   email: string;
   sourceIp: string;
@@ -68,11 +71,9 @@ export class PasswordResetService {
     private readonly repository: AuthenticationRepositoryPort,
     @Inject(AUTH_SECURITY_STORE)
     private readonly security: AuthSecurityStore,
-    @Inject(PASSWORD_RESET_TOKEN_STORE)
-    private readonly tokens: PasswordResetTokenStore,
+    @Inject(PASSWORD_RESET_OUTBOX)
+    private readonly outbox: PasswordResetOutboxStore,
     private readonly credentials: PasswordCredentialService,
-    @Inject(PASSWORD_RESET_MAILER)
-    private readonly mailer: PasswordResetMailer,
     private readonly config: ConfigService,
   ) {}
 
@@ -83,53 +84,71 @@ export class PasswordResetService {
     const emailDigest = digest(email);
     const sourceDigest = digest(input.sourceIp || 'unknown');
 
-    if (
-      !(await this.security.consumeRateLimit(
+    try {
+      const sourceAllowed = await this.security.consumeRateLimit(
         `auth:password-reset:source:${sourceDigest}`,
         RESET_SOURCE_LIMIT,
         RESET_RATE_WINDOW_SECONDS,
-      )) ||
-      !(await this.security.consumeRateLimit(
-        `auth:password-reset:email:${emailDigest}`,
-        RESET_EMAIL_LIMIT,
-        RESET_RATE_WINDOW_SECONDS,
-      ))
-    ) {
-      throw new PasswordResetRateLimitError();
+      );
+      const emailAllowed = sourceAllowed
+        ? await this.security.consumeRateLimit(
+            `auth:password-reset:email:${emailDigest}`,
+            RESET_EMAIL_LIMIT,
+            RESET_RATE_WINDOW_SECONDS,
+          )
+        : false;
+      if (!sourceAllowed || !emailAllowed)
+        throw new PasswordResetRateLimitError();
+    } catch (error) {
+      if (error instanceof PasswordResetRateLimitError) throw error;
+      this.logger.warn('password_reset_request_unavailable');
+      throw new PasswordResetRequestUnavailableError();
     }
 
-    const account = await this.repository.findAccountByEmail(email);
+    try {
+      await this.outbox.assertReady();
+      this.createResetUrl('A'.repeat(43));
+    } catch {
+      this.logger.warn('password_reset_request_unavailable');
+      throw new PasswordResetRequestUnavailableError();
+    }
+
+    let account: Awaited<
+      ReturnType<AuthenticationRepositoryPort['findAccountByEmail']>
+    >;
+    try {
+      account = await this.repository.findAccountByEmail(email);
+    } catch {
+      this.logger.warn('password_reset_request_unavailable');
+      throw new PasswordResetRequestUnavailableError();
+    }
+
     const token = randomBytes(32).toString('base64url');
     const tokenHash = digest(token);
-    const eligible = account?.status === 'ACTIVE';
-    const userScopeHash = eligible
-      ? digest(account.userId)
-      : digest(`no-active-account:${emailDigest}`);
-    const userId = eligible ? account.userId : '000000000000000000000000';
-    const saved = await this.tokens.savePasswordResetToken(
-      userScopeHash,
-      tokenHash,
-      userId,
-      RESET_TOKEN_TTL_SECONDS,
-    );
-    if (!saved) return { status: 'accepted' };
-
-    if (!eligible || !account) {
-      await this.tokens.discardPasswordResetToken(userScopeHash, tokenHash);
-    } else {
-      await this.tokens.discardPasswordResetToken(
-        digest(`no-active-account:${emailDigest}`),
-        digest(randomBytes(32).toString('base64url')),
-      );
-      // SMTP latency and errors must not reveal whether the account exists.
-      setImmediate(() => {
-        void this.deliverResetEmail(
-          account.email,
-          token,
-          userScopeHash,
-          tokenHash,
-        );
+    const eligibleAccount = account?.status === 'ACTIVE' ? account : null;
+    const userScopeHash = eligibleAccount
+      ? digest(eligibleAccount.userId)
+      : digest(randomBytes(32).toString('base64url'));
+    try {
+      const saved = await this.outbox.savePasswordResetRequest({
+        userScopeHash,
+        tokenHash,
+        userId: eligibleAccount?.userId ?? '000000000000000000000000',
+        expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_SECONDS * 1000),
+        ...(eligibleAccount
+          ? {
+              payload: {
+                recipientEmail: eligibleAccount.email,
+                resetUrl: this.createResetUrl(token),
+              },
+            }
+          : {}),
       });
+      if (saved === 'NOT_SAVED')
+        throw new Error('PASSWORD_RESET_OUTBOX_WRITE_NOT_APPLIED');
+    } catch {
+      this.logger.warn('password_reset_request_unavailable');
+      throw new PasswordResetRequestUnavailableError();
     }
 
     return { status: 'accepted' };
@@ -158,7 +177,7 @@ export class PasswordResetService {
 
     const tokenHash = digest(input.token);
     const claimId = randomBytes(32).toString('base64url');
-    const claim = await this.tokens.claimPasswordResetToken(tokenHash, claimId);
+    const claim = await this.outbox.claimPasswordResetToken(tokenHash, claimId);
     if (!claim) throw new PasswordResetInvalidTokenError();
 
     let updated: boolean;
@@ -167,7 +186,7 @@ export class PasswordResetService {
       updated = await this.repository.resetPassword(claim.userId, passwordHash);
     } catch (error) {
       try {
-        await this.tokens.releasePasswordResetTokenClaim(
+        await this.outbox.releasePasswordResetTokenClaim(
           claim.userScopeHash,
           claimId,
         );
@@ -178,9 +197,9 @@ export class PasswordResetService {
     }
 
     // The Mongo transaction has committed (or confirmed the account inactive)
-    // before the one-time token is removed. A Redis error here leaves the
-    // claim in place until the token's original TTL, preventing replay.
-    const consumed = await this.tokens.consumeClaimedPasswordResetToken(
+    // before the one-time token document is removed. A Mongo error here leaves
+    // the claim in place until expiry, preventing replay.
+    const consumed = await this.outbox.consumeClaimedPasswordResetToken(
       tokenHash,
       claim.userScopeHash,
       claimId,
@@ -206,27 +225,6 @@ export class PasswordResetService {
     const resetUrl = new URL('/reset-password', baseUrl);
     resetUrl.hash = new URLSearchParams({ token }).toString();
     return resetUrl.toString();
-  }
-
-  private async deliverResetEmail(
-    email: string,
-    token: string,
-    userScopeHash: string,
-    tokenHash: string,
-  ): Promise<void> {
-    try {
-      await this.mailer.sendPasswordResetEmail(
-        email,
-        this.createResetUrl(token),
-      );
-    } catch {
-      try {
-        await this.tokens.discardPasswordResetToken(userScopeHash, tokenHash);
-      } catch {
-        this.logger.warn('password_reset_token_cleanup_failed');
-      }
-      this.logger.warn('password_reset_email_delivery_failed');
-    }
   }
 }
 

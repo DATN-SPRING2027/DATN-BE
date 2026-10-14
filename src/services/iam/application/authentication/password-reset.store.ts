@@ -1,18 +1,45 @@
-export const PASSWORD_RESET_TOKEN_STORE = Symbol('PASSWORD_RESET_TOKEN_STORE');
+export const PASSWORD_RESET_OUTBOX = Symbol('PASSWORD_RESET_OUTBOX');
 
 export interface PasswordResetTokenClaim {
   userScopeHash: string;
   userId: string;
 }
 
-export interface PasswordResetTokenStore {
-  savePasswordResetToken(
+export interface PasswordResetEmailPayload {
+  recipientEmail: string;
+  resetUrl: string;
+}
+
+export interface PasswordResetEmailJob {
+  userScopeHash: string;
+  userId: string;
+  tokenHash: string;
+  leaseId: string;
+  attemptCount: number;
+  encryptedPayload: string;
+}
+
+export interface PasswordResetEmailPayloadBinding {
+  userScopeHash: string;
+  userId: string;
+  tokenHash: string;
+}
+
+export type PasswordResetRequestSaveResult =
+  'SAVED' | 'COALESCED' | 'NOT_SAVED';
+
+export interface PasswordResetOutboxStore {
+  assertReady(this: void): Promise<void>;
+  savePasswordResetRequest(
     this: void,
-    userScopeHash: string,
-    tokenHash: string,
-    userId: string,
-    ttlSeconds: number,
-  ): Promise<boolean>;
+    input: {
+      userScopeHash: string;
+      tokenHash: string;
+      userId: string;
+      expiresAt: Date;
+      payload?: PasswordResetEmailPayload;
+    },
+  ): Promise<PasswordResetRequestSaveResult>;
   claimPasswordResetToken(
     this: void,
     tokenHash: string,
@@ -29,9 +56,35 @@ export interface PasswordResetTokenStore {
     userScopeHash: string,
     claimId: string,
   ): Promise<void>;
-  discardPasswordResetToken(
+  claimNextPasswordResetEmail(
     this: void,
-    userScopeHash: string,
-    tokenHash: string,
+    now: Date,
+    leaseId: string,
+    leaseUntil: Date,
+  ): Promise<PasswordResetEmailJob | null>;
+  failExhaustedPasswordResetEmails(
+    this: void,
+    now: Date,
+    maxAttempts: number,
+    safeErrorCode: string,
   ): Promise<void>;
+  markPasswordResetEmailSent(
+    this: void,
+    tokenHash: string,
+    leaseId: string,
+    sentAt: Date,
+  ): Promise<boolean>;
+  retryPasswordResetEmail(
+    this: void,
+    tokenHash: string,
+    leaseId: string,
+    nextAttemptAt: Date,
+    maxAttempts: number,
+    safeErrorCode: string,
+  ): Promise<'REQUEUED' | 'FAILED' | 'STALE'>;
+  decryptPasswordResetEmailPayload(
+    this: void,
+    encryptedPayload: string,
+    binding: PasswordResetEmailPayloadBinding,
+  ): PasswordResetEmailPayload;
 }

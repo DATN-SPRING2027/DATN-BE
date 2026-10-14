@@ -5,12 +5,12 @@ import type {
 } from './authentication.repository';
 import type { AuthSecurityStore } from './auth-security.store';
 import type { PasswordCredentialService } from '../credentials/password-credential.service';
-import type { PasswordResetTokenStore } from './password-reset.store';
-import type { PasswordResetMailer } from './password-reset.mailer';
+import type { PasswordResetOutboxStore } from './password-reset.store';
 import {
   PasswordResetInvalidTokenError,
   PasswordResetPasswordPolicyError,
   PasswordResetRateLimitError,
+  PasswordResetRequestUnavailableError,
   PasswordResetService,
 } from './password-reset.service';
 
@@ -29,9 +29,8 @@ describe('PasswordResetService', () => {
     Pick<AuthenticationRepositoryPort, 'findAccountByEmail' | 'resetPassword'>
   >;
   let security: jest.Mocked<Pick<AuthSecurityStore, 'consumeRateLimit'>>;
-  let tokens: jest.Mocked<PasswordResetTokenStore>;
+  let outbox: jest.Mocked<PasswordResetOutboxStore>;
   let credentials: jest.Mocked<Pick<PasswordCredentialService, 'hashPassword'>>;
-  let mailer: jest.Mocked<PasswordResetMailer>;
   let service: PasswordResetService;
 
   beforeEach(() => {
@@ -40,29 +39,32 @@ describe('PasswordResetService', () => {
       resetPassword: jest.fn().mockResolvedValue(true),
     };
     security = { consumeRateLimit: jest.fn().mockResolvedValue(true) };
-    tokens = {
-      savePasswordResetToken: jest.fn().mockResolvedValue(true),
+    outbox = {
+      assertReady: jest.fn().mockResolvedValue(undefined),
+      savePasswordResetRequest: jest.fn().mockResolvedValue('SAVED'),
       claimPasswordResetToken: jest.fn().mockResolvedValue({
         userScopeHash: createHash('sha256').update(USER_ID).digest('hex'),
         userId: USER_ID,
       }),
       consumeClaimedPasswordResetToken: jest.fn().mockResolvedValue(true),
       releasePasswordResetTokenClaim: jest.fn().mockResolvedValue(undefined),
-      discardPasswordResetToken: jest.fn().mockResolvedValue(undefined),
+      claimNextPasswordResetEmail: jest.fn().mockResolvedValue(null),
+      failExhaustedPasswordResetEmails: jest.fn().mockResolvedValue(undefined),
+      markPasswordResetEmailSent: jest.fn().mockResolvedValue(true),
+      retryPasswordResetEmail: jest.fn().mockResolvedValue('REQUEUED'),
+      decryptPasswordResetEmailPayload: jest.fn(),
     };
     credentials = { hashPassword: jest.fn().mockResolvedValue('new-hash') };
-    mailer = { sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined) };
     service = new PasswordResetService(
       repository as unknown as AuthenticationRepositoryPort,
       security as unknown as AuthSecurityStore,
-      tokens,
+      outbox,
       credentials as unknown as PasswordCredentialService,
-      mailer,
       { get: jest.fn().mockReturnValue('https://app.example.test') } as never,
     );
   });
 
-  it('responds generically and emails a 30-minute, hashed, single-use token to an active account', async () => {
+  it('durably queues a 30-minute, hashed, single-use token for an active account', async () => {
     await expect(
       service.requestReset({
         email: ' PERSON@EXAMPLE.COM ',
@@ -70,21 +72,28 @@ describe('PasswordResetService', () => {
       }),
     ).resolves.toEqual({ status: 'accepted' });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    const [userScope, tokenHash, userId, ttlSeconds] =
-      tokens.savePasswordResetToken.mock.calls[0];
-    const resetLink = mailer.sendPasswordResetEmail.mock.calls[0][1];
+    expect(outbox.savePasswordResetRequest).toHaveBeenCalledTimes(1);
+    const [queued] = outbox.savePasswordResetRequest.mock.calls[0];
+    const payload = queued.payload;
+    if (!payload) throw new Error('Expected a queued email payload');
+    const resetLink = payload.resetUrl;
     const token = new URLSearchParams(new URL(resetLink).hash.slice(1)).get(
       'token',
     );
-    expect(userScope).toBe(createHash('sha256').update(USER_ID).digest('hex'));
-    expect(userId).toBe(USER_ID);
-    expect(ttlSeconds).toBe(30 * 60);
+    expect(queued.userScopeHash).toBe(
+      createHash('sha256').update(USER_ID).digest('hex'),
+    );
+    expect(queued.userId).toBe(USER_ID);
+    expect(queued.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(queued.expiresAt.getTime()).toBeLessThanOrEqual(
+      Date.now() + 30 * 60 * 1000,
+    );
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(tokenHash).toBe(createHash('sha256').update(token!).digest('hex'));
-    expect(tokenHash).not.toBe(token);
-    expect(mailer.sendPasswordResetEmail.mock.calls[0][0]).toBe(account.email);
+    expect(queued.tokenHash).toBe(
+      createHash('sha256').update(token!).digest('hex'),
+    );
+    expect(queued.tokenHash).not.toBe(token);
+    expect(payload.recipientEmail).toBe(account.email);
     const parsedResetLink = new URL(resetLink);
     expect(parsedResetLink.origin).toBe('https://app.example.test');
     expect(parsedResetLink.pathname).toBe('/reset-password');
@@ -101,9 +110,10 @@ describe('PasswordResetService', () => {
     await expect(
       service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
     ).resolves.toEqual({ status: 'accepted' });
-    expect(tokens.savePasswordResetToken).toHaveBeenCalledTimes(1);
-    expect(tokens.discardPasswordResetToken).toHaveBeenCalledTimes(1);
-    expect(mailer.sendPasswordResetEmail).not.toHaveBeenCalled();
+    expect(outbox.savePasswordResetRequest).toHaveBeenCalledTimes(1);
+    expect(
+      outbox.savePasswordResetRequest.mock.calls[0][0].payload,
+    ).toBeUndefined();
   });
 
   it('lets an active Google-only account set a local password through its verified email', async () => {
@@ -116,11 +126,9 @@ describe('PasswordResetService', () => {
     await expect(
       service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
     ).resolves.toEqual({ status: 'accepted' });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(mailer.sendPasswordResetEmail).toHaveBeenCalledWith(
-      account.email,
-      expect.stringContaining('token='),
-    );
+    const [queued] = outbox.savePasswordResetRequest.mock.calls[0];
+    expect(queued.payload?.recipientEmail).toBe(account.email);
+    expect(queued.payload?.resetUrl).toContain('token=');
   });
 
   it('does not reveal account email or IP in rate-limit keys', async () => {
@@ -144,17 +152,49 @@ describe('PasswordResetService', () => {
     expect(repository.findAccountByEmail).not.toHaveBeenCalled();
   });
 
-  it('removes a reset token when email delivery fails and keeps the response generic', async () => {
-    mailer.sendPasswordResetEmail.mockRejectedValue(new Error('SMTP details'));
+  it('returns a generic service-unavailable error if the request cannot be durably queued', async () => {
+    outbox.savePasswordResetRequest.mockRejectedValue(new Error('database'));
+
+    await expect(
+      service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
+    ).rejects.toBeInstanceOf(PasswordResetRequestUnavailableError);
+  });
+
+  it('returns the generic acknowledgement when a current reset is already in flight', async () => {
+    outbox.savePasswordResetRequest.mockResolvedValue('COALESCED');
 
     await expect(
       service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
     ).resolves.toEqual({ status: 'accepted' });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(tokens.discardPasswordResetToken).toHaveBeenCalledWith(
-      createHash('sha256').update(USER_ID).digest('hex'),
-      expect.any(String),
+  });
+
+  it('does not acknowledge a request that could not be durably queued', async () => {
+    outbox.savePasswordResetRequest.mockResolvedValue('NOT_SAVED');
+
+    await expect(
+      service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
+    ).rejects.toBeInstanceOf(PasswordResetRequestUnavailableError);
+  });
+
+  it('checks outbox readiness before looking up the account', async () => {
+    outbox.assertReady.mockRejectedValue(
+      new Error('outbox indexes unavailable'),
     );
+
+    await expect(
+      service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
+    ).rejects.toBeInstanceOf(PasswordResetRequestUnavailableError);
+    expect(repository.findAccountByEmail).not.toHaveBeenCalled();
+    expect(outbox.savePasswordResetRequest).not.toHaveBeenCalled();
+  });
+
+  it('maps rate-limit backend failures to the generic unavailable error', async () => {
+    security.consumeRateLimit.mockRejectedValueOnce(new Error('redis offline'));
+
+    await expect(
+      service.requestReset({ email: account.email, sourceIp: '203.0.113.8' }),
+    ).rejects.toBeInstanceOf(PasswordResetRequestUnavailableError);
+    expect(repository.findAccountByEmail).not.toHaveBeenCalled();
   });
 
   it('claims a valid token, commits the password reset, then consumes the token', async () => {
@@ -167,20 +207,20 @@ describe('PasswordResetService', () => {
     ).resolves.toBeUndefined();
 
     const tokenHash = createHash('sha256').update('a'.repeat(43)).digest('hex');
-    const claimId = tokens.claimPasswordResetToken.mock.calls[0][1];
-    expect(tokens.claimPasswordResetToken).toHaveBeenCalledWith(
+    const claimId = outbox.claimPasswordResetToken.mock.calls[0][1];
+    expect(outbox.claimPasswordResetToken).toHaveBeenCalledWith(
       tokenHash,
       expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
     );
-    expect(tokens.consumeClaimedPasswordResetToken).toHaveBeenCalledWith(
+    expect(outbox.consumeClaimedPasswordResetToken).toHaveBeenCalledWith(
       tokenHash,
       createHash('sha256').update(USER_ID).digest('hex'),
       claimId,
     );
     expect(
-      tokens.consumeClaimedPasswordResetToken.mock.invocationCallOrder[0],
+      outbox.consumeClaimedPasswordResetToken.mock.invocationCallOrder[0],
     ).toBeGreaterThan(repository.resetPassword.mock.invocationCallOrder[0]);
-    expect(tokens.releasePasswordResetTokenClaim).not.toHaveBeenCalled();
+    expect(outbox.releasePasswordResetTokenClaim).not.toHaveBeenCalled();
     expect(credentials.hashPassword).toHaveBeenCalledWith(
       'A-long-password-123',
     );
@@ -198,12 +238,12 @@ describe('PasswordResetService', () => {
       }),
     ).rejects.toThrow('hash failure');
 
-    const claimId = tokens.claimPasswordResetToken.mock.calls[0][1];
-    expect(tokens.releasePasswordResetTokenClaim).toHaveBeenCalledWith(
+    const claimId = outbox.claimPasswordResetToken.mock.calls[0][1];
+    expect(outbox.releasePasswordResetTokenClaim).toHaveBeenCalledWith(
       createHash('sha256').update(USER_ID).digest('hex'),
       claimId,
     );
-    expect(tokens.consumeClaimedPasswordResetToken).not.toHaveBeenCalled();
+    expect(outbox.consumeClaimedPasswordResetToken).not.toHaveBeenCalled();
     expect(repository.resetPassword).not.toHaveBeenCalled();
   });
 
@@ -220,16 +260,16 @@ describe('PasswordResetService', () => {
       }),
     ).rejects.toThrow('transaction failure');
 
-    const claimId = tokens.claimPasswordResetToken.mock.calls[0][1];
-    expect(tokens.releasePasswordResetTokenClaim).toHaveBeenCalledWith(
+    const claimId = outbox.claimPasswordResetToken.mock.calls[0][1];
+    expect(outbox.releasePasswordResetTokenClaim).toHaveBeenCalledWith(
       createHash('sha256').update(USER_ID).digest('hex'),
       claimId,
     );
-    expect(tokens.consumeClaimedPasswordResetToken).not.toHaveBeenCalled();
+    expect(outbox.consumeClaimedPasswordResetToken).not.toHaveBeenCalled();
   });
 
   it('does not hash or update the password when the token cannot be claimed', async () => {
-    tokens.claimPasswordResetToken.mockResolvedValue(null);
+    outbox.claimPasswordResetToken.mockResolvedValue(null);
 
     await expect(
       service.completeReset({
@@ -252,8 +292,8 @@ describe('PasswordResetService', () => {
         sourceIp: '203.0.113.8',
       }),
     ).rejects.toBeInstanceOf(PasswordResetInvalidTokenError);
-    expect(tokens.consumeClaimedPasswordResetToken).toHaveBeenCalledTimes(1);
-    expect(tokens.releasePasswordResetTokenClaim).not.toHaveBeenCalled();
+    expect(outbox.consumeClaimedPasswordResetToken).toHaveBeenCalledTimes(1);
+    expect(outbox.releasePasswordResetTokenClaim).not.toHaveBeenCalled();
   });
 
   it('rejects passwords shorter than 12 characters or longer than 72 UTF-8 bytes', async () => {
@@ -268,7 +308,7 @@ describe('PasswordResetService', () => {
     }
 
     expect(security.consumeRateLimit).not.toHaveBeenCalled();
-    expect(tokens.claimPasswordResetToken).not.toHaveBeenCalled();
+    expect(outbox.claimPasswordResetToken).not.toHaveBeenCalled();
     expect(credentials.hashPassword).not.toHaveBeenCalled();
     expect(repository.resetPassword).not.toHaveBeenCalled();
   });
@@ -285,7 +325,7 @@ describe('PasswordResetService', () => {
   });
 
   it('rejects an absent, expired, superseded or already used token without changing a password', async () => {
-    tokens.claimPasswordResetToken.mockResolvedValue(null);
+    outbox.claimPasswordResetToken.mockResolvedValue(null);
 
     await expect(
       service.completeReset({

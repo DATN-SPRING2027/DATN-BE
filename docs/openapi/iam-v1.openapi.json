@@ -62,7 +62,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Request a password reset email",
-        "description": "Always returns the same 202 response for a valid email, whether or not an ACTIVE account exists or email delivery succeeds. The backend rate-limits by trusted source IP and normalized email. ACTIVE accounts, including Google-only accounts that do not yet have a local password, receive a single-use link that expires after 30 minutes. The token is stored only as a SHA-256 digest in Redis; no account or delivery details are returned.",
+        "description": "Returns the same generic 202 after a valid request is durably recorded, whether or not an ACTIVE account exists or SMTP accepts delivery. A rate-limit, persistence, or encryption-key outage returns generic 503 PASSWORD_RESET_REQUEST_UNAVAILABLE. The backend rate-limits by trusted source IP and normalized email. ACTIVE accounts, including Google-only accounts that do not yet have a local password, receive a single-use link that expires after 30 minutes. MongoDB stores the SHA-256 token digest and encrypted email payload atomically; plaintext token and email content are not stored.",
         "operationId": "requestPasswordReset",
         "security": [],
         "requestBody": {
@@ -87,7 +87,22 @@
             }
           },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
-          "429": { "$ref": "#/components/responses/TooManyRequests" }
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": {
+            "description": "The reset token and email job could not be durably stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "properties": {
+                    "code": { "type": "string", "const": "PASSWORD_RESET_REQUEST_UNAVAILABLE" },
+                    "message": { "type": "string", "const": "Password reset is temporarily unavailable." }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

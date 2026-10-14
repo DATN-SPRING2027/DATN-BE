@@ -15,7 +15,10 @@ import {
 } from '../application/authentication/authentication.application.service';
 import { AuthenticationController } from './authentication.controller';
 import { GoogleOAuthService } from '../application/authentication/google-oauth.service';
-import { PasswordResetService } from '../application/authentication/password-reset.service';
+import {
+  PasswordResetRequestUnavailableError,
+  PasswordResetService,
+} from '../application/authentication/password-reset.service';
 import { configureApplication } from '../../../bootstrap';
 import { signGatewaySource } from '../../../common/http/gateway-source';
 
@@ -434,6 +437,23 @@ describe('AuthenticationController', () => {
     const input = passwordReset.requestReset.mock.calls[0][0];
     expect(input.email).toBe('person@example.com');
     expect(typeof input.sourceIp).toBe('string');
+  });
+
+  it('returns a generic 503 when the reset request cannot be durably queued', async () => {
+    passwordReset.requestReset.mockRejectedValueOnce(
+      new PasswordResetRequestUnavailableError(),
+    );
+
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/password-reset/request')
+      .send({ email: 'person@example.com' })
+      .expect(503)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          code: 'PASSWORD_RESET_REQUEST_UNAVAILABLE',
+          message: 'Password reset is temporarily unavailable.',
+        });
+      });
   });
 
   it('validates password reset request and confirm bodies before calling the service', async () => {

@@ -3,7 +3,7 @@ import { RuntimeConfigModule } from '../../config/runtime-config.module';
 import { AccessTokenService } from './application/authentication/access-token.service';
 import { AUTH_SECURITY_STORE } from './application/authentication/auth-security.store';
 import { AuthenticationApplicationService } from './application/authentication/authentication.application.service';
-import { PASSWORD_RESET_TOKEN_STORE } from './application/authentication/password-reset.store';
+import { PasswordResetOutboxWorker } from './infrastructure/email/password-reset-outbox.worker';
 import { PASSWORD_RESET_MAILER } from './application/authentication/password-reset.mailer';
 import { PasswordResetService } from './application/authentication/password-reset.service';
 import { GoogleOAuthService } from './application/authentication/google-oauth.service';
@@ -74,8 +74,10 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     PasswordResetService,
     GoogleOAuthService,
     { provide: AUTH_SECURITY_STORE, useExisting: RedisService },
-    { provide: PASSWORD_RESET_TOKEN_STORE, useExisting: RedisService },
     { provide: PASSWORD_RESET_MAILER, useClass: SmtpPasswordResetMailer },
+    ...(process.env.INFRA_ENABLED === 'true'
+      ? [PasswordResetOutboxWorker]
+      : []),
     LeaderDirectedLoginEligibilityPolicy,
     MembershipOrganizationContextResolver,
     {

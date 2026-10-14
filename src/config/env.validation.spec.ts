@@ -26,6 +26,7 @@ describe('validateEnvironment', () => {
     [{ SWAGGER_ENABLED: 'sometimes' }, 'SWAGGER_ENABLED'],
     [{ INFRA_ENABLED: 'sometimes' }, 'INFRA_ENABLED'],
     [{ JWT_SECRET: 'too-short' }, 'JWT_SECRET'],
+    [{ PASSWORD_RESET_OUTBOX_KEY: 'too-short' }, 'PASSWORD_RESET_OUTBOX_KEY'],
     [{ IAM_GATEWAY_SECRET: 'too-short' }, 'IAM_GATEWAY_SECRET'],
     [{ SERVICE_DATABASE: 'continuum_db' }, 'SERVICE_DATABASE'],
     [{ SERVICE_DATABASE: 'continuum_task' }, 'SERVICE_DATABASE'],

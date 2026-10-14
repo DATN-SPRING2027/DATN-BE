@@ -14,6 +14,7 @@ import {
   Req,
   Res,
   Query,
+  ServiceUnavailableException,
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -45,6 +46,7 @@ import {
   PasswordResetInvalidTokenError,
   PasswordResetPasswordPolicyError,
   PasswordResetRateLimitError,
+  PasswordResetRequestUnavailableError,
   PasswordResetService,
 } from '../application/authentication/password-reset.service';
 import {
@@ -368,6 +370,12 @@ export class AuthenticationController {
           },
           HttpStatus.TOO_MANY_REQUESTS,
         );
+      }
+      if (error instanceof PasswordResetRequestUnavailableError) {
+        throw new ServiceUnavailableException({
+          code: 'PASSWORD_RESET_REQUEST_UNAVAILABLE',
+          message: 'Password reset is temporarily unavailable.',
+        });
       }
       throw error;
     }

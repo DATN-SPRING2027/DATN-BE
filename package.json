@@ -42,6 +42,7 @@
     "test:membership-lifecycle:integration": "node --test scripts/migrations/20261012-organization-membership-lifecycle.mongodb.test.mjs",
     "migrate:membership-lifecycle": "node scripts/migrations/20261012-organization-membership-lifecycle.mjs",
     "migrate:google-identity-index": "node scripts/migrations/20261011-google-identity-index.mjs",
+    "migrate:password-reset-outbox": "node scripts/migrations/20261014-password-reset-outbox.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",

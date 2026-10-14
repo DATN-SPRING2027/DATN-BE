@@ -93,10 +93,12 @@ describe('IAM OpenAPI contract', () => {
 
     expect(request?.operationId).toBe('requestPasswordReset');
     expect(request?.security).toEqual([]);
-    expect(request?.description).toContain('same 202 response');
+    expect(request?.description).toContain('same generic 202');
+    expect(request?.description).toContain('durably recorded');
     expect(request?.description).toContain('normalized email');
     expect(request?.responses['202']).toBeDefined();
     expect(request?.responses['429']).toBeDefined();
+    expect(request?.responses['503']).toBeDefined();
     expect(confirm?.operationId).toBe('confirmPasswordReset');
     expect(confirm?.description).toContain('single-use');
     expect(confirm?.description).toContain(
