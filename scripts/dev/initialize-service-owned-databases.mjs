@@ -65,7 +65,12 @@ const EXPECTED_SEED = Object.freeze({
     {
       code: 'ADMIN',
       name: 'Admin',
-      permissions: ['project.visibility.manage', 'project.leader.manage'],
+      permissions: [
+        'organization.memberships.read',
+        'organization.memberships.manage',
+        'project.visibility.manage',
+        'project.leader.manage',
+      ],
       isSystem: true,
     },
     {
@@ -543,10 +548,22 @@ export async function seedDevelopmentDataset(connection, seedPassword) {
         'organization_memberships',
         { organizationId, userId },
         timestamped(
-          { _id: membershipId, organizationId, userId, status: 'ACTIVE' },
+          {
+            _id: membershipId,
+            organizationId,
+            userId,
+            status: 'ACTIVE',
+            version: 1,
+          },
           now,
         ),
-        { _id: membershipId, organizationId, userId, status: 'ACTIVE' },
+        {
+          _id: membershipId,
+          organizationId,
+          userId,
+          status: 'ACTIVE',
+          version: 1,
+        },
       ),
     );
   }

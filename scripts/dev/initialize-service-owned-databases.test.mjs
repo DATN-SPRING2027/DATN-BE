@@ -274,6 +274,21 @@ test('creates only fresh deterministic synthetic IAM data and reruns without ove
   const password = 'test-only password not shown in output';
   const first = await seedDevelopmentDataset(connection, password);
   const iam = connection.useDb('continuum_iam').db;
+  const adminRole = iam
+    .collection('roles')
+    .documents.find((role) => role.code === 'ADMIN');
+  assert.deepEqual(adminRole.permissions, [
+    'organization.memberships.read',
+    'organization.memberships.manage',
+    'project.visibility.manage',
+    'project.leader.manage',
+  ]);
+  assert.ok(
+    iam
+      .collection('organization_memberships')
+      .documents.every((membership) => membership.version === 1),
+    'the synthetic ACTIVE memberships must include the lifecycle migration version',
+  );
   const originalPasswordHash =
     iam.collection('users').documents[0].passwordHash;
   const second = await seedDevelopmentDataset(connection, password);
