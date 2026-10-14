@@ -10,6 +10,7 @@ export type NodeEnvironment = 'development' | 'test' | 'production';
 export interface EnvironmentVariables {
   NODE_ENV: NodeEnvironment;
   JWT_SECRET?: string;
+  PASSWORD_RESET_OUTBOX_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_CALLBACK_URL?: string;
@@ -43,6 +44,7 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .valid('development', 'test', 'production')
     .default('development'),
   JWT_SECRET: Joi.string().min(32).optional(),
+  PASSWORD_RESET_OUTBOX_KEY: Joi.string().min(32).optional(),
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
   GOOGLE_CALLBACK_URL: Joi.string()

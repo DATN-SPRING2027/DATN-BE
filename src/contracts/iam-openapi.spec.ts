@@ -85,6 +85,40 @@ describe('IAM OpenAPI contract', () => {
     expect(new Set(operationIds).size).toBe(operationIds.length);
   });
 
+  it('documents the generic one-time password reset contract', () => {
+    const request = contract.paths['/api/v1/auth/password-reset/request'].post;
+    const confirm = contract.paths['/api/v1/auth/password-reset/confirm'].post;
+    const requestSchema = contract.components.schemas.PasswordResetRequest;
+    const confirmSchema = contract.components.schemas.PasswordResetConfirm;
+
+    expect(request?.operationId).toBe('requestPasswordReset');
+    expect(request?.security).toEqual([]);
+    expect(request?.description).toContain('same generic 202');
+    expect(request?.description).toContain('durably recorded');
+    expect(request?.description).toContain('normalized email');
+    expect(request?.responses['202']).toBeDefined();
+    expect(request?.responses['429']).toBeDefined();
+    expect(request?.responses['503']).toBeDefined();
+    expect(confirm?.operationId).toBe('confirmPasswordReset');
+    expect(confirm?.description).toContain('single-use');
+    expect(confirm?.description).toContain(
+      'revokes all of its refresh sessions',
+    );
+    expect(confirm?.description).toContain('15-minute expiry');
+    expect(confirm?.responses['204']).toBeDefined();
+    expect(confirm?.responses['400']).toBeDefined();
+    expect(confirm?.responses['429']).toBeDefined();
+    expect(requestSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['email'],
+    });
+    expect(confirmSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['token', 'password'],
+    });
+    expect(JSON.stringify(confirmSchema)).toContain('72 UTF-8 bytes');
+  });
+
   it('documents only the three approved A-04 platform permissions and boundaries', () => {
     const organization =
       contract.paths['/api/v1/iam/platform/organizations'].post;

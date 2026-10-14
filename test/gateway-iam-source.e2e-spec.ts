@@ -12,6 +12,7 @@ import { GatewayIamController } from '../src/gateway/gateway-iam.controller';
 import { AuthenticationApplicationService } from '../src/services/iam/application/authentication/authentication.application.service';
 import { AuthenticationController } from '../src/services/iam/controllers/authentication.controller';
 import { GoogleOAuthService } from '../src/services/iam/application/authentication/google-oauth.service';
+import { PasswordResetService } from '../src/services/iam/application/authentication/password-reset.service';
 
 const secret = 'test-gateway-secret-at-least-32-characters';
 
@@ -41,6 +42,7 @@ describe('Gateway to IAM source IP over HTTP', () => {
       providers: [
         { provide: AuthenticationApplicationService, useValue: { login } },
         { provide: GoogleOAuthService, useValue: {} },
+        { provide: PasswordResetService, useValue: {} },
         { provide: ConfigService, useValue: { get: () => secret } },
       ],
     }).compile();

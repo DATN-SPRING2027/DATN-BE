@@ -64,6 +64,22 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('auth/password-reset/request')
+  requestPasswordReset(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('auth/password-reset/confirm')
+  confirmPasswordReset(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Post('auth/select-organization')
   selectOrganization(
     @Req() request: Request,
@@ -261,7 +277,11 @@ export class GatewayIamController {
       const value = request.headers[name];
       if (typeof value === 'string') headers[name] = value;
     }
-    if (request.path.endsWith('/auth/login')) {
+    if (
+      /^\/api\/v1\/auth\/(?:login|password-reset\/(?:request|confirm))$/.test(
+        request.path,
+      )
+    ) {
       Object.assign(
         headers,
         signGatewaySource(

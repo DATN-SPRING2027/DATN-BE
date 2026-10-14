@@ -146,6 +146,7 @@ jobs:
           npm test -- --runInBand --runTestsByPath
           src/services/iam/infrastructure/mongodb/project.repository.mongodb.spec.ts
           src/services/iam/infrastructure/mongodb/organization-provisioning.mongodb.spec.ts
+          src/services/iam/infrastructure/mongodb/authentication.repository.mongodb.spec.ts
       - name: Run DATN-87 membership read integration suite
         run: >-
           npm test -- --runInBand --runTestsByPath

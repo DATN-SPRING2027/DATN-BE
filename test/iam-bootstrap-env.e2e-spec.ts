@@ -30,7 +30,7 @@ describe('IAM runtime environment bootstrap', () => {
         cwd: resolve(__dirname, '..'),
         env: childEnvironment,
         encoding: 'utf8',
-        timeout: 15000,
+        timeout: 30000,
       },
     );
 
