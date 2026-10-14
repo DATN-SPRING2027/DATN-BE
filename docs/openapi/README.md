@@ -18,6 +18,7 @@ describes implemented routes.
 | Project Membership | List, create and idempotent removal; generic update proposed only and not enabled in Project Access V1 |
 | Team               | List, create, read and partial update       |
 | Team Membership    | List, create and idempotent removal         |
+| Organization Membership | Membership list/detail, invitation list/detail, guarded invite lifecycle commands and ACTIVE membership suspension. Invite/resend/cancel and recipient acceptance remain runtime-gated by the approved readiness decision. |
 
 ## Review checklist
 

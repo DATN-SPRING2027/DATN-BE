@@ -1,23 +1,14 @@
 import {
   ForbiddenException,
+  HttpException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import type { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import type { OrganizationInvitationService } from '../application/organizations/organization-invitation.service';
-import {
-  AccountInvitationController,
-  OrganizationInvitationController,
-} from './organization-invitation.controller';
+import { AccountInvitationController } from './organization-invitation.controller';
 
-const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';
-const admin = {
-  id: '651a2b3c4d5e6f7a8b9c0d1f',
-  email: 'admin@example.com',
-  name: 'Admin',
-  organizationId,
-  roles: ['ADMIN'],
-};
 const account = {
   id: '751a2b3c4d5e6f7a8b9c0d1f',
   email: 'invitee@example.com',
@@ -25,119 +16,151 @@ const account = {
   context: 'ACCOUNT' as const,
 };
 
-describe('OrganizationInvitationController', () => {
+describe('AccountInvitationController', () => {
   let auth: jest.Mocked<
-    Pick<
-      AuthenticationApplicationService,
-      'getCurrentIdentity' | 'getCurrentSessionIdentity'
-    >
+    Pick<AuthenticationApplicationService, 'getCurrentSessionIdentity'>
   >;
   let invitations: jest.Mocked<
-    Pick<
-      OrganizationInvitationService,
-      'create' | 'listOrganization' | 'listMine' | 'revoke' | 'accept'
-    >
+    Pick<OrganizationInvitationService, 'listMine' | 'getMine'>
   >;
+  let setHeader: jest.MockedFunction<Response['setHeader']>;
   let response: Response;
+  let controller: AccountInvitationController;
 
   beforeEach(() => {
     auth = {
-      getCurrentIdentity: jest.fn().mockResolvedValue(admin),
       getCurrentSessionIdentity: jest.fn().mockResolvedValue(account),
     };
     invitations = {
-      create: jest.fn().mockResolvedValue({ id: 'a'.repeat(24) }),
-      listOrganization: jest.fn().mockResolvedValue([]),
-      listMine: jest.fn().mockResolvedValue([]),
-      revoke: jest.fn().mockResolvedValue(undefined),
-      accept: jest
-        .fn()
-        .mockResolvedValue({ organizationId, organizationName: 'Example' }),
+      listMine: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
+      getMine: jest.fn().mockResolvedValue({}),
     };
-    response = { setHeader: jest.fn() } as unknown as Response;
-  });
-
-  it('requires a matching CSRF cookie/header before creating an invitation', async () => {
-    const controller = new OrganizationInvitationController(
+    setHeader = jest.fn();
+    response = { setHeader } as unknown as Response;
+    controller = new AccountInvitationController(
       auth as never,
       invitations as never,
     );
-
-    await expect(
-      controller.create(
-        'Bearer access',
-        '__Host-csrf=expected',
-        'other',
-        organizationId,
-        { email: 'person@example.com', roleCode: 'MEMBER' },
-        response,
-      ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(invitations.create).not.toHaveBeenCalled();
   });
 
-  it('rejects extra or unsupported invitation body fields at the HTTP boundary', async () => {
-    const controller = new OrganizationInvitationController(
-      auth as never,
-      invitations as never,
+  it('uses the authenticated account and paginated query for the recipient inbox', async () => {
+    await controller.list(
+      'Bearer access',
+      'continuum_access=access',
+      { page: '2', pageSize: '10' },
+      response,
     );
-
-    await expect(
-      controller.create(
-        'Bearer access',
-        '__Host-csrf=csrf',
-        'csrf',
-        organizationId,
-        {
-          email: 'person@example.com',
-          roleCode: 'PLATFORM_OPERATOR',
-          organizationId,
-        },
-        response,
-      ),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(invitations.create).not.toHaveBeenCalled();
-  });
-
-  it('uses authenticated session identity for the email-scoped invitation inbox', async () => {
-    const controller = new AccountInvitationController(
-      auth as never,
-      invitations as never,
-    );
-
-    await controller.list('Bearer access', 'continuum_access=access', response);
-
     expect(auth.getCurrentSessionIdentity).toHaveBeenCalledWith(
       'Bearer access',
       'continuum_access=access',
     );
-    expect(invitations.listMine).toHaveBeenCalledWith(account);
+    expect(invitations.listMine.mock.calls).toContainEqual([account, 2, 10]);
+    expect(setHeader.mock.calls).toContainEqual(['Cache-Control', 'no-store']);
   });
 
-  it('requires CSRF on acceptance and forwards no user id or role from the client', async () => {
-    const controller = new AccountInvitationController(
-      auth as never,
-      invitations as never,
-    );
+  it('rejects unknown or non-integer list query values', async () => {
+    await expect(
+      controller.list(undefined, undefined, { page: '1.2' }, response),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      controller.list(undefined, undefined, { status: 'PENDING' }, response),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(invitations.listMine).not.toHaveBeenCalled();
+  });
 
+  it('reads recipient detail only through the authenticated account service', async () => {
+    await controller.get(
+      'Bearer access',
+      'continuum_access=access',
+      'a'.repeat(24),
+      response,
+    );
+    expect(invitations.getMine.mock.calls).toContainEqual([
+      account,
+      'a'.repeat(24),
+    ]);
+    expect(setHeader.mock.calls).toContainEqual(['Cache-Control', 'no-store']);
+  });
+
+  it('keeps acceptance unavailable while A7 is blocked and validates its V2 request first', async () => {
+    const body = {
+      expectedMembershipVersion: 1,
+      expectedInvitationVersion: 1,
+    };
+    await expect(
+      controller.accept(
+        'Bearer access',
+        '__Host-csrf=csrf',
+        'csrf',
+        '0123456789abcdef',
+        'a'.repeat(24),
+        body,
+        response,
+      ),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
     await expect(
       controller.accept(
         'Bearer access',
         '__Host-csrf=csrf',
         'wrong',
+        '0123456789abcdef',
         'a'.repeat(24),
+        body,
         response,
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(invitations.accept).not.toHaveBeenCalled();
-
-    await controller.accept(
-      'Bearer access',
-      '__Host-csrf=csrf',
-      'csrf',
-      'a'.repeat(24),
-      response,
-    );
-    expect(invitations.accept).toHaveBeenCalledWith(account, 'a'.repeat(24));
+    await expect(
+      controller.accept(
+        'Bearer access',
+        '__Host-csrf=csrf',
+        'csrf',
+        '0123456789abcdef',
+        'a'.repeat(24),
+        body,
+        response,
+      ),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(
+      controller.accept(
+        'Bearer access',
+        '__Host-csrf=csrf',
+        'csrf',
+        undefined,
+        'a'.repeat(24),
+        body,
+        response,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      controller.accept(
+        'Bearer access',
+        '__Host-csrf=csrf',
+        'csrf',
+        '0123456789abcdef',
+        'a'.repeat(24),
+        { ...body, unexpected: true },
+        response,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    try {
+      await controller.accept(
+        'Bearer access',
+        '__Host-csrf=csrf',
+        'csrf',
+        '0123456789abcdef',
+        'a'.repeat(24),
+        body,
+        response,
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getStatus()).toBe(503);
+      expect((error as HttpException).getResponse()).toEqual({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    }
   });
 });

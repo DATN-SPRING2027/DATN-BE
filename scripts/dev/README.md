@@ -80,17 +80,22 @@ accounts. It creates one organization, three active users, active organization
 memberships, the existing `ADMIN`, `TEAM_LEADER`, and `MEMBER` role codes, the
 matching role assignments, and one private sample Project with one Project
 Leader and one ordinary Project member. It does not create Teams, leader
-database roles, extra permissions, or fake audit events.
+database roles, or fake audit events.
 
-Permission values are taken from the current accepted
+Project permission values are taken from the current accepted
 [Project Access & Visibility V1 decision](../../docs/decisions/project-access-visibility-v1.md)
-and [Project creator bootstrap decision](../../docs/decisions/project-creator-member-bootstrap-v1.md):
-`ADMIN` receives only `project.visibility.manage` and `project.leader.manage`;
-`TEAM_LEADER` receives `project.read` and the three approved member-management
-permissions; `MEMBER` receives `project.read`. The disabled
+and [Project creator bootstrap decision](../../docs/decisions/project-creator-member-bootstrap-v1.md).
+The synthetic `ADMIN` also receives the accepted
+`organization.memberships.read` and `organization.memberships.manage`
+permissions so local development can exercise Organization Membership
+administration. `TEAM_LEADER` receives `project.read` and the three approved
+member-management permissions; `MEMBER` receives `project.read`. The disabled
 `project.members.role.change` permission is absent. These role records are
-inserted only into an explicitly confirmed development database; this is
-not a production role-provisioning mechanism.
+inserted only into an explicitly confirmed development database; this is not a
+production role-provisioning mechanism or a grant to any real account. Seeded
+ACTIVE OrganizationMembership records carry lifecycle version 1 so the
+approved membership read contract can validate them without bypassing the
+migration metadata check.
 
 For the approved development seed, supply the Atlas URI, Redis endpoint, and
 seed password through the current shell environment. The URI must use

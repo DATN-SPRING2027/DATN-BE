@@ -1,0 +1,110 @@
+export const ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY = Symbol(
+  'ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY',
+);
+
+export type MembershipReasonCode =
+  | 'ACCESS_REQUEST'
+  | 'ACCESS_REVIEW'
+  | 'INVITATION_CANCELLED'
+  | 'SECURITY_INCIDENT';
+
+export type OrganizationMembershipCommand =
+  | {
+      command: 'INVITE';
+      email: string;
+      reasonCode: 'ACCESS_REQUEST' | 'ACCESS_REVIEW';
+    }
+  | {
+      command: 'RESEND';
+      invitationId: string;
+      expectedMembershipVersion: number;
+      expectedInvitationVersion: number;
+      reasonCode: 'ACCESS_REQUEST' | 'ACCESS_REVIEW';
+    }
+  | {
+      command: 'CANCEL';
+      invitationId: string;
+      expectedMembershipVersion: number;
+      expectedInvitationVersion: number;
+      reasonCode: 'INVITATION_CANCELLED';
+    }
+  | {
+      command: 'SUSPEND';
+      membershipId: string;
+      expectedMembershipVersion: number;
+      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+    };
+
+export interface MembershipMutationAcknowledgement {
+  operationId: string;
+  membership: {
+    id: string;
+    organizationId: string;
+    userId: string;
+    status: 'PENDING_INVITE' | 'ACTIVE' | 'SUSPENDED' | 'REMOVED';
+    version: number;
+  };
+  invitation?: {
+    id: string;
+    status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
+    version: number;
+    expiresAt: string;
+  };
+}
+
+export interface MembershipMutationResult {
+  httpStatus: 200 | 201;
+  body: MembershipMutationAcknowledgement;
+  replayed: boolean;
+}
+
+export interface AdminInvitationSummary {
+  id: string;
+  membershipId: string;
+  organizationId: string;
+  status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
+  version: number;
+  expiresAt: string;
+  createdAt: string;
+  membershipVersion: number;
+  targetUserId: string;
+  email: string;
+}
+
+export interface AdminInvitationPage {
+  data: AdminInvitationSummary[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+}
+
+export interface OrganizationMembershipCommandRepository {
+  hasPermission(
+    this: void,
+    organizationId: string,
+    actorUserId: string,
+    permission:
+      'organization.memberships.read' | 'organization.memberships.manage',
+  ): Promise<boolean>;
+  listInvitations(
+    this: void,
+    organizationId: string,
+    page: number,
+    pageSize: number,
+    now: Date,
+  ): Promise<AdminInvitationPage>;
+  execute(
+    this: void,
+    input: {
+      actorUserId: string;
+      organizationId: string;
+      idempotencyKey: string;
+      command: OrganizationMembershipCommand;
+      now: Date;
+      correlationId?: string;
+    },
+  ): Promise<MembershipMutationResult>;
+}

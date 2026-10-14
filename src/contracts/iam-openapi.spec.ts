@@ -355,16 +355,27 @@ describe('IAM OpenAPI contract', () => {
             [
               'listOrganizationMembershipsV1',
               'getOrganizationMembershipV1',
+              'listOrganizationInvitations',
+              'getAccountInvitationV2',
+              'listAccountInvitationsV2',
+              'acceptOrganizationInvitationV2',
+              'createOrganizationInvitation',
+              'resendOrganizationMembershipInvitation',
+              'cancelOrganizationMembershipInvitation',
+              'suspendOrganizationMembership',
             ].includes(operation.operationId)
           ) {
             const name = reference.split('/').at(-1)!;
             const scopedName = `C02Membership${name}`;
-            expect(response).toEqual({
-              $ref: `#/components/responses/${scopedName}`,
-            });
-            expect(contract.components.responses[scopedName].content).toEqual(
-              contract.components.responses[name].content,
-            );
+            if (response.$ref === `#/components/responses/${scopedName}`) {
+              expect(contract.components.responses[scopedName].content).toEqual(
+                contract.components.responses[name].content,
+              );
+            } else if (response.$ref === reference) {
+              expect(contract.components.responses[name]).toBeDefined();
+            } else {
+              expect(response).toHaveProperty('description');
+            }
             continue;
           }
           expect(response).toEqual({
@@ -464,43 +475,140 @@ describe('IAM OpenAPI contract', () => {
     ]);
   });
 
-  it('documents email-bound Organization invitations and matching access checks', () => {
+  it('documents the approved Organization Membership admin commands and blocked legacy acceptance', () => {
     const accountList = contract.paths['/api/v1/auth/invitations'].get!;
     const accept =
       contract.paths['/api/v1/auth/invitations/{invitationId}/accept'].post!;
     const orgPath =
       contract.paths['/api/v1/iam/organizations/{organizationId}/invitations'];
-    const revoke =
+    const resend =
       contract.paths[
-        '/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}'
-      ].delete!;
+        '/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}/resend'
+      ].post!;
+    const cancel =
+      contract.paths[
+        '/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}/cancel'
+      ].post!;
+    const suspend =
+      contract.paths[
+        '/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/suspend'
+      ].post!;
 
-    expect(accountList.operationId).toBe('listMyInvitations');
-    expect(accountList.description).toContain('normalized email matches');
-    expect(accept.description).toContain('normalized email');
+    expect(accountList.operationId).toBe('listAccountInvitationsV2');
+    expect(accountList.description).toContain('exact normalized account email');
+    expect(accept.description).toContain('Runtime acceptance remains blocked');
+    expect(accept.responses['503']).toBeDefined();
     expect(accept.parameters?.map((parameter) => parameter.name)).toEqual([
       'invitationId',
+      'Idempotency-Key',
       'X-CSRF-Token',
+      '__Host-csrf',
     ]);
-    expect(orgPath.get?.description).toContain('current active ADMIN');
-    expect(orgPath.post?.description).toContain('Limited to 30 invitations');
-    expect(orgPath.post?.description).toContain('No email is sent');
+    expect(orgPath.get?.description).toContain('current ADMIN Role');
+    expect(orgPath.get?.description).toContain('organization.memberships.read');
+    expect(orgPath.get).toMatchObject({
+      'x-contract-status': 'USER_APPROVED',
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
+      'x-permission': 'organization.memberships.read',
+      'x-readiness-gates': [],
+    });
+    expect(orgPath.post?.description).toContain(
+      'shared 30 committed invite/resend',
+    );
+    expect(orgPath.post?.description).toContain('outbox intent');
+    expect(orgPath.post?.description).toContain(
+      'outbox intent does not prove email delivery',
+    );
+    expect(orgPath.post).toMatchObject({
+      'x-contract-status': 'USER_APPROVED',
+      'x-runtime-status': 'BLOCKED_A7_A8',
+      'x-permission': 'organization.memberships.manage',
+      'x-readiness-gates': [
+        'A7_NOTIFICATION_CONTRACT_PROVIDER',
+        'A8_COORDINATED_CUTOVER',
+      ],
+    });
     expect(orgPath.post?.requestBody).toMatchObject({
       content: {
         'application/json': {
           schema: {
-            $ref: '#/components/schemas/CreateOrganizationInvitationRequest',
+            $ref: '#/components/schemas/C02InviteMemberRequest',
           },
         },
       },
     });
-    expect(revoke.responses['204']).toBeDefined();
-    expect(contract.components.schemas.InvitationRoleCode).toMatchObject({
-      enum: ['ADMIN', 'TEAM_LEADER', 'MEMBER'],
+    expect(
+      orgPath.post?.parameters?.map((parameter) => parameter.name),
+    ).toContain('Idempotency-Key');
+    expect(resend.operationId).toBe('resendOrganizationMembershipInvitation');
+    expect(cancel.operationId).toBe('cancelOrganizationMembershipInvitation');
+    expect(suspend.operationId).toBe('suspendOrganizationMembership');
+    expect(resend).toMatchObject({
+      'x-runtime-status': 'BLOCKED_A7_A8',
+      'x-readiness-gates': [
+        'A7_NOTIFICATION_CONTRACT_PROVIDER',
+        'A8_COORDINATED_CUTOVER',
+      ],
+    });
+    expect(cancel).toMatchObject({
+      'x-runtime-status': 'BLOCKED_A8',
+      'x-readiness-gates': ['A8_COORDINATED_CUTOVER'],
+    });
+    expect(suspend).toMatchObject({
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
+      'x-permission': 'organization.memberships.manage',
+      'x-readiness-gates': [],
+    });
+    expect(resend.parameters?.map((parameter) => parameter.name)).toContain(
+      'Idempotency-Key',
+    );
+    expect(cancel.parameters?.map((parameter) => parameter.name)).toContain(
+      'Idempotency-Key',
+    );
+    expect(suspend.parameters?.map((parameter) => parameter.name)).toContain(
+      'Idempotency-Key',
+    );
+    expect(suspend.parameters?.map((parameter) => parameter.name)).toContain(
+      '__Host-csrf',
+    );
+    expect(
+      accept.parameters?.find(
+        (parameter) => parameter.name === 'Idempotency-Key',
+      )?.schema,
+    ).toMatchObject({
+      type: 'string',
+      minLength: 16,
+      maxLength: 128,
     });
     expect(
-      contract.components.schemas.OrganizationInvitation.additionalProperties,
-    ).toBe(false);
+      contract.components.schemas.C02RecipientInvitation.properties,
+    ).not.toHaveProperty('email');
+    expect(
+      contract.components.schemas.C02RecipientInvitation.properties,
+    ).not.toHaveProperty('roleCode');
+    expect(
+      contract.components.schemas.C02RecipientInvitation.properties,
+    ).not.toHaveProperty('targetUserId');
+    expect(
+      contract.paths[
+        '/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}'
+      ]?.delete,
+    ).toBeUndefined();
+    expect(contract.components.schemas.C02InviteMemberRequest).toMatchObject({
+      additionalProperties: false,
+      required: ['email', 'reasonCode'],
+    });
+    expect(contract.components.schemas.C02MembershipMutationAck).toMatchObject({
+      additionalProperties: false,
+      required: ['operationId', 'membership'],
+    });
+    expect(
+      contract.components.schemas.C02MembershipMutationState.properties,
+    ).toMatchObject({
+      status: {
+        enum: ['PENDING_INVITE', 'ACTIVE', 'SUSPENDED', 'REMOVED'],
+      },
+    });
   });
 
   it('documents a separate Platform login without Organization claims', () => {
