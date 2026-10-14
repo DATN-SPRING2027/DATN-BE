@@ -40,5 +40,4 @@ export interface UserDirectoryRepository {
     userId: string,
     changes: UserUpdate,
   ): Promise<UserRecord | null>;
-  countActiveAdmins(organizationId: string): Promise<number>;
 }

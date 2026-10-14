@@ -36,7 +36,6 @@ describe('UserDirectoryService', () => {
       list: jest.fn().mockResolvedValue({ data: [user], totalItems: 1 }),
       find: jest.fn().mockResolvedValue(user),
       update: jest.fn().mockResolvedValue({ ...user, fullName: 'Renamed' }),
-      countActiveAdmins: jest.fn().mockResolvedValue(2),
     };
     service = new UserDirectoryService(repository);
   });
@@ -97,12 +96,19 @@ describe('UserDirectoryService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('prevents suspending the final active organization admin', async () => {
-    repository.find.mockResolvedValue({ ...user, roleCodes: ['ADMIN'] });
-    repository.countActiveAdmins.mockResolvedValue(1);
+  it('surfaces the repository transaction conflict when suspending the final eligible admin', async () => {
+    repository.update.mockRejectedValue(
+      new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' }),
+    );
     await expect(
       service.update(actor, user.id, { status: 'SUSPENDED' }),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(repository.update.mock.calls).toHaveLength(0);
+    ).rejects.toMatchObject({
+      response: { code: 'LAST_ELIGIBLE_ADMIN' },
+    });
+    expect(repository.update.mock.calls).toContainEqual([
+      actor.organizationId,
+      user.id,
+      { status: 'SUSPENDED' },
+    ]);
   });
 });

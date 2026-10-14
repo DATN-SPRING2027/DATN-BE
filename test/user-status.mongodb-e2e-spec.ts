@@ -158,9 +158,12 @@ integration('User status invariants in continuum_iam', () => {
         ) as PromiseRejectedResult
       ).reason,
     ).toBeInstanceOf(ConflictException);
-    expect(
-      await repository.countActiveAdmins(organizationA.toHexString()),
-    ).toBe(1);
+    const activeAdmins = await Promise.all(
+      userIds.map((userId) =>
+        repository.isAdmin(organizationA.toHexString(), userId.toHexString()),
+      ),
+    );
+    expect(activeAdmins.filter(Boolean)).toHaveLength(1);
   }, 30000);
 
   it('rejects a status change to an account shared with another organization', async () => {
@@ -185,7 +188,10 @@ integration('User status invariants in continuum_iam', () => {
       response: { code: 'SHARED_ACCOUNT_STATUS_CHANGE' },
     });
     expect(
-      await repository.countActiveAdmins(organizationB.toHexString()),
-    ).toBe(1);
+      await repository.isAdmin(
+        organizationB.toHexString(),
+        sharedAdmin.toHexString(),
+      ),
+    ).toBe(true);
   }, 30000);
 });

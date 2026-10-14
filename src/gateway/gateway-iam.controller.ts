@@ -19,6 +19,7 @@ const forwardedRequestHeaders = [
   'authorization',
   'content-type',
   'cookie',
+  'idempotency-key',
   'x-csrf-token',
   'x-organization-id',
   'x-request-id',
@@ -27,6 +28,7 @@ const forwardedResponseHeaders = [
   'cache-control',
   'content-type',
   'location',
+  'idempotency-replayed',
   'retry-after',
   'www-authenticate',
   'referrer-policy',
@@ -98,6 +100,14 @@ export class GatewayIamController {
 
   @Get('auth/invitations')
   listMyInvitations(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('auth/invitations/:invitationId')
+  getMyInvitation(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {
@@ -183,8 +193,24 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
-  @Delete('iam/organizations/:organizationId/invitations/:invitationId')
-  revokeOrganizationInvitation(
+  @Post('iam/organizations/:organizationId/invitations/:invitationId/resend')
+  resendOrganizationInvitation(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations/:organizationId/invitations/:invitationId/cancel')
+  cancelOrganizationInvitation(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations/:organizationId/memberships/:membershipId/suspend')
+  suspendOrganizationMembership(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {

@@ -376,33 +376,70 @@
     "/api/v1/auth/invitations": {
       "get": {
         "tags": ["Auth"],
-        "summary": "List invitations for the signed-in account",
-        "description": "Returns only pending, unexpired invitations whose normalized email matches the active authenticated account. No bearer token is stored; the account email is checked again on acceptance. The UI must not imply that email delivery occurred.",
-        "operationId": "listMyInvitations",
+        "summary": "List the signed-in recipient's current invitations",
+        "description": "Returns only current PENDING, unexpired V2 invitations bound to the authenticated active User ID and exact normalized account email, with the current PENDING_INVITE membership version and Organization label. Recipient DTOs exclude targetUserId, recipient email and roleCode. Results are paginated and no-store.",
+        "operationId": "listAccountInvitationsV2",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
         "responses": {
-          "200": { "description": "Invitations addressed to the current account.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/OrganizationInvitation" } } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "200": { "description": "Current invitations addressed to the signed-in recipient.", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02RecipientInvitationPage" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "500": { "description": "Invitation read failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "The IAM membership persistence dependency is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/invitations/{invitationId}": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Read a bound recipient invitation",
+        "description": "Returns the minimal recipient invitation and membership snapshot. A pending invitation whose expiresAt is at or before the current time is presented as EXPIRED without changing its stored version. The lookup is bound to authenticated User ID and exact normalized account email and is no-store.",
+        "operationId": "getAccountInvitationV2",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "invitationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } }
+        ],
+        "responses": {
+          "200": { "description": "Minimal recipient invitation and membership detail.", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02RecipientInvitationDetail" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "404": { "description": "Invitation is missing or not bound to the current account.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "500": { "description": "Invitation read failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "The IAM membership persistence dependency is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },
     "/api/v1/auth/invitations/{invitationId}/accept": {
       "post": {
         "tags": ["Auth"],
-        "summary": "Accept an Organization invitation",
-        "description": "Requires an active authenticated account, matching CSRF cookie/header and an unexpired pending invitation addressed to the account's normalized email. The server atomically activates the Organization Membership, assigns only the inviter-authorized role, consumes the invitation and records audit. The account must then select the Organization to receive an Organization session.",
-        "operationId": "acceptInvitation",
+        "summary": "Accept a current bound Organization invitation",
+        "description": "The V2 request requires both membership and invitation versions, idempotency and the CSRF cookie/header pair. It never grants a Role or mints an Organization session. Runtime acceptance remains blocked until the A7 orphan-right evidence and coordinated A8 cutover are verified; while blocked, the endpoint returns 503 IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE and performs no mutation.",
+        "operationId": "acceptOrganizationInvitationV2",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "name": "invitationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
-          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "__Host-csrf", "in": "cookie", "required": true, "schema": { "type": "string", "minLength": 1 }, "description": "Readable double-submit CSRF cookie; its value must match the X-CSRF-Token header." }
         ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02AcceptInvitationRequest" } } } },
         "responses": {
-          "200": { "description": "Invitation accepted; membership is active. Organization session has not yet been selected.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AcceptedOrganizationInvitation" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" }
-        }
+          "200": { "description": "Recipient accepted a current live invitation.", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } }, "Idempotency-Replayed": { "schema": { "type": "boolean", "const": true } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02MembershipMutationAck" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "500": { "description": "Required membership mutation write failed and was rolled back.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "A7/A8 acceptance readiness is unavailable; no mutation was attempted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-readiness-gates": ["A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF", "A8_COORDINATED_CUTOVER"]
       }
     },
     "/api/v1/auth/select-organization": {
@@ -442,58 +479,145 @@
     "/api/v1/iam/organizations/{organizationId}/invitations": {
       "get": {
         "tags": ["Users"],
-        "summary": "List pending Organization invitations",
-        "description": "Returns pending, unexpired invitations for this Organization. Requires the caller's current Organization context and a current active ADMIN membership and role assignment.",
+        "summary": "List pending Organization Membership invitations",
+        "description": "Returns contract V2 pending, unexpired invitations for the scoped Organization, joined to current membership versions. Requires an ACTIVE User and OrganizationMembership plus the current ADMIN Role's organization.memberships.read permission. Role/title claims do not authorize access.",
         "operationId": "listOrganizationInvitations",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
-          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } }
+          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
         ],
         "responses": {
-          "200": { "description": "Pending invitations in the caller's Organization.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/OrganizationInvitation" } } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
-        }
+          "200": { "description": "Current pending invitations in the caller's Organization.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02AdminInvitationPage" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "503": { "description": "Required membership dependency is not ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.read",
+        "x-readiness-gates": []
       },
       "post": {
         "tags": ["Users"],
         "summary": "Invite an account to an Organization",
-        "description": "Requires a current active Organization ADMIN membership and role assignment, matching Organization context and CSRF. Creates one pending invitation bound to the normalized email and selected Organization role for seven days. Limited to 30 invitations per Organization/admin per hour. No email is sent; notify the recipient out of band.",
+        "description": "Contract V2 invite command. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. The email must identify an existing eligible account. When operational readiness is enabled, it creates PENDING_INVITE membership, invitation, committed operation, allowlisted audit record, and outbox intent atomically. The seven-day invitation expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. An outbox intent does not prove email delivery. New invite operations currently return 503 without mutation while A7 notification-provider evidence and A8 coordinated cutover are blocked; exact committed idempotency replays remain replayable.",
         "operationId": "createOrganizationInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
-          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "__Host-csrf", "in": "cookie", "required": true, "schema": { "type": "string", "minLength": 1 }, "description": "Readable double-submit CSRF cookie; its value must match the X-CSRF-Token header." },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" } }
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateOrganizationInvitationRequest" } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02InviteMemberRequest" } } } },
         "responses": {
-          "201": { "description": "Invitation recorded; no email delivery was attempted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrganizationInvitation" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
+          "201": { "description": "Membership invite command committed. Exact key replay returns the same status/body and Idempotency-Replayed: true.", "headers": { "Idempotency-Replayed": { "schema": { "type": "string", "const": "true" } }, "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02MembershipMutationAck" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "404": { "$ref": "#/components/responses/C02MembershipNotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" },
-          "429": { "$ref": "#/components/responses/TooManyRequests" }
-        }
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "429": { "description": "The committed invitation quota was reached. Retry-After is seconds until the oldest counted operation leaves the rolling window.", "headers": { "Retry-After": { "schema": { "type": "integer", "minimum": 1 } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no mutation; an exact committed idempotency replay returns the stored result.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-permission": "organization.memberships.manage",
+        "x-readiness-gates": ["A7_NOTIFICATION_CONTRACT_PROVIDER", "A8_COORDINATED_CUTOVER"]
       }
     },
-    "/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}": {
-      "delete": {
-        "tags": ["Users"],
-        "summary": "Revoke a pending Organization invitation",
-        "description": "Requires current Organization ADMIN authority, matching Organization context and CSRF. Only an unexpired pending invitation in this Organization can be revoked. The transition is audited.",
-        "operationId": "revokeOrganizationInvitation",
+    "/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}/resend": {
+      "post": {
+        "tags": ["Organization Memberships"],
+        "summary": "Resend a pending invitation",
+        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Supersedes the current V2 pending invitation and creates its successor with membership and invitation version checks. Invite/resend quota, idempotency, audit, and outbox intent are transactional. An outbox intent does not prove email delivery. New commands currently return 503 without mutation while A7 notification-provider evidence and A8 coordinated cutover are blocked; exact committed idempotency replays remain replayable.",
+        "operationId": "resendOrganizationMembershipInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
           { "name": "invitationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
-          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "__Host-csrf", "in": "cookie", "required": true, "schema": { "type": "string", "minLength": 1 }, "description": "Readable double-submit CSRF cookie; its value must match the X-CSRF-Token header." },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" } }
         ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02ResendInvitationRequest" } } } },
         "responses": {
-          "204": { "description": "Invitation revoked." },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" }
-        }
+          "200": { "description": "Invitation resend committed or exactly replayed.", "headers": { "Idempotency-Replayed": { "schema": { "type": "string", "const": "true" } }, "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02MembershipMutationAck" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "404": { "$ref": "#/components/responses/C02MembershipNotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no mutation; an exact committed idempotency replay returns the stored result.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-permission": "organization.memberships.manage",
+        "x-readiness-gates": ["A7_NOTIFICATION_CONTRACT_PROVIDER", "A8_COORDINATED_CUTOVER"]
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}/cancel": {
+      "post": {
+        "tags": ["Organization Memberships"],
+        "summary": "Cancel a pending invitation",
+        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Uses expected membership/invitation versions and atomically cancels the invitation, transitions the pending membership to REMOVED, records the committed operation, and writes audit when operationally enabled. New commands currently return 503 without mutation while A8 coordinated cutover is blocked; exact committed idempotency replays remain replayable.",
+        "operationId": "cancelOrganizationMembershipInvitation",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "invitationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "__Host-csrf", "in": "cookie", "required": true, "schema": { "type": "string", "minLength": 1 }, "description": "Readable double-submit CSRF cookie; its value must match the X-CSRF-Token header." },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02CancelInvitationRequest" } } } },
+        "responses": {
+          "200": { "description": "Invitation cancellation committed or exactly replayed.", "headers": { "Idempotency-Replayed": { "schema": { "type": "string", "const": "true" } }, "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02MembershipMutationAck" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "404": { "$ref": "#/components/responses/C02MembershipNotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "503": { "description": "A8 coordinated cutover is blocked. A new command performs no mutation; an exact committed idempotency replay returns the stored result.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "BLOCKED_A8",
+        "x-permission": "organization.memberships.manage",
+        "x-readiness-gates": ["A8_COORDINATED_CUTOVER"]
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/suspend": {
+      "post": {
+        "tags": ["Organization Memberships"],
+        "summary": "Suspend an active Organization Membership",
+        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-suspension, checks ACTIVE membership and expected version, resolves eligible ADMIN through the current Role permission, serializes through the shared Organization ADMIN fence, protects the last eligible ADMIN, and writes one atomic operation/audit record.",
+        "operationId": "suspendOrganizationMembership",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "organizationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "membershipId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ResourceId" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "__Host-csrf", "in": "cookie", "required": true, "schema": { "type": "string", "minLength": 1 }, "description": "Readable double-submit CSRF cookie; its value must match the X-CSRF-Token header." },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02SuspendMembershipRequest" } } } },
+        "responses": {
+          "200": { "description": "Membership suspension committed or exactly replayed.", "headers": { "Idempotency-Replayed": { "schema": { "type": "string", "const": "true" } }, "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/C02MembershipMutationAck" } } } },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "404": { "$ref": "#/components/responses/C02MembershipNotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "503": { "description": "The membership persistence or audit dependency is unavailable; the transaction is rolled back and no success is returned.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.manage",
+        "x-readiness-gates": []
       }
     },
     "/api/v1/iam/users": {
@@ -2346,6 +2470,159 @@
           "pagination": {
             "$ref": "#/components/schemas/C02Pagination"
           }
+        }
+      },
+      "C02AdminInvitationPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "maxItems": 100,
+            "items": { "$ref": "#/components/schemas/C02AdminInvitation" }
+          },
+          "pagination": { "$ref": "#/components/schemas/C02Pagination" }
+        }
+      },
+      "C02AdminInvitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "membershipId", "organizationId", "status", "version", "expiresAt", "createdAt", "membershipVersion", "targetUserId", "email"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "membershipId": { "$ref": "#/components/schemas/ResourceId" },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "status": { "type": "string", "const": "PENDING" },
+          "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "membershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "targetUserId": { "$ref": "#/components/schemas/ResourceId" },
+          "email": { "type": "string", "format": "email" }
+        }
+      },
+      "C02RecipientInvitationPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination"],
+        "properties": {
+          "data": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/C02RecipientInvitation" } },
+          "pagination": { "$ref": "#/components/schemas/C02Pagination" }
+        }
+      },
+      "C02RecipientInvitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "membershipId", "organizationId", "status", "version", "expiresAt", "createdAt", "membershipVersion", "organizationName"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "membershipId": { "$ref": "#/components/schemas/ResourceId" },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "CANCELLED", "EXPIRED", "SUPERSEDED"] },
+          "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "membershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "organizationName": { "type": "string" }
+        }
+      },
+      "C02RecipientInvitationDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["membership", "invitation"],
+        "properties": {
+          "membership": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status", "version"],
+            "properties": {
+              "id": { "$ref": "#/components/schemas/ResourceId" },
+              "status": { "$ref": "#/components/schemas/MembershipStatus" },
+              "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+            }
+          },
+          "invitation": { "$ref": "#/components/schemas/C02RecipientInvitation" }
+        }
+      },
+      "C02MembershipMutationAck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "membership"],
+        "properties": {
+          "operationId": { "$ref": "#/components/schemas/ResourceId" },
+          "membership": { "$ref": "#/components/schemas/C02MembershipMutationState" },
+          "invitation": { "$ref": "#/components/schemas/C02InvitationMutationState" }
+        }
+      },
+      "C02MembershipMutationState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "organizationId", "userId", "status", "version"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "status": { "type": "string", "enum": ["PENDING_INVITE", "ACTIVE", "SUSPENDED", "REMOVED"] },
+          "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+        }
+      },
+      "C02InvitationMutationState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "version", "expiresAt"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "CANCELLED", "EXPIRED", "SUPERSEDED"] },
+          "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "C02InviteMemberRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "reasonCode"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 254 },
+          "reasonCode": { "type": "string", "enum": ["ACCESS_REQUEST", "ACCESS_REVIEW"] }
+        }
+      },
+      "C02ResendInvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "expectedInvitationVersion", "reasonCode"],
+        "properties": {
+          "expectedMembershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "expectedInvitationVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "reasonCode": { "type": "string", "enum": ["ACCESS_REQUEST", "ACCESS_REVIEW"] }
+        }
+      },
+      "C02CancelInvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "expectedInvitationVersion", "reasonCode"],
+        "properties": {
+          "expectedMembershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "expectedInvitationVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "reasonCode": { "type": "string", "const": "INVITATION_CANCELLED" }
+        }
+      },
+      "C02AcceptInvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "expectedInvitationVersion"],
+        "properties": {
+          "expectedMembershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "expectedInvitationVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+        }
+      },
+      "C02SuspendMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "reasonCode"],
+        "properties": {
+          "expectedMembershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "reasonCode": { "type": "string", "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW"] }
         }
       },
       "C02MembershipSummary": {

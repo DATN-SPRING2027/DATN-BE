@@ -50,10 +50,11 @@ import { MongoOrganizationProvisioningRepository } from './infrastructure/mongod
 import { PlatformAuditService } from './application/platform/platform-audit.service';
 import { PLATFORM_AUDIT_REPOSITORY } from './application/platform/platform-audit.repository';
 import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-audit.repository';
-import {
-  OrganizationInvitationController,
-  AccountInvitationController,
-} from './controllers/organization-invitation.controller';
+import { AccountInvitationController } from './controllers/organization-invitation.controller';
+import { OrganizationMembershipCommandController } from './controllers/organization-membership-command.controller';
+import { OrganizationMembershipCommandService } from './application/organizations/organization-membership-command.service';
+import { ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY } from './application/organizations/organization-membership-command.repository';
+import { MongoOrganizationMembershipCommandRepository } from './infrastructure/mongodb/organization-membership-command.repository';
 import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
@@ -69,7 +70,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     ProjectAccessController,
     PlatformController,
     AccountOrganizationController,
-    OrganizationInvitationController,
+    OrganizationMembershipCommandController,
     AccountInvitationController,
   ],
   providers: [
@@ -112,6 +113,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     ProjectAccessService,
     OrganizationProvisioningService,
     OrganizationInvitationService,
+    OrganizationMembershipCommandService,
     PlatformAuditService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
@@ -133,6 +135,10 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     {
       provide: ORGANIZATION_INVITATION_REPOSITORY,
       useClass: MongoOrganizationInvitationRepository,
+    },
+    {
+      provide: ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,
+      useClass: MongoOrganizationMembershipCommandRepository,
     },
     {
       provide: PLATFORM_AUDIT_REPOSITORY,

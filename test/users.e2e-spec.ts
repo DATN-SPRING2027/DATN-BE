@@ -1,4 +1,8 @@
-import { INestApplication, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  INestApplication,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
@@ -55,16 +59,23 @@ describe('User directory (e2e)', () => {
     update: (_org, userId, changes) => {
       const index = users.findIndex((item) => item.id === userId);
       if (index < 0) return Promise.resolve(null);
-      users[index] = { ...users[index], ...changes };
-      return Promise.resolve(users[index]);
-    },
-    countActiveAdmins: () =>
-      Promise.resolve(
+      const existing = users[index];
+      if (
+        existing.status === 'ACTIVE' &&
+        existing.roleCodes.includes('ADMIN') &&
+        changes.status !== undefined &&
+        changes.status !== 'ACTIVE' &&
         users.filter(
           (item) =>
             item.status === 'ACTIVE' && item.roleCodes.includes('ADMIN'),
-        ).length,
-      ),
+        ).length <= 1
+      )
+        return Promise.reject(
+          new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' }),
+        );
+      users[index] = { ...users[index], ...changes };
+      return Promise.resolve(users[index]);
+    },
   };
   const auth = {
     getCurrentIdentity: jest.fn(

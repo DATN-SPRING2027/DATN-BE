@@ -16,6 +16,7 @@ const user = {
 
 function chain(result: unknown) {
   const query = {
+    session: jest.fn(),
     sort: jest.fn(),
     skip: jest.fn(),
     limit: jest.fn(),
@@ -23,6 +24,7 @@ function chain(result: unknown) {
     exec: jest.fn().mockResolvedValue(result),
   };
   query.sort.mockReturnValue(query);
+  query.session.mockReturnValue(query);
   query.skip.mockReturnValue(query);
   query.limit.mockReturnValue(query);
   query.lean.mockReturnValue(query);
@@ -30,6 +32,83 @@ function chain(result: unknown) {
 }
 
 describe('MongoUserDirectoryRepository', () => {
+  it('authorizes only eligible admins with the current ADMIN Role permission and ACTIVE membership', async () => {
+    const roleId = new Types.ObjectId();
+    const adminUserId = new Types.ObjectId();
+    const assignmentQuery = chain([{ userId: adminUserId, roleId }]);
+    const roleQuery = chain([{ _id: roleId }]);
+    const membershipsQuery = chain([adminUserId]);
+    const usersQuery = chain([adminUserId]);
+    const assignments = { find: jest.fn().mockReturnValue(assignmentQuery) };
+    const roles = { find: jest.fn().mockReturnValue(roleQuery) };
+    const memberships = {
+      distinct: jest.fn().mockReturnValue(membershipsQuery),
+    };
+    const users = { distinct: jest.fn().mockReturnValue(usersQuery) };
+    const connection = {
+      models: {
+        continuum_iam_role_assignments: assignments,
+        continuum_iam_roles: roles,
+        continuum_iam_organization_memberships: memberships,
+        continuum_iam_users: users,
+      },
+    } as unknown as Connection;
+
+    await expect(
+      new MongoUserDirectoryRepository(connection).isAdmin(
+        organizationId,
+        adminUserId.toHexString(),
+      ),
+    ).resolves.toBe(true);
+    expect(assignments.find).toHaveBeenCalledWith(
+      expect.objectContaining({ roleCode: 'ADMIN' }),
+      { userId: 1, roleId: 1 },
+    );
+    expect(roles.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'ADMIN',
+        permissions: 'organization.memberships.manage',
+      }),
+      { _id: 1 },
+    );
+    expect(memberships.distinct).toHaveBeenCalledWith(
+      'userId',
+      expect.objectContaining({ status: 'ACTIVE' }),
+    );
+    expect(users.distinct).toHaveBeenCalledWith(
+      '_id',
+      expect.objectContaining({ status: 'ACTIVE' }),
+    );
+  });
+
+  it('does not authorize an ADMIN-coded assignment without the live manage permission', async () => {
+    const assignment = chain([
+      { userId: new Types.ObjectId(userId), roleId: new Types.ObjectId() },
+    ]);
+    const roles = { find: jest.fn().mockReturnValue(chain([])) };
+    const memberships = { distinct: jest.fn() };
+    const users = { distinct: jest.fn() };
+    const connection = {
+      models: {
+        continuum_iam_role_assignments: {
+          find: jest.fn().mockReturnValue(assignment),
+        },
+        continuum_iam_roles: roles,
+        continuum_iam_organization_memberships: memberships,
+        continuum_iam_users: users,
+      },
+    } as unknown as Connection;
+
+    await expect(
+      new MongoUserDirectoryRepository(connection).isAdmin(
+        organizationId,
+        userId,
+      ),
+    ).resolves.toBe(false);
+    expect(memberships.distinct).not.toHaveBeenCalled();
+    expect(users.distinct).not.toHaveBeenCalled();
+  });
+
   it('lists active organization members, filters by role, paginates, and never returns credentials', async () => {
     const assignmentsForPage = chain([
       { userId: new Types.ObjectId(userId), roleCode: 'MEMBER' },
