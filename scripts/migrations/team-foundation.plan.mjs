@@ -107,10 +107,11 @@ export function planTeamFoundation(snapshot) {
     databaseName: snapshot.databaseName,
     targetFingerprint: snapshot.targetFingerprint,
     assessmentBasis: {
-      source: 'DATN-89 latest Team decision table',
+      source: 'DATN-89 proposed Team decision table',
       asOf: '2026-10-14',
-      decisionStatus: 'PARTIAL',
-      dispositions: {
+      decisionStatus: 'PROPOSED',
+      authoritySignoff: 'PENDING',
+      proposedDispositions: {
         'TQ-01': 'APPROVE',
         'TQ-02': 'APPROVE',
         'TQ-03': 'APPROVE',

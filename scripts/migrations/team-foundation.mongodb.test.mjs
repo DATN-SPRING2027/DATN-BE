@@ -95,6 +95,7 @@ integration(
       await assert.rejects(
         db.collection('teams').insertOne({
           ...input,
+          _id: new mongoose.Types.ObjectId(),
           status: 'ARCHIVED',
           archivedAt: new Date(),
           archivedBy: actor,
@@ -107,7 +108,11 @@ integration(
       );
       await db
         .collection('teams')
-        .insertOne({ ...input, projectId: otherProject });
+        .insertOne({
+          ...input,
+          _id: new mongoose.Types.ObjectId(),
+          projectId: otherProject,
+        });
       const state = async () => ({
         rows: await db.collection('teams').find().sort({ _id: 1 }).toArray(),
         indexes: await db.collection('teams').listIndexes().toArray(),
@@ -115,9 +120,13 @@ integration(
       const before = await state();
       const clean = await inspectTeamFoundation(db, 'synthetic-fixture');
       assert.equal(clean.clean, true);
-      assert.equal(clean.assessmentBasis.decisionStatus, 'PARTIAL');
-      assert.equal(clean.assessmentBasis.dispositions['TQ-01'], 'APPROVE');
-      assert.deepEqual(clean.assessmentBasis.dispositions['TQ-09'], {
+      assert.equal(clean.assessmentBasis.decisionStatus, 'PROPOSED');
+      assert.equal(clean.assessmentBasis.authoritySignoff, 'PENDING');
+      assert.equal(
+        clean.assessmentBasis.proposedDispositions['TQ-01'],
+        'APPROVE',
+      );
+      assert.deepEqual(clean.assessmentBasis.proposedDispositions['TQ-09'], {
         contract: 'APPROVE',
         mutations: 'DEFER',
       });
