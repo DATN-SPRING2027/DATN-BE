@@ -3,7 +3,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import mongoose, { Types, type Connection } from 'mongoose';
+import mongoose, { Types, type ClientSession, type Connection } from 'mongoose';
 import {
   AUDIT_DATABASE_NAME,
   IAM_AUDIT_COLLECTION_NAME,
@@ -302,6 +302,59 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     ).toBe(1);
   });
 
+  it('revalidates the actor permission after acquiring the Organization fence', async () => {
+    const internals = repository as unknown as {
+      acquireOrganizationAdminFence: (
+        organizationId: Types.ObjectId,
+        session: ClientSession,
+      ) => Promise<void>;
+    };
+    const acquireFence =
+      internals.acquireOrganizationAdminFence.bind(repository);
+    const fence = jest
+      .spyOn(internals, 'acquireOrganizationAdminFence')
+      .mockImplementation(async (fencedOrganizationId, session) => {
+        await acquireFence(fencedOrganizationId, session);
+        await connection!
+          .collection('roles')
+          .updateOne(
+            { _id: roleId },
+            { $set: { permissions: [] } },
+            { session },
+          );
+      });
+
+    let result: unknown;
+    try {
+      result = await invoke(actorId, {
+        command: 'SUSPEND',
+        membershipId: targetMembershipId.toHexString(),
+        expectedMembershipVersion: 3,
+        reasonCode: 'ACCESS_REVIEW',
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    } finally {
+      fence.mockRestore();
+    }
+
+    expect(result).toBeInstanceOf(ForbiddenException);
+    expect(
+      await connection!
+        .collection('organization_memberships')
+        .findOne({ _id: targetMembershipId }),
+    ).toMatchObject({ status: 'ACTIVE', version: 3 });
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+      }),
+    ).toBe(0);
+  });
+
   it('suspends an active member and denies inactive actors and cross-Organization commands', async () => {
     const result = await invoke(actorId, {
       command: 'SUSPEND',
@@ -344,6 +397,75 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         foreignOrganizationId,
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('records the pending invitation as the resend audit pre-state', async () => {
+    const now = new Date('2026-10-14T03:00:00.000Z');
+    const invitationId = new Types.ObjectId();
+    const session = await connection!.startSession();
+    const internals = repository as unknown as {
+      resend: (
+        organizationIdText: string,
+        actorUserId: Types.ObjectId,
+        command: Extract<OrganizationMembershipCommand, { command: 'RESEND' }>,
+        now: Date,
+        session: ClientSession,
+      ) => Promise<{
+        audit: { before: Record<string, string | number> };
+      }>;
+    };
+    const rollback = new Error('rollback resend audit fixture');
+    let before: Record<string, string | number> | undefined;
+
+    await connection!
+      .collection('organization_memberships')
+      .updateOne(
+        { _id: targetMembershipId },
+        { $set: { status: 'PENDING_INVITE' } },
+      );
+    await connection!.collection('organization_invitations').insertOne({
+      _id: invitationId,
+      organizationId,
+      membershipId: targetMembershipId,
+      targetUserId: memberId,
+      email: 'member@example.test',
+      contractVersion: 2,
+      version: 1,
+      status: 'PENDING',
+      invitedBy: actorId,
+      expiresAt: new Date('2026-10-21T03:00:00.000Z'),
+      createdAt: now,
+    });
+
+    let transactionError: unknown;
+    try {
+      await session
+        .withTransaction(async () => {
+          const result = await internals.resend(
+            organizationId.toHexString(),
+            actorId,
+            {
+              command: 'RESEND',
+              invitationId: invitationId.toHexString(),
+              expectedMembershipVersion: 3,
+              expectedInvitationVersion: 1,
+              reasonCode: 'ACCESS_REVIEW',
+            },
+            now,
+            session,
+          );
+          before = result.audit.before;
+          throw rollback;
+        })
+        .catch((error: unknown) => {
+          transactionError = error;
+        });
+    } finally {
+      await session.endSession();
+    }
+
+    expect(transactionError).toBe(rollback);
+    expect(before).toMatchObject({ invitationStatus: 'PENDING' });
   });
 
   it('rolls back membership and operation writes when required audit persistence fails', async () => {

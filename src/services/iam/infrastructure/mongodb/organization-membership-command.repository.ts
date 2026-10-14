@@ -275,6 +275,21 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           });
 
         await this.acquireOrganizationAdminFence(organizationId, session);
+        // Re-read the actor's current account, membership, ADMIN assignment,
+        // and exact permission after the shared fence. withTransaction reruns
+        // this callback on transient conflicts, so each attempt checks again.
+        if (
+          !(await this.hasPermissionAt(
+            organizationId,
+            actorUserId,
+            organizationMembershipManagePermission,
+            session,
+          ))
+        )
+          throw new ForbiddenException({
+            code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+          });
+
         if (
           input.command.command === 'INVITE' ||
           input.command.command === 'RESEND'
@@ -626,7 +641,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         before: {
           membershipStatus: membership.status,
           membershipVersion: membership.version,
-          invitationStatus: previousInvitationStatus,
+          invitationStatus: invitation.status,
           invitationVersion: invitation.version,
           invitationExpiresAt: invitation.expiresAt.toISOString(),
         },
