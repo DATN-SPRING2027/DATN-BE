@@ -13,11 +13,16 @@ export class ProjectAccessService {
     private readonly repository: ProjectAccessRepository,
   ) {}
 
-  makePublic(actor: AuthenticatedIdentity, projectId: string) {
-    return this.repository.makePublic(
+  changeVisibility(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+    visibility: 'PRIVATE' | 'PUBLIC',
+  ) {
+    return this.repository.changeVisibility(
       actor.organizationId,
       actor.id,
       projectId,
+      visibility,
     );
   }
 

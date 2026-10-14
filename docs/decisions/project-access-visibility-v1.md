@@ -1,3 +1,47 @@
+# Visibility completion amendment — 2026-10-14
+
+The requester authorized resolving all blockers and completing the visibility UI
+following the approved bidirectional mutation. GET on the existing visibility
+path now provides a read-only access signal using exactly the existing PATCH
+guard and permission policy. 200 returns {canManageVisibility:true}; 403 is denial.
+It neither mutates nor grants a later PATCH. No new authorization rule, role,
+schema, permission provisioning or database migration is introduced. This resolves
+the pre-mutation permission-signal gap and supersedes the earlier no-GET restriction
+below. FE enables actions only after a fresh API allow response and still handles
+mutation denial; no client role/ownership inference is allowed. Both PRIVATE to
+PUBLIC and PUBLIC to PRIVATE retain the approved transaction and audit behavior.
+
+---
+
+# Minimal visibility amendment — 2026-10-14
+
+The requester approved minimal backend changes allowing PUBLIC to PRIVATE as well
+as PRIVATE to PUBLIC. This amendment supersedes only the historical one-way
+restriction below. Both directions use the existing PATCH visibility endpoint,
+project.visibility.manage permission, Organization-scoped ADMIN assignment,
+ACTIVE OrganizationMembership and transactional PROJECT_VISIBILITY_CHANGED audit.
+A same-state request returns 409 after authorization. Archived, cross-organization
+and unauthorized requests retain existing fail-closed semantics. There is no
+schema, migration, permission provisioning or new endpoint. Existing OpenAPI
+operation/schema identifiers are retained for client compatibility; the visibility
+request now accepts the existing ProjectVisibility enum.
+
+PUBLIC to PRIVATE removes metadata access granted solely by PUBLIC visibility;
+content ACLs are unchanged. Clients must revalidate Project reads after that change.
+The accepted contract still has no pre-mutation permission signal; this gap remains
+flagged and must not be filled by roles/client state or a new capability endpoint.
+
+Verification of this amendment: lint/typecheck, 25 development smoke-safety tests,
+468 enabled unit tests, the disposable MongoDB mutation/audit integration test and
+production build passed. E2e passed 55 tests with infrastructure disabled from a
+working directory without .env. The repo-root npm run check exposes the existing
+missing-JWT test environment issue: ConfigModule reloads JWT_SECRET from the
+development .env after the test deletes it. Runtime configuration was not changed.
+No development Project data, schema or permission records were changed. All code
+changes remain local; no branch, commit, push or PR was created for this amendment.
+
+---
+
 # Project Access & Visibility V1 — work package decision
 
 **Status:** Accepted V1 business decisions and authorization mapping; permission provisioning is tracked as a separate DB work package.

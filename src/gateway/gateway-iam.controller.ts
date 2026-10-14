@@ -183,6 +183,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/projects/:projectId/visibility')
+  getProjectVisibilityAccess(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Patch('iam/projects/:projectId/visibility')
   makeProjectPublic(
     @Req() request: Request,

@@ -783,10 +783,31 @@
       }
     },
     "/api/v1/iam/projects/{projectId}/visibility": {
+      "get": {
+        "tags": ["Projects"],
+        "summary": "Check visibility management access",
+        "description": "Read-only permission check using the same authorization guard as PATCH: ACTIVE OrganizationMembership, Organization-scoped ADMIN assignment and project.visibility.manage. Returns canManageVisibility=true on 200, 403 means denied. Archived, missing and cross-organization Projects fail closed. No mutation or audit event is created. Cache-Control: no-store. A later PATCH is independently reauthorized.",
+        "operationId": "getProjectVisibilityAccess",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "responses": {
+          "200": {
+            "description": "Current actor may manage visibility.",
+            "content": { "application/json": { "schema": {
+              "type": "object", "additionalProperties": false,
+              "required": ["canManageVisibility"],
+              "properties": { "canManageVisibility": { "const": true } }
+            } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
       "patch": {
         "tags": ["Projects"],
-        "summary": "Make a private project public",
-        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.visibility.manage in the resolved Role.permissions. Allows PRIVATE to PUBLIC only; PUBLIC to PRIVATE is not supported by V1. An already-PUBLIC active Project returns 409 after authorization succeeds. The mutation is audited in continuum_audit.audit_logs_iam. Project content permissions are unchanged.",
+        "summary": "Change project visibility",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.visibility.manage in the resolved Role.permissions. Allows PRIVATE to PUBLIC and PUBLIC to PRIVATE. A request for the current visibility returns 409 after authorization succeeds. Making a Project PRIVATE revokes metadata access granted solely by PUBLIC visibility. The mutation is audited in continuum_audit.audit_logs_iam. Project content permissions are unchanged.",
         "operationId": "makeProjectPublic",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "requestBody": {
@@ -1816,7 +1837,7 @@
         "additionalProperties": false,
         "required": ["visibility"],
         "properties": {
-          "visibility": { "const": "PUBLIC" }
+          "visibility": { "$ref": "#/components/schemas/ProjectVisibility" }
         }
       },
       "AssignProjectLeaderRequest": {
