@@ -107,10 +107,11 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     private readonly authorizationPolicy = new AuthorizationPolicy(),
   ) {}
 
-  async makePublic(
+  async changeVisibility(
     organizationId: string,
     actorId: string,
     projectId: string,
+    visibility: ProjectVisibility,
   ): Promise<ProjectRecord> {
     this.assertIds(organizationId, actorId, projectId);
     const connection = this.requireConnection();
@@ -125,10 +126,14 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           'project.visibility.manage',
           session,
         );
-        if (authorizedProject.visibility !== 'PRIVATE')
+        if (
+          !['PRIVATE', 'PUBLIC'].includes(authorizedProject.visibility ?? '') ||
+          authorizedProject.visibility === visibility
+        )
           throw new ConflictException({
             code: 'PROJECT_VISIBILITY_TRANSITION_NOT_ALLOWED',
-            message: 'Only an active PRIVATE Project can be made PUBLIC.',
+            message:
+              'Project visibility changed or already matches the requested value.',
           });
         const project = await this.model<ProjectDocument>('projects')
           .findOneAndUpdate(
@@ -136,9 +141,9 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
               _id: new Types.ObjectId(projectId),
               organizationId: new Types.ObjectId(organizationId),
               status: 'ACTIVE',
-              visibility: 'PRIVATE',
+              visibility: authorizedProject.visibility,
             },
-            { $set: { visibility: 'PUBLIC' } },
+            { $set: { visibility } },
             { new: true, session },
           )
           .lean()
@@ -155,7 +160,8 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           if (!current) throw projectNotFound();
           throw new ConflictException({
             code: 'PROJECT_VISIBILITY_TRANSITION_NOT_ALLOWED',
-            message: 'Only an active PRIVATE Project can be made PUBLIC.',
+            message:
+              'Project visibility changed or already matches the requested value.',
           });
         }
         result = this.projectRecord(project);

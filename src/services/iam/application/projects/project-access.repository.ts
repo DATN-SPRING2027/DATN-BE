@@ -18,10 +18,11 @@ export interface ProjectMembershipListQuery {
 }
 
 export interface ProjectAccessRepository {
-  makePublic(
+  changeVisibility(
     organizationId: string,
     actorId: string,
     projectId: string,
+    visibility: ProjectRecord['visibility'],
   ): Promise<ProjectRecord>;
   listMembers(
     organizationId: string,

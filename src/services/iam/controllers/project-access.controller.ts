@@ -103,10 +103,18 @@ export class ProjectAccessController {
     private readonly access: ProjectAccessService,
   ) {}
 
+  @Get('visibility')
+  @RequireProjectAccessPermission('project.visibility.manage')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  getVisibilityAccess(@Res({ passthrough: true }) response: Response) {
+    response.setHeader('Cache-Control', 'no-store');
+    return { canManageVisibility: true };
+  }
+
   @Patch('visibility')
   @RequireProjectAccessPermission('project.visibility.manage')
   @UseGuards(ProjectAccessAuthorizationGuard)
-  async makePublic(
+  async changeVisibility(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
     @Body() body: unknown,
@@ -118,12 +126,18 @@ export class ProjectAccessController {
       body === null ||
       Array.isArray(body) ||
       Object.keys(body).length !== 1 ||
-      (body as Record<string, unknown>).visibility !== 'PUBLIC'
+      !['PRIVATE', 'PUBLIC'].includes(
+        (body as Record<string, unknown>).visibility as string,
+      )
     )
       invalid();
     response.setHeader('Cache-Control', 'no-store');
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
-    return this.access.makePublic(actor, projectId);
+    return this.access.changeVisibility(
+      actor,
+      projectId,
+      (body as { visibility: 'PRIVATE' | 'PUBLIC' }).visibility,
+    );
   }
 
   @Get('memberships')
