@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import type { ServiceCollectionDefinition } from './mongodb.types';
+import { teamFoundationSchema } from './team-foundation.schema';
 import {
   membershipInvitationSchema,
   membershipOperationSchema,
@@ -110,16 +111,7 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'projects', timestamps: true, strict: true },
   ),
-  teams: new Schema(
-    {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      projectId: { type: Schema.Types.ObjectId, required: true },
-      name: { type: String, required: true, trim: true },
-      code: { type: String, required: true, uppercase: true, trim: true },
-      description: String,
-    },
-    { collection: 'teams', timestamps: true, strict: true },
-  ),
+  teams: teamFoundationSchema,
   project_memberships: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
