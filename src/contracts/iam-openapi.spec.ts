@@ -351,6 +351,22 @@ describe('IAM OpenAPI contract', () => {
       for (const [status, reference] of Object.entries(expectedReferences)) {
         const response = operation.responses[status];
         if (response) {
+          if (
+            [
+              'listOrganizationMembershipsV1',
+              'getOrganizationMembershipV1',
+            ].includes(operation.operationId)
+          ) {
+            const name = reference.split('/').at(-1)!;
+            const scopedName = `C02Membership${name}`;
+            expect(response).toEqual({
+              $ref: `#/components/responses/${scopedName}`,
+            });
+            expect(contract.components.responses[scopedName].content).toEqual(
+              contract.components.responses[name].content,
+            );
+            continue;
+          }
           expect(response).toEqual({
             $ref:
               operation.operationId === 'login' && status === '409'

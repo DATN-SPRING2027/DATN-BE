@@ -151,6 +151,22 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/organizations/:organizationId/memberships')
+  listOrganizationMemberships(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/organizations/:organizationId/memberships/:membershipId')
+  getOrganizationMembership(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/organizations/:organizationId/invitations')
   listOrganizationInvitations(
     @Req() request: Request,

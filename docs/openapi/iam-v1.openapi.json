@@ -15,7 +15,8 @@
       "description": "User access to projects."
     },
     { "name": "Teams", "description": "Teams within a project." },
-    { "name": "Team Memberships", "description": "User membership in teams." }
+    { "name": "Team Memberships", "description": "User membership in teams." },
+    { "name": "Organization Memberships", "description": "C-02 membership reads; lifecycle commands and invitation cutover remain separate." }
   ],
   "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
   "paths": {
@@ -1225,6 +1226,261 @@
           "429": { "$ref": "#/components/responses/TooManyRequests" }
         }
       }
+    },
+    "/api/v1/iam/organizations/{organizationId}/memberships": {
+      "get": {
+        "tags": [
+          "Organization Memberships"
+        ],
+        "summary": "List own Organization members across all four states",
+        "operationId": "listOrganizationMembershipsV1",
+        "description": "C-02 approved membership read contract. Authenticate an ACTIVE User in the selected Organization, revalidate ACTIVE membership and an Organization-level assignment resolving actual ADMIN with organization.memberships.read from current Role.permissions. JWT roles and manage permission alone do not grant read. Strict IDs/query allowlist; no-store; createdAt DESC then _id DESC; page/count share a scoped facet with minimal User lookup after page limit. Missing User is null; missing lifecycle migration metadata fails closed. Existing invitation APIs and membership commands are outside this implementation.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{24}$",
+              "minLength": 24,
+              "maxLength": 24
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PENDING_INVITE",
+                "ACTIVE",
+                "SUSPENDED",
+                "REMOVED"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List own Organization members across all four states",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/C02MembershipPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/C02MembershipUnauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/C02MembershipForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/C02MembershipNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/C02MembershipValidationFailed"
+          },
+          "500": {
+            "description": "Unexpected internal failure while reading Organization Memberships.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency/readiness unavailable.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-unknown-input-fields": "REJECT",
+        "x-permission": "organization.memberships.read",
+        "x-readiness-gates": [],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}": {
+      "get": {
+        "tags": [
+          "Organization Memberships"
+        ],
+        "summary": "Read own scoped Membership details/version",
+        "operationId": "getOrganizationMembershipV1",
+        "description": "C-02 approved membership read contract. Authenticate an ACTIVE User in the selected Organization, revalidate ACTIVE membership and an Organization-level assignment resolving actual ADMIN with organization.memberships.read from current Role.permissions. JWT roles and manage permission alone do not grant read. Strict IDs/query allowlist; no-store; createdAt DESC then _id DESC; page/count share a scoped facet with minimal User lookup after page limit. Missing User is null; missing lifecycle migration metadata fails closed. Existing invitation APIs and membership commands are outside this implementation.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{24}$",
+              "minLength": 24,
+              "maxLength": 24
+            }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{24}$",
+              "minLength": 24,
+              "maxLength": 24
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read own scoped Membership details/version",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/C02MembershipSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/C02MembershipUnauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/C02MembershipForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/C02MembershipNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/C02MembershipValidationFailed"
+          },
+          "500": {
+            "description": "Unexpected internal failure while reading Organization Memberships.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency/readiness unavailable.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-unknown-input-fields": "REJECT",
+        "x-permission": "organization.memberships.read",
+        "x-readiness-gates": [],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1292,6 +1548,78 @@
       }
     },
     "responses": {
+      "C02MembershipUnauthorized": {
+        "description": "Authentication is missing, invalid, expired or revoked.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "C02MembershipForbidden": {
+        "description": "The authenticated caller lacks permission for the requested scope.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "C02MembershipNotFound": {
+        "description": "The addressed resource does not exist or is not visible to the caller.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "C02MembershipValidationFailed": {
+        "description": "The JSON request is understood but violates field or business validation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
       "RefreshInvalid": {
         "description": "Generic invalid refresh credential, including known revoked-token replay. No replacement cookies.",
         "content": {
@@ -2019,6 +2347,155 @@
             "items": { "$ref": "#/components/schemas/TeamMembership" }
           },
           "pagination": { "$ref": "#/components/schemas/Pagination" }
+        }
+      },
+      "C02MembershipPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/C02MembershipSummary"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/C02Pagination"
+          }
+        }
+      },
+      "C02MembershipSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "organizationId",
+          "userId",
+          "status",
+          "version",
+          "createdAt",
+          "updatedAt",
+          "user"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$",
+            "minLength": 24,
+            "maxLength": 24
+          },
+          "organizationId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$",
+            "minLength": 24,
+            "maxLength": 24
+          },
+          "userId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$",
+            "minLength": 24,
+            "maxLength": 24
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING_INVITE",
+              "ACTIVE",
+              "SUSPENDED",
+              "REMOVED"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/C02MemberUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "C02MemberUser": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "fullName",
+          "email",
+          "accountStatus"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$",
+            "minLength": 24,
+            "maxLength": 24
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "accountStatus": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED",
+              "PENDING_INVITE"
+            ]
+          }
+        }
+      },
+      "C02Pagination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "page",
+          "pageSize",
+          "totalItems",
+          "totalPages"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "totalItems": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalPages": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
     }

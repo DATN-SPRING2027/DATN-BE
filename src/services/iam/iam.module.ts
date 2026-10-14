@@ -23,6 +23,10 @@ import { IamController } from './controllers/iam.controller';
 import { IamInfrastructureModule } from './infrastructure/iam.infrastructure.module';
 import { AuthenticationRepository } from './infrastructure/mongodb/authentication.repository';
 import { UserDirectoryController } from './controllers/user-directory.controller';
+import { OrganizationMembershipReadController } from './controllers/organization-membership-read.controller';
+import { OrganizationMembershipReadService } from './application/organizations/organization-membership-read.service';
+import { ORGANIZATION_MEMBERSHIP_READ_REPOSITORY } from './application/organizations/organization-membership-read.repository';
+import { MongoOrganizationMembershipReadRepository } from './infrastructure/mongodb/organization-membership-read.repository';
 import { UserDirectoryService } from './application/users/user-directory.service';
 import { USER_DIRECTORY_REPOSITORY } from './application/users/user-directory.repository';
 import { MongoUserDirectoryRepository } from './infrastructure/mongodb/user-directory.repository';
@@ -60,6 +64,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     IamController,
     AuthenticationController,
     UserDirectoryController,
+    OrganizationMembershipReadController,
     ProjectController,
     ProjectAccessController,
     PlatformController,
@@ -102,12 +107,17 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
       useClass: MongoAuthorizationEvidenceProvider,
     },
     UserDirectoryService,
+    OrganizationMembershipReadService,
     ProjectService,
     ProjectAccessService,
     OrganizationProvisioningService,
     OrganizationInvitationService,
     PlatformAuditService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
+    {
+      provide: ORGANIZATION_MEMBERSHIP_READ_REPOSITORY,
+      useClass: MongoOrganizationMembershipReadRepository,
+    },
     {
       provide: PROJECT_ACCESS_REPOSITORY,
       useClass: MongoProjectAccessRepository,
