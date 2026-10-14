@@ -1,5 +1,9 @@
 # Organization Membership legacy backfill
 
+DATN-87 adds a separate [lifecycle tracking/operation-cache DB work package](../../docs/work-packages/organization-membership-lifecycle-db-v1.md)
+and new `20261012-organization-membership-lifecycle.mjs`. Its metadata/permission
+migration does not rerun this historical membership backfill or enable C-02 APIs.
+
 ## Google identity subject index
 
 The IAM `users` collection declares a unique sparse index on `googleSubject`.
