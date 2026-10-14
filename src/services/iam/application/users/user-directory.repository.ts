@@ -39,5 +39,6 @@ export interface UserDirectoryRepository {
     organizationId: string,
     userId: string,
     changes: UserUpdate,
+    actorId: string,
   ): Promise<UserRecord | null>;
 }

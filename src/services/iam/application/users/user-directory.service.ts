@@ -71,6 +71,7 @@ export class UserDirectoryService {
       actor.organizationId,
       userId,
       changes,
+      actor.id,
     );
     if (!updated)
       throw new NotFoundException({

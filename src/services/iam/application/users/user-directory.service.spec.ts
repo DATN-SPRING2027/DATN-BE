@@ -79,7 +79,7 @@ describe('UserDirectoryService', () => {
     repository.find.mockResolvedValue({ ...user, id: actor.id });
     await service.update(actor, actor.id, { fullName: 'Renamed' });
     expect(repository.update.mock.calls).toEqual([
-      [actor.organizationId, actor.id, { fullName: 'Renamed' }],
+      [actor.organizationId, actor.id, { fullName: 'Renamed' }, actor.id],
     ]);
     await expect(
       service.update(actor, actor.id, { status: 'SUSPENDED' }),
@@ -109,6 +109,7 @@ describe('UserDirectoryService', () => {
       actor.organizationId,
       user.id,
       { status: 'SUSPENDED' },
+      actor.id,
     ]);
   });
 });

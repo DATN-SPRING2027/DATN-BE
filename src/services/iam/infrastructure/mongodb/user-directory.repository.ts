@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, Optional } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Optional,
+} from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model, PipelineStage } from 'mongoose';
@@ -187,10 +192,16 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     organizationId: string,
     userId: string,
     changes: UserUpdate,
+    actorId: string,
   ): Promise<UserRecord | null> {
     if (!(await this.find(organizationId, userId))) return null;
     if (changes.status !== undefined) {
-      await this.updateStatusAtomically(organizationId, userId, changes);
+      await this.updateStatusAtomically(
+        organizationId,
+        userId,
+        actorId,
+        changes,
+      );
       return this.find(organizationId, userId);
     }
     await this.users()
@@ -202,32 +213,17 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
   private async updateStatusAtomically(
     organizationId: string,
     userId: string,
+    actorId: string,
     changes: UserUpdate,
   ): Promise<void> {
     if (!this.connection)
       throw new Error('User directory persistence unavailable');
     const session = await this.connection.startSession();
     const userObjectId = new Types.ObjectId(userId);
+    const actorObjectId = new Types.ObjectId(actorId);
     const organizationObjectId = new Types.ObjectId(organizationId);
     try {
       await session.withTransaction(async () => {
-        const organizations = await this.memberships()
-          .distinct('organizationId', {
-            userId: userObjectId,
-            status: 'ACTIVE',
-          })
-          .session(session)
-          .exec();
-        if (
-          organizations.length !== 1 ||
-          String(organizations[0]) !== organizationId
-        ) {
-          throw new ConflictException({
-            code: 'SHARED_ACCOUNT_STATUS_CHANGE',
-            message: 'Status of a shared account cannot be changed here.',
-          });
-        }
-
         // Every status update writes the same organization document before
         // counting admins. Concurrent transactions then conflict and retry.
         const guard = await this.organizations()
@@ -247,6 +243,36 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           });
         }
 
+        // Recheck the actor from current IAM records only after taking the
+        // Organization fence. This callback runs again on transaction retry.
+        const eligibleAdminIds = await this.eligibleAdminIds(
+          organizationObjectId,
+          session,
+        );
+        if (!eligibleAdminIds.some((id) => id.equals(actorObjectId))) {
+          throw new ForbiddenException({
+            code: 'USER_MANAGEMENT_FORBIDDEN',
+            message: 'Organization admin access required.',
+          });
+        }
+
+        const organizations = await this.memberships()
+          .distinct('organizationId', {
+            userId: userObjectId,
+            status: 'ACTIVE',
+          })
+          .session(session)
+          .exec();
+        if (
+          organizations.length !== 1 ||
+          String(organizations[0]) !== organizationId
+        ) {
+          throw new ConflictException({
+            code: 'SHARED_ACCOUNT_STATUS_CHANGE',
+            message: 'Status of a shared account cannot be changed here.',
+          });
+        }
+
         const existing = await this.users()
           .findById(userObjectId, { status: 1 })
           .session(session)
@@ -254,10 +280,6 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           .exec();
         if (!existing) return;
         if (existing.status === 'ACTIVE' && changes.status !== 'ACTIVE') {
-          const eligibleAdminIds = await this.eligibleAdminIds(
-            organizationObjectId,
-            session,
-          );
           if (
             eligibleAdminIds.some((id) => id.equals(userObjectId)) &&
             eligibleAdminIds.length <= 1

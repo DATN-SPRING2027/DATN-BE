@@ -540,6 +540,37 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     ).toBe(1);
   });
 
+  it('rejects a user-status write when the actor membership is no longer ACTIVE', async () => {
+    await connection!
+      .collection('organization_memberships')
+      .updateOne(
+        { _id: secondAdminMembershipId },
+        { $set: { status: 'SUSPENDED' } },
+      );
+    const users = new MongoUserDirectoryRepository(connection);
+
+    await expect(
+      users.update(
+        organizationId.toHexString(),
+        memberId.toHexString(),
+        { status: 'SUSPENDED' },
+        secondAdminId.toHexString(),
+      ),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'USER_MANAGEMENT_FORBIDDEN' },
+    });
+
+    expect(
+      await connection!.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({ status: 'ACTIVE' });
+    expect(
+      await connection!.collection('organizations').findOne({
+        _id: organizationId,
+      }),
+    ).toMatchObject({ membershipAdminRevision: 0 });
+  });
+
   it('shares the ADMIN fence with legacy account-status writes', async () => {
     const users = new MongoUserDirectoryRepository(connection);
     const results = await Promise.allSettled([
@@ -549,9 +580,12 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         expectedMembershipVersion: 1,
         reasonCode: 'ACCESS_REVIEW',
       }),
-      users.update(organizationId.toHexString(), actorId.toHexString(), {
-        status: 'SUSPENDED',
-      }),
+      users.update(
+        organizationId.toHexString(),
+        actorId.toHexString(),
+        { status: 'SUSPENDED' },
+        secondAdminId.toHexString(),
+      ),
     ]);
 
     expect(
