@@ -23,6 +23,7 @@ describe('MembershipOrganizationContextResolver', () => {
         ),
       findProfileById: jest.fn(),
       replacePasswordHashIfCurrent: jest.fn(),
+      resetPassword: jest.fn(),
       revokeRefreshSessionByHash: jest.fn(),
       findRefreshSessionForRotation: jest.fn(),
       rotateRefreshSession: jest.fn(),

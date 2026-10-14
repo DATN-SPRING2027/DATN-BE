@@ -321,6 +321,53 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       .exec();
   }
 
+  async resetPassword(
+    userId: string,
+    replacementHash: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(userId)) return false;
+    if (!this.connection) {
+      throw new AuthenticationRepositoryUnavailableError(
+        'CONNECTION_UNAVAILABLE',
+      );
+    }
+
+    const users = this.getModel<UserDocument>(
+      USERS_MODEL,
+      'USER_MODEL_UNAVAILABLE',
+    );
+    const sessions = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    const accountId = new Types.ObjectId(userId);
+    const session = await this.connection.startSession();
+    try {
+      const changed = await session.withTransaction(async () => {
+        const updated = await users
+          .updateOne(
+            { _id: accountId, status: 'ACTIVE' },
+            { $set: { passwordHash: replacementHash } },
+            { session },
+          )
+          .exec();
+        if (updated.matchedCount !== 1) return false;
+
+        await sessions
+          .updateMany(
+            { userId: accountId, isRevoked: { $ne: true } },
+            { $set: { isRevoked: true } },
+            { session },
+          )
+          .exec();
+        return true;
+      });
+      return changed === true;
+    } finally {
+      await session.endSession();
+    }
+  }
+
   async revokeRefreshSessionByHash(tokenHash: string): Promise<boolean> {
     const model = this.getModel<RefreshSessionDocument>(
       REFRESH_SESSIONS_MODEL,

@@ -30,7 +30,7 @@ export interface PasswordVerificationResult {
 
 @Injectable()
 export class PasswordCredentialService {
-  async hashPassword(password: string): Promise<string> {
+  async hashPassword(this: void, password: string): Promise<string> {
     if (bcrypt.truncates(password)) {
       throw new PasswordHashFormatError('RESOURCE_LIMIT');
     }

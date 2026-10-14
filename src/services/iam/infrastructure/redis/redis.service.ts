@@ -4,7 +4,6 @@ import {
   createRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
-
 @Injectable()
 export class RedisService implements OnModuleDestroy {
   private readonly client: RedisConnection;

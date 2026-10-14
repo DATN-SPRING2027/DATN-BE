@@ -15,10 +15,21 @@ import {
 } from '../application/authentication/authentication.application.service';
 import { AuthenticationController } from './authentication.controller';
 import { GoogleOAuthService } from '../application/authentication/google-oauth.service';
+import {
+  PasswordResetRequestUnavailableError,
+  PasswordResetService,
+} from '../application/authentication/password-reset.service';
 import { configureApplication } from '../../../bootstrap';
 import { signGatewaySource } from '../../../common/http/gateway-source';
 
 const gatewaySecret = 'test-gateway-secret-at-least-32-characters';
+
+type PasswordResetRequestInput = { email: string; sourceIp: string };
+type PasswordResetConfirmInput = {
+  token: string;
+  password: string;
+  sourceIp: string;
+};
 
 describe('AuthenticationController', () => {
   let app: INestApplication;
@@ -36,6 +47,14 @@ describe('AuthenticationController', () => {
   let googleOAuth: {
     begin: jest.Mock;
     verifyCallback: jest.Mock;
+  };
+  let passwordReset: {
+    requestReset: jest.MockedFunction<
+      (input: PasswordResetRequestInput) => Promise<{ status: 'accepted' }>
+    >;
+    completeReset: jest.MockedFunction<
+      (input: PasswordResetConfirmInput) => Promise<void>
+    >;
   };
 
   beforeAll(async () => {
@@ -135,11 +154,24 @@ describe('AuthenticationController', () => {
         name: 'Test Person',
       }),
     };
+    passwordReset = {
+      requestReset: jest
+        .fn<Promise<{ status: 'accepted' }>, [PasswordResetRequestInput]>(() =>
+          Promise.resolve({ status: 'accepted' }),
+        )
+        .mockResolvedValue({ status: 'accepted' }),
+      completeReset: jest
+        .fn<Promise<void>, [PasswordResetConfirmInput]>(() =>
+          Promise.resolve(undefined),
+        )
+        .mockResolvedValue(undefined),
+    };
     const module = await Test.createTestingModule({
       controllers: [AuthenticationController],
       providers: [
         { provide: AuthenticationApplicationService, useValue: service },
         { provide: GoogleOAuthService, useValue: googleOAuth },
+        { provide: PasswordResetService, useValue: passwordReset },
         {
           provide: ConfigService,
           useValue: {
@@ -186,6 +218,8 @@ describe('AuthenticationController', () => {
       accessToken: 'replacement.access.value',
       refreshToken: 'replacement-refresh-value',
     });
+    passwordReset.requestReset.mockResolvedValue({ status: 'accepted' });
+    passwordReset.completeReset.mockResolvedValue(undefined);
     service.loginWithGoogle.mockResolvedValue({
       accessToken: 'google.private.jwt.value',
       refreshToken: 'google-refresh',
@@ -390,12 +424,75 @@ describe('AuthenticationController', () => {
     expect(service.loginPlatform).not.toHaveBeenCalled();
   });
 
+  it('returns a generic no-store response for a password reset request', async () => {
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/password-reset/request')
+      .send({ email: 'person@example.com' })
+      .expect(202)
+      .expect((response) => {
+        expect(response.body).toEqual({ status: 'accepted' });
+        expect(response.headers['cache-control']).toBe('no-store');
+        expect(response.headers['referrer-policy']).toBe('no-referrer');
+      });
+    const input = passwordReset.requestReset.mock.calls[0][0];
+    expect(input.email).toBe('person@example.com');
+    expect(typeof input.sourceIp).toBe('string');
+  });
+
+  it('returns a generic 503 when the reset request cannot be durably queued', async () => {
+    passwordReset.requestReset.mockRejectedValueOnce(
+      new PasswordResetRequestUnavailableError(),
+    );
+
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/password-reset/request')
+      .send({ email: 'person@example.com' })
+      .expect(503)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          code: 'PASSWORD_RESET_REQUEST_UNAVAILABLE',
+          message: 'Password reset is temporarily unavailable.',
+        });
+      });
+  });
+
+  it('validates password reset request and confirm bodies before calling the service', async () => {
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/password-reset/request')
+      .send({ email: 'not-an-email', extra: true })
+      .expect(422);
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/password-reset/confirm')
+      .send({ token: 'short', password: 'short' })
+      .expect(422);
+    expect(passwordReset.requestReset).not.toHaveBeenCalled();
+    expect(passwordReset.completeReset).not.toHaveBeenCalled();
+  });
+
+  it('confirms a password reset with a one-time token and returns no body', async () => {
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/password-reset/confirm')
+      .send({ token: 'a'.repeat(43), password: 'A-long-password-123' })
+      .expect(204)
+      .expect((response) => {
+        expect(response.text).toBe('');
+        expect(response.headers['set-cookie']).toHaveLength(3);
+        expect(response.headers['set-cookie'][0]).toContain('Max-Age=0');
+      });
+
+    const [input] = passwordReset.completeReset.mock.calls[0];
+    expect(input.token).toBe('a'.repeat(43));
+    expect(input.password).toBe('A-long-password-123');
+    expect(typeof input.sourceIp).toBe('string');
+  });
+
   it('accepts a signed source on the internal route and rejects an unsigned one', async () => {
     const module = await Test.createTestingModule({
       controllers: [AuthenticationController],
       providers: [
         { provide: AuthenticationApplicationService, useValue: service },
         { provide: GoogleOAuthService, useValue: googleOAuth },
+        { provide: PasswordResetService, useValue: passwordReset },
         { provide: ConfigService, useValue: { get: () => gatewaySecret } },
       ],
     }).compile();

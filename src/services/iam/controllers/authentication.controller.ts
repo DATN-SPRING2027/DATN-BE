@@ -1,10 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   Body,
   Controller,
   ForbiddenException,
   Get,
   Headers,
+  HttpException,
   HttpCode,
   HttpStatus,
   InternalServerErrorException,
@@ -12,6 +14,7 @@ import {
   Req,
   Res,
   Query,
+  ServiceUnavailableException,
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -35,11 +38,21 @@ import {
   validCsrfPair,
 } from '../application/authentication/authentication.application.service';
 import {
-  LoginCredentialsDto,
   LoginRequestDto,
   PlatformLoginRequestDto,
 } from '../application/authentication/login-request.dto';
 import { GoogleOAuthService } from '../application/authentication/google-oauth.service';
+import {
+  PasswordResetInvalidTokenError,
+  PasswordResetPasswordPolicyError,
+  PasswordResetRateLimitError,
+  PasswordResetRequestUnavailableError,
+  PasswordResetService,
+} from '../application/authentication/password-reset.service';
+import {
+  PasswordResetConfirmDto,
+  PasswordResetRequestDto,
+} from '../application/authentication/password-reset.request.dto';
 
 export const GOOGLE_OAUTH_STATE_COOKIE = '__Host-continuum-google-oauth-state';
 
@@ -110,7 +123,18 @@ function clearRefreshCookie(): string {
   ].join('; ');
 }
 
-async function parseLoginBody<T extends LoginCredentialsDto>(
+function clearCsrfCookie(): string {
+  return [
+    '__Host-csrf=',
+    'Path=/',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+    'SameSite=Lax',
+    'Secure',
+  ].join('; ');
+}
+
+async function parseLoginBody<T extends object>(
   body: unknown,
   dtoType: new () => T,
 ): Promise<T> {
@@ -198,6 +222,7 @@ export class AuthenticationController {
     private readonly service: AuthenticationApplicationService,
     private readonly config: ConfigService,
     private readonly googleOAuth: GoogleOAuthService,
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   @Get('google')
@@ -318,6 +343,86 @@ export class AuthenticationController {
     const result = await this.service.login({ ...dto, sourceIp });
     setLoginCookies(response, result);
     return { user: result.user };
+  }
+
+  @Post('password-reset/request')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async requestPasswordReset(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ status: 'accepted' }> {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    const dto = await parseLoginBody(body, PasswordResetRequestDto);
+    const sourceIp = ensureTrustedLoginSource(request, this.config);
+    try {
+      return await this.passwordReset.requestReset({
+        email: dto.email,
+        sourceIp,
+      });
+    } catch (error) {
+      if (error instanceof PasswordResetRateLimitError) {
+        throw new HttpException(
+          {
+            code: 'PASSWORD_RESET_RATE_LIMITED',
+            message: 'Too many password reset requests.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      if (error instanceof PasswordResetRequestUnavailableError) {
+        throw new ServiceUnavailableException({
+          code: 'PASSWORD_RESET_REQUEST_UNAVAILABLE',
+          message: 'Password reset is temporarily unavailable.',
+        });
+      }
+      throw error;
+    }
+  }
+
+  @Post('password-reset/confirm')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async confirmPasswordReset(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    const dto = await parseLoginBody(body, PasswordResetConfirmDto);
+    const sourceIp = ensureTrustedLoginSource(request, this.config);
+    try {
+      await this.passwordReset.completeReset({ ...dto, sourceIp });
+      response.setHeader('Set-Cookie', [
+        clearAccessCookie(),
+        clearRefreshCookie(),
+        clearCsrfCookie(),
+      ]);
+    } catch (error) {
+      if (error instanceof PasswordResetRateLimitError) {
+        throw new HttpException(
+          {
+            code: 'PASSWORD_RESET_RATE_LIMITED',
+            message: 'Too many password reset attempts.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      if (error instanceof PasswordResetInvalidTokenError) {
+        throw new BadRequestException({
+          code: 'PASSWORD_RESET_TOKEN_INVALID',
+          message: 'Password reset link is invalid or has expired.',
+        });
+      }
+      if (error instanceof PasswordResetPasswordPolicyError) {
+        throw new UnprocessableEntityException({
+          code: 'PASSWORD_RESET_PASSWORD_INVALID',
+          message: 'Password must fit the supported length limit.',
+        });
+      }
+      throw error;
+    }
   }
 
   @Post('platform/login')

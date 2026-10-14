@@ -3,6 +3,54 @@ import type { Connection } from 'mongoose';
 import { AuthenticationRepository } from './authentication.repository';
 
 describe('AuthenticationRepository', () => {
+  it('changes an ACTIVE password and revokes all refresh sessions in one transaction', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const session = {
+      withTransaction: jest.fn(async (callback: () => Promise<boolean>) =>
+        callback(),
+      ),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const userUpdate = { matchedCount: 1, modifiedCount: 1 };
+    const sessionUpdate = { matchedCount: 2, modifiedCount: 2 };
+    const users = {
+      updateOne: jest
+        .fn()
+        .mockReturnValue({ exec: jest.fn().mockResolvedValue(userUpdate) }),
+    };
+    const sessions = {
+      updateMany: jest
+        .fn()
+        .mockReturnValue({ exec: jest.fn().mockResolvedValue(sessionUpdate) }),
+    };
+    const connection = {
+      models: {
+        continuum_iam_users: users,
+        continuum_iam_refresh_sessions: sessions,
+      },
+      startSession: jest.fn().mockResolvedValue(session),
+    } as unknown as Connection;
+
+    await expect(
+      new AuthenticationRepository(connection).resetPassword(
+        userId,
+        'new-hash',
+      ),
+    ).resolves.toBe(true);
+    expect(users.updateOne).toHaveBeenCalledWith(
+      { _id: new Types.ObjectId(userId), status: 'ACTIVE' },
+      { $set: { passwordHash: 'new-hash' } },
+      { session },
+    );
+    expect(sessions.updateMany).toHaveBeenCalledWith(
+      { userId: new Types.ObjectId(userId), isRevoked: { $ne: true } },
+      { $set: { isRevoked: true } },
+      { session },
+    );
+    expect(session.withTransaction).toHaveBeenCalledTimes(1);
+    expect(session.endSession).toHaveBeenCalledTimes(1);
+  });
+
   it('looks up only complete refresh-session fields before rotation', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
     const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';

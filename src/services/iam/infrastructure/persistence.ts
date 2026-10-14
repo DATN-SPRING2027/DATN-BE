@@ -132,6 +132,31 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
+      name: 'password_reset_outbox',
+      indexes: [
+        index(
+          { userScopeHash: 1 },
+          { unique: true, name: 'password_reset_current_scope' },
+        ),
+        index(
+          { tokenHash: 1 },
+          { unique: true, name: 'password_reset_token_hash' },
+        ),
+        index(
+          { expiresAt: 1 },
+          { expireAfterSeconds: 0, name: 'password_reset_expiry' },
+        ),
+        index(
+          { deliveryStatus: 1, nextAttemptAt: 1, expiresAt: 1, createdAt: 1 },
+          { name: 'password_reset_pending_jobs' },
+        ),
+        index(
+          { deliveryStatus: 1, leaseUntil: 1, expiresAt: 1, createdAt: 1 },
+          { name: 'password_reset_expired_leases' },
+        ),
+      ],
+    },
+    {
       name: 'sme_assignments',
       indexes: [index({ projectId: 1, userId: 1, domainModule: 1 })],
     },

@@ -42,6 +42,7 @@
     "test:membership-lifecycle:integration": "node --test scripts/migrations/20261012-organization-membership-lifecycle.mongodb.test.mjs",
     "migrate:membership-lifecycle": "node scripts/migrations/20261012-organization-membership-lifecycle.mjs",
     "migrate:google-identity-index": "node scripts/migrations/20261011-google-identity-index.mjs",
+    "migrate:password-reset-outbox": "node scripts/migrations/20261014-password-reset-outbox.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",
@@ -69,6 +70,7 @@
     "ioredis": "^5.11.1",
     "joi": "^18.2.9",
     "mongoose": "^8.24.4",
+    "nodemailer": "^10.1.0",
     "prom-client": "^15.1.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
@@ -82,6 +84,7 @@
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
+    "@types/nodemailer": "^8.0.2",
     "@types/supertest": "^7.0.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",

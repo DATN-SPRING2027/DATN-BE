@@ -76,6 +76,55 @@ describe('microservice gateway IAM routes', () => {
     ).toBe(loginHeaders['x-iam-source-ip']);
   });
 
+  it.each([
+    {
+      path: '/api/v1/auth/password-reset/request',
+      status: 202,
+      body: { email: 'person@example.test' },
+    },
+    {
+      path: '/api/v1/auth/password-reset/confirm',
+      status: 204,
+      body: { token: 'a'.repeat(43), password: 'A-long-password-123' },
+    },
+  ])(
+    'forwards $path with a trusted source proof',
+    async ({ path, status, body }) => {
+      const backend = jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(null, {
+          status,
+          headers: {
+            'cache-control': 'no-store',
+            'referrer-policy': 'no-referrer',
+          },
+        }),
+      );
+
+      const response = await request(app.getHttpServer() as App)
+        .post(path)
+        .send(body)
+        .expect(status);
+
+      expect(backend).toHaveBeenCalledWith(
+        `http://iam.test:3001/internal${path.slice('/api/v1'.length)}`,
+        expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }),
+      );
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers['referrer-policy']).toBe('no-referrer');
+
+      const forwardedHeaders = backend.mock.calls[0][1]?.headers as Record<
+        string,
+        string
+      >;
+      expect(
+        verifyGatewaySource(
+          forwardedHeaders,
+          'test-gateway-secret-at-least-32-characters',
+        ),
+      ).toBe(forwardedHeaders['x-iam-source-ip']);
+    },
+  );
+
   it('replaces an untrusted source header before forwarding login', async () => {
     const backend = jest.spyOn(global, 'fetch').mockResolvedValue(
       new Response(

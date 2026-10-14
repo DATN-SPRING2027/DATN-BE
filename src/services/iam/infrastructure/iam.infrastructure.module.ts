@@ -8,6 +8,10 @@ import {
 import { AuditService } from './audit/audit.service';
 import { MongoInfrastructureModule } from './mongodb/mongodb.module';
 import { OutboxService } from './outbox/outbox.service';
+import { PASSWORD_RESET_OUTBOX } from '../application/authentication/password-reset.store';
+import { MongoPasswordResetOutboxStore } from './mongodb/password-reset-outbox.store';
+import { UnavailablePasswordResetOutboxStore } from './mongodb/unavailable-password-reset-outbox.store';
+import { PasswordResetPayloadCipher } from './email/password-reset-payload.cipher';
 import { IdempotencyService } from './redis/idempotency.service';
 import { RedisService } from './redis/redis.service';
 import { R2Storage } from './storage/r2.storage';
@@ -27,7 +31,23 @@ export class IamInfrastructureModule {
       IdempotencyService,
       R2Storage,
       { provide: AUDIT_DATABASE_NAME_TOKEN, useValue: AUDIT_DATABASE_NAME },
-      ...(enabled ? [AuditService, OutboxService] : []),
+      ...(enabled
+        ? [
+            AuditService,
+            OutboxService,
+            PasswordResetPayloadCipher,
+            MongoPasswordResetOutboxStore,
+            {
+              provide: PASSWORD_RESET_OUTBOX,
+              useExisting: MongoPasswordResetOutboxStore,
+            },
+          ]
+        : [
+            {
+              provide: PASSWORD_RESET_OUTBOX,
+              useClass: UnavailablePasswordResetOutboxStore,
+            },
+          ]),
     ];
     const imports: DynamicModule['imports'] = [];
 

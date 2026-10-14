@@ -71,6 +71,7 @@ describe('AuthenticationApplicationService', () => {
         .fn()
         .mockResolvedValue({ name: 'Test Person', status: 'ACTIVE' }),
       replacePasswordHashIfCurrent: jest.fn().mockResolvedValue(undefined),
+      resetPassword: jest.fn().mockResolvedValue(true),
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
       findRefreshSessionForRotation: jest.fn().mockResolvedValue({
         outcome: 'ACTIVE',

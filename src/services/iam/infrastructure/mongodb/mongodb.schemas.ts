@@ -225,6 +225,28 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'refresh_sessions', timestamps: true, strict: true },
   ),
+  password_reset_outbox: new Schema(
+    {
+      userScopeHash: { type: String, required: true },
+      userId: { type: String, required: true },
+      tokenHash: { type: String, required: true },
+      expiresAt: { type: Date, required: true },
+      deliveryStatus: {
+        type: String,
+        enum: ['PENDING', 'SENDING', 'SENT', 'FAILED', 'IGNORED'],
+        required: true,
+      },
+      encryptedPayload: String,
+      attemptCount: { type: Number, required: true, default: 0 },
+      nextAttemptAt: { type: Date, required: true },
+      leaseId: String,
+      leaseUntil: Date,
+      tokenClaimId: String,
+      lastErrorCode: String,
+      sentAt: Date,
+    },
+    { collection: 'password_reset_outbox', timestamps: true, strict: true },
+  ),
   sme_assignments: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
