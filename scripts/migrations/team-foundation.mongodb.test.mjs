@@ -76,6 +76,7 @@ integration(
         createCollectionSchema(definition),
       );
       await TeamIndexes.createIndexes();
+      const timestamp = new Date('2026-10-14T00:00:00.000Z');
       const input = {
         organizationId: org,
         projectId: project,
@@ -84,6 +85,8 @@ integration(
         description: null,
         status: 'ACTIVE',
         version: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
         archivedAt: null,
         archivedBy: null,
         archivedReason: null,
