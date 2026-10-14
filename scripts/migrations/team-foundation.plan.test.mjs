@@ -53,8 +53,21 @@ test('clean metadata produces a deterministic read-only report', () => {
   const report = planTeamFoundation(input);
   assert.equal(report.clean, true);
   assert.deepEqual(report.assessmentBasis, {
-    source: 'DATN-89 Team Foundation proposal',
-    policyStatus: 'PROPOSED',
+    source: 'DATN-89 latest Team decision table',
+    asOf: '2026-10-14',
+    decisionStatus: 'PARTIAL',
+    dispositions: {
+      'TQ-01': 'APPROVE',
+      'TQ-02': 'APPROVE',
+      'TQ-03': 'APPROVE',
+      'TQ-04': 'APPROVE',
+      'TQ-05': 'AMEND',
+      'TQ-06': 'AMEND',
+      'TQ-07': 'AMEND',
+      'TQ-08': 'AMEND',
+      'TQ-09': { contract: 'APPROVE', mutations: 'DEFER' },
+      'TQ-10': 'DEFER',
+    },
     runtimeSchemaEnforced: false,
     rolloutReady: false,
   });

@@ -30,7 +30,7 @@ test('apply and ambiguous target are rejected before any connection', async () =
 });
 
 integration(
-  'MongoDB7 proposed-contract preflight is read-only and preserves scoped uniqueness',
+  'MongoDB 7 selected-rule preflight is read-only and preserves scoped uniqueness',
   async () => {
     const uri = process.env.DATN254_TEST_URI;
     assert.equal(uri, 'mongodb://127.0.0.1:28954/?directConnection=true');
@@ -112,7 +112,12 @@ integration(
       const before = await state();
       const clean = await inspectTeamFoundation(db, 'synthetic-fixture');
       assert.equal(clean.clean, true);
-      assert.equal(clean.assessmentBasis.policyStatus, 'PROPOSED');
+      assert.equal(clean.assessmentBasis.decisionStatus, 'PARTIAL');
+      assert.equal(clean.assessmentBasis.dispositions['TQ-01'], 'APPROVE');
+      assert.deepEqual(clean.assessmentBasis.dispositions['TQ-09'], {
+        contract: 'APPROVE',
+        mutations: 'DEFER',
+      });
       assert.equal(clean.assessmentBasis.rolloutReady, false);
       assert.deepEqual(await state(), before);
       assert.deepEqual(
