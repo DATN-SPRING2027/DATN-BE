@@ -151,3 +151,44 @@ jobs:
         run: >-
           npm test -- --runInBand --runTestsByPath
           src/services/iam/infrastructure/mongodb/organization-membership-read.mongodb.spec.ts
+
+  team-foundation-mongodb-test:
+    name: BE / Team foundation preflight MongoDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATN254_MONGODB_TEST: 'true'
+      DATN254_TEST_URI: mongodb://127.0.0.1:28954/?directConnection=true
+      DATN254_FIXTURE_TOKEN: datn254-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Start disposable MongoDB 7 fixture
+        shell: bash
+        run: |
+          docker run --detach --name datn254-mongo --publish 28954:27017 mongo:7.0 mongod --bind_ip_all
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker exec datn254-mongo mongosh --quiet --eval 'db.adminCommand("ping").ok' | grep -q 1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo 'Disposable MongoDB fixture did not become ready.' >&2
+            exit 1
+          fi
+          docker exec datn254-mongo mongosh --quiet --eval \
+            "db.getSiblingDB('continuum_iam').getCollection('__datn254_fixture').insertOne({_id:'owner',token:'${DATN254_FIXTURE_TOKEN}'})"
+      - name: Run Team foundation MongoDB preflight test
+        run: node --test scripts/migrations/team-foundation.mongodb.test.mjs
+      - name: Remove disposable MongoDB fixture
+        if: always()
+        run: docker rm --force datn254-mongo
