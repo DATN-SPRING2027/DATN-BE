@@ -51,6 +51,8 @@ npm run check
 
 `team-foundation.mongodb.test.mjs` is opt-in through `DATN254_MONGODB_TEST=true`; it requires URI exactly `mongodb://127.0.0.1:28954/?directConnection=true`, MongoDB 7, and a fresh disposable `continuum_iam.__datn254_fixture` marker `{_id:'owner',token:...}` matching `DATN254_FIXTURE_TOKEN`. Fixture setup writes and deliberate index drift are confined to that disposable fixture. It verifies the preflight leaves rows/indexes unchanged, flags selected-rule conflicts, and observes retained scoped uniqueness. It does not enable or test runtime Team schema/API behavior, transactions, audit, providers, or parent races.
 
+Pull-request CI runs this opt-in test in a dedicated disposable MongoDB 7 container, separate from the other MongoDB integration suites.
+
 The decision table is partial; dependent APIs and mutations stay gated on the IAM/transport/provider/all-writer/audit evidence listed above. DATN-257 and DATN-255/256/258 are not enabled by this preflight. DATN-92 Membership BE and DATN-91 FE remain separate scopes. DATN-259 tests can continue independently when their contracts are available.
 
 Pending team notification (prepare only):
