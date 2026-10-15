@@ -117,13 +117,6 @@ export interface PendingResult {
   team: TeamRecord;
   etag: string;
   location?: string;
-  changed: boolean;
-  audit?: {
-    action: 'team.create' | 'team.update' | 'team.archive' | 'team.restore';
-    oldVersion: number | null;
-    newVersion: number;
-    changedFields: string[];
-  };
 }
 
 export const modelName = (collection: string): string =>

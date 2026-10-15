@@ -9,7 +9,7 @@ import { InjectConnection } from '@nestjs/mongoose';
 import { createHash } from 'node:crypto';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
-import type { Collection, Document } from 'mongodb';
+import type { Collection } from 'mongodb';
 import { TeamAuthorizationPolicy } from '../../application/teams/team-authorization.policy';
 import {
   parseIdempotencyKey,
@@ -24,10 +24,6 @@ import type {
   TeamListResult,
   TeamRecord,
 } from '../../application/teams/team.repository';
-import {
-  AUDIT_DATABASE_NAME,
-  IAM_AUDIT_COLLECTION_NAME,
-} from '../../../../common/mongodb/database-names';
 import { IAM_PERSISTENCE } from '../persistence';
 import { TeamAuthorizationEvidence } from './team-foundation.authorization-evidence';
 import {
@@ -55,6 +51,17 @@ const keyFingerprint = (value: unknown): string =>
   createHash('sha256').update(canonicalJson(value)).digest('hex');
 const keyHash = (value: string): string =>
   createHash('sha256').update(value, 'utf8').digest('hex');
+
+// Runtime writes stay disabled until the TQ-09 provider/writer/recovery gates
+// and the TQ-10 canonical audit contract and transaction writer are evidenced.
+// Mongo collection/index presence is deliberately not treated as that evidence.
+const TEAM_MUTATION_ENABLEMENT_EVIDENCE = {
+  idempotencyProviderVerified: false,
+  idempotencyWriterCoverageVerified: false,
+  ambiguousCommitRecoveryVerified: false,
+  canonicalAuditContractAndWriterVerified: false,
+} as const;
+
 const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -341,10 +348,7 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
   private async executeMutation(
     command: MutationCommand,
     session: ClientSession,
-    readiness: {
-      operations: Collection<TeamOperationDocument>;
-      audit: Collection<Document>;
-    },
+    readiness: { operations: Collection<TeamOperationDocument> },
   ): Promise<TeamCommandResult> {
     const { isCreate, projectId, currentTeam, facts } =
       await this.authorizeMutation(command, session);
@@ -424,21 +428,8 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
 
     const pending = isCreate
       ? await this.createTeam(command, projectId, now, session)
-      : await this.changeTeam(
-          command,
-          currentTeam!,
-          projectId,
-          commandId,
-          now,
-          session,
-        );
+      : await this.changeTeam(command, currentTeam!, projectId, now, session);
 
-    if (pending.changed && pending.audit) {
-      await readiness.audit.insertOne(
-        this.auditRecord(command, pending.team, commandId, pending.audit, now),
-        { session },
-      );
-    }
     const stored: Partial<TeamOperationDocument> = {
       status: 'COMMITTED',
       httpStatus: pending.statusCode,
@@ -567,13 +558,6 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
       team,
       etag: this.etag(team),
       location: `/api/v1/iam/teams/${team.id}`,
-      changed: true,
-      audit: {
-        action: 'team.create',
-        oldVersion: null,
-        newVersion: 1,
-        changedFields: ['name', 'code', 'description', 'status'],
-      },
     };
   }
 
@@ -581,7 +565,6 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
     command: MutationCommand,
     current: TeamDocument,
     projectId: string,
-    commandId: string,
     now: Date,
     session: ClientSession,
   ): Promise<PendingResult> {
@@ -591,34 +574,24 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
         message: 'Archived Teams cannot be updated.',
       });
     const next: Record<string, unknown> = {};
-    let action: NonNullable<PendingResult['audit']>['action'] = 'team.update';
-    let changedFields: string[] = [];
     if (command.permission === 'team.update') {
       const input = command.body as unknown as TeamUpdateInput;
       if (input.name !== undefined) next.name = input.name;
       if (input.description !== undefined) next.description = input.description;
-      action = 'team.update';
-      changedFields = ['name', 'description'].filter((field) =>
-        Object.hasOwn(next, field),
-      );
     } else if (command.permission === 'team.archive') {
-      action = 'team.archive';
       if (current.status === 'ACTIVE') {
         next.status = 'ARCHIVED';
         next.archivedAt = now;
         next.archivedBy = objectId(command.actorUserId);
         next.archivedReason = String(command.body.reason);
       }
-      changedFields = ['status', 'archivedAt', 'archivedBy', 'archivedReason'];
     } else {
-      action = 'team.restore';
       if (current.status === 'ARCHIVED') {
         next.status = 'ACTIVE';
         next.archivedAt = null;
         next.archivedBy = null;
         next.archivedReason = null;
       }
-      changedFields = ['status', 'archivedAt', 'archivedBy', 'archivedReason'];
     }
     const changed = Object.entries(next).some(
       ([key, value]) => !sameValue(current[key as keyof TeamDocument], value),
@@ -629,7 +602,6 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
         statusCode: 200,
         team,
         etag: this.etag(team),
-        changed: false,
       };
     }
     const newVersion = current.version + 1;
@@ -658,75 +630,34 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
       statusCode: 200,
       team,
       etag: this.etag(team),
-      changed: true,
-      audit: {
-        action,
-        oldVersion: current.version,
-        newVersion,
-        changedFields,
-      },
-    };
-  }
-
-  private auditRecord(
-    command: MutationCommand,
-    team: TeamRecord,
-    commandId: string,
-    event: NonNullable<PendingResult['audit']>,
-    occurredAt: Date,
-  ): Document {
-    return {
-      organizationId: command.organizationId,
-      projectId: team.projectId,
-      actorUserId: command.actorUserId,
-      action: event.action,
-      targetResource: 'TEAM',
-      targetResourceId: team.id,
-      occurredAt,
-      metadata: {
-        teamId: team.id,
-        commandId,
-        oldVersion: event.oldVersion,
-        newVersion: event.newVersion,
-        changedFields: event.changedFields,
-      },
     };
   }
 
   private async ensureMutationReady(): Promise<{
     operations: Collection<TeamOperationDocument>;
-    audit: Collection<Document>;
   }> {
+    if (
+      !Object.values(TEAM_MUTATION_ENABLEMENT_EVIDENCE).every(
+        (verified) => verified,
+      )
+    )
+      throw policyNotReady();
+
     const connection = this.requireConnection();
     if (!connection.db) throw policyNotReady();
     const operationName = 'team_operations';
-    const auditName = IAM_AUDIT_COLLECTION_NAME;
-    const auditConnection = connection.useDb(AUDIT_DATABASE_NAME, {
-      useCache: true,
-    });
-    if (!auditConnection.db) throw policyNotReady();
-    const [operationCollections, auditCollections] = await Promise.all([
-      connection.db
-        .listCollections({ name: operationName }, { nameOnly: true })
-        .toArray(),
-      auditConnection.db
-        .listCollections({ name: auditName }, { nameOnly: true })
-        .toArray(),
-    ]);
+    const operationCollections = await connection.db
+      .listCollections({ name: operationName }, { nameOnly: true })
+      .toArray();
     const operationCollection = operationCollections.length > 0;
-    const auditCollection = auditCollections.length > 0;
-    if (!operationCollection || !auditCollection) throw policyNotReady();
+    if (!operationCollection) throw policyNotReady();
     const operations =
       connection.db.collection<TeamOperationDocument>(operationName);
-    const audit = auditConnection.db.collection<Document>(auditName);
-    const [operationIndexesRaw, auditIndexesRaw, teamIndexesRaw] =
-      await Promise.all([
-        operations.listIndexes().toArray(),
-        audit.listIndexes().toArray(),
-        this.rawTeams().listIndexes().toArray(),
-      ]);
+    const [operationIndexesRaw, teamIndexesRaw] = await Promise.all([
+      operations.listIndexes().toArray(),
+      this.rawTeams().listIndexes().toArray(),
+    ]);
     const operationIndexes = operationIndexesRaw as unknown as ReadinessIndex[];
-    const auditIndexes = auditIndexesRaw as unknown as ReadinessIndex[];
     const teamIndexes = teamIndexesRaw as unknown as ReadinessIndex[];
     const hasOperationKey = operationIndexes.some(
       (index) =>
@@ -754,42 +685,9 @@ export class MongoTeamFoundationRepository implements TeamFoundationRepository {
           code: 1,
         }),
     );
-    const hasAuditDedupe = auditIndexes.some((index) => {
-      const partial = index.partialFilterExpression;
-      const commandIdFilter = partial?.['metadata.commandId'];
-      const commandIdExists =
-        typeof commandIdFilter === 'object' &&
-        commandIdFilter !== null &&
-        '$exists' in commandIdFilter &&
-        commandIdFilter.$exists === true;
-      return (
-        index.unique === true &&
-        index.sparse !== true &&
-        index.hidden !== true &&
-        index.collation === undefined &&
-        this.sameIndex(index.key, {
-          organizationId: 1,
-          'metadata.commandId': 1,
-          action: 1,
-          targetResourceId: 1,
-        }) &&
-        partial !== undefined &&
-        Object.keys(partial).length === 2 &&
-        typeof commandIdFilter === 'object' &&
-        commandIdFilter !== null &&
-        Object.keys(commandIdFilter).length === 1 &&
-        partial?.targetResource === 'TEAM' &&
-        commandIdExists
-      );
-    });
-    if (
-      !hasOperationKey ||
-      !hasOperationExpiry ||
-      !hasTeamCodeUnique ||
-      !hasAuditDedupe
-    )
+    if (!hasOperationKey || !hasOperationExpiry || !hasTeamCodeUnique)
       throw policyNotReady();
-    return { operations, audit };
+    return { operations };
   }
 
   private sameIndex(left: unknown, right: Record<string, 1 | -1>): boolean {

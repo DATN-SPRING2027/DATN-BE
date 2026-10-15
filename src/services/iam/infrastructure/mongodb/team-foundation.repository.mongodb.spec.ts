@@ -3,14 +3,11 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Types, type ClientSession, type Connection } from 'mongoose';
 import type { Document } from 'mongodb';
 import {
+  ConflictException,
   ForbiddenException,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import {
-  AUDIT_DATABASE_NAME,
-  IAM_AUDIT_COLLECTION_NAME,
-} from '../../../../common/mongodb/database-names';
 import { TeamAuthorizationPolicy } from '../../application/teams/team-authorization.policy';
 import { IAM_PERSISTENCE } from '../persistence';
 import { createCollectionSchema } from './mongodb.schemas';
@@ -22,7 +19,6 @@ const integration =
     : describe.skip;
 
 const mongoVersion = '7.0.45';
-const teamAuditIndexName = 'team_audit_idempotency';
 const disposableReplicaSetMarker = 'datn90-team-foundation-mongo7-disposable';
 
 function disposableReplicaSetUri(): string | undefined {
@@ -49,29 +45,12 @@ function disposableReplicaSetUri(): string | undefined {
   return value;
 }
 
-interface TeamAuditEvent extends Document {
-  action: string;
-  targetResource: string;
-  targetResourceId: string;
-  metadata: {
-    teamId: string;
-    commandId: string;
-    oldVersion: number | null;
-    newVersion: number;
-    changedFields: string[];
-  };
-}
-
-interface TeamOperationRecord extends Document {
-  commandId: string;
-}
-
 interface DisposableFixtureMarker extends Document {
   _id: string;
 }
 
 integration(
-  'Team repository transactions on disposable MongoDB 7 replica set',
+  'Team repository read scope and closed mutation gate on disposable MongoDB 7 replica set',
   () => {
     jest.setTimeout(300_000);
 
@@ -101,47 +80,6 @@ integration(
     function iam() {
       if (!connection?.db) throw new Error('IAM test database is unavailable');
       return connection.db;
-    }
-
-    function audit() {
-      const db = connection?.useDb(AUDIT_DATABASE_NAME, { useCache: true }).db;
-      if (!db) throw new Error('Audit test database is unavailable');
-      return db.collection<TeamAuditEvent>(IAM_AUDIT_COLLECTION_NAME);
-    }
-
-    async function provisionMutationPrerequisites() {
-      const db = iam();
-      await db.createCollection('team_operations');
-      const operations = db.collection('team_operations');
-      await operations.createIndex(
-        { organizationId: 1, actorUserId: 1, keyHash: 1 },
-        { name: 'team_operation_key', unique: true },
-      );
-      await operations.createIndex(
-        { expiresAt: 1 },
-        { name: 'team_operation_expiry', expireAfterSeconds: 0 },
-      );
-
-      const auditDb = connection!.useDb(AUDIT_DATABASE_NAME, {
-        useCache: true,
-      }).db!;
-      await auditDb.createCollection(IAM_AUDIT_COLLECTION_NAME);
-      await auditDb.collection(IAM_AUDIT_COLLECTION_NAME).createIndex(
-        {
-          organizationId: 1,
-          'metadata.commandId': 1,
-          action: 1,
-          targetResourceId: 1,
-        },
-        {
-          name: teamAuditIndexName,
-          unique: true,
-          partialFilterExpression: {
-            targetResource: 'TEAM',
-            'metadata.commandId': { $exists: true },
-          },
-        },
-      );
     }
 
     async function seedAuthorization() {
@@ -197,11 +135,33 @@ integration(
     }
 
     async function resetData() {
+      delete (repository as unknown as { ensureMutationReady?: unknown })
+        .ensureMutationReady;
       for (const name of iamCollectionNames)
         await iam().collection(name).deleteMany({});
-      await iam().collection('team_operations').deleteMany({});
-      await audit().deleteMany({});
+      const operationCollection = await iam()
+        .listCollections({ name: 'team_operations' })
+        .toArray();
+      if (operationCollection.length > 0)
+        await iam().dropCollection('team_operations');
       await seedAuthorization();
+    }
+
+    async function enableIsolatedIdempotencyMutationTest() {
+      const operations = await iam().createCollection('team_operations');
+      await operations.createIndex(
+        { organizationId: 1, actorUserId: 1, keyHash: 1 },
+        { name: 'test_operation_key', unique: true },
+      );
+      await operations.createIndex(
+        { expiresAt: 1 },
+        { name: 'test_operation_expiry', expireAfterSeconds: 0 },
+      );
+      (
+        repository as unknown as {
+          ensureMutationReady: () => Promise<unknown>;
+        }
+      ).ensureMutationReady = jest.fn().mockResolvedValue({ operations });
     }
 
     async function createTeam(
@@ -279,7 +239,6 @@ integration(
         await model.createCollection();
         await model.createIndexes();
       }
-      await provisionMutationPrerequisites();
       repository = new MongoTeamFoundationRepository(
         new TeamAuthorizationPolicy(),
         connection,
@@ -292,10 +251,6 @@ integration(
         if (!/^datn90team_[a-f\d]{32}$/.test(databaseName))
           throw new Error('Team integration fixture database identity changed');
         await connection.dropDatabase();
-        await connection
-          .useDb(AUDIT_DATABASE_NAME)
-          .collection(IAM_AUDIT_COLLECTION_NAME)
-          .deleteMany({ organizationId: organizationId.toHexString() });
         await connection.close();
       }
       await replicaSet?.stop();
@@ -303,8 +258,48 @@ integration(
 
     beforeEach(async () => resetData());
 
-    it('commits Team, idempotency result, and canonical audit event together; retry replays once', async () => {
-      const key = `create-${randomUUID()}`;
+    it('keeps repeated and concurrent mutations fail-closed until evidence is approved', async () => {
+      const operations = await iam().createCollection('team_operations');
+      await operations.createIndex(
+        { organizationId: 1, actorUserId: 1, keyHash: 1 },
+        { name: 'test_operation_key', unique: true },
+      );
+      await operations.createIndex(
+        { expiresAt: 1 },
+        { name: 'test_operation_expiry', expireAfterSeconds: 0 },
+      );
+
+      await expect(createTeam('repeat-key')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      await expect(createTeam('repeat-key')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      const concurrent = await Promise.allSettled([
+        createTeam('concurrent-key'),
+        createTeam('concurrent-key'),
+      ]);
+
+      expect(concurrent.every((result) => result.status === 'rejected')).toBe(
+        true,
+      );
+      expect(
+        concurrent.every(
+          (result) =>
+            result.status === 'rejected' &&
+            result.reason instanceof ServiceUnavailableException,
+        ),
+      ).toBe(true);
+      expect(await iam().collection('teams').countDocuments({})).toBe(0);
+      expect(
+        await iam().listCollections({ name: 'team_operations' }).toArray(),
+      ).toHaveLength(1);
+      expect(await operations.countDocuments({})).toBe(0);
+    });
+
+    it('replays an identical command and rejects key reuse with a changed payload', async () => {
+      await enableIsolatedIdempotencyMutationTest();
+      const key = `repeat-${randomUUID()}`;
       const first = await createTeam(key);
       const replay = await createTeam(key);
 
@@ -312,39 +307,27 @@ integration(
       expect(first.replayed).toBe(false);
       expect(replay.replayed).toBe(true);
       expect(replay.team).toEqual(first.team);
+
+      const reusedKey = await createTeam(key, {
+        name: 'Quality',
+        code: 'QA',
+        description: 'different payload',
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(reusedKey).toBeInstanceOf(ConflictException);
+      expect((reusedKey as ConflictException).getResponse()).toMatchObject({
+        code: 'IDEMPOTENCY_KEY_REUSED',
+      });
       expect(await iam().collection('teams').countDocuments({})).toBe(1);
       expect(await iam().collection('team_operations').countDocuments({})).toBe(
         1,
       );
-
-      const events = await audit()
-        .find({
-          organizationId: organizationId.toHexString(),
-          targetResourceId: first.team.id,
-        })
-        .toArray();
-      const operation = await iam()
-        .collection<TeamOperationRecord>('team_operations')
-        .findOne({ organizationId, actorUserId });
-      expect(events).toHaveLength(1);
-      expect(events[0].metadata.commandId).toBe(operation?.commandId);
-      expect(events[0]).toMatchObject({
-        action: 'team.create',
-        targetResource: 'TEAM',
-        targetResourceId: first.team.id,
-        metadata: {
-          teamId: first.team.id,
-          oldVersion: null,
-          newVersion: 1,
-          changedFields: ['name', 'code', 'description', 'status'],
-        },
-      });
-      expect(events[0].metadata).not.toHaveProperty('beforeName');
-      expect(events[0].metadata).not.toHaveProperty('afterName');
-      expect(events[0].metadata).not.toHaveProperty('description');
     });
 
-    it('serializes concurrent requests for an absent idempotency slot', async () => {
+    it('serializes concurrent requests for one absent idempotency slot', async () => {
+      await enableIsolatedIdempotencyMutationTest();
       const key = `concurrent-${randomUUID()}`;
       const [left, right] = await Promise.all([
         createTeam(key),
@@ -357,107 +340,127 @@ integration(
       expect(await iam().collection('team_operations').countDocuments({})).toBe(
         1,
       );
-      expect(
-        await audit().countDocuments({
-          organizationId: organizationId.toHexString(),
-        }),
-      ).toBe(1);
     });
 
-    it('writes update, archive, and restore with versioned audit events in one session per command', async () => {
-      const created = await createTeam();
-      const updated = await repository.update(
-        organizationId.toHexString(),
-        actorUserId.toHexString(),
-        created.team.id,
-        { name: 'Operations North', description: 'changed detail' },
-        `update-${randomUUID()}`,
-        created.etag,
-      );
-      const archived = await repository.archive(
-        organizationId.toHexString(),
-        actorUserId.toHexString(),
-        created.team.id,
-        'Completed',
-        `archive-${randomUUID()}`,
-        updated.etag,
-      );
-      const restored = await repository.restore(
-        organizationId.toHexString(),
-        actorUserId.toHexString(),
-        created.team.id,
-        'Reopened',
-        `restore-${randomUUID()}`,
-        archived.etag,
-      );
+    it('rolls back the command-result slot when the Team write conflicts', async () => {
+      await enableIsolatedIdempotencyMutationTest();
+      await createTeam('first-code-key');
 
-      expect([
-        created.team.version,
-        updated.team.version,
-        archived.team.version,
-        restored.team.version,
-      ]).toEqual([1, 2, 3, 4]);
-      expect(restored.team.status).toBe('ACTIVE');
+      await expect(createTeam('duplicate-code-key')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
       expect(await iam().collection('teams').countDocuments({})).toBe(1);
-      const events = await audit()
-        .find({
-          organizationId: organizationId.toHexString(),
-          targetResourceId: created.team.id,
-        })
-        .sort({ _id: 1 })
-        .toArray();
-      expect(events.map((event) => event.action)).toEqual([
-        'team.create',
-        'team.update',
-        'team.archive',
-        'team.restore',
-      ]);
-      expect(events.map((event) => event.metadata.newVersion)).toEqual([
-        1, 2, 3, 4,
-      ]);
-      expect(events[1].metadata.changedFields).toEqual(['name', 'description']);
-      expect(events[2].metadata.changedFields).toEqual([
-        'status',
-        'archivedAt',
-        'archivedBy',
-        'archivedReason',
-      ]);
-      expect(events[2].metadata).not.toHaveProperty('reason');
+      expect(await iam().collection('team_operations').countDocuments({})).toBe(
+        1,
+      );
+    });
+
+    it('replays after an unknown commit acknowledgement on the isolated replica set', async () => {
+      await enableIsolatedIdempotencyMutationTest();
+      const key = `ambiguous-${randomUUID()}`;
+      const startSession = connection!.startSession.bind(connection);
+      const startSessionSpy = jest
+        .spyOn(connection!, 'startSession')
+        .mockImplementation(async (...args) => {
+          const session = await startSession(...args);
+          const withTransaction = session.withTransaction.bind(session);
+          Object.defineProperty(session, 'withTransaction', {
+            configurable: true,
+            value: async (
+              ...transactionArgs: Parameters<ClientSession['withTransaction']>
+            ) => {
+              await withTransaction(...transactionArgs);
+              const error = new Error(
+                'Simulated lost acknowledgement after transaction commit',
+              ) as Error & { errorLabels: string[] };
+              error.errorLabels = ['UnknownTransactionCommitResult'];
+              throw error;
+            },
+          });
+          return session;
+        });
+
+      try {
+        const failure = await createTeam(key).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(ServiceUnavailableException);
+        expect((failure as ServiceUnavailableException).getStatus()).toBe(503);
+        expect(
+          (failure as ServiceUnavailableException).getResponse(),
+        ).toMatchObject({ code: 'RETRY_LATER' });
+      } finally {
+        startSessionSpy.mockRestore();
+      }
+
+      const replay = await createTeam(key);
+      expect(replay.statusCode).toBe(201);
+      expect(replay.replayed).toBe(true);
+      expect(await iam().collection('teams').countDocuments({})).toBe(1);
+      expect(await iam().collection('team_operations').countDocuments({})).toBe(
+        1,
+      );
     });
 
     it('scopes Manager list and detail reads to the Project and denies Member reads without Team proof', async () => {
-      const archived = await createTeam();
-      const active = await createTeam(`create-${randomUUID()}`, {
-        name: 'Quality',
-        code: 'QA',
-        description: null,
-      });
-      await repository.archive(
-        organizationId.toHexString(),
-        actorUserId.toHexString(),
-        archived.team.id,
-        'Completed',
-        `archive-${randomUUID()}`,
-        archived.etag,
-      );
-
+      const archivedTeamId = new Types.ObjectId();
+      const activeTeamId = new Types.ObjectId();
       const foreignTeamId = new Types.ObjectId();
-      await iam().collection('teams').insertOne({
-        _id: foreignTeamId,
-        organizationId: new Types.ObjectId(),
-        projectId: new Types.ObjectId(),
-        name: 'Out of scope',
-        code: 'OUT',
-        description: null,
-        status: 'ACTIVE',
-        version: 1,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        archivedAt: null,
-        archivedBy: null,
-        archivedReason: null,
-      });
+      const createdAt = new Date('2026-10-15T00:00:00.000Z');
+      const updatedAt = new Date('2026-10-15T01:00:00.000Z');
+      await iam()
+        .collection('teams')
+        .insertMany([
+          {
+            _id: archivedTeamId,
+            organizationId,
+            projectId,
+            name: 'Operations',
+            code: 'OPS',
+            description: 'internal detail',
+            status: 'ARCHIVED',
+            version: 2,
+            createdAt,
+            updatedAt,
+            archivedAt: updatedAt,
+            archivedBy: actorUserId,
+            archivedReason: 'Completed',
+          },
+          {
+            _id: activeTeamId,
+            organizationId,
+            projectId,
+            name: 'Quality',
+            code: 'QA',
+            description: null,
+            status: 'ACTIVE',
+            version: 1,
+            createdAt: new Date(createdAt.getTime() + 1),
+            updatedAt: createdAt,
+            archivedAt: null,
+            archivedBy: null,
+            archivedReason: null,
+          },
+          {
+            _id: foreignTeamId,
+            organizationId: new Types.ObjectId(),
+            projectId: new Types.ObjectId(),
+            name: 'Out of scope',
+            code: 'OUT',
+            description: null,
+            status: 'ACTIVE',
+            version: 1,
+            createdAt,
+            updatedAt,
+            archivedAt: null,
+            archivedBy: null,
+            archivedReason: null,
+          },
+        ]);
 
+      const archivedTeam = archivedTeamId.toHexString();
+      const activeTeam = activeTeamId.toHexString();
       const firstPage = await repository.list(
         organizationId.toHexString(),
         actorUserId.toHexString(),
@@ -487,23 +490,21 @@ integration(
       expect([
         ...firstPage.data.map((row) => row.id),
         ...secondPage.data.map((row) => row.id),
-      ]).toEqual(expect.arrayContaining([archived.team.id, active.team.id]));
+      ]).toEqual(expect.arrayContaining([archivedTeam, activeTeam]));
       expect(
         [...firstPage.data, ...secondPage.data].some(
           (row) => row.id === foreignTeamId.toHexString(),
         ),
       ).toBe(false);
-      expect(archivedPage.data.map((row) => row.id)).toEqual([
-        archived.team.id,
-      ]);
+      expect(archivedPage.data.map((row) => row.id)).toEqual([archivedTeam]);
       expect(
         await repository.get(
           organizationId.toHexString(),
           actorUserId.toHexString(),
-          archived.team.id,
+          archivedTeam,
         ),
       ).toMatchObject({
-        id: archived.team.id,
+        id: archivedTeam,
         status: 'ARCHIVED',
         version: 2,
       });
@@ -529,130 +530,9 @@ integration(
         repository.get(
           organizationId.toHexString(),
           actorUserId.toHexString(),
-          archived.team.id,
+          archivedTeam,
         ),
       ).rejects.toBeInstanceOf(NotFoundException);
-    });
-
-    it('replays a committed command after an unknown commit acknowledgement', async () => {
-      const key = `ambiguous-${randomUUID()}`;
-      const startSession = connection!.startSession.bind(connection);
-      const startSessionSpy = jest
-        .spyOn(connection!, 'startSession')
-        .mockImplementation(async (...args) => {
-          const session = await startSession(...args);
-          const commit = session.withTransaction.bind(session);
-          Object.defineProperty(session, 'withTransaction', {
-            configurable: true,
-            value: async (
-              ...transactionArgs: Parameters<ClientSession['withTransaction']>
-            ) => {
-              await commit(...transactionArgs);
-              const error = new Error(
-                'Simulated lost acknowledgement after transaction commit',
-              ) as Error & { errorLabels: string[] };
-              error.errorLabels = ['UnknownTransactionCommitResult'];
-              throw error;
-            },
-          });
-          return session;
-        });
-
-      try {
-        const failure = await createTeam(key).then(
-          () => undefined,
-          (error: unknown) => error,
-        );
-        if (!(failure instanceof ServiceUnavailableException)) throw failure;
-        expect(failure.getStatus()).toBe(503);
-        expect(failure.getResponse()).toMatchObject({ code: 'RETRY_LATER' });
-      } finally {
-        startSessionSpy.mockRestore();
-      }
-
-      const replay = await createTeam(key);
-      expect(replay.statusCode).toBe(201);
-      expect(replay.replayed).toBe(true);
-      expect(await iam().collection('teams').countDocuments({})).toBe(1);
-      expect(await iam().collection('team_operations').countDocuments({})).toBe(
-        1,
-      );
-      expect(
-        await audit().countDocuments({
-          organizationId: organizationId.toHexString(),
-        }),
-      ).toBe(1);
-    });
-
-    it('rolls back Team, operation, and authorization fences when audit insert fails', async () => {
-      await connection!.useDb(AUDIT_DATABASE_NAME).db!.command({
-        collMod: IAM_AUDIT_COLLECTION_NAME,
-        validator: { action: 'reject-team-create' },
-        validationLevel: 'strict',
-        validationAction: 'error',
-      });
-      try {
-        await expect(createTeam()).rejects.toMatchObject({ code: 121 });
-        expect(await iam().collection('teams').countDocuments({})).toBe(0);
-        expect(
-          await iam().collection('team_operations').countDocuments({}),
-        ).toBe(0);
-        const fencedRows: Array<[string, Types.ObjectId]> = [
-          ['users', actorUserId],
-          ['organization_memberships', organizationMembershipId],
-          ['projects', projectId],
-          ['project_memberships', projectMembershipId],
-          ['role_assignments', roleAssignmentId],
-          ['roles', roleId],
-        ];
-        for (const [collection, id] of fencedRows) {
-          expect(
-            await iam().collection(collection).findOne({ _id: id }),
-          ).not.toHaveProperty('__v');
-        }
-      } finally {
-        await connection!.useDb(AUDIT_DATABASE_NAME).db!.command({
-          collMod: IAM_AUDIT_COLLECTION_NAME,
-          validator: {},
-          validationLevel: 'strict',
-          validationAction: 'error',
-        });
-      }
-    });
-
-    it('fails closed when the Team audit dedupe index is missing', async () => {
-      await audit().dropIndex(teamAuditIndexName);
-      try {
-        await expect(createTeam()).rejects.toBeInstanceOf(
-          ServiceUnavailableException,
-        );
-        expect(await iam().collection('teams').countDocuments({})).toBe(0);
-        expect(
-          await iam().collection('team_operations').countDocuments({}),
-        ).toBe(0);
-        expect(
-          await audit().countDocuments({
-            organizationId: organizationId.toHexString(),
-          }),
-        ).toBe(0);
-      } finally {
-        await audit().createIndex(
-          {
-            organizationId: 1,
-            'metadata.commandId': 1,
-            action: 1,
-            targetResourceId: 1,
-          },
-          {
-            name: teamAuditIndexName,
-            unique: true,
-            partialFilterExpression: {
-              targetResource: 'TEAM',
-              'metadata.commandId': { $exists: true },
-            },
-          },
-        );
-      }
     });
   },
 );
