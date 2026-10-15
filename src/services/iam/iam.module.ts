@@ -58,6 +58,11 @@ import { MongoOrganizationMembershipCommandRepository } from './infrastructure/m
 import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
+import { TeamFoundationController } from './controllers/team-foundation.controller';
+import { TeamService } from './application/teams/team.service';
+import { TEAM_FOUNDATION_REPOSITORY } from './application/teams/team.repository';
+import { TeamAuthorizationPolicy } from './application/teams/team-authorization.policy';
+import { MongoTeamFoundationRepository } from './infrastructure/mongodb/team-foundation.repository';
 
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
@@ -72,6 +77,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     AccountOrganizationController,
     OrganizationMembershipCommandController,
     AccountInvitationController,
+    TeamFoundationController,
   ],
   providers: [
     IamApplicationService,
@@ -100,6 +106,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     },
     PasswordCredentialService,
     AuthorizationPolicy,
+    TeamAuthorizationPolicy,
     ProjectCreateAuthorizationGuard,
     ProjectAccessAuthorizationGuard,
     PlatformAuthorizationGuard,
@@ -114,6 +121,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     OrganizationProvisioningService,
     OrganizationInvitationService,
     OrganizationMembershipCommandService,
+    TeamService,
     PlatformAuditService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
@@ -139,6 +147,10 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     {
       provide: ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,
       useClass: MongoOrganizationMembershipCommandRepository,
+    },
+    {
+      provide: TEAM_FOUNDATION_REPOSITORY,
+      useClass: MongoTeamFoundationRepository,
     },
     {
       provide: PLATFORM_AUDIT_REPOSITORY,

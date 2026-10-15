@@ -9,8 +9,8 @@ export function configureApplication(
   app: INestApplication,
   trustedProxyCidrs: string[] = [],
 ): void {
+  const expressApp = app.getHttpAdapter().getInstance() as Application;
   if (trustedProxyCidrs.length > 0) {
-    const expressApp = app.getHttpAdapter().getInstance() as Application;
     expressApp.set('trust proxy', trustedProxyCidrs);
   }
   app.setGlobalPrefix('api/v1');
@@ -24,7 +24,15 @@ export function configureApplication(
     origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-CSRF-Token',
+      'X-Organization-Id',
+      'If-Match',
+      'Idempotency-Key',
+    ],
+    exposedHeaders: ['ETag', 'Location', 'Idempotency-Replayed', 'Retry-After'],
   });
   app.useGlobalPipes(
     new ValidationPipe({
