@@ -299,7 +299,7 @@ export class AuthenticationController {
         stage: 'session_cookie_response',
         status: 'succeeded',
       });
-      response.redirect(302, '/');
+      response.redirect(302, '/select-organization');
       logGoogleOAuthStage({
         requestId,
         stage: 'callback_completed',

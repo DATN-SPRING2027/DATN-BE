@@ -24,7 +24,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Log in",
-        "description": "Authenticates an eligible user and stores only a hash of the initial refresh credential. A user with no ACTIVE Organization Membership receives an ACCOUNT session without Organization or role claims. A user with one membership receives an Organization session; multiple memberships return 409. Invalid credentials use a generic response.",
+        "description": "Authenticates an eligible user and stores only a hash of the initial refresh credential. Unless an organizationId is explicitly supplied and validated, every Organization membership count (zero, one, or many) receives an ACCOUNT session without Organization or role claims so the browser can open the Organization chooser. Invalid credentials use a generic response.",
         "operationId": "login",
         "security": [],
         "requestBody": {
@@ -144,7 +144,7 @@
       "get": {
         "tags": ["Auth"],
         "summary": "Start Google sign-in or signup",
-        "description": "Starts Google OAuth authorization-code flow with PKCE, state and nonce. The backend issues a short-lived encrypted HttpOnly state cookie through the FE BFF. The OAuth callback URI is GOOGLE_CALLBACK_URL and must point to the FE /api/auth/google/callback route. Only openid, email and profile scopes are requested. If no ACTIVE membership exists the verified identity receives an ACCOUNT session.",
+        "description": "Starts Google OAuth authorization-code flow with PKCE, state and nonce. The backend issues a short-lived encrypted HttpOnly state cookie through the FE BFF. The OAuth callback URI is GOOGLE_CALLBACK_URL and must point to the FE /api/auth/google/callback route. Only openid, email and profile scopes are requested. Without an explicit organizationId, every membership count receives an ACCOUNT session and continues to the Organization chooser; a supplied organizationId is revalidated before Organization context is issued.",
         "operationId": "startGoogleLogin",
         "security": [],
         "parameters": [
@@ -184,7 +184,7 @@
       "get": {
         "tags": ["Auth"],
         "summary": "Complete Google sign-in or signup",
-        "description": "Accepts the Google authorization response at the FE callback route. The backend checks the browser-bound state cookie, PKCE verifier, nonce, ID-token signature, audience, issuer, expiry, stable sub and verified email before creating or linking an account. A matching normalized verified email links to its existing internal User; Google sub remains the provider identity key. Active-account and MFA checks still apply. One active Organization may be selected automatically; multiple active Organizations return 409 for explicit selection; zero active Organizations receive an ACCOUNT session with no Organization or role claims. Google signup creates no Organization, membership, role or platform authority.",
+        "description": "Accepts the Google authorization response at the FE callback route. The backend checks the browser-bound state cookie, PKCE verifier, nonce, ID-token signature, audience, issuer, expiry, stable sub and verified email before creating or linking an account. A matching normalized verified email links to its existing internal User; Google sub remains the provider identity key. Active-account and MFA checks still apply. Unless an Organization was explicitly requested and revalidated, zero, one, or multiple active Organizations receive an ACCOUNT session and the browser is sent to the Organization chooser. Google signup creates no Organization, membership, role or platform authority.",
         "operationId": "finishGoogleLogin",
         "security": [],
         "parameters": [
@@ -445,8 +445,8 @@
     "/api/v1/auth/select-organization": {
       "post": {
         "tags": ["Auth"],
-        "summary": "Enter an Organization from an account session",
-        "description": "Requires a valid ACCOUNT session and matching CSRF cookie/header. The server rechecks the user's ACTIVE membership for the requested Organization before issuing new session cookies with Organization context.",
+        "summary": "Enter an Organization from an authenticated account session",
+        "description": "Requires a valid non-Platform ACCOUNT or Organization session and matching CSRF cookie/header. The server revalidates any current Organization membership and the user's ACTIVE membership for the requested Organization before issuing new session cookies with the selected Organization context.",
         "operationId": "selectOrganization",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["organizationId"], "properties": { "organizationId": { "$ref": "#/components/schemas/ResourceId" } } } } } },
@@ -1809,7 +1809,7 @@
         }
       },
       "OrganizationSelectionRequired": {
-        "description": "The password was verified, but an organization must be selected. The details.organizations array contains only organizations assigned to this account.",
+        "description": "A requested or legacy Organization selector could not be resolved. Default browser sign-in without organizationId issues an ACCOUNT session for every membership count and does not use this response merely to display Organization options.",
         "content": {
           "application/json": {
             "schema": {
@@ -2055,7 +2055,7 @@
       "CurrentUser": {
         "type": "object",
         "additionalProperties": false,
-        "description": "An authenticated account identity. ACCOUNT context has no organizationId or roles; Organization sessions include both.",
+        "description": "An authenticated Organization product identity. Default password and Google sign-in return context ACCOUNT for all membership counts, without organizationId or roles, until the user chooses a workspace. A selected Organization session includes organizationId and the user's Organization roles; those claims never establish Platform authority.",
         "required": ["id", "email", "name"],
         "properties": {
           "id": { "$ref": "#/components/schemas/ResourceId" },

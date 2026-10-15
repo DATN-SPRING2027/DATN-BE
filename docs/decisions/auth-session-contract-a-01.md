@@ -29,6 +29,22 @@ All bodies shown are JSON. Implemented BE errors use `{ "code": string, "message
 
 The login selector/error behavior is the Leader-directed WP-04A implementation disposition in Authentication Decision Closure §10; it does not resolve wider Product/Security authority or the SRS conflicts preserved there. The access cookie currently uses `HttpOnly; SameSite=Strict; Path=/; Max-Age=900`, with `Secure` outside local development/test. It is the only cookie issued by current login. The refreshed MVP browser-cookie target in Refresh Decision Closure §4–5 is `SameSite=Lax`, including authentication and CSRF cookies. This **current-versus-target difference** needs implementation review in A-02/A-03; A-01 does not silently change runtime behavior.
 
+## 2026-10-15 implementation amendment — Organization chooser after sign-in
+
+The browser implementation now defers Organization context after both password
+and Google sign-in. Without an explicitly supplied and server-validated
+`organizationId`, the session is `ACCOUNT` regardless of whether the user has
+zero, one, or multiple ACTIVE Organization memberships. The FE sends every
+successful Organization-product sign-in to `/select-organization`; that page
+lists all ACTIVE memberships, including a single membership, and offers
+Organization creation when the list is empty. Choosing an Organization
+revalidates current membership and issues a scoped session. This replaces the
+older login behavior described in the endpoint table above for this
+implementation; it does not change DEC-016's membership eligibility rule or
+grant Platform authority. See
+[`organization-selection-after-auth.md`](organization-selection-after-auth.md)
+for rationale and endpoint behavior.
+
 On successful refresh, the target emits **two separate `Set-Cookie` fields**: `continuum_access` at `Path=/`, `HttpOnly`, `SameSite=Lax`, `Max-Age=900`; and host-only `continuum_refresh` at `Path=/api/v1/auth`, `HttpOnly`, `SameSite=Lax`, `Max-Age=604800`. Both are `Secure` in production. The BFF forwards each field independently without comma-joining them. Errors issue no replacement credentials. Whether refresh reissues the separate CSRF cookie is **UNKNOWN/TBD**.
 
 ## Session and browser model for A-02/A-03

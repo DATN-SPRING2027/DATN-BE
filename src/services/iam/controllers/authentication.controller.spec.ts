@@ -303,7 +303,7 @@ describe('AuthenticationController', () => {
     expect(googleOAuth.begin).toHaveBeenCalledWith('651a2b3c4d5e6f7a8b9c0d1f');
   });
 
-  it('GET /api/v1/auth/google/callback issues normal session cookies and clears OAuth state', async () => {
+  it('GET /api/v1/auth/google/callback issues session cookies and opens Organization selection', async () => {
     const requestId = 'b127a512-4b27-4a62-96a3-587ae4d2e4b0';
     const log = jest
       .spyOn(Logger.prototype, 'log')
@@ -317,7 +317,7 @@ describe('AuthenticationController', () => {
       )
       .expect(302);
 
-    expect(response.headers.location).toBe('/');
+    expect(response.headers.location).toBe('/select-organization');
     expect(response.headers['referrer-policy']).toBe('no-referrer');
     expect(googleOAuth.verifyCallback).toHaveBeenCalledWith(
       {
