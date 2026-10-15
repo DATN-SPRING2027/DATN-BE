@@ -57,23 +57,6 @@ export const iamAuditSchema = new Schema(
   { collection: 'audit_logs_iam', strict: true },
 );
 
-iamAuditSchema.index(
-  {
-    organizationId: 1,
-    'metadata.commandId': 1,
-    action: 1,
-    targetResourceId: 1,
-  },
-  {
-    name: 'team_audit_command_dedupe',
-    unique: true,
-    partialFilterExpression: {
-      targetResource: 'Team',
-      'metadata.commandId': { $exists: true },
-    },
-  },
-);
-
 const iamSchemas: Record<string, Schema> = {
   users: new Schema(
     {
@@ -125,26 +108,6 @@ const iamSchemas: Record<string, Schema> = {
   ),
   organization_invitations: membershipInvitationSchema,
   membership_operations: membershipOperationSchema,
-  team_operations: new Schema(
-    {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      actorUserId: { type: Schema.Types.ObjectId, required: true },
-      keyHash: { type: String, required: true },
-      fingerprint: { type: String, required: true },
-      status: {
-        type: String,
-        enum: ['IN_PROGRESS', 'COMMITTED'],
-        required: true,
-      },
-      commandId: { type: String, required: true },
-      expiresAt: { type: Date, required: true },
-      httpStatus: Number,
-      responseBody: Schema.Types.Mixed,
-      etag: String,
-      location: String,
-    },
-    { collection: 'team_operations', strict: true, versionKey: false },
-  ),
   projects: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },

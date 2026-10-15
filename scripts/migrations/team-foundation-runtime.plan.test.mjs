@@ -6,10 +6,7 @@ import {
   publicTeamFoundationRuntimeReport,
   TEAM_FOUNDATION_INDEXES,
 } from './team-foundation-runtime.plan.mjs';
-import {
-  applyTeamFoundationRuntimePlan,
-  duplicateGroupPipeline,
-} from './20261015-team-foundation-runtime.mjs';
+import { applyTeamFoundationRuntimePlan } from './20261015-team-foundation-runtime.mjs';
 
 const { ObjectId } = mongoose.mongo;
 const org = new ObjectId();
@@ -42,7 +39,6 @@ function cleanSnapshot(teams = [baseTeam()], extra = {}) {
   const teamIndexes = [TEAM_FOUNDATION_INDEXES.teams];
   return {
     iamDatabaseName: 'continuum_iam',
-    auditDatabaseName: 'continuum_audit',
     targetFingerprint: 'synthetic-target-fingerprint',
     objects: {
       organizations: { type: 'collection', indexes: [] },
@@ -51,21 +47,10 @@ function cleanSnapshot(teams = [baseTeam()], extra = {}) {
         type: 'collection',
         indexes: indexRows(teamIndexes),
       },
-      team_operations: {
-        type: 'collection',
-        indexes: indexRows(TEAM_FOUNDATION_INDEXES.teamOperations),
-      },
-    },
-    auditObjects: {
-      audit_logs_iam: {
-        type: 'collection',
-        indexes: indexRows([TEAM_FOUNDATION_INDEXES.audit]),
-      },
     },
     teams,
     organizations: [{ _id: org }],
     projects: [{ _id: project, organizationId: org }],
-    duplicateGroups: [],
     ...extra,
   };
 }
@@ -78,6 +63,28 @@ test('clean metadata and required indexes plan no changes deterministically', ()
   assert.deepEqual(first.createCollections, []);
   assert.deepEqual(first.indexesToCreate, []);
   assert.deepEqual(planTeamFoundationRuntime(snapshot), first);
+});
+
+test('migration plans only the Team collection and scoped code index', () => {
+  const snapshot = cleanSnapshot([], {
+    objects: {
+      organizations: { type: 'collection', indexes: [] },
+      projects: { type: 'collection', indexes: [] },
+    },
+  });
+  const plan = planTeamFoundationRuntime(snapshot);
+
+  assert.equal(plan.clean, true);
+  assert.deepEqual(plan.createCollections, [
+    { database: 'continuum_iam', name: 'teams' },
+  ]);
+  assert.deepEqual(plan.indexesToCreate, [
+    { collection: 'teams', ...TEAM_FOUNDATION_INDEXES.teams },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(plan),
+    /team_operations|team_audit_command_dedupe/,
+  );
 });
 
 test('legacy metadata is never inferred and requires explicit per-Team mapping', () => {
@@ -179,28 +186,21 @@ test('CAS rejects an explicitly-null field changed after preflight', async () =>
   const iamDb = { collection: () => collection };
 
   await assert.rejects(
-    applyTeamFoundationRuntimePlan({ iamDb, auditDb: {}, plan }),
+    applyTeamFoundationRuntimePlan({ iamDb, plan }),
     /TEAM_CHANGED_AFTER_PREFLIGHT/,
   );
   assert.equal(updateCount, 0);
 });
 
-test('rejects parent mismatch, unsupported mapping fields, index drift and duplicate scopes', () => {
+test('rejects parent mismatch, unsupported mapping fields, and Team index drift', () => {
   const wrongProject = new ObjectId();
   const snapshot = cleanSnapshot([baseTeam({ projectId: wrongProject })], {
     projects: [{ _id: project, organizationId: org }],
-    duplicateGroups: [
-      {
-        collection: 'team_operations',
-        index: 'team_operation_scope',
-        count: 2,
-      },
-    ],
   });
-  snapshot.objects.team_operations.indexes = [
+  snapshot.objects.teams.indexes = [
     {
-      key: { organizationId: 1, actorUserId: 1, keyHash: 1 },
-      name: 'team_operation_scope',
+      key: { organizationId: 1, projectId: 1, code: 1 },
+      name: TEAM_FOUNDATION_INDEXES.teams.name,
       unique: false,
     },
   ];
@@ -217,8 +217,12 @@ test('rejects parent mismatch, unsupported mapping fields, index drift and dupli
   assert.ok(
     plan.issues.some((issue) => issue.code === 'INDEX_OPTIONS_CONFLICT'),
   );
+
+  const duplicateTeamCode = planTeamFoundationRuntime(
+    cleanSnapshot([baseTeam(), baseTeam({ _id: new ObjectId() })]),
+  );
   assert.ok(
-    plan.issues.some((issue) => issue.code === 'UNIQUE_INDEX_DUPLICATES'),
+    duplicateTeamCode.issues.some((issue) => issue.code === 'TEAM_CODE_COLLISION'),
   );
 
   const topLevelExtra = planTeamFoundationRuntime(cleanSnapshot(), {
@@ -244,22 +248,4 @@ test('refuses an unexpected logical database before making a plan', () => {
       ),
     /IAM_TARGET_REQUIRED/,
   );
-});
-
-test('audit duplicate preflight aliases dotted fields in its aggregation key', () => {
-  const pipeline = duplicateGroupPipeline(
-    { targetResource: 'Team' },
-    {
-      organizationId: 1,
-      'metadata.commandId': 1,
-      action: 1,
-      targetResourceId: 1,
-    },
-  );
-  assert.deepEqual(pipeline[1].$group._id, {
-    field0: { $ifNull: ['$organizationId', null] },
-    field1: { $ifNull: ['$metadata.commandId', null] },
-    field2: { $ifNull: ['$action', null] },
-    field3: { $ifNull: ['$targetResourceId', null] },
-  });
 });

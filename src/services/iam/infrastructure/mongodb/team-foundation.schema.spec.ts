@@ -189,6 +189,44 @@ describe('DATN-254 Team foundation schema', () => {
     await expect(team.validate()).rejects.toHaveProperty('errors.code');
   });
 
+  it('keeps organization, project, and code immutable after creation', () => {
+    const id = new Types.ObjectId();
+    const original = teamInput();
+    const team = Team.hydrate({ _id: id, ...original });
+    const nextOrganizationId = new Types.ObjectId();
+    const nextProjectId = new Types.ObjectId();
+
+    team.organizationId = nextOrganizationId;
+    team.projectId = nextProjectId;
+    team.code = 'MOVED_TEAM';
+
+    expect(team.organizationId).toEqual(original.organizationId);
+    expect(team.projectId).toEqual(original.projectId);
+    expect(team.code).toBe(original.code);
+    expect(team.modifiedPaths()).toEqual([]);
+
+    for (const path of ['organizationId', 'projectId', 'code']) {
+      expect(Team.schema.path(path).options.immutable).toBe(true);
+    }
+
+    const query = Team.updateOne(
+      { _id: id },
+      {
+        $set: {
+          organizationId: nextOrganizationId,
+          projectId: nextProjectId,
+          code: 'MOVED_TEAM',
+          name: 'Renamed Team',
+        },
+      },
+    );
+    const castUpdate = (
+      query as unknown as { _castUpdate: (update: unknown) => unknown }
+    )._castUpdate(query.getUpdate());
+
+    expect(castUpdate).toEqual({ $set: { name: 'Renamed Team' } });
+  });
+
   it('keeps the existing scoped unique code index without adding speculative indexes', () => {
     expect(Team.schema.indexes()).toEqual([
       [

@@ -9,7 +9,6 @@ import {
 } from '../../src/services/iam/infrastructure/mongodb/team-foundation.rules.cjs';
 
 export const TEAM_FOUNDATION_IAM_DATABASE = 'continuum_iam';
-export const TEAM_FOUNDATION_AUDIT_DATABASE = 'continuum_audit';
 
 export const TEAM_FOUNDATION_INDEXES = Object.freeze({
   teams: {
@@ -17,36 +16,11 @@ export const TEAM_FOUNDATION_INDEXES = Object.freeze({
     name: 'organizationId_1_projectId_1_code_1',
     unique: true,
   },
-  teamOperations: [
-    {
-      key: { organizationId: 1, actorUserId: 1, keyHash: 1 },
-      name: 'team_operation_scope',
-      unique: true,
-    },
-    {
-      key: { expiresAt: 1 },
-      name: 'team_operation_expiry',
-      expireAfterSeconds: 0,
-    },
-  ],
-  audit: {
-    key: {
-      organizationId: 1,
-      'metadata.commandId': 1,
-      action: 1,
-      targetResourceId: 1,
-    },
-    name: 'team_audit_command_dedupe',
-    unique: true,
-    partialFilterExpression: {
-      targetResource: 'Team',
-      'metadata.commandId': { $exists: true },
-    },
-  },
 });
 
 const { ObjectId, BSON } = mongoose.mongo;
-const mutableRuntimeFields = new Set([
+// Explicit legacy mapping fields for the one-time migration, not runtime mutability.
+const migrationWritableFields = new Set([
   'name',
   'code',
   'description',
@@ -58,7 +32,7 @@ const mutableRuntimeFields = new Set([
   'archivedBy',
   'archivedReason',
 ]);
-const requiredRuntimeFields = [...mutableRuntimeFields];
+const requiredRuntimeFields = [...migrationWritableFields];
 const validId = (value) => value instanceof ObjectId;
 const idString = (value) => (validId(value) ? value.toHexString() : null);
 const isDate = (value) =>
@@ -179,7 +153,7 @@ function mappingSetFor(entry, id, issues) {
     issues.push({ code: 'INVALID_MAPPING_ENTRY', id });
     return {};
   }
-  if (Object.keys(entry).some((field) => !mutableRuntimeFields.has(field))) {
+  if (Object.keys(entry).some((field) => !migrationWritableFields.has(field))) {
     issues.push({ code: 'INVALID_MAPPING_FIELD', id });
     return {};
   }
@@ -193,9 +167,6 @@ function sourceHash(snapshot) {
 export function planTeamFoundationRuntime(snapshot, mapping = { teams: [] }) {
   if (snapshot.iamDatabaseName !== TEAM_FOUNDATION_IAM_DATABASE)
     throw new Error('IAM_TARGET_REQUIRED');
-  if (snapshot.auditDatabaseName !== TEAM_FOUNDATION_AUDIT_DATABASE)
-    throw new Error('AUDIT_TARGET_REQUIRED');
-
   const issues = [];
   const indexesToCreate = [];
   const createCollections = [];
@@ -242,27 +213,6 @@ export function planTeamFoundationRuntime(snapshot, mapping = { teams: [] }) {
     });
   else if (objects.teams.type !== 'collection')
     issues.push({ code: 'COLLECTION_TYPE_CONFLICT', collection: 'teams' });
-  if (objects.team_operations?.type === undefined)
-    createCollections.push({
-      database: TEAM_FOUNDATION_IAM_DATABASE,
-      name: 'team_operations',
-    });
-  else if (objects.team_operations.type !== 'collection')
-    issues.push({
-      code: 'COLLECTION_TYPE_CONFLICT',
-      collection: 'team_operations',
-    });
-  if (snapshot.auditObjects?.audit_logs_iam?.type === undefined)
-    createCollections.push({
-      database: TEAM_FOUNDATION_AUDIT_DATABASE,
-      name: 'audit_logs_iam',
-    });
-  else if (snapshot.auditObjects.audit_logs_iam.type !== 'collection')
-    issues.push({
-      code: 'COLLECTION_TYPE_CONFLICT',
-      collection: 'audit_logs_iam',
-    });
-
   const organizations = new Set(
     (snapshot.organizations ?? [])
       .map((row) => idString(row._id))
@@ -357,30 +307,6 @@ export function planTeamFoundationRuntime(snapshot, mapping = { teams: [] }) {
     issues,
     indexesToCreate,
   );
-  compareIndexSet(
-    'team_operations',
-    objects.team_operations?.indexes ?? [],
-    TEAM_FOUNDATION_INDEXES.teamOperations,
-    issues,
-    indexesToCreate,
-  );
-  compareIndexSet(
-    'audit_logs_iam',
-    snapshot.auditObjects?.audit_logs_iam?.indexes ?? [],
-    [TEAM_FOUNDATION_INDEXES.audit],
-    issues,
-    indexesToCreate,
-  );
-
-  for (const duplicate of snapshot.duplicateGroups ?? []) {
-    if (duplicate.count > 0)
-      issues.push({
-        code: 'UNIQUE_INDEX_DUPLICATES',
-        collection: duplicate.collection,
-        index: duplicate.index,
-      });
-  }
-
   const mappingSha256 = lifecycleHash(
     BSON.EJSON.serialize(mapping, { relaxed: false }),
   );
@@ -388,7 +314,6 @@ export function planTeamFoundationRuntime(snapshot, mapping = { teams: [] }) {
   const summary = {
     migration: '20261015-team-foundation-runtime-v1',
     iamDatabaseName: snapshot.iamDatabaseName,
-    auditDatabaseName: snapshot.auditDatabaseName,
     targetFingerprint: snapshot.targetFingerprint,
     sourceSha256,
     mappingSha256,

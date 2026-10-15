@@ -19,8 +19,16 @@ function isValidDate(value: unknown): value is Date {
 
 export const teamFoundationSchema = new Schema(
   {
-    organizationId: { type: Schema.Types.ObjectId, required: true },
-    projectId: { type: Schema.Types.ObjectId, required: true },
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      immutable: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      immutable: true,
+    },
     name: {
       type: String,
       required: true,
@@ -33,6 +41,7 @@ export const teamFoundationSchema = new Schema(
     code: {
       type: String,
       required: true,
+      immutable: true,
       validate: {
         validator: (value: unknown) => teamRules.isCanonicalTeamCode(value),
         message:

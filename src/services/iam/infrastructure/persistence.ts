@@ -86,19 +86,6 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
-      name: 'team_operations',
-      indexes: [
-        index(
-          { organizationId: 1, actorUserId: 1, keyHash: 1 },
-          { name: 'team_operation_scope', unique: true },
-        ),
-        index(
-          { expiresAt: 1 },
-          { name: 'team_operation_expiry', expireAfterSeconds: 0 },
-        ),
-      ],
-    },
-    {
       name: 'projects',
       indexes: [index({ organizationId: 1, code: 1 }, { unique: true })],
     },

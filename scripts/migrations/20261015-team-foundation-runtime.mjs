@@ -10,7 +10,6 @@ import {
 import {
   planTeamFoundationRuntime,
   publicTeamFoundationRuntimeReport,
-  TEAM_FOUNDATION_AUDIT_DATABASE,
   TEAM_FOUNDATION_IAM_DATABASE,
 } from './team-foundation-runtime.plan.mjs';
 
@@ -30,12 +29,6 @@ const teamProjection = {
   archivedBy: 1,
   archivedReason: 1,
 };
-const operationProjection = {
-  organizationId: 1,
-  actorUserId: 1,
-  keyHash: 1,
-};
-
 async function collectionObject(db, name) {
   const [entry] = await db.listCollections({ name }).toArray();
   if (!entry) return null;
@@ -71,98 +64,29 @@ async function readRows(db, name, projection, budget) {
   return { object, rows };
 }
 
-export function duplicateGroupPipeline(match, key) {
-  const groupKey = Object.fromEntries(
-    Object.keys(key).map((field, index) => [
-      `field${index}`,
-      { $ifNull: [`$${field}`, null] },
-    ]),
-  );
-  return [
-    { $match: match },
-    {
-      $group: {
-        _id: groupKey,
-        count: { $sum: 1 },
-      },
-    },
-    { $match: { count: { $gt: 1 } } },
-    { $limit: 1 },
-    { $project: { _id: 0, count: 1 } },
-  ];
-}
-
-async function duplicateCount(collection, match, key) {
-  const groups = await collection
-    .aggregate(duplicateGroupPipeline(match, key))
-    .toArray();
-  return groups[0]?.count ?? 0;
-}
-
 async function collectSnapshot(client, fingerprint) {
   const iamDb = client.db(TEAM_FOUNDATION_IAM_DATABASE);
-  const auditDb = client.db(TEAM_FOUNDATION_AUDIT_DATABASE);
   if (iamDb.databaseName !== TEAM_FOUNDATION_IAM_DATABASE)
     throw new Error('IAM_TARGET_REQUIRED');
-  if (auditDb.databaseName !== TEAM_FOUNDATION_AUDIT_DATABASE)
-    throw new Error('AUDIT_TARGET_REQUIRED');
 
   const budget = new MigrationScanBudget();
-  const [teams, organizations, projects, operations] = await Promise.all([
+  const [teams, organizations, projects] = await Promise.all([
     readRows(iamDb, 'teams', teamProjection, budget),
     readRows(iamDb, 'organizations', { _id: 1 }, budget),
     readRows(iamDb, 'projects', { _id: 1, organizationId: 1 }, budget),
-    readRows(iamDb, 'team_operations', operationProjection, budget),
   ]);
-  const auditObject = await collectionObject(auditDb, 'audit_logs_iam');
-  const duplicateGroups = [];
-  if (operations.object?.type === 'collection') {
-    const count = await duplicateCount(
-      iamDb.collection('team_operations'),
-      {},
-      { organizationId: 1, actorUserId: 1, keyHash: 1 },
-    );
-    if (count > 0)
-      duplicateGroups.push({
-        collection: 'team_operations',
-        index: 'team_operation_scope',
-        count,
-      });
-  }
-  if (auditObject?.type === 'collection') {
-    const count = await duplicateCount(
-      auditDb.collection('audit_logs_iam'),
-      { targetResource: 'Team', 'metadata.commandId': { $exists: true } },
-      {
-        organizationId: 1,
-        'metadata.commandId': 1,
-        action: 1,
-        targetResourceId: 1,
-      },
-    );
-    if (count > 0)
-      duplicateGroups.push({
-        collection: 'audit_logs_iam',
-        index: 'team_audit_command_dedupe',
-        count,
-      });
-  }
 
   return {
     iamDatabaseName: iamDb.databaseName,
-    auditDatabaseName: auditDb.databaseName,
     targetFingerprint: fingerprint,
     objects: {
       teams: teams.object,
       organizations: organizations.object,
       projects: projects.object,
-      team_operations: operations.object,
     },
-    auditObjects: { audit_logs_iam: auditObject },
     teams: teams.rows,
     organizations: organizations.rows,
     projects: projects.rows,
-    duplicateGroups,
   };
 }
 
@@ -187,7 +111,7 @@ function compareFilterValue(current, expected) {
   );
 }
 
-export async function applyTeamFoundationRuntimePlan({ iamDb, auditDb, plan }) {
+export async function applyTeamFoundationRuntimePlan({ iamDb, plan }) {
   if (!plan.clean) throw new Error('MIGRATION_PLAN_NOT_CLEAN');
   for (const update of plan.updates) {
     const collection = iamDb.collection('teams');
@@ -210,21 +134,16 @@ export async function applyTeamFoundationRuntimePlan({ iamDb, auditDb, plan }) {
   }
 
   for (const collectionPlan of plan.createCollections) {
-    const db =
-      collectionPlan.database === TEAM_FOUNDATION_IAM_DATABASE
-        ? iamDb
-        : auditDb;
     try {
-      await db.createCollection(collectionPlan.name);
+      await iamDb.createCollection(collectionPlan.name);
     } catch (error) {
       if (error?.code !== 48) throw error;
     }
   }
 
   for (const index of plan.indexesToCreate) {
-    const db = index.collection === 'audit_logs_iam' ? auditDb : iamDb;
     const { collection, key, ...options } = index;
-    await db.collection(collection).createIndex(key, options);
+    await iamDb.collection(collection).createIndex(key, options);
   }
 }
 
@@ -282,7 +201,6 @@ export async function runTeamFoundationRuntimeMigration(
   try {
     await client.connect();
     const iamDb = client.db(TEAM_FOUNDATION_IAM_DATABASE);
-    const auditDb = client.db(TEAM_FOUNDATION_AUDIT_DATABASE);
     let snapshot = await collectSnapshot(client, fingerprint);
     let plan = planTeamFoundationRuntime(snapshot, mapping);
     process.stdout.write(
@@ -297,7 +215,7 @@ export async function runTeamFoundationRuntimeMigration(
     plan = planTeamFoundationRuntime(snapshot, mapping);
     if (!plan.clean || plan.reportSha256 !== options.expectedHash)
       throw new Error('TARGET_CHANGED_AFTER_REVIEW');
-    await applyTeamFoundationRuntimePlan({ iamDb, auditDb, plan });
+    await applyTeamFoundationRuntimePlan({ iamDb, plan });
 
     const verified = planTeamFoundationRuntime(
       await collectSnapshot(client, fingerprint),

@@ -245,46 +245,19 @@ test('derives all service collections and indexes from current Mongoose schemas'
   const iamTarget = plan.find(
     ({ databaseName }) => databaseName === 'continuum_iam',
   );
-  const teamOperations = iamTarget.collections.find(
-    ({ name }) => name === 'team_operations',
-  );
-  assert.deepEqual(
-    teamOperations.indexes.map(({ key, options }) => ({ key, options })),
-    [
-      {
-        key: { organizationId: 1, actorUserId: 1, keyHash: 1 },
-        options: { name: 'team_operation_scope', unique: true },
-      },
-      {
-        key: { expiresAt: 1 },
-        options: { name: 'team_operation_expiry', expireAfterSeconds: 0 },
-      },
-    ],
+  assert.equal(
+    iamTarget.collections.some(({ name }) => name === 'team_operations'),
+    false,
   );
 
   const auditCollection = plan
     .find(({ databaseName }) => databaseName === 'continuum_audit')
     .collections.find(({ name }) => name === 'audit_logs_iam');
-  assert.deepEqual(
-    auditCollection.indexes.map(({ key, options }) => ({ key, options })),
-    [
-      {
-        key: {
-          organizationId: 1,
-          'metadata.commandId': 1,
-          action: 1,
-          targetResourceId: 1,
-        },
-        options: {
-          name: 'team_audit_command_dedupe',
-          unique: true,
-          partialFilterExpression: {
-            targetResource: 'Team',
-            'metadata.commandId': { $exists: true },
-          },
-        },
-      },
-    ],
+  assert.equal(
+    auditCollection.indexes.some(
+      ({ name }) => name === 'team_audit_command_dedupe',
+    ),
+    false,
   );
 });
 
