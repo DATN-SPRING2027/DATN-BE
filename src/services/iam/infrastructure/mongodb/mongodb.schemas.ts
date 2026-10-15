@@ -6,6 +6,7 @@ import {
   membershipVersion,
   mutationFence,
 } from './membership-lifecycle.schemas';
+import { teamFoundationSchema } from './team-foundation.schema';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
 
@@ -40,6 +41,37 @@ export const auditSchema = new Schema(
     occurredAt: { type: Date, required: true, default: Date.now, index: true },
   },
   { collection: 'audit_logs', timestamps: true },
+);
+
+export const iamAuditSchema = new Schema(
+  {
+    organizationId: String,
+    projectId: String,
+    actorUserId: String,
+    action: { type: String, required: true },
+    targetResource: { type: String, required: true },
+    targetResourceId: { type: String, required: true },
+    metadata: Schema.Types.Mixed,
+    occurredAt: { type: Date, required: true },
+  },
+  { collection: 'audit_logs_iam', strict: true },
+);
+
+iamAuditSchema.index(
+  {
+    organizationId: 1,
+    'metadata.commandId': 1,
+    action: 1,
+    targetResourceId: 1,
+  },
+  {
+    name: 'team_audit_command_dedupe',
+    unique: true,
+    partialFilterExpression: {
+      targetResource: 'Team',
+      'metadata.commandId': { $exists: true },
+    },
+  },
 );
 
 const iamSchemas: Record<string, Schema> = {
@@ -93,6 +125,26 @@ const iamSchemas: Record<string, Schema> = {
   ),
   organization_invitations: membershipInvitationSchema,
   membership_operations: membershipOperationSchema,
+  team_operations: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      actorUserId: { type: Schema.Types.ObjectId, required: true },
+      keyHash: { type: String, required: true },
+      fingerprint: { type: String, required: true },
+      status: {
+        type: String,
+        enum: ['IN_PROGRESS', 'COMMITTED'],
+        required: true,
+      },
+      commandId: { type: String, required: true },
+      expiresAt: { type: Date, required: true },
+      httpStatus: Number,
+      responseBody: Schema.Types.Mixed,
+      etag: String,
+      location: String,
+    },
+    { collection: 'team_operations', strict: true, versionKey: false },
+  ),
   projects: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
@@ -110,16 +162,7 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'projects', timestamps: true, strict: true },
   ),
-  teams: new Schema(
-    {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      projectId: { type: Schema.Types.ObjectId, required: true },
-      name: { type: String, required: true, trim: true },
-      code: { type: String, required: true, uppercase: true, trim: true },
-      description: String,
-    },
-    { collection: 'teams', timestamps: true, strict: true },
-  ),
+  teams: teamFoundationSchema,
   project_memberships: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
