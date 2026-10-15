@@ -242,10 +242,23 @@ test('derives all service collections and indexes from current Mongoose schemas'
     ],
   );
 
+  const iamTarget = plan.find(
+    ({ databaseName }) => databaseName === 'continuum_iam',
+  );
+  assert.equal(
+    iamTarget.collections.some(({ name }) => name === 'team_operations'),
+    false,
+  );
+
   const auditCollection = plan
     .find(({ databaseName }) => databaseName === 'continuum_audit')
     .collections.find(({ name }) => name === 'audit_logs_iam');
-  assert.deepEqual(auditCollection.indexes, []);
+  assert.equal(
+    auditCollection.indexes.some(
+      ({ name }) => name === 'team_audit_command_dedupe',
+    ),
+    false,
+  );
 });
 
 test('creates missing schemas/indexes idempotently without replacing existing data', async () => {

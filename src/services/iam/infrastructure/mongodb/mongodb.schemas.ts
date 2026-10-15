@@ -6,6 +6,7 @@ import {
   membershipVersion,
   mutationFence,
 } from './membership-lifecycle.schemas';
+import { teamFoundationSchema } from './team-foundation.schema';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
 
@@ -40,6 +41,20 @@ export const auditSchema = new Schema(
     occurredAt: { type: Date, required: true, default: Date.now, index: true },
   },
   { collection: 'audit_logs', timestamps: true },
+);
+
+export const iamAuditSchema = new Schema(
+  {
+    organizationId: String,
+    projectId: String,
+    actorUserId: String,
+    action: { type: String, required: true },
+    targetResource: { type: String, required: true },
+    targetResourceId: { type: String, required: true },
+    metadata: Schema.Types.Mixed,
+    occurredAt: { type: Date, required: true },
+  },
+  { collection: 'audit_logs_iam', strict: true },
 );
 
 const iamSchemas: Record<string, Schema> = {
@@ -110,16 +125,7 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'projects', timestamps: true, strict: true },
   ),
-  teams: new Schema(
-    {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      projectId: { type: Schema.Types.ObjectId, required: true },
-      name: { type: String, required: true, trim: true },
-      code: { type: String, required: true, uppercase: true, trim: true },
-      description: String,
-    },
-    { collection: 'teams', timestamps: true, strict: true },
-  ),
+  teams: teamFoundationSchema,
   project_memberships: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },

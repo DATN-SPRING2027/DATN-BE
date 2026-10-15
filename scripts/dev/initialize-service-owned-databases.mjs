@@ -177,7 +177,10 @@ export function buildInitializationPlan() {
         name: 'audit_logs',
         indexes: normalizeSchemaIndexes(iamSchemas.auditSchema),
       },
-      { name: 'audit_logs_iam', indexes: [] },
+      {
+        name: 'audit_logs_iam',
+        indexes: normalizeSchemaIndexes(iamSchemas.iamAuditSchema),
+      },
     ],
   };
   const plan = [...serviceTargets, auditTarget];

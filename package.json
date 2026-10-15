@@ -41,6 +41,8 @@
     "test:project-access-permissions:integration": "node --test scripts/migrations/20261012-project-access-permission-provisioning.mongodb.test.mjs",
     "test:membership-lifecycle:integration": "node --test scripts/migrations/20261012-organization-membership-lifecycle.mongodb.test.mjs",
     "migrate:membership-lifecycle": "node scripts/migrations/20261012-organization-membership-lifecycle.mjs",
+    "migrate:team-foundation-runtime": "node scripts/migrations/20261015-team-foundation-runtime.mjs",
+    "test:team-foundation-runtime-plan": "node --test scripts/migrations/team-foundation-runtime.plan.test.mjs",
     "migrate:google-identity-index": "node scripts/migrations/20261011-google-identity-index.mjs",
     "migrate:password-reset-outbox": "node scripts/migrations/20261014-password-reset-outbox.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",
