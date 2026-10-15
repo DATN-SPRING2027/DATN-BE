@@ -44,6 +44,7 @@
     "migrate:team-foundation-runtime": "node scripts/migrations/20261015-team-foundation-runtime.mjs",
     "test:team-foundation-runtime-plan": "node --test scripts/migrations/team-foundation-runtime.plan.test.mjs",
     "test:team-foundation-transactions": "node scripts/tests/team-foundation-transactions.integration.mjs",
+    "test:project-audit-atomicity": "node scripts/tests/project-audit-atomicity.integration.mjs",
     "migrate:google-identity-index": "node scripts/migrations/20261011-google-identity-index.mjs",
     "migrate:password-reset-outbox": "node scripts/migrations/20261014-password-reset-outbox.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",

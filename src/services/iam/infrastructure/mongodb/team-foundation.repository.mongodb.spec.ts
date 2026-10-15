@@ -147,21 +147,25 @@ integration(
       await seedAuthorization();
     }
 
-    async function enableIsolatedIdempotencyMutationTest() {
+    async function enableIsolatedIdempotencyMutationTest(
+      includeTtlIndex = true,
+    ) {
       const operations = await iam().createCollection('team_operations');
       await operations.createIndex(
         { organizationId: 1, actorUserId: 1, keyHash: 1 },
         { name: 'test_operation_key', unique: true },
       );
-      await operations.createIndex(
-        { expiresAt: 1 },
-        { name: 'test_operation_expiry', expireAfterSeconds: 0 },
-      );
+      if (includeTtlIndex)
+        await operations.createIndex(
+          { expiresAt: 1 },
+          { name: 'test_operation_expiry', expireAfterSeconds: 0 },
+        );
       (
         repository as unknown as {
           ensureMutationReady: () => Promise<unknown>;
         }
       ).ensureMutationReady = jest.fn().mockResolvedValue({ operations });
+      return operations;
     }
 
     async function createTeam(
@@ -342,6 +346,60 @@ integration(
       );
     });
 
+    it('replaces an expired committed idempotency slot with compare-and-set', async () => {
+      const operations = await enableIsolatedIdempotencyMutationTest(false);
+      const key = `expired-${randomUUID()}`;
+      await createTeam(key);
+
+      const original = await operations.findOne({
+        organizationId,
+        actorUserId,
+      });
+      if (!original)
+        throw new Error('Committed idempotency slot was not stored');
+      if (typeof original.commandId !== 'string')
+        throw new Error('Committed idempotency slot has no command ID');
+      const originalCommandId = original.commandId;
+      await operations.updateOne(
+        { _id: original._id },
+        { $set: { expiresAt: new Date(Date.now() - 1_000) } },
+      );
+
+      const replacement = await createTeam(key, {
+        name: 'Quality',
+        code: 'QA',
+        description: null,
+      });
+      const stored = await operations.findOne({ _id: original._id });
+
+      expect(replacement.replayed).toBe(false);
+      expect(replacement.team.name).toBe('Quality');
+      expect(stored?.status).toBe('COMMITTED');
+      expect(stored?.commandId).not.toBe(originalCommandId);
+      expect(await iam().collection('teams').countDocuments({})).toBe(2);
+      expect(await operations.countDocuments({})).toBe(1);
+    });
+
+    it('rolls back Team and idempotency slot when command-result persistence fails', async () => {
+      const operations = await enableIsolatedIdempotencyMutationTest();
+      const updateResult = jest
+        .spyOn(operations, 'updateOne')
+        .mockRejectedValueOnce(
+          new Error('Simulated command-result write failure'),
+        );
+
+      try {
+        await expect(
+          createTeam(`result-failure-${randomUUID()}`),
+        ).rejects.toThrow('Simulated command-result write failure');
+      } finally {
+        updateResult.mockRestore();
+      }
+
+      expect(await iam().collection('teams').countDocuments({})).toBe(0);
+      expect(await operations.countDocuments({})).toBe(0);
+    });
+
     it('rolls back the command-result slot when the Team write conflicts', async () => {
       await enableIsolatedIdempotencyMutationTest();
       await createTeam('first-code-key');
@@ -390,6 +448,14 @@ integration(
         expect(
           (failure as ServiceUnavailableException).getResponse(),
         ).toMatchObject({ code: 'RETRY_LATER' });
+        expect(await iam().collection('teams').countDocuments({})).toBe(1);
+        const committedSlot = await iam()
+          .collection('team_operations')
+          .findOne({ organizationId, actorUserId });
+        expect(committedSlot?.status).toBe('COMMITTED');
+        expect(
+          await iam().collection('team_operations').countDocuments({}),
+        ).toBe(1);
       } finally {
         startSessionSpy.mockRestore();
       }
