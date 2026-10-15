@@ -137,7 +137,7 @@ describe('AuthenticationApplicationService', () => {
     );
   });
 
-  it('authenticates an ACTIVE user and signs only the selected organization context', async () => {
+  it('issues an ACCOUNT session when one Organization is available so the user can select it', async () => {
     const result = await service.login({
       email: account.email,
       password: 'correct-password',
@@ -148,8 +148,7 @@ describe('AuthenticationApplicationService', () => {
         id: USER_ID,
         email: account.email,
         name: account.name,
-        organizationId: ORG_ID,
-        roles: ['ADMIN', 'MEMBER'],
+        context: 'ACCOUNT',
       },
     });
     expect(result.refreshToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -157,8 +156,7 @@ describe('AuthenticationApplicationService', () => {
     expect(result.csrfToken).not.toBe(result.refreshToken);
     expect(repository.createRefreshSession.mock.calls[0][0]).toMatchObject({
       userId: USER_ID,
-      context: 'ORGANIZATION',
-      organizationId: ORG_ID,
+      context: 'ACCOUNT',
       tokenHash: createHash('sha256').update(result.refreshToken).digest('hex'),
     });
     const issuedExpiry =
@@ -166,15 +164,11 @@ describe('AuthenticationApplicationService', () => {
     expect(issuedExpiry).toBeInstanceOf(Date);
     expect(issuedExpiry.getTime() - Date.now()).toBeGreaterThan(604799000);
     expect(issuedExpiry.getTime() - Date.now()).toBeLessThanOrEqual(604800000);
-    expect(organizationResolver.resolveForUser.mock.calls).toContainEqual([
-      USER_ID,
-      undefined,
-    ]);
+    expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
     expect(accessTokens.signAccessToken).toHaveBeenCalledWith({
       sub: USER_ID,
       email: account.email,
-      orgId: ORG_ID,
-      roles: ['ADMIN', 'MEMBER'],
+      context: 'ACCOUNT',
     });
     expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
       expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
@@ -223,7 +217,7 @@ describe('AuthenticationApplicationService', () => {
       warn.mockRestore();
     });
 
-    it('links a verified Google identity to the existing email account and issues the normal session', async () => {
+    it('links a verified Google identity and defers Organization selection', async () => {
       repository.findAccountByGoogleSubject.mockResolvedValue(null);
       repository.findAccountByEmail.mockResolvedValue(account);
       repository.linkGoogleSubjectIfMissing.mockResolvedValue(true);
@@ -234,8 +228,17 @@ describe('AuthenticationApplicationService', () => {
         USER_ID,
         googleIdentity.subject,
       ]);
-      expect(result.user).toMatchObject({ id: USER_ID, email: account.email });
+      expect(result.user).toEqual({
+        id: USER_ID,
+        email: account.email,
+        name: account.name,
+        context: 'ACCOUNT',
+      });
       expect(repository.createRefreshSession.mock.calls).toHaveLength(1);
+      expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
+      expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+        context: 'ACCOUNT',
+      });
     });
 
     it('creates a passwordless user for a new verified Google identity without granting an Organization', async () => {
@@ -280,6 +283,7 @@ describe('AuthenticationApplicationService', () => {
         email: googleAccount.email,
         context: 'ACCOUNT',
       });
+      expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
     });
 
     it('signs in an existing Google-only account in ACCOUNT context', async () => {
@@ -313,6 +317,7 @@ describe('AuthenticationApplicationService', () => {
         userId: googleAccount.userId,
         context: 'ACCOUNT',
       });
+      expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
     });
 
     it('does not resolve or create an account when Google email is unverified', async () => {
@@ -326,7 +331,7 @@ describe('AuthenticationApplicationService', () => {
       expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
     });
 
-    it('requires an explicit Organization when the linked account has multiple active memberships', async () => {
+    it('issues an ACCOUNT session when the linked account has multiple active memberships', async () => {
       repository.findAccountByGoogleSubject.mockResolvedValue({
         ...account,
         googleSubject: googleIdentity.subject,
@@ -339,20 +344,43 @@ describe('AuthenticationApplicationService', () => {
         ],
       });
 
-      await expect(
-        service.loginWithGoogle(googleIdentity),
-      ).rejects.toMatchObject({
-        response: {
-          code: 'ORGANIZATION_SELECTION_REQUIRED',
-          details: {
-            organizations: [
-              { id: ORG_ID, name: 'Alpha' },
-              { id: OTHER_ORG_ID, name: 'Beta' },
-            ],
-          },
-        },
+      const result = await service.loginWithGoogle(googleIdentity);
+
+      expect(result.user).toEqual({
+        id: USER_ID,
+        email: account.email,
+        name: account.name,
+        context: 'ACCOUNT',
       });
-      expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
+      expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+        context: 'ACCOUNT',
+      });
+      expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicitly requested active Organization when provided', async () => {
+      repository.findAccountByGoogleSubject.mockResolvedValue({
+        ...account,
+        googleSubject: googleIdentity.subject,
+      });
+      organizationResolver.resolveForUser.mockResolvedValue({
+        outcome: 'RESOLVED',
+        context: { orgId: OTHER_ORG_ID, roles: ['MEMBER'] },
+      });
+
+      const result = await service.loginWithGoogle(
+        googleIdentity,
+        OTHER_ORG_ID,
+      );
+
+      expect(result.user).toMatchObject({
+        organizationId: OTHER_ORG_ID,
+        roles: ['MEMBER'],
+      });
+      expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+        context: 'ORGANIZATION',
+        organizationId: OTHER_ORG_ID,
+      });
     });
 
     it('does not link a verified email to an account already linked to another Google subject', async () => {
@@ -476,6 +504,87 @@ describe('AuthenticationApplicationService', () => {
     ]);
   });
 
+  it('selects an active Organization from an ACCOUNT session after membership verification', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'ACCOUNT',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'RESOLVED',
+      context: { orgId: ORG_ID, roles: ['MEMBER'] },
+    });
+
+    const result = await service.selectOrganization(
+      'Bearer account-token',
+      undefined,
+      ORG_ID,
+    );
+
+    expect(organizationResolver.resolveForUser).toHaveBeenCalledWith(
+      USER_ID,
+      ORG_ID,
+    );
+    expect(result.user).toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: 'Test Person',
+      organizationId: ORG_ID,
+      roles: ['MEMBER'],
+    });
+    expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+      context: 'ORGANIZATION',
+      organizationId: ORG_ID,
+    });
+  });
+
+  it('allows an active Organization session to switch only to another active membership', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([
+      ORG_ID,
+      OTHER_ORG_ID,
+    ]);
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'RESOLVED',
+      context: { orgId: OTHER_ORG_ID, roles: ['MEMBER'] },
+    });
+
+    const result = await service.selectOrganization(
+      'Bearer current-organization-token',
+      undefined,
+      OTHER_ORG_ID,
+    );
+
+    expect(result.user).toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: 'Test Person',
+      organizationId: OTHER_ORG_ID,
+      roles: ['MEMBER'],
+    });
+    expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+      context: 'ORGANIZATION',
+      organizationId: OTHER_ORG_ID,
+    });
+  });
+
+  it('rejects switching from an Organization session whose current membership is no longer active', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([
+      OTHER_ORG_ID,
+    ]);
+
+    await expect(
+      service.selectOrganization(
+        'Bearer stale-organization-token',
+        undefined,
+        OTHER_ORG_ID,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       'unknown user',
@@ -526,6 +635,9 @@ describe('AuthenticationApplicationService', () => {
       await service.login({
         email: account.email,
         password: 'supplied-secret',
+        ...(_case === 'invalid organization selector'
+          ? { organizationId: OTHER_ORG_ID }
+          : {}),
       });
     } catch (error) {
       thrown = error;
@@ -560,6 +672,7 @@ describe('AuthenticationApplicationService', () => {
       email: account.email,
       context: 'ACCOUNT',
     });
+    expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
   });
 
   it('does not allow a Google-only account to sign in with an empty password', async () => {
@@ -603,20 +716,27 @@ describe('AuthenticationApplicationService', () => {
     });
   });
 
-  it('returns 409 for multiple organizations without a selector', async () => {
+  it('issues an ACCOUNT session for multiple organizations until the user selects one', async () => {
     organizationResolver.resolveForUser.mockResolvedValue({
       outcome: 'ORGANIZATION_SELECTION_REQUIRED',
       organizations: [{ id: ORG_ID, name: 'Alpha' }],
     });
 
-    await expect(
-      service.login({ email: account.email, password: 'correct-password' }),
-    ).rejects.toMatchObject({
-      response: {
-        code: 'ORGANIZATION_SELECTION_REQUIRED',
-        details: { organizations: [{ id: ORG_ID, name: 'Alpha' }] },
-      },
+    const result = await service.login({
+      email: account.email,
+      password: 'correct-password',
     });
+
+    expect(result.user).toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: account.name,
+      context: 'ACCOUNT',
+    });
+    expect(repository.createRefreshSession.mock.calls[0]?.[0]).toMatchObject({
+      context: 'ACCOUNT',
+    });
+    expect(organizationResolver.resolveForUser).not.toHaveBeenCalled();
   });
 
   it('limits requests from a source before expensive password verification', async () => {

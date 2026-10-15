@@ -198,6 +198,11 @@ export class AuthenticationApplicationService {
 
   async login(input: LoginInput): Promise<LoginResult> {
     const { account, needsRehash } = await this.authenticateCredentials(input);
+    if (!input.organizationId) {
+      await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
+      return this.issueAccountSession(account);
+    }
+
     const organization = await this.organizationResolver.resolveForUser(
       account.userId,
       input.organizationId,
@@ -210,21 +215,7 @@ export class AuthenticationApplicationService {
       });
     }
     if (organization.outcome === 'NO_ELIGIBLE_ORGANIZATION') {
-      const user: AuthenticatedAccountIdentity = {
-        id: account.userId,
-        email: account.email,
-        name: account.name,
-        context: 'ACCOUNT',
-      };
-      await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
-      return {
-        ...(await this.issueSession(account.userId, 'ACCOUNT', {
-          sub: user.id,
-          email: user.email,
-          context: 'ACCOUNT',
-        })),
-        user,
-      };
+      throw unauthorized();
     }
     if (organization.outcome !== 'RESOLVED') throw unauthorized();
 
@@ -323,6 +314,15 @@ export class AuthenticationApplicationService {
       status: 'succeeded',
     });
 
+    if (!requestedOrganizationId) {
+      logGoogleOAuthStage({
+        requestId: correlationId,
+        stage: 'organization_resolution',
+        status: 'skipped',
+      });
+      return this.issueAccountSession(account, correlationId);
+    }
+
     logGoogleOAuthStage({
       requestId: correlationId,
       stage: 'organization_resolution',
@@ -363,30 +363,7 @@ export class AuthenticationApplicationService {
       });
     }
     if (organization.outcome === 'NO_ELIGIBLE_ORGANIZATION') {
-      logGoogleOAuthStage({
-        requestId: correlationId,
-        stage: 'organization_resolution',
-        status: 'succeeded',
-      });
-      const user: AuthenticatedAccountIdentity = {
-        id: account.userId,
-        email: account.email,
-        name: account.name,
-        context: 'ACCOUNT',
-      };
-      return {
-        ...(await this.issueSession(
-          account.userId,
-          'ACCOUNT',
-          {
-            sub: user.id,
-            email: user.email,
-            context: 'ACCOUNT',
-          },
-          correlationId,
-        )),
-        user,
-      };
+      throw unauthorized();
     }
     if (organization.outcome !== 'RESOLVED') {
       logGoogleOAuthStage({
@@ -810,20 +787,19 @@ export class AuthenticationApplicationService {
     cookieHeader: string | undefined,
     organizationId: string,
   ): Promise<LoginResult> {
-    const { claims, profile } = await this.getVerifiedActiveSubject(
+    const identity = await this.getCurrentSessionIdentity(
       authorization,
       cookieHeader,
     );
-    if (claims.context !== 'ACCOUNT') throw unauthorized();
     const organization = await this.organizationResolver.resolveForUser(
-      claims.sub,
+      identity.id,
       organizationId,
     );
     if (organization.outcome !== 'RESOLVED') throw unauthorized();
     const user: AuthenticatedIdentity = {
-      id: claims.sub,
-      email: claims.email,
-      name: profile.name,
+      id: identity.id,
+      email: identity.email,
+      name: identity.name,
       organizationId: organization.context.orgId,
       roles: organization.context.roles,
     };
@@ -842,15 +818,39 @@ export class AuthenticationApplicationService {
     authorization: string | undefined,
     cookieHeader: string | undefined,
   ): Promise<LoginOrganizationOption[]> {
-    const { claims } = await this.getVerifiedActiveSubject(
+    const identity = await this.getCurrentSessionIdentity(
       authorization,
       cookieHeader,
     );
-    if (claims.context === 'PLATFORM') throw unauthorized();
     const ids = await this.repository.findActiveOrganizationMembershipIds(
-      claims.sub,
+      identity.id,
     );
     return this.repository.findOrganizationOptions(ids);
+  }
+
+  private async issueAccountSession(
+    account: AuthenticationAccount,
+    googleOAuthRequestId?: string,
+  ): Promise<LoginResult> {
+    const user: AuthenticatedAccountIdentity = {
+      id: account.userId,
+      email: account.email,
+      name: account.name,
+      context: 'ACCOUNT',
+    };
+    return {
+      ...(await this.issueSession(
+        account.userId,
+        'ACCOUNT',
+        {
+          sub: user.id,
+          email: user.email,
+          context: 'ACCOUNT',
+        },
+        googleOAuthRequestId,
+      )),
+      user,
+    };
   }
 
   /**

@@ -406,6 +406,14 @@ describe('IAM OpenAPI contract', () => {
       },
       headers: { 'Set-Cookie': { schema: { type: 'string' } } },
     });
+    expect(login.description).toContain(
+      'every Organization membership count (zero, one, or many) receives an ACCOUNT session',
+    );
+    expect(
+      contract.components.responses.OrganizationSelectionRequired.description,
+    ).toContain(
+      'does not use this response merely to display Organization options',
+    );
     expect(contract.components.schemas.LoginResponse).toMatchObject({
       properties: { user: { $ref: '#/components/schemas/CurrentUser' } },
     });
@@ -456,7 +464,7 @@ describe('IAM OpenAPI contract', () => {
     expect(callback.description).toContain('ID-token signature, audience');
     expect(callback.description).toContain('stable sub and verified email');
     expect(callback.description).toContain(
-      'zero active Organizations receive an ACCOUNT session',
+      'zero, one, or multiple active Organizations receive an ACCOUNT session',
     );
     expect(callback.description).toContain(
       'Google signup creates no Organization, membership, role or platform authority',

@@ -33,13 +33,14 @@ the preflight, apply, and rollback steps are in the DB work package on branch
 2. The BFF and Gateway preserve the provider 302, encrypted state cookie,
    no-store header, and no-referrer policy for the browser.
 3. Google returns code and state to `/api/auth/google/callback`.
-4. The callback BFF forwards the browser cookie to IAM and relays session
-   cookies. The normal app redirect is returned to the browser.
-5. If the account has multiple active Organizations, the BFF sends the user to
-   the selection page. Selecting one starts a fresh OAuth exchange and IAM
-   rechecks current membership before issuing a session. With no active
-   Organization, sign-in still succeeds in `ACCOUNT` context and routes to
-   onboarding.
+4. IAM verifies and links the identity, then issues an `ACCOUNT` session unless
+   an Organization was explicitly requested and revalidated. The callback BFF
+   relays session cookies and returns the browser to `/select-organization`.
+5. The chooser lists every active Organization membership for all
+   Organization roles. With no active Organization, it offers Organization
+   creation. Selecting one uses the existing session and IAM rechecks the
+   selected membership before issuing Organization-scoped cookies. No second
+   Google exchange is required.
 
 The browser receives the same access, refresh, and CSRF cookies as password
 login. Google provider tokens never enter browser code or IAM persistence.
