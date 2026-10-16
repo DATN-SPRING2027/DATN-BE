@@ -58,12 +58,9 @@ import { MongoOrganizationMembershipCommandRepository } from './infrastructure/m
 import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
-import { TeamFoundationController } from './controllers/team-foundation.controller';
-import { TeamService } from './application/teams/team.service';
-import { TEAM_FOUNDATION_REPOSITORY } from './application/teams/team.repository';
-import { TeamAuthorizationPolicy } from './application/teams/team-authorization.policy';
-import { MongoTeamFoundationRepository } from './infrastructure/mongodb/team-foundation.repository';
 
+// C-04 TQ-05/07/08 remain conditional. Keep Team runtime unwired until the
+// contract closes.
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
   controllers: [
@@ -77,7 +74,6 @@ import { MongoTeamFoundationRepository } from './infrastructure/mongodb/team-fou
     AccountOrganizationController,
     OrganizationMembershipCommandController,
     AccountInvitationController,
-    TeamFoundationController,
   ],
   providers: [
     IamApplicationService,
@@ -106,7 +102,6 @@ import { MongoTeamFoundationRepository } from './infrastructure/mongodb/team-fou
     },
     PasswordCredentialService,
     AuthorizationPolicy,
-    TeamAuthorizationPolicy,
     ProjectCreateAuthorizationGuard,
     ProjectAccessAuthorizationGuard,
     PlatformAuthorizationGuard,
@@ -121,7 +116,6 @@ import { MongoTeamFoundationRepository } from './infrastructure/mongodb/team-fou
     OrganizationProvisioningService,
     OrganizationInvitationService,
     OrganizationMembershipCommandService,
-    TeamService,
     PlatformAuditService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
@@ -147,10 +141,6 @@ import { MongoTeamFoundationRepository } from './infrastructure/mongodb/team-fou
     {
       provide: ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,
       useClass: MongoOrganizationMembershipCommandRepository,
-    },
-    {
-      provide: TEAM_FOUNDATION_REPOSITORY,
-      useClass: MongoTeamFoundationRepository,
     },
     {
       provide: PLATFORM_AUDIT_REPOSITORY,

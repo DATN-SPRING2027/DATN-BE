@@ -155,48 +155,6 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
-  @Post('iam/projects/:projectId/teams')
-  createTeam(
-    @Req() request: Request,
-    @Res() response: Response,
-  ): Promise<void> {
-    return this.forward(request, response);
-  }
-
-  @Patch('iam/teams/:teamId')
-  updateTeam(
-    @Req() request: Request,
-    @Res() response: Response,
-  ): Promise<void> {
-    return this.forward(request, response);
-  }
-
-  @Get('iam/projects/:projectId/teams')
-  listTeams(@Req() request: Request, @Res() response: Response): Promise<void> {
-    return this.forward(request, response);
-  }
-
-  @Get('iam/teams/:teamId')
-  getTeam(@Req() request: Request, @Res() response: Response): Promise<void> {
-    return this.forward(request, response);
-  }
-
-  @Post('iam/teams/:teamId/archive')
-  archiveTeam(
-    @Req() request: Request,
-    @Res() response: Response,
-  ): Promise<void> {
-    return this.forward(request, response);
-  }
-
-  @Post('iam/teams/:teamId/restore')
-  restoreTeam(
-    @Req() request: Request,
-    @Res() response: Response,
-  ): Promise<void> {
-    return this.forward(request, response);
-  }
-
   @Post('iam/organizations')
   createOwnOrganization(
     @Req() request: Request,
