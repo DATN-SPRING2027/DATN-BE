@@ -348,7 +348,14 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
       validationLevel: 'strict',
     });
     try {
-      await create().expect(500);
+      const response = await create().expect(500);
+      expect(response.text).not.toContain(token);
+      expect(response.text).not.toContain(input.name);
+      expect(response.text).not.toContain(input.slug);
+      expect(response.text).not.toContain(input.firstAdminUserId);
+      expect(response.text).not.toMatch(
+        /MongoServerError|Document failed validation|audit_logs_iam/i,
+      );
       expect(await bootstrapCounts()).toEqual([0, 0, 0, 0]);
     } finally {
       await auditDb.command({ collMod: 'audit_logs_iam', validator: {} });

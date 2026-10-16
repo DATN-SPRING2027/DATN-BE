@@ -369,11 +369,16 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     'does not allow provisioning with only %s',
     async (permission) => {
       assignedPermission = permission;
-      await request(app.getHttpServer() as App)
+      const token = operatorToken();
+      const response = await request(app.getHttpServer() as App)
         .post('/api/v1/iam/platform/organizations')
-        .set('Authorization', `Bearer ${operatorToken()}`)
+        .set('Authorization', `Bearer ${token}`)
         .send(validInput)
         .expect(403);
+      expect(response.text).not.toContain(token);
+      expect(response.text).not.toContain(validInput.name);
+      expect(response.text).not.toContain(validInput.slug);
+      expect(response.text).not.toContain(validInput.firstAdminUserId);
       expect(createOrganization).not.toHaveBeenCalled();
     },
   );
