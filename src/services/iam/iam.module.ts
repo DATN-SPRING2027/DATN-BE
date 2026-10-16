@@ -50,6 +50,13 @@ import { MongoOrganizationProvisioningRepository } from './infrastructure/mongod
 import { PlatformAuditService } from './application/platform/platform-audit.service';
 import { PLATFORM_AUDIT_REPOSITORY } from './application/platform/platform-audit.repository';
 import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-audit.repository';
+import { PlatformAuthorityChangeService } from './application/platform/platform-authority-change.service';
+import {
+  PLATFORM_AUTHORITY_CHANGE_AUTHORIZATION,
+  UnconfiguredPlatformAuthorityChangeAuthorizationPolicy,
+} from './application/platform/platform-authority-change.authorization';
+import { PLATFORM_AUTHORITY_CHANGE_REPOSITORY } from './application/platform/platform-authority-change.repository';
+import { MongoPlatformAuthorityChangeRepository } from './infrastructure/mongodb/platform-authority-change.repository';
 import { AccountInvitationController } from './controllers/organization-invitation.controller';
 import { OrganizationMembershipCommandController } from './controllers/organization-membership-command.controller';
 import { OrganizationMembershipCommandService } from './application/organizations/organization-membership-command.service';
@@ -145,6 +152,15 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     {
       provide: PLATFORM_AUDIT_REPOSITORY,
       useClass: MongoPlatformAuditRepository,
+    },
+    PlatformAuthorityChangeService,
+    {
+      provide: PLATFORM_AUTHORITY_CHANGE_AUTHORIZATION,
+      useClass: UnconfiguredPlatformAuthorityChangeAuthorizationPolicy,
+    },
+    {
+      provide: PLATFORM_AUTHORITY_CHANGE_REPOSITORY,
+      useClass: MongoPlatformAuthorityChangeRepository,
     },
   ],
 })

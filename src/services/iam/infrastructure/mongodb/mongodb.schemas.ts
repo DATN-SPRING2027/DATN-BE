@@ -211,9 +211,89 @@ const iamSchemas: Record<string, Schema> = {
       expiresAt: Date,
       revokedAt: Date,
       revokedBy: Schema.Types.ObjectId,
+      provenanceOperationId: String,
     },
     {
       collection: 'platform_authority_assignments',
+      timestamps: true,
+      strict: true,
+    },
+  ),
+  platform_authority_change_operations: new Schema(
+    {
+      operationId: {
+        type: String,
+        required: true,
+        match:
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      },
+      payloadHash: {
+        type: String,
+        required: true,
+        match: /^[a-f\d]{64}$/,
+      },
+      actorUserId: { type: Schema.Types.ObjectId, required: true },
+      issuerUserId: { type: Schema.Types.ObjectId, required: true },
+      operationType: {
+        type: String,
+        enum: ['BOOTSTRAP', 'REGRANT', 'REVOKE'],
+        required: true,
+      },
+      targetUserId: { type: Schema.Types.ObjectId, required: true },
+      permissions: {
+        type: [
+          {
+            type: String,
+            enum: [
+              'organization.create',
+              'platform.health.read',
+              'platform.audit.read',
+            ],
+          },
+        ],
+        required: true,
+        validate: {
+          validator: (permissions: string[]) =>
+            permissions.length === 3 &&
+            new Set(permissions).size === 3 &&
+            [
+              'organization.create',
+              'platform.health.read',
+              'platform.audit.read',
+            ].every((permission) => permissions.includes(permission)),
+          message: 'permissions must contain the complete A-04 bundle.',
+        },
+      },
+      scope: { type: String, enum: ['PLATFORM'], required: true },
+      auditEventId: { type: String, required: true },
+      status: { type: String, enum: ['COMMITTED'], required: true },
+      httpStatus: { type: Number, enum: [200, 201], required: true },
+      resultBody: { type: Schema.Types.Mixed, required: true },
+      committedAt: { type: Date, required: true },
+    },
+    {
+      collection: 'platform_authority_change_operations',
+      timestamps: true,
+      strict: true,
+    },
+  ),
+  platform_authority_change_locks: new Schema(
+    {
+      permission: {
+        type: String,
+        enum: [
+          'organization.create',
+          'platform.health.read',
+          'platform.audit.read',
+          'PLATFORM_OPERATOR_LIFECYCLE',
+        ],
+        required: true,
+      },
+      scope: { type: String, enum: ['PLATFORM'], required: true },
+      version: { type: Number, required: true, default: 0 },
+    },
+    {
+      collection: 'platform_authority_change_locks',
       timestamps: true,
       strict: true,
     },

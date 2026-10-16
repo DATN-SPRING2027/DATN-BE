@@ -84,3 +84,16 @@ permissions, schema, or lifecycle workflow were imported into DATN.
 - Establish the separately controlled initial Platform Operator assignment and lifecycle operations when that operational mechanism is authorized; do not use this PR as a public grant/revoke API.
 - Define grant/revoke audit event production alongside that controlled mechanism.
 - Close DEC-ACCESS-10 independently if exact error codes/bodies are needed; this implementation does not reopen or expand the A-04 policy.
+
+### DATN-295 implementation review follow-up (2026-10-16)
+
+The DATN-295 change workflow remains disabled by default until the issuer
+authorization process and trusted fresh-MFA evidence source are explicitly
+approved and implemented. The default IAM provider returns HTTP 503 before the
+repository is called. Caller-supplied MFA booleans and break-glass flags are not
+authorization evidence. The follow-up
+[`20261016-platform-authority-change-hardening.mjs`](../../scripts/migrations/20261016-platform-authority-change-hardening.mjs)
+adds the operation-ledger TTL index and permission locks needed for serialized
+last-operator checks; it must be reviewed and applied separately per target
+environment. This note records the DATN-295 implementation state and does not
+amend DEC-ACCESS-09 or define the deferred issuer workflow.
