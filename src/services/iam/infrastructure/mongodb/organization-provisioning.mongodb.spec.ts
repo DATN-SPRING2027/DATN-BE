@@ -348,7 +348,13 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
       validationLevel: 'strict',
     });
     try {
-      await create().expect(500);
+      const response = await create().expect(500);
+      expect(response.body).toEqual({
+        code: 'HTTP_500',
+        message: 'Internal server error',
+        details: {},
+        requestId: expect.any(String) as string,
+      });
       expect(await bootstrapCounts()).toEqual([0, 0, 0, 0]);
     } finally {
       await auditDb.command({ collMod: 'audit_logs_iam', validator: {} });

@@ -369,11 +369,17 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     'does not allow provisioning with only %s',
     async (permission) => {
       assignedPermission = permission;
-      await request(app.getHttpServer() as App)
+      const response = await request(app.getHttpServer() as App)
         .post('/api/v1/iam/platform/organizations')
         .set('Authorization', `Bearer ${operatorToken()}`)
         .send(validInput)
         .expect(403);
+      expect(response.body).toEqual({
+        code: 'FORBIDDEN',
+        message: 'Insufficient authorization.',
+        details: {},
+        requestId: expect.any(String) as string,
+      });
       expect(createOrganization).not.toHaveBeenCalled();
     },
   );
