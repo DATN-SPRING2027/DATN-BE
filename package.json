@@ -42,6 +42,8 @@
     "test:membership-lifecycle:integration": "node --test scripts/migrations/20261012-organization-membership-lifecycle.mongodb.test.mjs",
     "migrate:membership-lifecycle": "node scripts/migrations/20261012-organization-membership-lifecycle.mjs",
     "migrate:platform-authority-change-hardening": "node scripts/migrations/20261016-platform-authority-change-hardening.mjs",
+    "migrate:platform-operator-v1-expansion-index": "node scripts/migrations/20261016-platform-operator-v1-expansion-index.mjs",
+    "test:platform-operator-v1-expansion-index-plan": "node --test scripts/migrations/platform-operator-v1-expansion-index.plan.test.mjs",
     "migrate:team-foundation-runtime": "node scripts/migrations/20261015-team-foundation-runtime.mjs",
     "test:team-foundation-runtime-plan": "node --test scripts/migrations/team-foundation-runtime.plan.test.mjs",
     "test:team-foundation-transactions": "node scripts/tests/team-foundation-transactions.integration.mjs",
