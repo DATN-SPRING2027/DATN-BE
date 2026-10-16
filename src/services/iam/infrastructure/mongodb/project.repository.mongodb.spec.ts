@@ -56,8 +56,14 @@ function isProjectListResponse(
   );
 }
 
+function isProjectMetadataResponse(
+  value: unknown,
+): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 integration('MongoProjectRepository transaction and unique index', () => {
-  it('bootstraps creator access, reads the Private Project, rolls back failures, and scopes codes by Organization', async () => {
+  it('bootstraps creator access, enforces Project read boundaries, rolls back failures, and scopes codes by Organization', async () => {
     if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
     const databaseName = `pf_api_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
     const auditDatabaseName = `${databaseName}_audit`;
@@ -125,6 +131,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
         name: 'Creator',
         roles: ['MEMBER'],
       };
+      let currentIdentity = identity;
       const facts: ProjectCreateEvidence = {
         membership: { userId: user, organizationId: orgA, status: 'ACTIVE' },
         explicitDeny: 'CLEAR',
@@ -137,7 +144,9 @@ integration('MongoProjectRepository transaction and unique index', () => {
           {
             provide: AuthenticationApplicationService,
             useValue: {
-              getCurrentIdentity: jest.fn().mockResolvedValue(identity),
+              getCurrentIdentity: jest
+                .fn()
+                .mockImplementation(() => Promise.resolve(currentIdentity)),
             },
           },
           {
@@ -282,6 +291,238 @@ integration('MongoProjectRepository transaction and unique index', () => {
       expect(await auditDb.collection('audit_logs_iam').countDocuments()).toBe(
         2,
       );
+
+      const publicReaderId = new Types.ObjectId();
+      const externalReaderId = new Types.ObjectId();
+      const inactiveReaderId = new Types.ObjectId();
+      const crossOrganizationReaderId = new Types.ObjectId();
+      await db.collection('organization_memberships').insertMany([
+        {
+          organizationId: new Types.ObjectId(orgA),
+          userId: publicReaderId,
+          status: 'ACTIVE',
+        },
+        {
+          organizationId: new Types.ObjectId(orgA),
+          userId: inactiveReaderId,
+          status: 'SUSPENDED',
+        },
+        {
+          organizationId: new Types.ObjectId(orgB),
+          userId: crossOrganizationReaderId,
+          status: 'ACTIVE',
+        },
+      ]);
+
+      const publicProjectId = new Types.ObjectId();
+      const projectTimestamp = new Date();
+      await db.collection('projects').insertOne({
+        _id: publicProjectId,
+        organizationId: new Types.ObjectId(orgA),
+        name: 'Public project',
+        code: 'PUB',
+        description: 'Metadata only',
+        visibility: 'PUBLIC',
+        status: 'ACTIVE',
+        createdBy: new Types.ObjectId(user),
+        createdAt: projectTimestamp,
+        updatedAt: projectTimestamp,
+      });
+      const unrelatedProjectId = new Types.ObjectId();
+      await db.collection('projects').insertOne({
+        _id: unrelatedProjectId,
+        organizationId: new Types.ObjectId(orgA),
+        name: 'Unrelated private project',
+        code: 'OTHER',
+        visibility: 'PRIVATE',
+        status: 'ACTIVE',
+        createdBy: new Types.ObjectId(user),
+        createdAt: projectTimestamp,
+        updatedAt: projectTimestamp,
+      });
+      const creatorRoleAssignment = await db
+        .collection('role_assignments')
+        .findOne({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+          roleCode: 'MEMBER',
+        });
+      if (!creatorRoleAssignment)
+        throw new Error('Creator MEMBER RoleAssignment missing');
+      await db.collection('project_memberships').insertOne({
+        organizationId: new Types.ObjectId(orgA),
+        projectId: unrelatedProjectId,
+        userId: publicReaderId,
+        status: 'ACTIVE',
+      });
+      await db.collection('role_assignments').insertOne({
+        organizationId: new Types.ObjectId(orgA),
+        projectId: unrelatedProjectId,
+        userId: publicReaderId,
+        roleId: creatorRoleAssignment.roleId,
+        roleCode: 'MEMBER',
+        assignedBy: new Types.ObjectId(user),
+      });
+
+      currentIdentity = {
+        ...identity,
+        id: publicReaderId.toString(),
+        email: 'public-reader@example.test',
+        roles: [],
+      };
+      const publicList = await request(app.getHttpServer() as App)
+        .get('/api/v1/iam/projects')
+        .set(headers)
+        .expect(200);
+      const publicListBody: unknown = publicList.body;
+      if (!isProjectListResponse(publicListBody))
+        throw new Error('Public Project list response is invalid');
+      expect(publicListBody.data.map((project) => project.id).sort()).toEqual(
+        [publicProjectId.toString(), unrelatedProjectId.toString()].sort(),
+      );
+
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${first.id}`)
+        .set(headers)
+        .expect(404);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${unrelatedProjectId.toString()}`)
+        .set(headers)
+        .expect(200);
+      const publicDetail = await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${publicProjectId.toString()}`)
+        .set(headers)
+        .expect(200);
+      const publicDetailBody: unknown = publicDetail.body;
+      if (!isProjectMetadataResponse(publicDetailBody))
+        throw new Error('Public Project detail response is invalid');
+      expect(publicDetailBody).toMatchObject({
+        id: publicProjectId.toString(),
+        organizationId: orgA,
+        name: 'Public project',
+        visibility: 'PUBLIC',
+      });
+      expect(Object.keys(publicDetailBody).sort()).toEqual([
+        'code',
+        'createdAt',
+        'createdBy',
+        'description',
+        'id',
+        'name',
+        'organizationId',
+        'status',
+        'updatedAt',
+        'visibility',
+      ]);
+
+      currentIdentity = {
+        ...identity,
+        id: externalReaderId.toString(),
+        email: 'external-reader@example.test',
+        roles: [],
+      };
+      const externalList = await request(app.getHttpServer() as App)
+        .get('/api/v1/iam/projects')
+        .set(headers)
+        .expect(200);
+      const externalListBody: unknown = externalList.body;
+      if (!isProjectListResponse(externalListBody))
+        throw new Error('External Project list response is invalid');
+      expect(externalListBody.data).toEqual([]);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${publicProjectId.toString()}`)
+        .set(headers)
+        .expect(404);
+
+      currentIdentity = {
+        ...identity,
+        id: inactiveReaderId.toString(),
+        email: 'inactive-reader@example.test',
+        roles: [],
+      };
+      const inactiveList = await request(app.getHttpServer() as App)
+        .get('/api/v1/iam/projects')
+        .set(headers)
+        .expect(200);
+      const inactiveListBody: unknown = inactiveList.body;
+      if (!isProjectListResponse(inactiveListBody))
+        throw new Error('Inactive Project list response is invalid');
+      expect(inactiveListBody.data).toEqual([]);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${publicProjectId.toString()}`)
+        .set(headers)
+        .expect(404);
+
+      currentIdentity = {
+        ...identity,
+        id: crossOrganizationReaderId.toString(),
+        organizationId: orgB,
+        email: 'cross-organization-reader@example.test',
+        roles: [],
+      };
+      const crossOrganizationList = await request(app.getHttpServer() as App)
+        .get('/api/v1/iam/projects')
+        .set(headers)
+        .expect(200);
+      const crossOrganizationListBody: unknown = crossOrganizationList.body;
+      if (!isProjectListResponse(crossOrganizationListBody))
+        throw new Error('Cross-organization Project list response is invalid');
+      expect(crossOrganizationListBody.data).toEqual([]);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${publicProjectId.toString()}`)
+        .set(headers)
+        .expect(404);
+
+      currentIdentity = identity;
+      const memberRole = await db.collection('roles').findOne({
+        code: 'MEMBER',
+      });
+      if (!memberRole) throw new Error('Provisioned MEMBER Role missing');
+      const permissionRevoked = await db
+        .collection('roles')
+        .updateOne({ _id: memberRole._id }, { $set: { permissions: [] } });
+      expect(permissionRevoked.modifiedCount).toBe(1);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${first.id}`)
+        .set(headers)
+        .expect(404);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${publicProjectId.toString()}`)
+        .set(headers)
+        .expect(200);
+
+      await db
+        .collection('roles')
+        .updateOne(
+          { _id: memberRole._id },
+          { $set: { permissions: ['project.read'] } },
+        );
+      const creatorMembership = await db
+        .collection('project_memberships')
+        .findOne({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+          status: 'ACTIVE',
+        });
+      if (!creatorMembership)
+        throw new Error('Creator ProjectMembership missing');
+      const membershipRevoked = await db
+        .collection('project_memberships')
+        .updateOne(
+          { _id: creatorMembership._id, status: 'ACTIVE' },
+          { $set: { status: 'INACTIVE' } },
+        );
+      expect(membershipRevoked.modifiedCount).toBe(1);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${first.id}`)
+        .set(headers)
+        .expect(404);
+      await request(app.getHttpServer() as App)
+        .get(`/api/v1/iam/projects/${publicProjectId.toString()}`)
+        .set(headers)
+        .expect(200);
     } finally {
       await app?.close();
       if (
