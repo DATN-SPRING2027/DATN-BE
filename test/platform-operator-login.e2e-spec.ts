@@ -268,9 +268,30 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     const accessCookie = cookies.find((cookie: string) =>
       cookie.startsWith('continuum_access='),
     ) as string;
+    const csrfCookie = cookies.find((cookie: string) =>
+      cookie.startsWith('__Host-csrf='),
+    ) as string;
+    const accessCookieValue = accessCookie.split(';', 1)[0];
+    const csrfCookieValue = csrfCookie.split(';', 1)[0];
+    const csrfToken = csrfCookieValue.slice('__Host-csrf='.length);
+
+    await request(server)
+      .post('/api/v1/iam/platform/organizations')
+      .type('form')
+      .set('Cookie', `${accessCookieValue}; ${csrfCookieValue}`)
+      .send({
+        name: 'Forged Organization',
+        slug: 'forged-organization',
+        plan: 'FREE',
+        firstAdminUserId: ADMIN_ID,
+      })
+      .expect(403);
+    expect(createOrganization).not.toHaveBeenCalled();
+
     const provision = await request(server)
       .post('/api/v1/iam/platform/organizations')
-      .set('Cookie', accessCookie.split(';', 1)[0])
+      .set('Cookie', `${accessCookieValue}; ${csrfCookieValue}`)
+      .set('X-CSRF-Token', csrfToken)
       .send({
         name: 'First Organization',
         slug: 'first-organization',
@@ -302,11 +323,16 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     const accessCookie = cookies.find((cookie: string) =>
       cookie.startsWith('continuum_access='),
     ) as string;
+    const csrfCookie = cookies.find((cookie: string) =>
+      cookie.startsWith('__Host-csrf='),
+    ) as string;
+    const csrfCookieValue = csrfCookie.split(';', 1)[0];
 
     assignmentActive = false;
     await request(server)
       .post('/api/v1/iam/platform/organizations')
-      .set('Cookie', accessCookie.split(';', 1)[0])
+      .set('Cookie', `${accessCookie.split(';', 1)[0]}; ${csrfCookieValue}`)
+      .set('X-CSRF-Token', csrfCookieValue.slice('__Host-csrf='.length))
       .send({
         name: 'Denied Organization',
         slug: 'denied-organization',

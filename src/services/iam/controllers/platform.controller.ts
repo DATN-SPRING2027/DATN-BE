@@ -181,6 +181,7 @@ export class PlatformController {
   async createOrganization(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: Response,
   ) {
@@ -190,6 +191,11 @@ export class PlatformController {
         authorization,
         cookie,
       );
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
     return this.organizations.create(actor, parseOrganizationInput(body));
   }
 
