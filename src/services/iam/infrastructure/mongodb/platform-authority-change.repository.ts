@@ -398,7 +398,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
               revokedBy: null,
               provenanceOperationId: command.operationId,
             })),
-            { session: transactionSession },
+            { session: transactionSession, ordered: true },
           );
         } else if (command.operationType === 'REGRANT') {
           await assertOwnedBundle();
@@ -599,7 +599,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
               committedAt: now,
             },
           ],
-          { session: transactionSession },
+          { session: transactionSession, ordered: true },
         );
 
         await conn
