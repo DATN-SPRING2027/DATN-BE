@@ -99,6 +99,14 @@ describe('Project visibility HTTP contract', () => {
       .expect(403);
     expect(access.changeVisibility).not.toHaveBeenCalled();
   });
+  it('does not expose nested Project memberships to a PUBLIC metadata reader', async () => {
+    evidence.project!.visibility = 'PUBLIC';
+    evidence.assignments = [];
+    await request(app.getHttpServer() as App)
+      .get(`/api/v1/iam/projects/${projectId}/memberships`)
+      .expect(403);
+    expect(access.changeVisibility).not.toHaveBeenCalled();
+  });
   it('reauthorizes a mutation after a prior allow signal', async () => {
     await request(app.getHttpServer() as App)
       .get(path)
