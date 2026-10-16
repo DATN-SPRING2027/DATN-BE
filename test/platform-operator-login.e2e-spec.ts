@@ -36,6 +36,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
   let repository: jest.Mocked<AuthenticationRepositoryPort>;
   let createOrganization: jest.Mock;
   let loadPlatformPermission: jest.Mock;
+  let listOperationalMetadata: jest.Mock;
 
   beforeAll(async () => {
     assignmentActive = true;
@@ -96,6 +97,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       createdAt: '2026-10-08T00:00:00.000Z',
       updatedAt: '2026-10-08T00:00:00.000Z',
     });
+    listOperationalMetadata = jest.fn().mockResolvedValue([]);
 
     const module = await Test.createTestingModule({
       controllers: [AuthenticationController, PlatformController],
@@ -151,9 +153,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
         },
         {
           provide: PlatformAuditService,
-          useValue: {
-            listOperationalMetadata: jest.fn().mockResolvedValue([]),
-          },
+          useValue: { listOperationalMetadata },
         },
       ],
     }).compile();
@@ -171,6 +171,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     assignmentActive = true;
     assignedPermission = 'organization.create';
     jest.clearAllMocks();
+    listOperationalMetadata.mockResolvedValue([]);
     repository.findAccountByEmail.mockResolvedValue({
       userId: USER_ID,
       email: 'operator@example.test',
@@ -287,10 +288,57 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       .expect(200);
 
     expect(response.body).toEqual({ status: 'ok' });
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(loadPlatformPermission).toHaveBeenCalledWith(
       USER_ID,
       'platform.health.read',
     );
+  });
+
+  it('serves the fixed audit projection with the exact audit permission', async () => {
+    assignedPermission = 'platform.audit.read';
+    const auditRows = [
+      {
+        action: 'organization.create',
+        targetResource: 'ORGANIZATION',
+        targetResourceId: '651a2b3c4d5e6f7a8b9c0d21',
+        actorUserId: USER_ID,
+        occurredAt: '2026-10-08T00:00:00.000Z',
+      },
+    ];
+    listOperationalMetadata.mockResolvedValue(auditRows);
+
+    const response = await request(app.getHttpServer() as App)
+      .get('/api/v1/iam/platform/audit')
+      .set('Authorization', `Bearer ${operatorToken()}`)
+      .expect(200);
+
+    expect(response.body).toEqual(auditRows);
+    expect(response.headers['cache-control']).toContain('no-store');
+    expect(loadPlatformPermission).toHaveBeenCalledWith(
+      USER_ID,
+      'platform.audit.read',
+    );
+    expect(listOperationalMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies audit access when the current assignment grants only health read', async () => {
+    assignedPermission = 'platform.health.read';
+    const token = operatorToken();
+
+    const response = await request(app.getHttpServer() as App)
+      .get('/api/v1/iam/platform/audit')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(403);
+
+    expect(loadPlatformPermission).toHaveBeenCalledWith(
+      USER_ID,
+      'platform.audit.read',
+    );
+    expect(listOperationalMetadata).not.toHaveBeenCalled();
+    expect(response.text).not.toContain(token);
+    expect(response.text).not.toContain('organization.create');
+    expect(response.text).not.toContain('651a2b3c4d5e6f7a8b9c0d21');
   });
 
   const validInput = {
