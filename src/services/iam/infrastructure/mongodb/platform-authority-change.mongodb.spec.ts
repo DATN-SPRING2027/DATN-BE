@@ -6,7 +6,34 @@ import { MongoPlatformAuthorityChangeRepository } from './platform-authority-cha
 import { MongoPlatformAuditRepository } from './platform-audit.repository';
 import { IAM_PERSISTENCE } from '../persistence';
 import { createCollectionSchema } from './mongodb.schemas';
-import type { PlatformAuthorityChangeCommand } from '../../application/platform/platform-authority-change.types';
+import {
+  hashAssignmentSnapshot,
+  type PlatformAuthorityChangeCommand,
+} from '../../application/platform/platform-authority-change.types';
+
+type AuthorityAssignmentFixture = {
+  _id: Types.ObjectId;
+  permission: string;
+  scope: string;
+  status: string;
+  grantedAt: Date;
+  grantedBy: Types.ObjectId;
+  expiresAt?: Date | null;
+  revokedAt?: Date | null;
+  revokedBy?: Types.ObjectId | null;
+  provenanceOperationId?: string;
+};
+
+type RepositoryTestCommand = Omit<
+  PlatformAuthorityChangeCommand,
+  'bundleVersion' | 'expectedCurrentSnapshotHash'
+> &
+  Partial<
+    Pick<
+      PlatformAuthorityChangeCommand,
+      'bundleVersion' | 'expectedCurrentSnapshotHash'
+    >
+  >;
 
 describe('Platform authority change operations transactional integration', () => {
   jest.setTimeout(120_000);
@@ -23,6 +50,100 @@ describe('Platform authority change operations transactional integration', () =>
   let issuerId: Types.ObjectId;
   let targetUserId1: Types.ObjectId;
   let targetUserId2: Types.ObjectId;
+  const snapshotHashesByOperation = new Map<string, string>();
+
+  const currentSnapshotHash = async (targetUserId: string) => {
+    const rows = (await connection
+      .db!.collection('platform_authority_assignments')
+      .find({
+        subjectUserId: new Types.ObjectId(targetUserId),
+        scope: 'PLATFORM',
+      })
+      .toArray()) as unknown as AuthorityAssignmentFixture[];
+    return hashAssignmentSnapshot(
+      rows.map((row) => ({
+        assignmentId: row._id.toHexString(),
+        permission: row.permission,
+        scope: row.scope,
+        status: row.status,
+        grantedAt: row.grantedAt,
+        grantedBy: row.grantedBy.toHexString(),
+        expiresAt: row.expiresAt ?? null,
+        revokedAt: row.revokedAt ?? null,
+        revokedBy: row.revokedBy?.toHexString() ?? null,
+        provenanceOperationId: row.provenanceOperationId ?? null,
+      })),
+    );
+  };
+
+  const executeChange = async (input: RepositoryTestCommand) => {
+    const expectedCurrentSnapshotHash =
+      input.expectedCurrentSnapshotHash ??
+      snapshotHashesByOperation.get(input.operationId) ??
+      (await currentSnapshotHash(input.targetUserId));
+    snapshotHashesByOperation.set(
+      input.operationId,
+      expectedCurrentSnapshotHash,
+    );
+    return repository.execute({
+      ...input,
+      bundleVersion: input.bundleVersion ?? 'V1',
+      expectedCurrentSnapshotHash,
+    });
+  };
+
+  const seedLegacyA04Bundle = async (targetUserId: Types.ObjectId) => {
+    const operationId = `00000000-0000-4000-8000-${targetUserId.toHexString().slice(-12)}`;
+    const permissions = [
+      'organization.create',
+      'platform.health.read',
+      'platform.audit.read',
+    ];
+    const assignments = permissions.map((permission) => ({
+      _id: new Types.ObjectId(),
+      subjectUserId: targetUserId,
+      permission,
+      scope: 'PLATFORM',
+      status: 'ACTIVE',
+      grantedAt: new Date('2026-10-01T00:00:00.000Z'),
+      grantedBy: issuerId,
+      expiresAt: null,
+      revokedAt: null,
+      revokedBy: null,
+      provenanceOperationId: operationId,
+    }));
+    await connection
+      .db!.collection('platform_authority_assignments')
+      .insertMany(assignments);
+    await connection
+      .db!.collection('platform_authority_change_operations')
+      .insertOne({
+        operationId,
+        payloadHash: 'a'.repeat(64),
+        actorUserId: executorId,
+        issuerUserId: issuerId,
+        operationType: 'BOOTSTRAP',
+        targetUserId,
+        permissions,
+        scope: 'PLATFORM',
+        auditEventId: `audit-${operationId}`,
+        status: 'COMMITTED',
+        httpStatus: 201,
+        resultBody: {
+          operationId,
+          targetUserId: targetUserId.toHexString(),
+          scope: 'PLATFORM',
+          status: 'ACTIVE',
+          assignments: assignments.map((assignment) => ({
+            assignmentId: assignment._id.toHexString(),
+            permission: assignment.permission,
+            status: 'ACTIVE',
+          })),
+        },
+        committedAt: new Date('2026-10-01T00:00:00.000Z'),
+      });
+    return assignments;
+  };
 
   beforeAll(async () => {
     replSet = await MongoMemoryReplSet.create({
@@ -81,6 +202,7 @@ describe('Platform authority change operations transactional integration', () =>
   });
 
   beforeEach(async () => {
+    snapshotHashesByOperation.clear();
     const db = connection.db!;
     await db.collection('users').deleteMany({});
     await db.collection('platform_authority_assignments').deleteMany({});
@@ -134,20 +256,30 @@ describe('Platform authority change operations transactional integration', () =>
     const command: PlatformAuthorityChangeCommand = {
       operationId: '00000000-0000-4000-8000-000000000101',
       operationType: 'BOOTSTRAP',
+      bundleVersion: 'V1',
       targetUserId: targetUserId1.toHexString(),
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
+      expectedCurrentSnapshotHash: hashAssignmentSnapshot([]),
       reasonCode: 'PO_AUTH_01_PROVISIONING',
     };
 
-    const result = await repository.execute(command);
+    const result = await executeChange(command);
     expect(result.status).toBe('COMMITTED');
     expect(result.httpStatus).toBe(201);
     expect(result.replayed).toBe(false);
-    expect(result.body.assignments).toHaveLength(3);
+    expect(result.body.assignments).toHaveLength(7);
     expect(result.body.assignments.map(({ permission }) => permission)).toEqual(
-      ['organization.create', 'platform.audit.read', 'platform.health.read'],
+      [
+        'organization.create',
+        'platform.audit.read',
+        'platform.health.read',
+        'platform.memberships.lifecycle.manage',
+        'platform.memberships.membership.read',
+        'platform.organizations.organization.read',
+        'platform.users.account.read',
+      ],
     );
     expect(result.body.status).toBe('ACTIVE');
 
@@ -196,7 +328,7 @@ describe('Platform authority change operations transactional integration', () =>
   });
 
   it('idempotently replays previous result when called with same operationId and same payload', async () => {
-    const command: PlatformAuthorityChangeCommand = {
+    const command: RepositoryTestCommand = {
       operationId: '00000000-0000-4000-8000-000000000102',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -206,10 +338,10 @@ describe('Platform authority change operations transactional integration', () =>
       reasonCode: 'REPLAY_TEST',
     };
 
-    const first = await repository.execute(command);
+    const first = await executeChange(command);
     expect(first.replayed).toBe(false);
 
-    const second = await repository.execute(command);
+    const second = await executeChange(command);
     expect(second.replayed).toBe(true);
     expect(second.body).toEqual(first.body);
 
@@ -224,7 +356,7 @@ describe('Platform authority change operations transactional integration', () =>
   });
 
   it('throws 409 Conflict when duplicate operationId is sent with different payload', async () => {
-    const command: PlatformAuthorityChangeCommand = {
+    const command: RepositoryTestCommand = {
       operationId: '00000000-0000-4000-8000-000000000103',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -233,10 +365,10 @@ describe('Platform authority change operations transactional integration', () =>
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'FIRST_ATTEMPT',
     };
-    await repository.execute(command);
+    await executeChange(command);
 
     await expect(
-      repository.execute({
+      executeChange({
         ...command,
         reasonCode: 'DIFFERENT_REASON_AND_PAYLOAD',
       }),
@@ -245,8 +377,8 @@ describe('Platform authority change operations transactional integration', () =>
     });
   });
 
-  it('enforces CAS: rejects GRANT if expectedCurrentStatus is mismatched', async () => {
-    await repository.execute({
+  it('enforces full-snapshot CAS: rejects a stale grant pre-state', async () => {
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000104',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -257,23 +389,59 @@ describe('Platform authority change operations transactional integration', () =>
     });
 
     await expect(
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000105',
         operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
-        expectedCurrentStatus: 'REVOKED', // Target is ACTIVE, but expected REVOKED
+        expectedCurrentSnapshotHash: hashAssignmentSnapshot([]),
         reasonCode: 'MISMATCH_TEST',
       }),
     ).rejects.toMatchObject({
-      response: { code: 'AUTHORITY_STATE_CONFLICT' },
+      response: { code: 'PLATFORM_AUTHORITY_STALE' },
     });
   });
 
+  it('expands only a complete provenance-matched legacy A-04 bundle and preserves its assignment rows', async () => {
+    const legacyRows = await seedLegacyA04Bundle(targetUserId1);
+    const result = await executeChange({
+      operationId: '00000000-0000-4000-8000-000000000120',
+      operationType: 'V1_EXPAND',
+      bundleVersion: 'V1',
+      targetUserId: targetUserId1.toHexString(),
+      scope: 'PLATFORM',
+      actorUserId: executorId.toHexString(),
+      issuerUserId: issuerId.toHexString(),
+      reasonCode: 'V1_EXPANSION',
+    });
+
+    expect(result.body.assignments).toHaveLength(7);
+    const stored = await connection
+      .db!.collection('platform_authority_assignments')
+      .find({ subjectUserId: targetUserId1 })
+      .toArray();
+    expect(stored).toHaveLength(7);
+    expect(
+      legacyRows.every((row) =>
+        stored.some(
+          (candidate) => String(candidate._id) === row._id.toHexString(),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      stored.filter((row) => row.provenanceOperationId === result.operationId),
+    ).toHaveLength(4);
+    const ledger = await connection
+      .db!.collection('platform_authority_change_operations')
+      .findOne({ operationId: result.operationId });
+    expect(ledger?.operationType).toBe('V1_EXPAND');
+    expect(ledger?.sourceOperationId).toBe(legacyRows[0].provenanceOperationId);
+  });
+
   it('blocks duplicate bootstrap when target already has a procedure-owned bundle', async () => {
-    await repository.execute({
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000106',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -284,7 +452,7 @@ describe('Platform authority change operations transactional integration', () =>
     });
 
     await expect(
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000107',
         operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
@@ -299,7 +467,7 @@ describe('Platform authority change operations transactional integration', () =>
   });
 
   it('blocks revoking the sole active operator even when an unapproved breakGlass flag is supplied', async () => {
-    await repository.execute({
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000108',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -311,7 +479,7 @@ describe('Platform authority change operations transactional integration', () =>
 
     // A command flag must not override the last-operator invariant.
     await expect(
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000109',
         operationType: 'REVOKE',
         targetUserId: targetUserId1.toHexString(),
@@ -325,7 +493,7 @@ describe('Platform authority change operations transactional integration', () =>
     });
 
     await expect(
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000110',
         operationType: 'REVOKE',
         targetUserId: targetUserId1.toHexString(),
@@ -334,7 +502,7 @@ describe('Platform authority change operations transactional integration', () =>
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'EMERGENCY_DECOMMISSION_AUTHORIZED',
         breakGlass: true,
-      } as PlatformAuthorityChangeCommand),
+      } as unknown as RepositoryTestCommand),
     ).rejects.toMatchObject({
       response: { code: 'LAST_OPERATOR_REQUIRED' },
     });
@@ -346,7 +514,7 @@ describe('Platform authority change operations transactional integration', () =>
 
   it('serializes concurrent revokes so one active operator remains', async () => {
     const permission = 'platform.health.read';
-    await repository.execute({
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000111',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -355,7 +523,7 @@ describe('Platform authority change operations transactional integration', () =>
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'CONCURRENT_TEST_SETUP',
     });
-    await repository.execute({
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000112',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId2.toHexString(),
@@ -366,7 +534,7 @@ describe('Platform authority change operations transactional integration', () =>
     });
 
     const outcomes = await Promise.allSettled([
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000113',
         operationType: 'REVOKE',
         targetUserId: targetUserId1.toHexString(),
@@ -375,7 +543,7 @@ describe('Platform authority change operations transactional integration', () =>
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'CONCURRENT_TEST_REVOKE',
       }),
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000114',
         operationType: 'REVOKE',
         targetUserId: targetUserId2.toHexString(),
@@ -409,7 +577,7 @@ describe('Platform authority change operations transactional integration', () =>
       );
 
     await expect(
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000115',
         operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
@@ -430,7 +598,7 @@ describe('Platform authority change operations transactional integration', () =>
   });
 
   it('allows revocation when multiple active operators exist', async () => {
-    await repository.execute({
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000116',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
@@ -440,7 +608,7 @@ describe('Platform authority change operations transactional integration', () =>
       reasonCode: 'OP1_SETUP',
     });
 
-    await repository.execute({
+    await executeChange({
       operationId: '00000000-0000-4000-8000-000000000117',
       operationType: 'BOOTSTRAP',
       targetUserId: targetUserId2.toHexString(),
@@ -450,7 +618,7 @@ describe('Platform authority change operations transactional integration', () =>
       reasonCode: 'OP2_SETUP',
     });
 
-    const revokeResult = await repository.execute({
+    const revokeResult = await executeChange({
       operationId: '00000000-0000-4000-8000-000000000118',
       operationType: 'REVOKE',
       targetUserId: targetUserId1.toHexString(),
@@ -501,7 +669,7 @@ describe('Platform authority change operations transactional integration', () =>
       );
 
     await expect(
-      repository.execute({
+      executeChange({
         operationId: '00000000-0000-4000-8000-000000000119',
         operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),

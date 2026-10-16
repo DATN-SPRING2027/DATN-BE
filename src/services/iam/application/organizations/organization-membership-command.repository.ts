@@ -58,6 +58,17 @@ export interface MembershipMutationResult {
   replayed: boolean;
 }
 
+export interface PlatformMembershipSuspendInput {
+  actorUserId: string;
+  organizationId: string;
+  membershipId: string;
+  idempotencyKey: string;
+  expectedMembershipVersion: number;
+  reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+  now: Date;
+  correlationId?: string;
+}
+
 export interface AdminInvitationSummary {
   id: string;
   membershipId: string;
@@ -106,5 +117,8 @@ export interface OrganizationMembershipCommandRepository {
       now: Date;
       correlationId?: string;
     },
+  ): Promise<MembershipMutationResult>;
+  executePlatformSuspend(
+    input: PlatformMembershipSuspendInput,
   ): Promise<MembershipMutationResult>;
 }

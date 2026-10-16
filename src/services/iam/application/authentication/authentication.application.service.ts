@@ -40,6 +40,7 @@ import {
   AuthorizationPolicy,
   PLATFORM_PERMISSIONS,
 } from '../authorization/authorization.policy';
+import type { PlatformPermission } from '../authorization/authorization.policy';
 
 export interface LoginInput {
   email: string;
@@ -74,6 +75,11 @@ export interface AuthenticatedPlatformSubject {
   id: string;
   email: string;
   name: string;
+}
+
+export interface AuthenticatedPlatformSession extends AuthenticatedPlatformSubject {
+  context: 'PLATFORM';
+  permissions: PlatformPermission[];
 }
 
 export interface LoginResult {
@@ -867,7 +873,52 @@ export class AuthenticationApplicationService {
       authorization,
       cookieHeader,
     );
+    if (claims.context !== 'PLATFORM') throw unauthorized();
     return { id: claims.sub, email: claims.email, name: profile.name };
+  }
+
+  async getCurrentPlatformSessionIdentity(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<AuthenticatedPlatformSession> {
+    const { claims, profile } = await this.getVerifiedActiveSubject(
+      authorization,
+      cookieHeader,
+    );
+    if (claims.context !== 'PLATFORM') throw unauthorized();
+
+    const now = new Date();
+    const permissions: PlatformPermission[] = [];
+    for (const permission of PLATFORM_PERMISSIONS) {
+      try {
+        const evidence =
+          await this.authorizationEvidence.loadPlatformPermission(
+            claims.sub,
+            permission,
+          );
+        if (
+          evidence &&
+          this.authorizationPolicy.evaluatePlatformPermission({
+            permission,
+            subject: { userId: claims.sub, status: profile.status },
+            assignments: evidence.assignments,
+            now,
+          }).allowed
+        )
+          permissions.push(permission);
+      } catch {
+        // A partial or unavailable evidence store must never advertise rights.
+      }
+    }
+    if (permissions.length === 0) throw unauthorized();
+
+    return {
+      id: claims.sub,
+      email: claims.email,
+      name: profile.name,
+      context: 'PLATFORM',
+      permissions,
+    };
   }
 
   private async getVerifiedActiveSubject(

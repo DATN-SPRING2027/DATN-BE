@@ -3,11 +3,24 @@ import { Types } from 'mongoose';
 
 export type DocumentedPermission = 'project.create';
 export type PlatformPermission =
-  'organization.create' | 'platform.health.read' | 'platform.audit.read';
-export const PLATFORM_PERMISSIONS: readonly PlatformPermission[] = [
+  | 'organization.create'
+  | 'platform.health.read'
+  | 'platform.audit.read'
+  | 'platform.organizations.organization.read'
+  | 'platform.users.account.read'
+  | 'platform.memberships.membership.read'
+  | 'platform.memberships.lifecycle.manage';
+export const PLATFORM_A04_PERMISSIONS = [
   'organization.create',
   'platform.health.read',
   'platform.audit.read',
+] as const satisfies readonly PlatformPermission[];
+export const PLATFORM_PERMISSIONS: readonly PlatformPermission[] = [
+  ...PLATFORM_A04_PERMISSIONS,
+  'platform.organizations.organization.read',
+  'platform.users.account.read',
+  'platform.memberships.membership.read',
+  'platform.memberships.lifecycle.manage',
 ];
 export type ProjectAccessPermission =
   | 'project.visibility.manage'

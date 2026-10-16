@@ -59,12 +59,62 @@ export class PlatformAuthorityChangeService {
       });
     }
 
+    if (!['A04', 'V1'].includes(command.bundleVersion)) {
+      throw new BadRequestException({
+        code: 'INVALID_BUNDLE_VERSION',
+        message: 'A supported fixed Platform authority bundle is required.',
+      });
+    }
+
+    if (
+      (command.operationType === 'BOOTSTRAP' ||
+        command.operationType === 'V1_EXPAND') &&
+      command.bundleVersion !== 'V1'
+    ) {
+      throw new BadRequestException({
+        code: 'INVALID_BUNDLE_VERSION',
+        message:
+          'New authority grants and explicit expansion use the V1 bundle.',
+      });
+    }
+
     const commandFields = command as unknown as Record<string, unknown>;
     if ('permission' in commandFields || 'permissions' in commandFields) {
       throw new BadRequestException({
         code: 'FIXED_PERMISSION_BUNDLE_REQUIRED',
         message:
           'PO-AUTH-01 always changes the complete A-04 permission bundle.',
+      });
+    }
+
+    const acceptedFields = new Set([
+      'operationId',
+      'operationType',
+      'bundleVersion',
+      'targetUserId',
+      'scope',
+      'actorUserId',
+      'issuerUserId',
+      'expectedCurrentSnapshotHash',
+      'expiresAt',
+      'reasonCode',
+      'now',
+    ]);
+    if (Object.keys(commandFields).some((key) => !acceptedFields.has(key))) {
+      throw new BadRequestException({
+        code: 'UNSUPPORTED_AUTHORITY_FIELD',
+        message: 'The PO-AUTH-01 command contains an unsupported field.',
+      });
+    }
+
+    if (
+      typeof command.expectedCurrentSnapshotHash !== 'string' ||
+      !/^[a-f\d]{64}$/i.test(command.expectedCurrentSnapshotHash)
+    ) {
+      throw new BadRequestException({
+        code: 'EXPECTED_SNAPSHOT_REQUIRED',
+        message:
+          'A SHA-256 hash of the full current assignment snapshot is required.',
       });
     }
 

@@ -530,6 +530,19 @@ export class AuthenticationController {
     return this.service.getCurrentSessionIdentity(authorization, cookie);
   }
 
+  @Get('platform/me')
+  async getCurrentPlatformSessionIdentity(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.service.getCurrentPlatformSessionIdentity(
+      authorization,
+      cookie,
+    );
+  }
+
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(

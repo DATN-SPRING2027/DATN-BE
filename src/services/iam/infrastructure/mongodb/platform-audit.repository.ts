@@ -24,6 +24,7 @@ const PLATFORM_OPERATIONAL_ACTIONS = [
   'organization.create',
   'platform.authority.granted',
   'platform.authority.revoked',
+  'ORGANIZATION_MEMBERSHIP_SUSPENDED',
 ] as const;
 
 @Injectable()
@@ -74,7 +75,9 @@ export class MongoPlatformAuditRepository implements PlatformAuditRepository {
       const targetResource =
         row.action === 'organization.create'
           ? 'ORGANIZATION'
-          : 'PLATFORM_AUTHORITY';
+          : row.action === 'ORGANIZATION_MEMBERSHIP_SUSPENDED'
+            ? 'ORGANIZATION_MEMBERSHIP'
+            : 'PLATFORM_AUTHORITY';
       if (row.targetResource !== targetResource) return [];
       return [
         {

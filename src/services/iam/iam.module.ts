@@ -49,6 +49,9 @@ import { ORGANIZATION_PROVISIONING_REPOSITORY } from './application/organization
 import { MongoOrganizationProvisioningRepository } from './infrastructure/mongodb/organization-provisioning.repository';
 import { PlatformAuditService } from './application/platform/platform-audit.service';
 import { PLATFORM_AUDIT_REPOSITORY } from './application/platform/platform-audit.repository';
+import { PlatformAdministrationService } from './application/platform/platform-administration.service';
+import { PLATFORM_ADMINISTRATION_REPOSITORY } from './application/platform/platform-administration.repository';
+import { MongoPlatformAdministrationRepository } from './infrastructure/mongodb/platform-administration.repository';
 import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-audit.repository';
 import { PlatformAuthorityChangeService } from './application/platform/platform-authority-change.service';
 import {
@@ -124,6 +127,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     OrganizationInvitationService,
     OrganizationMembershipCommandService,
     PlatformAuditService,
+    PlatformAdministrationService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
       provide: ORGANIZATION_MEMBERSHIP_READ_REPOSITORY,
@@ -152,6 +156,10 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     {
       provide: PLATFORM_AUDIT_REPOSITORY,
       useClass: MongoPlatformAuditRepository,
+    },
+    {
+      provide: PLATFORM_ADMINISTRATION_REPOSITORY,
+      useClass: MongoPlatformAdministrationRepository,
     },
     PlatformAuthorityChangeService,
     {

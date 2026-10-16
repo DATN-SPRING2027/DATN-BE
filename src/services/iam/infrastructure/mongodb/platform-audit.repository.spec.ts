@@ -37,6 +37,14 @@ describe('MongoPlatformAuditRepository', () => {
         metadata: { refreshToken: 'sentinel-refresh-token' },
       },
       {
+        action: 'ORGANIZATION_MEMBERSHIP_SUSPENDED',
+        targetResource: 'ORGANIZATION_MEMBERSHIP',
+        targetResourceId: 'membership-1',
+        actorUserId: 'operator-4',
+        occurredAt,
+        metadata: { tenantContent: 'sentinel-membership-private-content' },
+      },
+      {
         action: 'project.create',
         targetResource: 'PROJECT',
         targetResourceId: 'tenant-project-1',
@@ -86,6 +94,7 @@ describe('MongoPlatformAuditRepository', () => {
             'organization.create',
             'platform.authority.granted',
             'platform.authority.revoked',
+            'ORGANIZATION_MEMBERSHIP_SUSPENDED',
           ],
         },
       },
@@ -124,9 +133,16 @@ describe('MongoPlatformAuditRepository', () => {
         actorUserId: 'operator-3',
         occurredAt: '2026-10-08T00:00:00.000Z',
       },
+      {
+        action: 'ORGANIZATION_MEMBERSHIP_SUSPENDED',
+        targetResource: 'ORGANIZATION_MEMBERSHIP',
+        targetResourceId: 'membership-1',
+        actorUserId: 'operator-4',
+        occurredAt: '2026-10-08T00:00:00.000Z',
+      },
     ]);
     expect(JSON.stringify(result)).not.toMatch(
-      /sentinel-password-hash|sentinel-tenant-content|sentinel-access-token|sentinel-refresh-token|sentinel-private-project-content|tenant-project-1/,
+      /sentinel-password-hash|sentinel-tenant-content|sentinel-access-token|sentinel-refresh-token|sentinel-private-project-content|sentinel-membership-private-content|tenant-project-1/,
     );
   });
 });

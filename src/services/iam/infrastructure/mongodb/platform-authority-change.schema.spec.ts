@@ -46,11 +46,17 @@ describe('platform_authority_change_operations persistence contract', () => {
       actorUserId: new Types.ObjectId(),
       issuerUserId: new Types.ObjectId(),
       operationType: 'BOOTSTRAP',
+      bundleVersion: 'V1',
+      sourceOperationId: undefined,
       targetUserId: new Types.ObjectId(),
       permissions: [
         'organization.create',
         'platform.health.read',
         'platform.audit.read',
+        'platform.organizations.organization.read',
+        'platform.users.account.read',
+        'platform.memberships.membership.read',
+        'platform.memberships.lifecycle.manage',
       ],
       scope: 'PLATFORM',
       auditEventId: 'evt-01',
@@ -65,6 +71,10 @@ describe('platform_authority_change_operations persistence contract', () => {
           'organization.create',
           'platform.health.read',
           'platform.audit.read',
+          'platform.organizations.organization.read',
+          'platform.users.account.read',
+          'platform.memberships.membership.read',
+          'platform.memberships.lifecycle.manage',
         ].map((permission) => ({
           assignmentId: new Types.ObjectId().toHexString(),
           permission,
@@ -83,6 +93,7 @@ describe('platform_authority_change_operations persistence contract', () => {
       actorUserId: new Types.ObjectId(),
       issuerUserId: new Types.ObjectId(),
       operationType: 'BOOTSTRAP',
+      bundleVersion: 'A04',
       targetUserId: new Types.ObjectId(),
       permissions: [
         'organization.create',
@@ -108,6 +119,7 @@ describe('platform_authority_change_operations persistence contract', () => {
       actorUserId: new Types.ObjectId(),
       issuerUserId: new Types.ObjectId(),
       operationType: 'INVALID_OP',
+      bundleVersion: 'V1',
       targetUserId: new Types.ObjectId(),
       permissions: ['platform.configuration.read'],
       scope: 'PLATFORM',
@@ -121,6 +133,48 @@ describe('platform_authority_change_operations persistence contract', () => {
     expect(error).toBeDefined();
     expect(error?.errors.operationType).toBeDefined();
     expect(error?.errors.permissions).toBeDefined();
+  });
+
+  it('accepts an exact legacy A-04 bundle and rejects a partial V1 bundle', () => {
+    const legacy = new Operation({
+      operationId: '00000000-0000-4000-8000-000000000004',
+      payloadHash: 'c'.repeat(64),
+      actorUserId: new Types.ObjectId(),
+      issuerUserId: new Types.ObjectId(),
+      operationType: 'BOOTSTRAP',
+      bundleVersion: 'A04',
+      targetUserId: new Types.ObjectId(),
+      permissions: [
+        'organization.create',
+        'platform.health.read',
+        'platform.audit.read',
+      ],
+      scope: 'PLATFORM',
+      auditEventId: 'evt-04',
+      status: 'COMMITTED',
+      httpStatus: 201,
+      resultBody: {},
+      committedAt: new Date(),
+    });
+    expect(legacy.validateSync()).toBeUndefined();
+
+    const partial = new Operation({
+      operationId: '00000000-0000-4000-8000-000000000005',
+      payloadHash: 'd'.repeat(64),
+      actorUserId: new Types.ObjectId(),
+      issuerUserId: new Types.ObjectId(),
+      operationType: 'BOOTSTRAP',
+      bundleVersion: 'V1',
+      targetUserId: new Types.ObjectId(),
+      permissions: ['organization.create', 'platform.health.read'],
+      scope: 'PLATFORM',
+      auditEventId: 'evt-05',
+      status: 'COMMITTED',
+      httpStatus: 201,
+      resultBody: {},
+      committedAt: new Date(),
+    });
+    expect(partial.validateSync()?.errors.permissions).toBeDefined();
   });
 });
 

@@ -21,11 +21,15 @@ const assignment = (permission: string, overrides = {}) => ({
 describe('AuthorizationPolicy platform permissions', () => {
   const policy = new AuthorizationPolicy();
 
-  it('keeps exactly the three active A-04 permissions', () => {
+  it('allows exactly the seven approved PLATFORM_OPERATOR V1 permissions', () => {
     expect(PLATFORM_PERMISSIONS).toEqual([
       'organization.create',
       'platform.health.read',
       'platform.audit.read',
+      'platform.organizations.organization.read',
+      'platform.users.account.read',
+      'platform.memberships.membership.read',
+      'platform.memberships.lifecycle.manage',
     ]);
   });
 

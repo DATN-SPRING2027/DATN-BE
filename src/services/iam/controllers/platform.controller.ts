@@ -1,9 +1,13 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
+  HttpCode,
+  Param,
   Post,
+  Query,
   Res,
   UnprocessableEntityException,
   UseGuards,
@@ -22,6 +26,15 @@ import type {
 import { OrganizationProvisioningService } from '../application/organizations/organization-provisioning.service';
 import { IamApplicationService } from '../application/iam.service';
 import { PlatformAuditService } from '../application/platform/platform-audit.service';
+import { PlatformAdministrationService } from '../application/platform/platform-administration.service';
+import {
+  ORGANIZATION_MEMBERSHIP_STATUSES,
+  type OrganizationMembershipStatus,
+} from '../application/organizations/organization-membership-read.repository';
+import {
+  readCookie,
+  validCsrfPair,
+} from '../application/authentication/authentication.application.service';
 
 function invalid(): never {
   throw new UnprocessableEntityException({
@@ -61,6 +74,97 @@ function parseOrganizationInput(body: unknown): OrganizationProvisioningInput {
   };
 }
 
+function parsePageQuery(query: Record<string, unknown>): {
+  page: number;
+  pageSize: number;
+} {
+  if (
+    Object.keys(query).some((key) => !['page', 'pageSize'].includes(key)) ||
+    (query.page !== undefined && typeof query.page !== 'string') ||
+    (query.pageSize !== undefined && typeof query.pageSize !== 'string')
+  )
+    return invalid();
+  const page = query.page === undefined ? 1 : Number(query.page);
+  const pageSize = query.pageSize === undefined ? 20 : Number(query.pageSize);
+  if (
+    !Number.isSafeInteger(page) ||
+    page < 1 ||
+    !Number.isSafeInteger(pageSize) ||
+    pageSize < 1 ||
+    pageSize > 100
+  )
+    return invalid();
+  return { page, pageSize };
+}
+
+function parseMembershipPageQuery(query: Record<string, unknown>): {
+  page: number;
+  pageSize: number;
+  status?: OrganizationMembershipStatus;
+} {
+  if (
+    Object.keys(query).some(
+      (key) => !['page', 'pageSize', 'status'].includes(key),
+    ) ||
+    (query.status !== undefined && typeof query.status !== 'string')
+  )
+    return invalid();
+  const { page, pageSize } = parsePageQuery(
+    Object.fromEntries(
+      Object.entries(query).filter(([key]) => key !== 'status'),
+    ),
+  );
+  if (
+    query.status !== undefined &&
+    !ORGANIZATION_MEMBERSHIP_STATUSES.includes(
+      query.status as OrganizationMembershipStatus,
+    )
+  )
+    return invalid();
+  return {
+    page,
+    pageSize,
+    ...(query.status !== undefined
+      ? { status: query.status as OrganizationMembershipStatus }
+      : {}),
+  };
+}
+
+function parseUserLookup(body: unknown): string {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 1 ||
+    !('email' in body) ||
+    typeof body.email !== 'string'
+  )
+    return invalid();
+  return body.email;
+}
+
+function parsePlatformSuspend(body: unknown): {
+  expectedMembershipVersion: number;
+  reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+} {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 2 ||
+    !('expectedMembershipVersion' in body) ||
+    !('reasonCode' in body) ||
+    !Number.isSafeInteger(body.expectedMembershipVersion) ||
+    Number(body.expectedMembershipVersion) < 1 ||
+    !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(String(body.reasonCode))
+  )
+    return invalid();
+  return {
+    expectedMembershipVersion: Number(body.expectedMembershipVersion),
+    reasonCode: body.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+  };
+}
+
 @Controller('iam/platform')
 @UseGuards(PlatformAuthorizationGuard)
 export class PlatformController {
@@ -69,6 +173,7 @@ export class PlatformController {
     private readonly organizations: OrganizationProvisioningService,
     private readonly health: IamApplicationService,
     private readonly audit: PlatformAuditService,
+    private readonly administration: PlatformAdministrationService,
   ) {}
 
   @Post('organizations')
@@ -86,6 +191,90 @@ export class PlatformController {
         cookie,
       );
     return this.organizations.create(actor, parseOrganizationInput(body));
+  }
+
+  @Get('organizations')
+  @RequirePlatformPermission('platform.organizations.organization.read')
+  listOrganizations(
+    @Query() query: Record<string, unknown>,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const { page, pageSize } = parsePageQuery(query);
+    return this.administration.listOrganizations(page, pageSize);
+  }
+
+  @Get('organizations/:organizationId')
+  @RequirePlatformPermission('platform.organizations.organization.read')
+  findOrganization(
+    @Param('organizationId') organizationId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.administration.findOrganization(organizationId);
+  }
+
+  @Post('users/lookup')
+  @HttpCode(200)
+  @RequirePlatformPermission('platform.users.account.read')
+  async lookupUser(
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (!validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader))
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    return this.administration.lookupActiveUser(parseUserLookup(body));
+  }
+
+  @Get('organizations/:organizationId/memberships')
+  @RequirePlatformPermission('platform.memberships.membership.read')
+  listOrganizationMemberships(
+    @Param('organizationId') organizationId: string,
+    @Query() query: Record<string, unknown>,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.administration.listOrganizationMemberships({
+      organizationId,
+      ...parseMembershipPageQuery(query),
+    });
+  }
+
+  @Post('organizations/:organizationId/memberships/:membershipId/suspend')
+  @HttpCode(200)
+  @RequirePlatformPermission('platform.memberships.lifecycle.manage')
+  async suspendMembership(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Param('membershipId') membershipId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (!validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader))
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    const result = await this.administration.suspendMembership({
+      actorUserId: actor.id,
+      organizationId,
+      membershipId,
+      idempotencyKey: idempotencyKey ?? '',
+      ...parsePlatformSuspend(body),
+      ...(correlationId ? { correlationId } : {}),
+    });
+    response.status(result.httpStatus);
+    response.setHeader('X-Idempotent-Replay', String(result.replayed));
+    return result.body;
   }
 
   @Get('health')

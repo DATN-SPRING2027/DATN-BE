@@ -848,6 +848,14 @@ describe('AuthenticationApplicationService', () => {
 
   it('authenticates a Human User for platform APIs without requiring Organization membership', async () => {
     repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'PLATFORM',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
 
     await expect(
       service.getCurrentPlatformSubject('Bearer any.valid-token', undefined),
@@ -859,6 +867,65 @@ describe('AuthenticationApplicationService', () => {
     expect(
       repository.findActiveOrganizationMembershipIds.mock.calls,
     ).toHaveLength(0);
+  });
+
+  it('rejects Account-context credentials on Platform APIs', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'ACCOUNT',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
+
+    await expect(
+      service.getCurrentPlatformSubject('Bearer account-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('returns only currently effective exact Platform permissions for the session probe', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'PLATFORM',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+    });
+    authorizationEvidence.loadPlatformPermission.mockImplementation(
+      (_userId: string, permission: string) =>
+        Promise.resolve({
+          assignments:
+            permission === 'platform.health.read'
+              ? [
+                  {
+                    subjectUserId: USER_ID,
+                    grantedAt: new Date(Date.now() - 1000),
+                    grantedBy: OTHER_ORG_ID,
+                    permission,
+                    scope: 'PLATFORM',
+                    status: 'ACTIVE',
+                    expiresAt: null,
+                    revokedAt: null,
+                  },
+                ]
+              : [],
+        }),
+    );
+
+    await expect(
+      service.getCurrentPlatformSessionIdentity(
+        'Bearer platform-token',
+        undefined,
+      ),
+    ).resolves.toEqual({
+      id: USER_ID,
+      email: account.email,
+      name: 'Test Person',
+      context: 'PLATFORM',
+      permissions: ['platform.health.read'],
+    });
   });
 
   it('rejects a still-valid token after the user is suspended', async () => {

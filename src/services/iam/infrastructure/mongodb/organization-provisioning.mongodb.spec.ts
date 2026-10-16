@@ -23,6 +23,7 @@ import { ORGANIZATION_PROVISIONING_REPOSITORY } from '../../application/organiza
 import type { ProvisionedOrganization } from '../../application/organizations/organization-provisioning.repository';
 import { OrganizationProvisioningService } from '../../application/organizations/organization-provisioning.service';
 import { PlatformAuditService } from '../../application/platform/platform-audit.service';
+import { PlatformAdministrationService } from '../../application/platform/platform-administration.service';
 import { PlatformController } from '../../controllers/platform.controller';
 import { IAM_PERSISTENCE } from '../persistence';
 import { AuthenticationRepository } from './authentication.repository';
@@ -144,6 +145,34 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
         {
           provide: PlatformAuditService,
           useValue: { listOperationalMetadata: () => Promise.resolve([]) },
+        },
+        {
+          provide: PlatformAdministrationService,
+          useValue: {
+            listOrganizations: () =>
+              Promise.resolve({
+                data: [],
+                pagination: {
+                  page: 1,
+                  pageSize: 20,
+                  totalItems: 0,
+                  totalPages: 0,
+                },
+              }),
+            findOrganization: jest.fn(),
+            lookupActiveUser: jest.fn(),
+            listOrganizationMemberships: () =>
+              Promise.resolve({
+                data: [],
+                pagination: {
+                  page: 1,
+                  pageSize: 20,
+                  totalItems: 0,
+                  totalPages: 0,
+                },
+              }),
+            suspendMembership: jest.fn(),
+          },
         },
       ],
     }).compile();

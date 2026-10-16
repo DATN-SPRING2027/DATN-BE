@@ -56,7 +56,11 @@ function readPlatformRouteInventory(): RouteContractEntry[] {
 
       return paths.map((path) => ({ method, path, permission }));
     })
-    .sort((left, right) => left.path.localeCompare(right.path));
+    .sort(
+      (left, right) =>
+        left.path.localeCompare(right.path) ||
+        Number(left.method) - Number(right.method),
+    );
 }
 
 describe('PlatformController V1 route contract', () => {
@@ -66,7 +70,7 @@ describe('PlatformController V1 route contract', () => {
     );
   });
 
-  it('exposes only the three unchanged A-04 routes and permissions', () => {
+  it('exposes only the eight approved administration/platform routes and exact permissions', () => {
     expect(readPlatformRouteInventory()).toEqual([
       {
         method: RequestMethod.GET,
@@ -79,9 +83,34 @@ describe('PlatformController V1 route contract', () => {
         permission: 'platform.health.read',
       },
       {
+        method: RequestMethod.GET,
+        path: 'organizations',
+        permission: 'platform.organizations.organization.read',
+      },
+      {
         method: RequestMethod.POST,
         path: 'organizations',
         permission: 'organization.create',
+      },
+      {
+        method: RequestMethod.GET,
+        path: 'organizations/:organizationId',
+        permission: 'platform.organizations.organization.read',
+      },
+      {
+        method: RequestMethod.GET,
+        path: 'organizations/:organizationId/memberships',
+        permission: 'platform.memberships.membership.read',
+      },
+      {
+        method: RequestMethod.POST,
+        path: 'organizations/:organizationId/memberships/:membershipId/suspend',
+        permission: 'platform.memberships.lifecycle.manage',
+      },
+      {
+        method: RequestMethod.POST,
+        path: 'users/lookup',
+        permission: 'platform.users.account.read',
       },
     ]);
   });

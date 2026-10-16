@@ -7,8 +7,20 @@ import {
   mutationFence,
 } from './membership-lifecycle.schemas';
 import { teamFoundationSchema } from './team-foundation.schema';
+import {
+  PLATFORM_A04_PERMISSIONS,
+  PLATFORM_PERMISSIONS,
+} from '../../application/authorization/authorization.policy';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
+
+const isCompletePlatformAuthorityBundle = (permissions: string[]) =>
+  [PLATFORM_A04_PERMISSIONS, PLATFORM_PERMISSIONS].some(
+    (bundle) =>
+      permissions.length === bundle.length &&
+      new Set(permissions).size === bundle.length &&
+      bundle.every((permission) => permissions.includes(permission)),
+  );
 
 export const outboxSchema = new Schema(
   {
@@ -197,11 +209,7 @@ const iamSchemas: Record<string, Schema> = {
       subjectUserId: { type: Schema.Types.ObjectId, required: true },
       permission: {
         type: String,
-        enum: [
-          'organization.create',
-          'platform.health.read',
-          'platform.audit.read',
-        ],
+        enum: [...PLATFORM_PERMISSIONS],
         required: true,
       },
       scope: { type: String, enum: ['PLATFORM'], required: true },
@@ -236,32 +244,24 @@ const iamSchemas: Record<string, Schema> = {
       issuerUserId: { type: Schema.Types.ObjectId, required: true },
       operationType: {
         type: String,
-        enum: ['BOOTSTRAP', 'REGRANT', 'REVOKE'],
+        enum: ['BOOTSTRAP', 'V1_EXPAND', 'REGRANT', 'REVOKE'],
         required: true,
       },
+      bundleVersion: { type: String, enum: ['A04', 'V1'], required: true },
+      sourceOperationId: { type: String },
       targetUserId: { type: Schema.Types.ObjectId, required: true },
       permissions: {
         type: [
           {
             type: String,
-            enum: [
-              'organization.create',
-              'platform.health.read',
-              'platform.audit.read',
-            ],
+            enum: [...PLATFORM_PERMISSIONS],
           },
         ],
         required: true,
         validate: {
-          validator: (permissions: string[]) =>
-            permissions.length === 3 &&
-            new Set(permissions).size === 3 &&
-            [
-              'organization.create',
-              'platform.health.read',
-              'platform.audit.read',
-            ].every((permission) => permissions.includes(permission)),
-          message: 'permissions must contain the complete A-04 bundle.',
+          validator: isCompletePlatformAuthorityBundle,
+          message:
+            'permissions must contain one complete approved A-04 or V1 bundle.',
         },
       },
       scope: { type: String, enum: ['PLATFORM'], required: true },
