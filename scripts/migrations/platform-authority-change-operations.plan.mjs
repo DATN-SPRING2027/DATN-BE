@@ -69,8 +69,12 @@ export function planPlatformAuthorityChangeOperations({
     collectionExists,
     objectType,
     documentCount,
-    duplicateOperations,
-    invalidRecords,
+    duplicateOperationCount: duplicateOperations.length,
+    duplicateOperations: duplicateOperations.map(({ count }) => ({ count })),
+    invalidRecordCount: invalidRecords.length,
+    invalidRecords: invalidRecords.map(({ reason }) => ({
+      reason: reason ?? 'invalid-operation-record',
+    })),
     desiredIndexes,
     clean,
     action: !clean

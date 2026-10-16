@@ -125,16 +125,16 @@ describe('Platform authority change operations transactional integration', () =>
           'organization.create',
           'platform.health.read',
           'platform.audit.read',
+          'PLATFORM_OPERATOR_LIFECYCLE',
         ].map((permission) => ({ permission, scope: 'PLATFORM', version: 0 })),
       );
   });
 
   it('atomically commits assignment, ledger, and audit on valid GRANT', async () => {
     const command: PlatformAuthorityChangeCommand = {
-      operationId: 'op-grant-test-01',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000101',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'organization.create',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -145,13 +145,19 @@ describe('Platform authority change operations transactional integration', () =>
     expect(result.status).toBe('COMMITTED');
     expect(result.httpStatus).toBe(201);
     expect(result.replayed).toBe(false);
-    expect(result.body.permission).toBe('organization.create');
+    expect(result.body.assignments).toHaveLength(3);
+    expect(result.body.assignments.map(({ permission }) => permission)).toEqual(
+      ['organization.create', 'platform.audit.read', 'platform.health.read'],
+    );
     expect(result.body.status).toBe('ACTIVE');
 
     const db = connection.db!;
     const assignment = await db
       .collection('platform_authority_assignments')
-      .findOne({ subjectUserId: targetUserId1 });
+      .findOne({
+        subjectUserId: targetUserId1,
+        permission: 'organization.create',
+      });
     expect(assignment).toBeDefined();
     expect(assignment?.status).toBe('ACTIVE');
     expect(assignment?.permission).toBe('organization.create');
@@ -159,7 +165,7 @@ describe('Platform authority change operations transactional integration', () =>
 
     const ledger = await db
       .collection('platform_authority_change_operations')
-      .findOne({ operationId: 'op-grant-test-01' });
+      .findOne({ operationId: '00000000-0000-4000-8000-000000000101' });
     expect(ledger).toBeDefined();
     expect(ledger?.status).toBe('COMMITTED');
     expect(String(ledger?.actorUserId)).toBe(executorId.toHexString());
@@ -168,7 +174,7 @@ describe('Platform authority change operations transactional integration', () =>
     const auditDb = connection.useDb(auditDatabaseName, { useCache: true });
     const auditLogs = await auditDb
       .collection('audit_logs_iam')
-      .find({ operationId: 'op-grant-test-01' })
+      .find({ operationId: '00000000-0000-4000-8000-000000000101' })
       .toArray();
     expect(auditLogs).toHaveLength(1);
     expect(auditLogs[0].action).toBe('platform.authority.granted');
@@ -182,7 +188,7 @@ describe('Platform authority change operations transactional integration', () =>
         expect.objectContaining({
           action: 'platform.authority.granted',
           targetResource: 'PLATFORM_AUTHORITY',
-          targetResourceId: assignment?._id.toHexString(),
+          targetResourceId: targetUserId1.toHexString(),
           actorUserId: executorId.toHexString(),
         }),
       ]),
@@ -191,10 +197,9 @@ describe('Platform authority change operations transactional integration', () =>
 
   it('idempotently replays previous result when called with same operationId and same payload', async () => {
     const command: PlatformAuthorityChangeCommand = {
-      operationId: 'op-replay-01',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000102',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'organization.create',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -212,16 +217,17 @@ describe('Platform authority change operations transactional integration', () =>
     expect(
       await db
         .collection('platform_authority_change_operations')
-        .countDocuments({ operationId: 'op-replay-01' }),
+        .countDocuments({
+          operationId: '00000000-0000-4000-8000-000000000102',
+        }),
     ).toBe(1);
   });
 
   it('throws 409 Conflict when duplicate operationId is sent with different payload', async () => {
     const command: PlatformAuthorityChangeCommand = {
-      operationId: 'op-conflict-01',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000103',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'organization.create',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -235,16 +241,15 @@ describe('Platform authority change operations transactional integration', () =>
         reasonCode: 'DIFFERENT_REASON_AND_PAYLOAD',
       }),
     ).rejects.toMatchObject({
-      response: { code: 'OPERATION_PAYLOAD_MISMATCH' },
+      response: { code: 'IDEMPOTENCY_KEY_REUSED' },
     });
   });
 
   it('enforces CAS: rejects GRANT if expectedCurrentStatus is mismatched', async () => {
     await repository.execute({
-      operationId: 'op-cas-initial',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000104',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'platform.health.read',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -253,10 +258,9 @@ describe('Platform authority change operations transactional integration', () =>
 
     await expect(
       repository.execute({
-        operationId: 'op-cas-fail',
-        operationType: 'GRANT',
+        operationId: '00000000-0000-4000-8000-000000000105',
+        operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
-        permission: 'platform.health.read',
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
@@ -264,16 +268,15 @@ describe('Platform authority change operations transactional integration', () =>
         reasonCode: 'MISMATCH_TEST',
       }),
     ).rejects.toMatchObject({
-      response: { code: 'CAS_STATUS_MISMATCH' },
+      response: { code: 'AUTHORITY_STATE_CONFLICT' },
     });
   });
 
-  it('blocks duplicate active grant when target already holds active authority (preserving legacy row)', async () => {
+  it('blocks duplicate bootstrap when target already has a procedure-owned bundle', async () => {
     await repository.execute({
-      operationId: 'op-first-grant',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000106',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'platform.audit.read',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -282,10 +285,9 @@ describe('Platform authority change operations transactional integration', () =>
 
     await expect(
       repository.execute({
-        operationId: 'op-second-grant-diff-id',
-        operationType: 'GRANT',
+        operationId: '00000000-0000-4000-8000-000000000107',
+        operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
-        permission: 'platform.audit.read',
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
@@ -298,10 +300,9 @@ describe('Platform authority change operations transactional integration', () =>
 
   it('blocks revoking the sole active operator even when an unapproved breakGlass flag is supplied', async () => {
     await repository.execute({
-      operationId: 'op-grant-sole-operator',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000108',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'organization.create',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -311,25 +312,23 @@ describe('Platform authority change operations transactional integration', () =>
     // A command flag must not override the last-operator invariant.
     await expect(
       repository.execute({
-        operationId: 'op-revoke-sole-blocked',
+        operationId: '00000000-0000-4000-8000-000000000109',
         operationType: 'REVOKE',
         targetUserId: targetUserId1.toHexString(),
-        permission: 'organization.create',
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'TRYING_REVOKE_LAST',
       }),
     ).rejects.toMatchObject({
-      response: { code: 'LAST_OPERATOR_REVOCATION_BLOCKED' },
+      response: { code: 'LAST_OPERATOR_REQUIRED' },
     });
 
     await expect(
       repository.execute({
-        operationId: 'op-revoke-sole-breakglass',
+        operationId: '00000000-0000-4000-8000-000000000110',
         operationType: 'REVOKE',
         targetUserId: targetUserId1.toHexString(),
-        permission: 'organization.create',
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
@@ -337,7 +336,7 @@ describe('Platform authority change operations transactional integration', () =>
         breakGlass: true,
       } as PlatformAuthorityChangeCommand),
     ).rejects.toMatchObject({
-      response: { code: 'LAST_OPERATOR_REVOCATION_BLOCKED' },
+      response: { code: 'LAST_OPERATOR_REQUIRED' },
     });
     const assignment = await connection
       .db!.collection('platform_authority_assignments')
@@ -348,20 +347,18 @@ describe('Platform authority change operations transactional integration', () =>
   it('serializes concurrent revokes so one active operator remains', async () => {
     const permission = 'platform.health.read';
     await repository.execute({
-      operationId: 'op-concurrent-grant-1',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000111',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission,
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'CONCURRENT_TEST_SETUP',
     });
     await repository.execute({
-      operationId: 'op-concurrent-grant-2',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000112',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId2.toHexString(),
-      permission,
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -370,20 +367,18 @@ describe('Platform authority change operations transactional integration', () =>
 
     const outcomes = await Promise.allSettled([
       repository.execute({
-        operationId: 'op-concurrent-revoke-1',
+        operationId: '00000000-0000-4000-8000-000000000113',
         operationType: 'REVOKE',
         targetUserId: targetUserId1.toHexString(),
-        permission,
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'CONCURRENT_TEST_REVOKE',
       }),
       repository.execute({
-        operationId: 'op-concurrent-revoke-2',
+        operationId: '00000000-0000-4000-8000-000000000114',
         operationType: 'REVOKE',
         targetUserId: targetUserId2.toHexString(),
-        permission,
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
@@ -415,10 +410,9 @@ describe('Platform authority change operations transactional integration', () =>
 
     await expect(
       repository.execute({
-        operationId: 'op-private-error',
-        operationType: 'GRANT',
+        operationId: '00000000-0000-4000-8000-000000000115',
+        operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
-        permission: 'organization.create',
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
@@ -437,10 +431,9 @@ describe('Platform authority change operations transactional integration', () =>
 
   it('allows revocation when multiple active operators exist', async () => {
     await repository.execute({
-      operationId: 'op-grant-op1',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000116',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'platform.health.read',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -448,10 +441,9 @@ describe('Platform authority change operations transactional integration', () =>
     });
 
     await repository.execute({
-      operationId: 'op-grant-op2',
-      operationType: 'GRANT',
+      operationId: '00000000-0000-4000-8000-000000000117',
+      operationType: 'BOOTSTRAP',
       targetUserId: targetUserId2.toHexString(),
-      permission: 'platform.health.read',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -459,10 +451,9 @@ describe('Platform authority change operations transactional integration', () =>
     });
 
     const revokeResult = await repository.execute({
-      operationId: 'op-revoke-op1',
+      operationId: '00000000-0000-4000-8000-000000000118',
       operationType: 'REVOKE',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'platform.health.read',
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
@@ -511,10 +502,9 @@ describe('Platform authority change operations transactional integration', () =>
 
     await expect(
       repository.execute({
-        operationId: 'op-audit-failure-rollback',
-        operationType: 'GRANT',
+        operationId: '00000000-0000-4000-8000-000000000119',
+        operationType: 'BOOTSTRAP',
         targetUserId: targetUserId1.toHexString(),
-        permission: 'organization.create',
         scope: 'PLATFORM',
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
@@ -531,7 +521,7 @@ describe('Platform authority change operations transactional integration', () =>
 
     const ledger = await db
       .collection('platform_authority_change_operations')
-      .findOne({ operationId: 'op-audit-failure-rollback' });
+      .findOne({ operationId: '00000000-0000-4000-8000-000000000119' });
     expect(ledger).toBeNull();
   });
 });

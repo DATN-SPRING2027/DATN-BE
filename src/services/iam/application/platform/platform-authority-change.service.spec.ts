@@ -20,31 +20,40 @@ describe('PlatformAuthorityChangeService', () => {
   const targetUserId = new Types.ObjectId().toHexString();
 
   const validGrantCommand: PlatformAuthorityChangeCommand = {
-    operationId: 'op-grant-01',
-    operationType: 'GRANT',
+    operationId: '00000000-0000-4000-8000-000000000001',
+    operationType: 'BOOTSTRAP',
     targetUserId,
-    permission: 'organization.create',
     scope: 'PLATFORM',
     actorUserId,
     issuerUserId,
-    reasonCode: 'APPROVED_PO_AUTH_01_BOOTSTRAP',
+    reasonCode: 'PO_AUTH_01_BOOTSTRAP',
   };
 
   const sampleResult: PlatformAuthorityChangeResult = {
-    operationId: 'op-grant-01',
+    operationId: '00000000-0000-4000-8000-000000000001',
     status: 'COMMITTED',
     httpStatus: 201,
     replayed: false,
     body: {
-      operationId: 'op-grant-01',
-      assignmentId: new Types.ObjectId().toHexString(),
+      operationId: '00000000-0000-4000-8000-000000000001',
       targetUserId,
-      permission: 'organization.create',
       scope: 'PLATFORM',
       status: 'ACTIVE',
-      grantedBy: issuerUserId,
-      grantedAt: new Date().toISOString(),
-      expiresAt: null,
+      assignments: [
+        'organization.create',
+        'platform.health.read',
+        'platform.audit.read',
+      ].map((permission) => ({
+        assignmentId: new Types.ObjectId().toHexString(),
+        permission: permission as
+          | 'organization.create'
+          | 'platform.health.read'
+          | 'platform.audit.read',
+        status: 'ACTIVE' as const,
+        grantedBy: issuerUserId,
+        grantedAt: new Date().toISOString(),
+        expiresAt: null,
+      })),
     },
   };
 
@@ -107,48 +116,18 @@ describe('PlatformAuthorityChangeService', () => {
     });
   });
 
-  describe('Runtime Permission Catalog Boundaries (Gate 3)', () => {
-    it.each([
-      'platform.configuration.read',
-      'platform.configuration.write',
-      'platform.admin',
-      'system.admin',
-      'organization.memberships.manage',
-      'project.create',
-      'random.unknown.permission',
-    ])(
-      'rejects non-V1 permission %s as NO_DOCUMENTED_PERMISSION',
-      async (permission) => {
-        await expect(
-          service.executeChange({
-            ...validGrantCommand,
-            permission: permission as unknown as 'organization.create',
-          }),
-        ).rejects.toMatchObject({
-          response: {
-            code: 'NO_DOCUMENTED_PERMISSION',
-          },
-        });
-        expect(mockExecute).not.toHaveBeenCalled();
-      },
-    );
-
-    it.each([
-      'organization.create',
-      'platform.health.read',
-      'platform.audit.read',
-    ] as const)(
-      'accepts canonical active V1 permission %s',
-      async (permission) => {
-        await expect(
-          service.executeChange({
-            ...validGrantCommand,
-            permission,
-          }),
-        ).resolves.toEqual(sampleResult);
-        expect(mockExecute).toHaveBeenCalled();
-      },
-    );
+  describe('Fixed A-04 permission bundle', () => {
+    it('rejects a caller-selected single permission', async () => {
+      await expect(
+        service.executeChange({
+          ...validGrantCommand,
+          permission: 'organization.create',
+        } as unknown as PlatformAuthorityChangeCommand),
+      ).rejects.toMatchObject({
+        response: { code: 'FIXED_PERMISSION_BUNDLE_REQUIRED' },
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
   });
 
   describe('Input Validation & Safety Constraints', () => {
@@ -197,11 +176,11 @@ describe('PlatformAuthorityChangeService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('rejects empty reasonCode', async () => {
+    it('rejects a free-form reasonCode', async () => {
       await expect(
         service.executeChange({
           ...validGrantCommand,
-          reasonCode: '   ',
+          reasonCode: 'FREEFORM_REASON',
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });

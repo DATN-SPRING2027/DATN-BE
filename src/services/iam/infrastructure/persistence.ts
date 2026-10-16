@@ -131,19 +131,12 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
           { name: 'platform_authority_operation_id', unique: true },
         ),
         index(
-          { targetUserId: 1, permission: 1, committedAt: -1 },
-          { name: 'platform_authority_operation_target' },
+          { targetUserId: 1, committedAt: -1 },
+          { name: 'platform_authority_operation_target_v2' },
         ),
         index(
           { actorUserId: 1, committedAt: -1 },
           { name: 'platform_authority_operation_actor' },
-        ),
-        index(
-          { expiresAt: 1 },
-          {
-            name: 'platform_authority_operation_expiry',
-            expireAfterSeconds: 0,
-          },
         ),
       ],
     },

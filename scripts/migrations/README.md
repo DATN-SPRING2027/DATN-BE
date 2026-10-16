@@ -52,8 +52,11 @@ The A-04 platform authority assignment collection and index migration is
 documented in [20261005-platform-authority-assignments.README.md](20261005-platform-authority-assignments.README.md).
 The additive platform authority change operations ledger collection and index migration is
 documented in [20261016-platform-authority-change-operations.README.md](20261016-platform-authority-change-operations.README.md).
-The follow-up TTL and permission-lock migration is documented in
+The committed per-permission/TTL hardening migration is superseded; see
 [20261016-platform-authority-change-hardening.README.md](20261016-platform-authority-change-hardening.README.md).
+The report-first V2 script for the shared lifecycle lock, bundle index, and
+removal of the unapproved TTL index is documented in
+[20261016-platform-authority-change-v2-lifecycle.README.md](20261016-platform-authority-change-v2-lifecycle.README.md).
 
 ## Organization invitations
 

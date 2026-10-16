@@ -20,10 +20,16 @@ import {
 } from '../../../../common/mongodb/database-names';
 import type { PlatformAuthorityChangeRepository } from '../../application/platform/platform-authority-change.repository';
 import {
+  PLATFORM_PERMISSIONS,
+  type PlatformPermission,
+} from '../../application/authorization/authorization.policy';
+import {
   hashPayload,
+  type PlatformAuthorityAssignmentResult,
   type PlatformAuthorityChangeCommand,
   type PlatformAuthorityChangeResult,
   type PlatformAuthorityChangeResultBody,
+  type PlatformAuthorityOperationType,
 } from '../../application/platform/platform-authority-change.types';
 import { IAM_PERSISTENCE } from '../persistence';
 
@@ -46,6 +52,7 @@ interface PlatformAuthorityAssignmentDocument {
   expiresAt?: Date | null;
   revokedAt?: Date | null;
   revokedBy?: Types.ObjectId | null;
+  provenanceOperationId?: string;
 }
 
 interface PlatformAuthorityOperationDocument {
@@ -54,16 +61,15 @@ interface PlatformAuthorityOperationDocument {
   payloadHash: string;
   actorUserId: Types.ObjectId;
   issuerUserId: Types.ObjectId;
-  operationType: 'GRANT' | 'REVOKE';
+  operationType: PlatformAuthorityOperationType;
   targetUserId: Types.ObjectId;
-  permission: string;
+  permissions: PlatformPermission[];
   scope: 'PLATFORM';
   auditEventId: string;
   status: 'COMMITTED';
   httpStatus: 200 | 201;
   resultBody: PlatformAuthorityChangeResultBody;
   committedAt: Date;
-  expiresAt: Date;
 }
 
 interface PlatformAuthorityChangeLockDocument {
@@ -98,32 +104,38 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
   ): Promise<PlatformAuthorityChangeResult> {
     const conn = this.connectionOrThrow();
     let session: ClientSession | undefined;
-
     let result: PlatformAuthorityChangeResult | undefined;
+
+    const throwLegacyConflict = (): never => {
+      throw new ConflictException({
+        code: 'LEGACY_ASSIGNMENT_CONFLICT',
+        message:
+          'The complete authority bundle lacks matching PO-AUTH-01 provenance.',
+      });
+    };
 
     try {
       session = await conn.startSession();
       const activeSession = session;
-      const executeInSession = async (activeSession: ClientSession) => {
+      const executeInSession = async (transactionSession: ClientSession) => {
         const now = command.now ?? new Date();
         const payloadHash = hashPayload(command);
         const targetUserId = new Types.ObjectId(command.targetUserId);
         const actorUserId = new Types.ObjectId(command.actorUserId);
         const issuerUserId = new Types.ObjectId(command.issuerUserId);
 
-        // 1. Idempotency Check in Operation Ledger
         const prior = await this.operations()
           .findOne({ operationId: command.operationId })
-          .session(activeSession)
+          .session(transactionSession)
           .lean()
           .exec();
 
         if (prior) {
           if (prior.payloadHash !== payloadHash) {
             throw new ConflictException({
-              code: 'OPERATION_PAYLOAD_MISMATCH',
+              code: 'IDEMPOTENCY_KEY_REUSED',
               message:
-                'The operationId was already executed with a different payload.',
+                'The operationId was already committed with a different payload.',
             });
           }
           result = {
@@ -136,14 +148,14 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           return;
         }
 
-        // Every mutation for one permission writes the same lock row inside
-        // this transaction. MongoDB's write conflict retry then serializes the
-        // read-count-update sequence used by the last-operator invariant.
         const lock = await this.locks()
           .findOneAndUpdate(
-            { permission: command.permission, scope: 'PLATFORM' },
+            {
+              permission: 'PLATFORM_OPERATOR_LIFECYCLE',
+              scope: 'PLATFORM',
+            },
             { $inc: { version: 1 } },
-            { new: true, session: activeSession },
+            { new: true, session: transactionSession },
           )
           .lean()
           .exec();
@@ -151,14 +163,13 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           throw new ServiceUnavailableException({
             code: 'PLATFORM_AUTHORITY_LOCKS_UNAVAILABLE',
             message:
-              'Platform authority changes are disabled until the database lock records are provisioned.',
+              'Platform authority changes are disabled until the lifecycle lock is provisioned.',
           });
         }
 
-        // 2. Gate 1: Principal Verifications inside transaction boundary
         const actor = await this.users()
           .findOne({ _id: actorUserId }, { _id: 1, status: 1 })
-          .session(activeSession)
+          .session(transactionSession)
           .lean()
           .exec();
         if (!actor || actor.status !== 'ACTIVE') {
@@ -170,7 +181,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
 
         const issuer = await this.users()
           .findOne({ _id: issuerUserId }, { _id: 1, status: 1 })
-          .session(activeSession)
+          .session(transactionSession)
           .lean()
           .exec();
         if (!issuer || issuer.status !== 'ACTIVE') {
@@ -182,7 +193,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
 
         const target = await this.users()
           .findOne({ _id: targetUserId }, { _id: 1, status: 1 })
-          .session(activeSession)
+          .session(transactionSession)
           .lean()
           .exec();
         if (!target) {
@@ -191,8 +202,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             message: 'Target user account not found.',
           });
         }
-
-        if (command.operationType === 'GRANT' && target.status !== 'ACTIVE') {
+        if (command.operationType !== 'REVOKE' && target.status !== 'ACTIVE') {
           throw new ConflictException({
             code: 'TARGET_USER_INACTIVE',
             message:
@@ -200,154 +210,268 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           });
         }
 
-        // 3. Inspect Current Assignment State
-        const existing = await this.assignments()
-          .findOne({
+        const permissions = [...PLATFORM_PERMISSIONS];
+        const rows = await this.assignments()
+          .find({
             subjectUserId: targetUserId,
-            permission: command.permission,
+            permission: { $in: permissions },
             scope: 'PLATFORM',
           })
-          .session(activeSession)
+          .session(transactionSession)
           .exec();
+        const rowsByPermission = new Map(
+          rows.map((row) => [row.permission, row] as const),
+        );
+        const completeBundle =
+          rows.length === permissions.length &&
+          permissions.every((permission) => rowsByPermission.has(permission));
+        const isCurrent = (row: PlatformAuthorityAssignmentDocument) =>
+          row.status === 'ACTIVE' &&
+          (row.expiresAt == null || row.expiresAt.getTime() > now.getTime());
+        const allCurrent =
+          completeBundle &&
+          permissions.every((permission) =>
+            isCurrent(rowsByPermission.get(permission)!),
+          );
+        const allInactive =
+          completeBundle &&
+          permissions.every((permission) => {
+            const row = rowsByPermission.get(permission)!;
+            return (
+              row.status === 'REVOKED' ||
+              (row.status === 'ACTIVE' &&
+                row.expiresAt != null &&
+                row.expiresAt.getTime() <= now.getTime())
+            );
+          });
+        const currentState =
+          rows.length === 0
+            ? 'ABSENT'
+            : allCurrent
+              ? 'ACTIVE'
+              : allInactive
+                ? 'REVOKED'
+                : null;
 
-        let assignmentId: Types.ObjectId;
-        let previousStatus = 'ABSENT';
-        let newStatus: 'ACTIVE' | 'REVOKED';
+        if (rows.length > 0 && !completeBundle) throwLegacyConflict();
+        if (currentState === null) throwLegacyConflict();
+        if (
+          command.expectedCurrentStatus &&
+          command.expectedCurrentStatus !== currentState
+        ) {
+          throw new ConflictException({
+            code: 'AUTHORITY_STATE_CONFLICT',
+            message:
+              'The complete permission bundle no longer matches the expected state.',
+          });
+        }
+
+        const assertOwnedBundle = async () => {
+          if (
+            !completeBundle ||
+            rows.some((row) => !row.provenanceOperationId) ||
+            new Set(rows.map((row) => row.provenanceOperationId)).size !== 1
+          ) {
+            throwLegacyConflict();
+          }
+
+          const provenanceOperationId = rows[0].provenanceOperationId!;
+          const source = await this.operations()
+            .findOne({
+              operationId: provenanceOperationId,
+              targetUserId,
+              operationType: { $in: ['BOOTSTRAP', 'REGRANT'] },
+              permissions: { $all: permissions, $size: permissions.length },
+            })
+            .session(transactionSession)
+            .lean()
+            .exec();
+          if (!source) {
+            throw new ConflictException({
+              code: 'LEGACY_ASSIGNMENT_CONFLICT',
+              message:
+                'The complete authority bundle lacks matching PO-AUTH-01 provenance.',
+            });
+          }
+          const sourceBody =
+            source.resultBody as Partial<PlatformAuthorityChangeResultBody> | null;
+          if (sourceBody === null) {
+            throw new ConflictException({
+              code: 'LEGACY_ASSIGNMENT_CONFLICT',
+              message:
+                'The complete authority bundle lacks matching PO-AUTH-01 provenance.',
+            });
+          }
+          if (
+            source.status !== 'COMMITTED' ||
+            source.scope !== 'PLATFORM' ||
+            !source.auditEventId ||
+            sourceBody.operationId !== provenanceOperationId ||
+            typeof sourceBody.targetUserId !== 'string' ||
+            sourceBody.targetUserId.toLowerCase() !==
+              targetUserId.toHexString() ||
+            sourceBody.scope !== 'PLATFORM' ||
+            sourceBody.status !== 'ACTIVE'
+          ) {
+            throwLegacyConflict();
+          }
+          if (!Array.isArray(sourceBody.assignments)) {
+            throw new ConflictException({
+              code: 'LEGACY_ASSIGNMENT_CONFLICT',
+              message:
+                'The complete authority bundle lacks matching PO-AUTH-01 provenance.',
+            });
+          }
+          const provenanceAssignments = sourceBody.assignments;
+          if (
+            provenanceAssignments.length !== permissions.length ||
+            provenanceAssignments.some(
+              (assignment) =>
+                !assignment ||
+                typeof assignment.assignmentId !== 'string' ||
+                typeof assignment.permission !== 'string' ||
+                assignment.status !== 'ACTIVE',
+            )
+          ) {
+            throwLegacyConflict();
+          }
+
+          const sourceAssignments = new Set(
+            provenanceAssignments.map(
+              (assignment) =>
+                assignment.permission +
+                ':' +
+                assignment.assignmentId.toLowerCase(),
+            ),
+          );
+          if (
+            rows.some(
+              (row) =>
+                !sourceAssignments.has(
+                  row.permission + ':' + row._id.toHexString(),
+                ),
+            )
+          ) {
+            throwLegacyConflict();
+          }
+        };
+
         const httpStatus: 200 | 201 =
-          command.operationType === 'GRANT' ? 201 : 200;
+          command.operationType === 'BOOTSTRAP' ? 201 : 200;
+        const committedStatus: PlatformAuthorityAssignmentResult['status'] =
+          command.operationType === 'REVOKE' ? 'REVOKED' : 'ACTIVE';
+        const previousStatuses = rows.map((row) => ({
+          assignmentId: row._id.toHexString(),
+          permission: row.permission,
+          status: row.status,
+        }));
+        let assignments: PlatformAuthorityAssignmentDocument[];
 
-        if (command.operationType === 'GRANT') {
-          newStatus = 'ACTIVE';
-          const newExpiresAt = command.expiresAt
-            ? new Date(command.expiresAt)
-            : null;
-
-          if (existing) {
-            previousStatus = existing.status;
-            const isCurrentlyActive =
-              existing.status === 'ACTIVE' &&
-              (existing.expiresAt == null ||
-                existing.expiresAt.getTime() > now.getTime());
-
-            if (isCurrentlyActive) {
-              if (
-                command.expectedCurrentStatus &&
-                command.expectedCurrentStatus !== 'ACTIVE'
-              ) {
-                throw new ConflictException({
-                  code: 'CAS_STATUS_MISMATCH',
-                  message: `Expected status '${command.expectedCurrentStatus}' but assignment is currently ACTIVE.`,
-                });
-              }
+        if (command.operationType === 'BOOTSTRAP') {
+          if (rows.length > 0) {
+            await assertOwnedBundle();
+            if (currentState === 'ACTIVE') {
               throw new ConflictException({
                 code: 'PLATFORM_AUTHORITY_ALREADY_ACTIVE',
                 message:
-                  'Target user already holds active platform authority for this permission.',
+                  'The complete platform authority bundle is already active.',
               });
             }
-
-            // Existing is REVOKED or expired -> reactivate under controlled procedure
-            if (
-              command.expectedCurrentStatus &&
-              command.expectedCurrentStatus !== 'REVOKED'
-            ) {
-              throw new ConflictException({
-                code: 'CAS_STATUS_MISMATCH',
-                message: `Expected status '${command.expectedCurrentStatus}' but assignment is REVOKED/EXPIRED.`,
-              });
-            }
-
-            existing.status = 'ACTIVE';
-            existing.grantedAt = now;
-            existing.grantedBy = issuerUserId;
-            existing.expiresAt = newExpiresAt;
-            existing.revokedAt = null;
-            existing.revokedBy = null;
-            await existing.save({ session: activeSession });
-            assignmentId = existing._id;
-          } else {
-            // No existing assignment row -> create new
-            if (
-              command.expectedCurrentStatus &&
-              command.expectedCurrentStatus !== 'ABSENT'
-            ) {
-              throw new ConflictException({
-                code: 'CAS_STATUS_MISMATCH',
-                message: `Expected status '${command.expectedCurrentStatus}' but assignment is ABSENT.`,
-              });
-            }
-
-            const [created] = await this.assignments().create(
-              [
-                {
-                  subjectUserId: targetUserId,
-                  permission: command.permission,
-                  scope: 'PLATFORM',
-                  status: 'ACTIVE',
-                  grantedAt: now,
-                  grantedBy: issuerUserId,
-                  expiresAt: newExpiresAt,
-                  revokedAt: null,
-                  revokedBy: null,
-                },
+            throw new ConflictException({
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message: 'Use REGRANT for an existing procedure-owned bundle.',
+            });
+          }
+          const newExpiresAt = command.expiresAt
+            ? new Date(command.expiresAt)
+            : null;
+          assignments = await this.assignments().create(
+            permissions.map((permission) => ({
+              subjectUserId: targetUserId,
+              permission,
+              scope: 'PLATFORM' as const,
+              status: 'ACTIVE' as const,
+              grantedAt: now,
+              grantedBy: issuerUserId,
+              expiresAt: newExpiresAt,
+              revokedAt: null,
+              revokedBy: null,
+              provenanceOperationId: command.operationId,
+            })),
+            { session: transactionSession },
+          );
+        } else if (command.operationType === 'REGRANT') {
+          await assertOwnedBundle();
+          if (currentState === 'ACTIVE') {
+            throw new ConflictException({
+              code: 'PLATFORM_AUTHORITY_ALREADY_ACTIVE',
+              message:
+                'The complete platform authority bundle is already active.',
+            });
+          }
+          const newExpiresAt = command.expiresAt
+            ? new Date(command.expiresAt)
+            : null;
+          assignments = rows;
+          const update = await this.assignments().updateMany(
+            {
+              _id: { $in: rows.map((assignment) => assignment._id) },
+              subjectUserId: targetUserId,
+              scope: 'PLATFORM',
+              $or: [
+                { status: 'REVOKED' },
+                { status: 'ACTIVE', expiresAt: { $lte: now } },
               ],
-              { session: activeSession },
-            );
-            assignmentId = created._id;
+            },
+            {
+              $set: {
+                status: 'ACTIVE',
+                grantedAt: now,
+                grantedBy: issuerUserId,
+                expiresAt: newExpiresAt,
+                revokedAt: null,
+                revokedBy: null,
+                provenanceOperationId: command.operationId,
+              },
+            },
+            { session: transactionSession },
+          );
+          if (update.modifiedCount !== rows.length) {
+            throw new ConflictException({
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message:
+                'The complete permission bundle changed before it could be regranted.',
+            });
+          }
+          for (const assignment of assignments) {
+            assignment.status = 'ACTIVE';
+            assignment.grantedAt = now;
+            assignment.grantedBy = issuerUserId;
+            assignment.expiresAt = newExpiresAt;
+            assignment.revokedAt = null;
+            assignment.revokedBy = null;
+            assignment.provenanceOperationId = command.operationId;
           }
         } else {
-          // REVOKE operation
-          newStatus = 'REVOKED';
-
-          if (!existing) {
-            if (
-              command.expectedCurrentStatus &&
-              command.expectedCurrentStatus !== 'ABSENT'
-            ) {
-              throw new ConflictException({
-                code: 'CAS_STATUS_MISMATCH',
-                message: `Expected status '${command.expectedCurrentStatus}' but assignment is ABSENT.`,
-              });
-            }
-            throw new NotFoundException({
-              code: 'PLATFORM_AUTHORITY_NOT_FOUND',
-              message:
-                'No platform authority assignment found for this target and permission.',
-            });
-          }
-
-          previousStatus = existing.status;
-
-          if (existing.status === 'REVOKED') {
-            if (
-              command.expectedCurrentStatus &&
-              command.expectedCurrentStatus !== 'REVOKED'
-            ) {
-              throw new ConflictException({
-                code: 'CAS_STATUS_MISMATCH',
-                message: `Expected status '${command.expectedCurrentStatus}' but assignment is REVOKED.`,
-              });
-            }
+          await assertOwnedBundle();
+          if (rows.every((row) => row.status === 'REVOKED')) {
             throw new ConflictException({
               code: 'PLATFORM_AUTHORITY_ALREADY_REVOKED',
-              message: 'Platform authority assignment is already revoked.',
+              message:
+                'The complete platform authority bundle is already revoked.',
             });
           }
-
-          if (
-            command.expectedCurrentStatus &&
-            command.expectedCurrentStatus !== 'ACTIVE'
-          ) {
+          if (rows.some((row) => row.status === 'REVOKED')) {
             throw new ConflictException({
-              code: 'CAS_STATUS_MISMATCH',
-              message: `Expected status '${command.expectedCurrentStatus}' but assignment is ACTIVE.`,
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message:
+                'The complete platform authority bundle is partially revoked.',
             });
           }
 
-          // Gate 1: Last-operator protection invariant
           const activeAssignments = await this.assignments()
             .find({
-              permission: command.permission,
+              permission: { $in: permissions },
               scope: 'PLATFORM',
               status: 'ACTIVE',
               $or: [
@@ -356,65 +480,107 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
                 { expiresAt: { $gt: now } },
               ],
             })
-            .select({ subjectUserId: 1 })
-            .session(activeSession);
-          const activeSubjectIds = Array.from(
-            new Set(
-              activeAssignments.map((assignment) =>
-                assignment.subjectUserId.toHexString(),
-              ),
-            ),
-            (userId) => new Types.ObjectId(userId),
-          );
-          const activeOperatorsCount = activeSubjectIds.length
+            .select({ subjectUserId: 1, permission: 1 })
+            .session(transactionSession)
+            .lean()
+            .exec();
+          const permissionsBySubject = new Map<string, Set<string>>();
+          for (const assignment of activeAssignments) {
+            const subjectId = assignment.subjectUserId.toHexString();
+            const subjectPermissions =
+              permissionsBySubject.get(subjectId) ?? new Set<string>();
+            subjectPermissions.add(assignment.permission);
+            permissionsBySubject.set(subjectId, subjectPermissions);
+          }
+          const otherBundleIds = [...permissionsBySubject.entries()]
+            .filter(
+              ([subjectId, subjectPermissions]) =>
+                subjectId !== targetUserId.toHexString() &&
+                permissions.every((permission) =>
+                  subjectPermissions.has(permission),
+                ),
+            )
+            .map(([subjectId]) => new Types.ObjectId(subjectId));
+          const otherActiveOperators = otherBundleIds.length
             ? await this.users()
                 .countDocuments({
-                  _id: { $in: activeSubjectIds },
+                  _id: { $in: otherBundleIds },
                   status: 'ACTIVE',
                 })
-                .session(activeSession)
+                .session(transactionSession)
             : 0;
-
-          if (activeOperatorsCount <= 1) {
+          if (otherActiveOperators < 1) {
             throw new ConflictException({
-              code: 'LAST_OPERATOR_REVOCATION_BLOCKED',
-              message: `Revoking this assignment would remove the last active user with permission '${command.permission}'.`,
+              code: 'LAST_OPERATOR_REQUIRED',
+              message:
+                'Revocation must leave another ACTIVE user with all three current, unexpired A-04 permissions.',
             });
           }
 
-          existing.status = 'REVOKED';
-          existing.revokedAt = now;
-          existing.revokedBy = actorUserId;
-          await existing.save({ session: activeSession });
-          assignmentId = existing._id;
+          assignments = rows;
+          const update = await this.assignments().updateMany(
+            {
+              _id: { $in: rows.map((assignment) => assignment._id) },
+              subjectUserId: targetUserId,
+              scope: 'PLATFORM',
+              status: 'ACTIVE',
+              $or: [
+                { expiresAt: { $exists: false } },
+                { expiresAt: null },
+                { expiresAt: { $gt: now } },
+              ],
+            },
+            {
+              $set: {
+                status: 'REVOKED',
+                revokedAt: now,
+                revokedBy: actorUserId,
+              },
+            },
+            { session: transactionSession },
+          );
+          if (update.modifiedCount !== rows.length) {
+            throw new ConflictException({
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message:
+                'The complete permission bundle changed before it could be revoked.',
+            });
+          }
+          for (const assignment of assignments) {
+            assignment.status = 'REVOKED';
+            assignment.revokedAt = now;
+            assignment.revokedBy = actorUserId;
+          }
         }
 
-        // 4. Result Body
+        const assignmentResults = assignments
+          .map((assignment) => ({
+            assignmentId: assignment._id.toHexString(),
+            permission: assignment.permission as PlatformPermission,
+            status: committedStatus,
+            ...(committedStatus === 'ACTIVE'
+              ? {
+                  grantedBy: command.issuerUserId,
+                  grantedAt: now.toISOString(),
+                  expiresAt: command.expiresAt ?? null,
+                }
+              : {
+                  revokedBy: command.actorUserId,
+                  revokedAt: now.toISOString(),
+                }),
+          }))
+          .sort((left, right) =>
+            left.permission.localeCompare(right.permission),
+          );
         const body: PlatformAuthorityChangeResultBody = {
           operationId: command.operationId,
-          assignmentId: assignmentId.toHexString(),
           targetUserId: command.targetUserId,
-          permission: command.permission,
           scope: 'PLATFORM',
-          status: newStatus,
-          ...(command.operationType === 'GRANT'
-            ? {
-                grantedBy: command.issuerUserId,
-                grantedAt: now.toISOString(),
-                expiresAt: command.expiresAt ?? null,
-              }
-            : {
-                revokedBy: command.actorUserId,
-                revokedAt: now.toISOString(),
-              }),
+          status: committedStatus,
+          assignments: assignmentResults,
         };
 
-        // 5. Operation Ledger Commit (Gate 1 & Gate 2)
         const auditEventId = randomUUID();
-        const ledgerExpiry = new Date(
-          now.getTime() + 365 * 24 * 60 * 60 * 1000,
-        );
-
         await this.operations().create(
           [
             {
@@ -424,20 +590,18 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
               issuerUserId,
               operationType: command.operationType,
               targetUserId,
-              permission: command.permission,
+              permissions,
               scope: 'PLATFORM',
               auditEventId,
               status: 'COMMITTED',
               httpStatus,
               resultBody: body,
               committedAt: now,
-              expiresAt: ledgerExpiry,
             },
           ],
-          { session: activeSession },
+          { session: transactionSession },
         );
 
-        // 6. Audit Event Commit (Gate 2: Atomic cross-database commit)
         await conn
           .useDb(this.auditDatabaseName, { useCache: true })
           .collection(IAM_AUDIT_COLLECTION_NAME)
@@ -449,22 +613,29 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
               actorUserId: command.actorUserId,
               issuerUserId: command.issuerUserId,
               action:
-                command.operationType === 'GRANT'
-                  ? 'platform.authority.granted'
-                  : 'platform.authority.revoked',
+                command.operationType === 'REVOKE'
+                  ? 'platform.authority.revoked'
+                  : 'platform.authority.granted',
               targetResource: 'PLATFORM_AUTHORITY',
-              targetResourceId: assignmentId.toHexString(),
+              targetResourceId: command.targetUserId,
               targetUserId: command.targetUserId,
-              permission: command.permission,
+              permissions,
+              assignmentIds: assignmentResults.map(
+                (assignment) => assignment.assignmentId,
+              ),
               scope: 'PLATFORM',
               metadata: {
-                before: { status: previousStatus },
-                after: { status: newStatus },
+                before: previousStatuses,
+                after: assignmentResults.map((assignment) => ({
+                  assignmentId: assignment.assignmentId,
+                  permission: assignment.permission,
+                  status: assignment.status,
+                })),
                 reasonCode: command.reasonCode,
               },
               occurredAt: now,
             },
-            { session: activeSession },
+            { session: transactionSession },
           );
 
         result = {
@@ -476,9 +647,13 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         };
       };
 
-      await activeSession.withTransaction(async () => {
-        await executeInSession(activeSession);
-      });
+      await activeSession.withTransaction(
+        async () => executeInSession(activeSession),
+        {
+          readConcern: { level: 'snapshot' },
+          writeConcern: { w: 'majority' },
+        },
+      );
     } catch (error) {
       if (isDuplicateKey(error)) {
         const payloadHash = hashPayload(command);
@@ -498,9 +673,9 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         if (prior) {
           if (prior.payloadHash !== payloadHash) {
             throw new ConflictException({
-              code: 'OPERATION_PAYLOAD_MISMATCH',
+              code: 'IDEMPOTENCY_KEY_REUSED',
               message:
-                'The operationId was already executed with a different payload.',
+                'The operationId was already committed with a different payload.',
             });
           }
           return {
@@ -512,9 +687,9 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           };
         }
         throw new ConflictException({
-          code: 'PLATFORM_AUTHORITY_ALREADY_ACTIVE',
+          code: 'AUTHORITY_STATE_CONFLICT',
           message:
-            'A concurrent platform authority assignment was committed for this target.',
+            'A conflicting platform authority lifecycle operation was committed.',
         });
       }
       if (error instanceof HttpException) throw error;
@@ -531,7 +706,6 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         'Platform authority change transaction completed with no result',
       );
     }
-
     return result;
   }
 

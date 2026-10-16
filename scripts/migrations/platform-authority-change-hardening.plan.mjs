@@ -108,7 +108,9 @@ export function planPlatformAuthorityChangeHardening({
       expectedLockKeys,
       missingLockKeys,
       duplicateLockPairs: locks.duplicateLockPairs ?? [],
-      invalidLockRows: locks.invalidLockRows ?? [],
+      invalidLockRows: (locks.invalidLockRows ?? []).map(({ reason }) => ({
+        reason,
+      })),
     },
     clean,
     action: !clean ? 'BLOCKED' : needsChanges ? 'APPLY_HARDENING' : 'NOOP',

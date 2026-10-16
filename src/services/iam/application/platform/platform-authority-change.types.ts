@@ -1,16 +1,25 @@
 import { createHash } from 'node:crypto';
-import type { PlatformPermission } from '../authorization/authorization.policy';
+import {
+  PLATFORM_PERMISSIONS,
+  type PlatformPermission,
+} from '../authorization/authorization.policy';
 
-export type PlatformAuthorityOperationType = 'GRANT' | 'REVOKE';
+export const PLATFORM_AUTHORITY_REASON_CODES = {
+  BOOTSTRAP: 'PO_AUTH_01_BOOTSTRAP',
+  REGRANT: 'PO_AUTH_01_REGRANT',
+  REVOKE: 'PO_AUTH_01_REVOKE',
+} as const;
+
+export type PlatformAuthorityOperationType =
+  keyof typeof PLATFORM_AUTHORITY_REASON_CODES;
 
 export interface PlatformAuthorityChangePayload {
   operationType: PlatformAuthorityOperationType;
   targetUserId: string;
-  permission: PlatformPermission;
   scope: 'PLATFORM';
-  actorUserId: string; // Executor principal
-  issuerUserId: string; // Authorizing issuer principal
-  expectedCurrentStatus?: 'ABSENT' | 'ACTIVE' | 'REVOKED'; // CAS check
+  actorUserId: string;
+  issuerUserId: string;
+  expectedCurrentStatus?: 'ABSENT' | 'ACTIVE' | 'REVOKED';
   expiresAt?: string | null;
   reasonCode: string;
 }
@@ -20,18 +29,23 @@ export interface PlatformAuthorityChangeCommand extends PlatformAuthorityChangeP
   now?: Date;
 }
 
-export interface PlatformAuthorityChangeResultBody {
-  operationId: string;
+export interface PlatformAuthorityAssignmentResult {
   assignmentId: string;
-  targetUserId: string;
   permission: PlatformPermission;
-  scope: 'PLATFORM';
   status: 'ACTIVE' | 'REVOKED';
   grantedBy?: string;
   grantedAt?: string;
   revokedBy?: string;
   revokedAt?: string;
   expiresAt?: string | null;
+}
+
+export interface PlatformAuthorityChangeResultBody {
+  operationId: string;
+  targetUserId: string;
+  scope: 'PLATFORM';
+  status: 'ACTIVE' | 'REVOKED';
+  assignments: PlatformAuthorityAssignmentResult[];
 }
 
 export interface PlatformAuthorityChangeResult {
@@ -45,21 +59,17 @@ export interface PlatformAuthorityChangeResult {
 export function canonicalizePayload(
   payload: PlatformAuthorityChangePayload,
 ): string {
-  const normalized = {
+  return JSON.stringify({
     actorUserId: payload.actorUserId.toLowerCase(),
-    // Keep existing default-false idempotency hashes stable. The command no
-    // longer accepts a caller-controlled break-glass override.
-    breakGlass: false,
     expectedCurrentStatus: payload.expectedCurrentStatus ?? null,
     expiresAt: payload.expiresAt ?? null,
     issuerUserId: payload.issuerUserId.toLowerCase(),
     operationType: payload.operationType,
-    permission: payload.permission,
-    reasonCode: payload.reasonCode.trim(),
+    permissions: [...PLATFORM_PERMISSIONS],
+    reasonCode: payload.reasonCode,
     scope: payload.scope,
     targetUserId: payload.targetUserId.toLowerCase(),
-  };
-  return JSON.stringify(normalized, Object.keys(normalized).sort());
+  });
 }
 
 export function hashPayload(payload: PlatformAuthorityChangePayload): string {

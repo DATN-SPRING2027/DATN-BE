@@ -211,6 +211,7 @@ const iamSchemas: Record<string, Schema> = {
       expiresAt: Date,
       revokedAt: Date,
       revokedBy: Schema.Types.ObjectId,
+      provenanceOperationId: String,
     },
     {
       collection: 'platform_authority_assignments',
@@ -220,7 +221,12 @@ const iamSchemas: Record<string, Schema> = {
   ),
   platform_authority_change_operations: new Schema(
     {
-      operationId: { type: String, required: true },
+      operationId: {
+        type: String,
+        required: true,
+        match:
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      },
       payloadHash: {
         type: String,
         required: true,
@@ -230,18 +236,33 @@ const iamSchemas: Record<string, Schema> = {
       issuerUserId: { type: Schema.Types.ObjectId, required: true },
       operationType: {
         type: String,
-        enum: ['GRANT', 'REVOKE'],
+        enum: ['BOOTSTRAP', 'REGRANT', 'REVOKE'],
         required: true,
       },
       targetUserId: { type: Schema.Types.ObjectId, required: true },
-      permission: {
-        type: String,
-        enum: [
-          'organization.create',
-          'platform.health.read',
-          'platform.audit.read',
+      permissions: {
+        type: [
+          {
+            type: String,
+            enum: [
+              'organization.create',
+              'platform.health.read',
+              'platform.audit.read',
+            ],
+          },
         ],
         required: true,
+        validate: {
+          validator: (permissions: string[]) =>
+            permissions.length === 3 &&
+            new Set(permissions).size === 3 &&
+            [
+              'organization.create',
+              'platform.health.read',
+              'platform.audit.read',
+            ].every((permission) => permissions.includes(permission)),
+          message: 'permissions must contain the complete A-04 bundle.',
+        },
       },
       scope: { type: String, enum: ['PLATFORM'], required: true },
       auditEventId: { type: String, required: true },
@@ -249,7 +270,6 @@ const iamSchemas: Record<string, Schema> = {
       httpStatus: { type: Number, enum: [200, 201], required: true },
       resultBody: { type: Schema.Types.Mixed, required: true },
       committedAt: { type: Date, required: true },
-      expiresAt: { type: Date, required: true },
     },
     {
       collection: 'platform_authority_change_operations',
@@ -265,6 +285,7 @@ const iamSchemas: Record<string, Schema> = {
           'organization.create',
           'platform.health.read',
           'platform.audit.read',
+          'PLATFORM_OPERATOR_LIFECYCLE',
         ],
         required: true,
       },

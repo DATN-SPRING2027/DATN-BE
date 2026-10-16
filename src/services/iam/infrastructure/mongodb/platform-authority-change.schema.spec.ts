@@ -24,9 +24,9 @@ describe('platform_authority_change_operations persistence contract', () => {
           }),
         ],
         [
-          { targetUserId: 1, permission: 1, committedAt: -1 },
+          { targetUserId: 1, committedAt: -1 },
           expect.objectContaining({
-            name: 'platform_authority_operation_target',
+            name: 'platform_authority_operation_target_v2',
           }),
         ],
         [
@@ -35,40 +35,43 @@ describe('platform_authority_change_operations persistence contract', () => {
             name: 'platform_authority_operation_actor',
           }),
         ],
-        [
-          { expiresAt: 1 },
-          expect.objectContaining({
-            name: 'platform_authority_operation_expiry',
-            expireAfterSeconds: 0,
-          }),
-        ],
       ]),
     );
   });
 
   it('accepts valid operation ledger document', () => {
     const valid = new Operation({
-      operationId: 'op-ledger-01',
+      operationId: '00000000-0000-4000-8000-000000000001',
       payloadHash: 'a'.repeat(64),
       actorUserId: new Types.ObjectId(),
       issuerUserId: new Types.ObjectId(),
-      operationType: 'GRANT',
+      operationType: 'BOOTSTRAP',
       targetUserId: new Types.ObjectId(),
-      permission: 'organization.create',
+      permissions: [
+        'organization.create',
+        'platform.health.read',
+        'platform.audit.read',
+      ],
       scope: 'PLATFORM',
       auditEventId: 'evt-01',
       status: 'COMMITTED',
       httpStatus: 201,
       resultBody: {
-        operationId: 'op-ledger-01',
-        assignmentId: new Types.ObjectId().toHexString(),
+        operationId: '00000000-0000-4000-8000-000000000001',
         targetUserId: new Types.ObjectId().toHexString(),
-        permission: 'organization.create',
         scope: 'PLATFORM',
         status: 'ACTIVE',
+        assignments: [
+          'organization.create',
+          'platform.health.read',
+          'platform.audit.read',
+        ].map((permission) => ({
+          assignmentId: new Types.ObjectId().toHexString(),
+          permission,
+          status: 'ACTIVE',
+        })),
       },
       committedAt: new Date(),
-      expiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000),
     });
     expect(valid.validateSync()).toBeUndefined();
   });
@@ -79,16 +82,19 @@ describe('platform_authority_change_operations persistence contract', () => {
       payloadHash: 'short-hash',
       actorUserId: new Types.ObjectId(),
       issuerUserId: new Types.ObjectId(),
-      operationType: 'GRANT',
+      operationType: 'BOOTSTRAP',
       targetUserId: new Types.ObjectId(),
-      permission: 'organization.create',
+      permissions: [
+        'organization.create',
+        'platform.health.read',
+        'platform.audit.read',
+      ],
       scope: 'PLATFORM',
       auditEventId: 'evt-02',
       status: 'COMMITTED',
       httpStatus: 201,
       resultBody: {},
       committedAt: new Date(),
-      expiresAt: new Date(),
     });
     const error = doc.validateSync();
     expect(error).toBeDefined();
@@ -103,19 +109,18 @@ describe('platform_authority_change_operations persistence contract', () => {
       issuerUserId: new Types.ObjectId(),
       operationType: 'INVALID_OP',
       targetUserId: new Types.ObjectId(),
-      permission: 'platform.configuration.read',
+      permissions: ['platform.configuration.read'],
       scope: 'PLATFORM',
       auditEventId: 'evt-03',
       status: 'COMMITTED',
       httpStatus: 201,
       resultBody: {},
       committedAt: new Date(),
-      expiresAt: new Date(),
     });
     const error = doc.validateSync();
     expect(error).toBeDefined();
     expect(error?.errors.operationType).toBeDefined();
-    expect(error?.errors.permission).toBeDefined();
+    expect(error?.errors.permissions).toBeDefined();
   });
 });
 
