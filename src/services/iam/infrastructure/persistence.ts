@@ -124,6 +124,23 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
+      name: 'platform_authority_change_operations',
+      indexes: [
+        index(
+          { operationId: 1 },
+          { name: 'platform_authority_operation_id', unique: true },
+        ),
+        index(
+          { targetUserId: 1, permission: 1, committedAt: -1 },
+          { name: 'platform_authority_operation_target' },
+        ),
+        index(
+          { actorUserId: 1, committedAt: -1 },
+          { name: 'platform_authority_operation_actor' },
+        ),
+      ],
+    },
+    {
       name: 'refresh_sessions',
       indexes: [
         index({ tokenHash: 1 }, { unique: true }),

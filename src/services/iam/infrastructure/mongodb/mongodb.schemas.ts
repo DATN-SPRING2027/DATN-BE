@@ -218,6 +218,45 @@ const iamSchemas: Record<string, Schema> = {
       strict: true,
     },
   ),
+  platform_authority_change_operations: new Schema(
+    {
+      operationId: { type: String, required: true },
+      payloadHash: {
+        type: String,
+        required: true,
+        match: /^[a-f\d]{64}$/,
+      },
+      actorUserId: { type: Schema.Types.ObjectId, required: true },
+      issuerUserId: { type: Schema.Types.ObjectId, required: true },
+      operationType: {
+        type: String,
+        enum: ['GRANT', 'REVOKE'],
+        required: true,
+      },
+      targetUserId: { type: Schema.Types.ObjectId, required: true },
+      permission: {
+        type: String,
+        enum: [
+          'organization.create',
+          'platform.health.read',
+          'platform.audit.read',
+        ],
+        required: true,
+      },
+      scope: { type: String, enum: ['PLATFORM'], required: true },
+      auditEventId: { type: String, required: true },
+      status: { type: String, enum: ['COMMITTED'], required: true },
+      httpStatus: { type: Number, enum: [200, 201], required: true },
+      resultBody: { type: Schema.Types.Mixed, required: true },
+      committedAt: { type: Date, required: true },
+      expiresAt: { type: Date, required: true },
+    },
+    {
+      collection: 'platform_authority_change_operations',
+      timestamps: true,
+      strict: true,
+    },
+  ),
   refresh_sessions: new Schema(
     {
       userId: { type: Schema.Types.ObjectId, required: true },
