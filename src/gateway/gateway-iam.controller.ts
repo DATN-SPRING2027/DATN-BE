@@ -19,6 +19,7 @@ const forwardedRequestHeaders = [
   'authorization',
   'content-type',
   'cookie',
+  'if-match',
   'idempotency-key',
   'x-csrf-token',
   'x-organization-id',
@@ -27,6 +28,7 @@ const forwardedRequestHeaders = [
 const forwardedResponseHeaders = [
   'cache-control',
   'content-type',
+  'etag',
   'location',
   'idempotency-replayed',
   'retry-after',
@@ -303,6 +305,11 @@ export class GatewayIamController {
   }
 
   private async forward(request: Request, response: Response): Promise<void> {
+    const isTeamRoute =
+      /^\/api\/v1\/iam\/(?:projects\/[^/]+\/teams|teams\/[^/]+(?:\/(?:archive|restore))?)$/.test(
+        request.path,
+      );
+    if (isTeamRoute) response.setHeader('cache-control', 'no-store');
     const baseUrl = this.config.getOrThrow<string>('IAM_SERVICE_URL');
     const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
     const url = new URL(path, baseUrl).toString();
@@ -352,6 +359,7 @@ export class GatewayIamController {
       const value = upstream.headers.get(name);
       if (value) response.setHeader(name, value);
     }
+    if (isTeamRoute) response.setHeader('cache-control', 'no-store');
     const cookies = upstream.headers.getSetCookie();
     if (cookies.length > 0) response.setHeader('set-cookie', cookies);
 

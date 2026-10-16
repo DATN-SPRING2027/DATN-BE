@@ -59,6 +59,8 @@ import { OrganizationInvitationService } from './application/organizations/organ
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
 
+// C-04 TQ-05/07/08 remain conditional. Keep Team runtime unwired until the
+// contract closes.
 @Module({
   imports: [RuntimeConfigModule, IamInfrastructureModule.register()],
   controllers: [
