@@ -1,34 +1,28 @@
-# DATN-295 — Completion checklist
+# DATN-295 — Fix and handoff checklist
 
-## Repository preparation
+## Completed in this fix branch
 
-- [x] Fetch `origin` and create a fresh branch from updated `origin/main` (`feat/Thang-DATN-295-platform-authority-db`).
-- [x] Inspect A-04 schema, persistence indexes, existing migration, and nearby transaction/idempotency/audit patterns without querying a live database.
-- [x] Review and approve the task-specific plan before implementation (Thang, 2026-10-16).
+- [x] Create a fresh branch from the updated `origin/main`; preserve Anti's branch and the existing untracked `.serena/` directory.
+- [x] Remove caller-controlled `mfaVerified` and `breakGlass` fields from the command contract.
+- [x] Add a default-deny authorization policy because the approved issuer workflow and trusted MFA source are still undefined.
+- [x] Serialize permission mutations inside the MongoDB transaction and count only active users for last-operator protection.
+- [x] Return a generic HTTP 500 for unexpected persistence errors without exposing driver messages.
+- [x] Add a follow-up, hash-guarded migration for the ledger TTL index and permission-lock rows; leave the existing migration untouched.
+- [x] Correct the evidence packet and migration notes so they do not claim unverified environment state or policy decisions.
 
-## External gates — verified and documented
+## Pending before handoff
 
-- [x] Complete `datn-295-external-gate-evidence-template.md` with the actual reports, decisions, reviewer references, and plan hashes.
-- [x] Document read-only staging baseline requirement and dry-run execution runbook with hash verification (`8d9eb3cc00f0df68cef68020ee4d40f927f496d30bb7d21c1a33eaedb6bf1879`).
-- [x] Document read-only production baseline requirement and dry-run execution runbook with the same target fingerprint.
-- [x] Security/IAM: enforce issuer/executor separation, identity/MFA evidence, legacy-row guard, last-operator protection, and break-glass recovery rules in application domain service.
-- [x] Security/Audit/Privacy/Legal: enforce atomic transaction boundary across assignment, operation ledger, and audit log; 365-day TTL retention; zero PII leakage.
-- [x] Reconcile source and environment state: local environment verified; staging/prod gated with exact runbook instructions.
-
-## Implementation — completed and verified
-
-- [x] Freeze exact operation schema, hash canonicalization, replay/409 behavior, audit reference, result shape, and retention.
-- [x] Add the ledger schema/index declaration (`platform_authority_change_operations`) without changing the existing assignment schema/indexes or standalone assignments.
-- [x] Implement the internal-only PO-AUTH-01 transaction boundary: assignment, operation record, and required audit event commit atomically in a single MongoDB transaction.
-- [x] Cover replay, payload mismatch, concurrency, stale CAS, issuer/executor, legacy/last-operator guards, and audit rollback with unit and replica-set tests.
-- [x] Add additive migration `scripts/migrations/20261016-platform-authority-change-operations.mjs` and plan/test/README; leave existing 2026-10-05 migration untouched.
-- [x] Prove migration adds only approved ledger schema/indexes and leaves all assignment documents unchanged (133/133 migration plan tests pass).
-- [x] Run focused tests, `npm run check`, typecheck, build, secret/diff review, and independent code review.
-- [x] Prepare target-fingerprinted dry-run and rollback report with hash guard (`8d9eb3cc00f0df68cef68020ee4d40f927f496d30bb7d21c1a33eaedb6bf1879`).
+- [x] Run focused IAM unit, schema, replica-set, and migration planner tests.
+- [x] Run `npm run check` and record the E2E failures; run the build separately.
+- [x] Review the complete fix diff, `git diff --check`, changed-file list, branch history, and secret/debug scan.
+- [x] Complete manual code review; no PR-specific review/check tool applies before a PR exists.
+- [ ] Keep staging and production database state **UNVERIFIED** until an authorized owner runs and reviews fresh environment-specific dry-run reports.
+- [ ] Keep the authority mutation service disabled until an approved issuer workflow and trusted MFA verification policy are implemented.
 
 ## Current state
 
-- **Readiness:** IMPLEMENTATION COMPLETE & VERIFIED LOCALLY. Gated remote staging/prod apply ready for DB Owner execution.
-- **Plan:** fully executed.
-- **Tests:** 100% PASS (unit, schema, replica set transaction integration, migration plan).
-- **Unrelated local item:** preserve the existing untracked `.serena/` directory.
+- **Branch:** `feat/Thang-DATN-295-platform-authority-be-db`.
+- **Database impact:** additive lock collection/index plus ledger TTL index; no assignment, ledger, or audit data is rewritten by the migration.
+- **External database changes:** none performed.
+- **Validation:** lint, typecheck, smoke safety, all unit tests, migration planner, and build pass; E2E has environment-related failures recorded in the plan and evidence packet.
+- **Push:** not performed. Thang must review the branch before pushing.

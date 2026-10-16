@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   HttpException,
   Inject,
+  InternalServerErrorException,
   Injectable,
   NotFoundException,
   Optional,
@@ -32,7 +33,6 @@ interface UserDocument {
   _id: Types.ObjectId;
   email: string;
   status: 'ACTIVE' | 'SUSPENDED' | 'PENDING_INVITE';
-  twoFactorEnabled?: boolean;
 }
 
 interface PlatformAuthorityAssignmentDocument {
@@ -66,6 +66,13 @@ interface PlatformAuthorityOperationDocument {
   expiresAt: Date;
 }
 
+interface PlatformAuthorityChangeLockDocument {
+  _id: Types.ObjectId;
+  permission: string;
+  scope: 'PLATFORM';
+  version: number;
+}
+
 function isDuplicateKey(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -88,15 +95,15 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
 
   async execute(
     command: PlatformAuthorityChangeCommand,
-    callerSession?: ClientSession,
   ): Promise<PlatformAuthorityChangeResult> {
     const conn = this.connectionOrThrow();
-    const session = callerSession ?? (await conn.startSession());
-    const isOwnerSession = !callerSession;
+    let session: ClientSession | undefined;
 
     let result: PlatformAuthorityChangeResult | undefined;
 
     try {
+      session = await conn.startSession();
+      const activeSession = session;
       const executeInSession = async (activeSession: ClientSession) => {
         const now = command.now ?? new Date();
         const payloadHash = hashPayload(command);
@@ -129,12 +136,28 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           return;
         }
 
+        // Every mutation for one permission writes the same lock row inside
+        // this transaction. MongoDB's write conflict retry then serializes the
+        // read-count-update sequence used by the last-operator invariant.
+        const lock = await this.locks()
+          .findOneAndUpdate(
+            { permission: command.permission, scope: 'PLATFORM' },
+            { $inc: { version: 1 } },
+            { new: true, session: activeSession },
+          )
+          .lean()
+          .exec();
+        if (!lock) {
+          throw new ServiceUnavailableException({
+            code: 'PLATFORM_AUTHORITY_LOCKS_UNAVAILABLE',
+            message:
+              'Platform authority changes are disabled until the database lock records are provisioned.',
+          });
+        }
+
         // 2. Gate 1: Principal Verifications inside transaction boundary
         const actor = await this.users()
-          .findOne(
-            { _id: actorUserId },
-            { _id: 1, status: 1, twoFactorEnabled: 1 },
-          )
+          .findOne({ _id: actorUserId }, { _id: 1, status: 1 })
           .session(activeSession)
           .lean()
           .exec();
@@ -146,10 +169,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         }
 
         const issuer = await this.users()
-          .findOne(
-            { _id: issuerUserId },
-            { _id: 1, status: 1, twoFactorEnabled: 1 },
-          )
+          .findOne({ _id: issuerUserId }, { _id: 1, status: 1 })
           .session(activeSession)
           .lean()
           .exec();
@@ -177,17 +197,6 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             code: 'TARGET_USER_INACTIVE',
             message:
               'Target user account must be ACTIVE to receive platform authority.',
-          });
-        }
-
-        const isMfaSatisfied =
-          command.mfaVerified === true ||
-          (actor.twoFactorEnabled === true && issuer.twoFactorEnabled === true);
-        if (!isMfaSatisfied) {
-          throw new ForbiddenException({
-            code: 'MFA_REQUIRED',
-            message:
-              'Platform authority mutations require multi-factor authentication proof for executor and issuer.',
           });
         }
 
@@ -336,8 +345,8 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           }
 
           // Gate 1: Last-operator protection invariant
-          const activeOperatorsCount = await this.assignments()
-            .countDocuments({
+          const activeAssignments = await this.assignments()
+            .find({
               permission: command.permission,
               scope: 'PLATFORM',
               status: 'ACTIVE',
@@ -347,12 +356,29 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
                 { expiresAt: { $gt: now } },
               ],
             })
+            .select({ subjectUserId: 1 })
             .session(activeSession);
+          const activeSubjectIds = Array.from(
+            new Set(
+              activeAssignments.map((assignment) =>
+                assignment.subjectUserId.toHexString(),
+              ),
+            ),
+            (userId) => new Types.ObjectId(userId),
+          );
+          const activeOperatorsCount = activeSubjectIds.length
+            ? await this.users()
+                .countDocuments({
+                  _id: { $in: activeSubjectIds },
+                  status: 'ACTIVE',
+                })
+                .session(activeSession)
+            : 0;
 
-          if (activeOperatorsCount <= 1 && !command.breakGlass) {
+          if (activeOperatorsCount <= 1) {
             throw new ConflictException({
               code: 'LAST_OPERATOR_REVOCATION_BLOCKED',
-              message: `Cannot revoke last active operator for permission '${command.permission}' without emergency recovery authorization.`,
+              message: `Revoking this assignment would remove the last active user with permission '${command.permission}'.`,
             });
           }
 
@@ -435,7 +461,6 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
                 before: { status: previousStatus },
                 after: { status: newStatus },
                 reasonCode: command.reasonCode,
-                ...(command.breakGlass ? { breakGlass: true } : {}),
               },
               occurredAt: now,
             },
@@ -451,20 +476,25 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         };
       };
 
-      if (isOwnerSession) {
-        await session.withTransaction(async () => {
-          await executeInSession(session);
-        });
-      } else {
-        await executeInSession(session);
-      }
+      await activeSession.withTransaction(async () => {
+        await executeInSession(activeSession);
+      });
     } catch (error) {
       if (isDuplicateKey(error)) {
         const payloadHash = hashPayload(command);
-        const prior = await this.operations()
-          .findOne({ operationId: command.operationId })
-          .lean()
-          .exec();
+        let prior: PlatformAuthorityOperationDocument | null;
+        try {
+          prior = await this.operations()
+            .findOne({ operationId: command.operationId })
+            .lean()
+            .exec();
+        } catch (lookupError) {
+          if (lookupError instanceof HttpException) throw lookupError;
+          throw new InternalServerErrorException({
+            code: 'PLATFORM_AUTHORITY_MUTATION_FAILED',
+            message: 'Platform authority mutation failed.',
+          });
+        }
         if (prior) {
           if (prior.payloadHash !== payloadHash) {
             throw new ConflictException({
@@ -488,17 +518,12 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         });
       }
       if (error instanceof HttpException) throw error;
-      throw new ConflictException({
+      throw new InternalServerErrorException({
         code: 'PLATFORM_AUTHORITY_MUTATION_FAILED',
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Platform authority mutation failed.',
+        message: 'Platform authority mutation failed.',
       });
     } finally {
-      if (isOwnerSession) {
-        await session.endSession();
-      }
+      if (session) await session.endSession();
     }
 
     if (!result) {
@@ -523,6 +548,12 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
   private operations(): Model<PlatformAuthorityOperationDocument> {
     return this.model<PlatformAuthorityOperationDocument>(
       'platform_authority_change_operations',
+    );
+  }
+
+  private locks(): Model<PlatformAuthorityChangeLockDocument> {
+    return this.model<PlatformAuthorityChangeLockDocument>(
+      'platform_authority_change_locks',
     );
   }
 

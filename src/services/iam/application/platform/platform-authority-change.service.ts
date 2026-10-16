@@ -3,9 +3,15 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { PLATFORM_PERMISSIONS } from '../authorization/authorization.policy';
+import {
+  PLATFORM_AUTHORITY_CHANGE_AUTHORIZATION,
+  type PlatformAuthorityChangeAuthorizationPolicy,
+} from './platform-authority-change.authorization';
 import {
   PLATFORM_AUTHORITY_CHANGE_REPOSITORY,
   type PlatformAuthorityChangeRepository,
@@ -20,6 +26,9 @@ export class PlatformAuthorityChangeService {
   constructor(
     @Inject(PLATFORM_AUTHORITY_CHANGE_REPOSITORY)
     private readonly repository: PlatformAuthorityChangeRepository,
+    @Optional()
+    @Inject(PLATFORM_AUTHORITY_CHANGE_AUTHORIZATION)
+    private readonly authorizationPolicy?: PlatformAuthorityChangeAuthorizationPolicy,
   ) {}
 
   async executeChange(
@@ -94,6 +103,15 @@ export class PlatformAuthorityChangeService {
       });
     }
 
+    if (!this.authorizationPolicy) {
+      throw new ServiceUnavailableException({
+        code: 'PLATFORM_AUTHORITY_WORKFLOW_UNAVAILABLE',
+        message:
+          'Platform authority changes are disabled until an approved issuer and MFA workflow is configured.',
+      });
+    }
+
+    await this.authorizationPolicy.assertAuthorized(command);
     return this.repository.execute(command);
   }
 }

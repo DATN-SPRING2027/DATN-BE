@@ -35,6 +35,13 @@ describe('platform_authority_change_operations persistence contract', () => {
             name: 'platform_authority_operation_actor',
           }),
         ],
+        [
+          { expiresAt: 1 },
+          expect.objectContaining({
+            name: 'platform_authority_operation_expiry',
+            expireAfterSeconds: 0,
+          }),
+        ],
       ]),
     );
   });
@@ -109,5 +116,27 @@ describe('platform_authority_change_operations persistence contract', () => {
     expect(error).toBeDefined();
     expect(error?.errors.operationType).toBeDefined();
     expect(error?.errors.permission).toBeDefined();
+  });
+});
+
+describe('platform_authority_change_locks persistence contract', () => {
+  const definition = IAM_PERSISTENCE.collections.find(
+    (collection) => collection.name === 'platform_authority_change_locks',
+  );
+  const schema = createCollectionSchema(definition!);
+
+  it('declares one unique lock for each permission and scope', () => {
+    expect(definition).toBeDefined();
+    expect(schema.indexes()).toEqual(
+      expect.arrayContaining([
+        [
+          { permission: 1, scope: 1 },
+          expect.objectContaining({
+            name: 'platform_authority_change_lock_key',
+            unique: true,
+          }),
+        ],
+      ]),
+    );
   });
 });

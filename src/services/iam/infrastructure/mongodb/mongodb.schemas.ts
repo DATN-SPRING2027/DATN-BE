@@ -257,6 +257,26 @@ const iamSchemas: Record<string, Schema> = {
       strict: true,
     },
   ),
+  platform_authority_change_locks: new Schema(
+    {
+      permission: {
+        type: String,
+        enum: [
+          'organization.create',
+          'platform.health.read',
+          'platform.audit.read',
+        ],
+        required: true,
+      },
+      scope: { type: String, enum: ['PLATFORM'], required: true },
+      version: { type: Number, required: true, default: 0 },
+    },
+    {
+      collection: 'platform_authority_change_locks',
+      timestamps: true,
+      strict: true,
+    },
+  ),
   refresh_sessions: new Schema(
     {
       userId: { type: Schema.Types.ObjectId, required: true },

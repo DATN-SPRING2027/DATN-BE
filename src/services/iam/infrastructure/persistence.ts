@@ -138,6 +138,22 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
           { actorUserId: 1, committedAt: -1 },
           { name: 'platform_authority_operation_actor' },
         ),
+        index(
+          { expiresAt: 1 },
+          {
+            name: 'platform_authority_operation_expiry',
+            expireAfterSeconds: 0,
+          },
+        ),
+      ],
+    },
+    {
+      name: 'platform_authority_change_locks',
+      indexes: [
+        index(
+          { permission: 1, scope: 1 },
+          { name: 'platform_authority_change_lock_key', unique: true },
+        ),
       ],
     },
     {

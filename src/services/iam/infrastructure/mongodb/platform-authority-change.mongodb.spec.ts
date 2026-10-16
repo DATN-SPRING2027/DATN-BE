@@ -49,6 +49,7 @@ describe('Platform authority change operations transactional integration', () =>
       'users',
       'platform_authority_assignments',
       'platform_authority_change_operations',
+      'platform_authority_change_locks',
     ];
     for (const name of collections) {
       await db.createCollection(name);
@@ -84,6 +85,7 @@ describe('Platform authority change operations transactional integration', () =>
     await db.collection('users').deleteMany({});
     await db.collection('platform_authority_assignments').deleteMany({});
     await db.collection('platform_authority_change_operations').deleteMany({});
+    await db.collection('platform_authority_change_locks').deleteMany({});
     await connection
       .useDb(auditDatabaseName, { useCache: true })
       .collection('audit_logs_iam')
@@ -99,27 +101,32 @@ describe('Platform authority change operations transactional integration', () =>
         _id: executorId,
         email: 'executor@continuum.test',
         status: 'ACTIVE',
-        twoFactorEnabled: true,
       },
       {
         _id: issuerId,
         email: 'issuer@continuum.test',
         status: 'ACTIVE',
-        twoFactorEnabled: true,
       },
       {
         _id: targetUserId1,
         email: 'target1@continuum.test',
         status: 'ACTIVE',
-        twoFactorEnabled: true,
       },
       {
         _id: targetUserId2,
         email: 'target2@continuum.test',
         status: 'ACTIVE',
-        twoFactorEnabled: true,
       },
     ]);
+    await db
+      .collection('platform_authority_change_locks')
+      .insertMany(
+        [
+          'organization.create',
+          'platform.health.read',
+          'platform.audit.read',
+        ].map((permission) => ({ permission, scope: 'PLATFORM', version: 0 })),
+      );
   });
 
   it('atomically commits assignment, ledger, and audit on valid GRANT', async () => {
@@ -132,7 +139,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'PO_AUTH_01_PROVISIONING',
-      mfaVerified: true,
     };
 
     const result = await repository.execute(command);
@@ -193,7 +199,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'REPLAY_TEST',
-      mfaVerified: true,
     };
 
     const first = await repository.execute(command);
@@ -221,7 +226,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'FIRST_ATTEMPT',
-      mfaVerified: true,
     };
     await repository.execute(command);
 
@@ -245,7 +249,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'INITIAL_GRANT',
-      mfaVerified: true,
     });
 
     await expect(
@@ -259,7 +262,6 @@ describe('Platform authority change operations transactional integration', () =>
         issuerUserId: issuerId.toHexString(),
         expectedCurrentStatus: 'REVOKED', // Target is ACTIVE, but expected REVOKED
         reasonCode: 'MISMATCH_TEST',
-        mfaVerified: true,
       }),
     ).rejects.toMatchObject({
       response: { code: 'CAS_STATUS_MISMATCH' },
@@ -276,7 +278,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'INITIAL_GRANT',
-      mfaVerified: true,
     });
 
     await expect(
@@ -289,14 +290,13 @@ describe('Platform authority change operations transactional integration', () =>
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'DUPLICATE_ATTEMPT',
-        mfaVerified: true,
       }),
     ).rejects.toMatchObject({
       response: { code: 'PLATFORM_AUTHORITY_ALREADY_ACTIVE' },
     });
   });
 
-  it('enforces last-operator protection: blocks revoking the sole active operator without break-glass', async () => {
+  it('blocks revoking the sole active operator even when an unapproved breakGlass flag is supplied', async () => {
     await repository.execute({
       operationId: 'op-grant-sole-operator',
       operationType: 'GRANT',
@@ -306,10 +306,9 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'SOLE_OPERATOR_SETUP',
-      mfaVerified: true,
     });
 
-    // Attempting to revoke the only operator without breakGlass
+    // A command flag must not override the last-operator invariant.
     await expect(
       repository.execute({
         operationId: 'op-revoke-sole-blocked',
@@ -320,28 +319,120 @@ describe('Platform authority change operations transactional integration', () =>
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'TRYING_REVOKE_LAST',
-        mfaVerified: true,
-        breakGlass: false,
       }),
     ).rejects.toMatchObject({
       response: { code: 'LAST_OPERATOR_REVOCATION_BLOCKED' },
     });
 
-    // Revoking with explicit breakGlass succeeds
-    const breakGlassResult = await repository.execute({
-      operationId: 'op-revoke-sole-breakglass',
-      operationType: 'REVOKE',
+    await expect(
+      repository.execute({
+        operationId: 'op-revoke-sole-breakglass',
+        operationType: 'REVOKE',
+        targetUserId: targetUserId1.toHexString(),
+        permission: 'organization.create',
+        scope: 'PLATFORM',
+        actorUserId: executorId.toHexString(),
+        issuerUserId: issuerId.toHexString(),
+        reasonCode: 'EMERGENCY_DECOMMISSION_AUTHORIZED',
+        breakGlass: true,
+      } as PlatformAuthorityChangeCommand),
+    ).rejects.toMatchObject({
+      response: { code: 'LAST_OPERATOR_REVOCATION_BLOCKED' },
+    });
+    const assignment = await connection
+      .db!.collection('platform_authority_assignments')
+      .findOne({ subjectUserId: targetUserId1 });
+    expect(assignment?.status).toBe('ACTIVE');
+  });
+
+  it('serializes concurrent revokes so one active operator remains', async () => {
+    const permission = 'platform.health.read';
+    await repository.execute({
+      operationId: 'op-concurrent-grant-1',
+      operationType: 'GRANT',
       targetUserId: targetUserId1.toHexString(),
-      permission: 'organization.create',
+      permission,
       scope: 'PLATFORM',
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
-      reasonCode: 'EMERGENCY_DECOMMISSION_AUTHORIZED',
-      mfaVerified: true,
-      breakGlass: true,
+      reasonCode: 'CONCURRENT_TEST_SETUP',
     });
-    expect(breakGlassResult.status).toBe('COMMITTED');
-    expect(breakGlassResult.body.status).toBe('REVOKED');
+    await repository.execute({
+      operationId: 'op-concurrent-grant-2',
+      operationType: 'GRANT',
+      targetUserId: targetUserId2.toHexString(),
+      permission,
+      scope: 'PLATFORM',
+      actorUserId: executorId.toHexString(),
+      issuerUserId: issuerId.toHexString(),
+      reasonCode: 'CONCURRENT_TEST_SETUP',
+    });
+
+    const outcomes = await Promise.allSettled([
+      repository.execute({
+        operationId: 'op-concurrent-revoke-1',
+        operationType: 'REVOKE',
+        targetUserId: targetUserId1.toHexString(),
+        permission,
+        scope: 'PLATFORM',
+        actorUserId: executorId.toHexString(),
+        issuerUserId: issuerId.toHexString(),
+        reasonCode: 'CONCURRENT_TEST_REVOKE',
+      }),
+      repository.execute({
+        operationId: 'op-concurrent-revoke-2',
+        operationType: 'REVOKE',
+        targetUserId: targetUserId2.toHexString(),
+        permission,
+        scope: 'PLATFORM',
+        actorUserId: executorId.toHexString(),
+        issuerUserId: issuerId.toHexString(),
+        reasonCode: 'CONCURRENT_TEST_REVOKE',
+      }),
+    ]);
+
+    expect(
+      outcomes.filter(({ status }) => status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(
+      1,
+    );
+    const activeAssignments = await connection
+      .model(`continuum_iam_platform_authority_assignments`)
+      .countDocuments({ permission, scope: 'PLATFORM', status: 'ACTIVE' });
+    expect(activeAssignments).toBe(1);
+  });
+
+  it('returns a generic 500 for persistence errors without exposing driver details', async () => {
+    const operations = connection.model(
+      'continuum_iam_platform_authority_change_operations',
+    );
+    const create = jest
+      .spyOn(operations, 'create')
+      .mockRejectedValueOnce(
+        new Error('MongoServerError: private host and index'),
+      );
+
+    await expect(
+      repository.execute({
+        operationId: 'op-private-error',
+        operationType: 'GRANT',
+        targetUserId: targetUserId1.toHexString(),
+        permission: 'organization.create',
+        scope: 'PLATFORM',
+        actorUserId: executorId.toHexString(),
+        issuerUserId: issuerId.toHexString(),
+        reasonCode: 'ERROR_TEST',
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      response: {
+        code: 'PLATFORM_AUTHORITY_MUTATION_FAILED',
+        message: 'Platform authority mutation failed.',
+      },
+    });
+    expect(create).toHaveBeenCalled();
+    create.mockRestore();
   });
 
   it('allows revocation when multiple active operators exist', async () => {
@@ -354,7 +445,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'OP1_SETUP',
-      mfaVerified: true,
     });
 
     await repository.execute({
@@ -366,7 +456,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'OP2_SETUP',
-      mfaVerified: true,
     });
 
     const revokeResult = await repository.execute({
@@ -378,8 +467,6 @@ describe('Platform authority change operations transactional integration', () =>
       actorUserId: executorId.toHexString(),
       issuerUserId: issuerId.toHexString(),
       reasonCode: 'OP1_DEPARTURE',
-      mfaVerified: true,
-      breakGlass: false,
     });
 
     expect(revokeResult.status).toBe('COMMITTED');
@@ -432,7 +519,6 @@ describe('Platform authority change operations transactional integration', () =>
         actorUserId: executorId.toHexString(),
         issuerUserId: issuerId.toHexString(),
         reasonCode: 'ATOMIC_FAILURE_TEST',
-        mfaVerified: true,
       }),
     ).rejects.toThrow();
 

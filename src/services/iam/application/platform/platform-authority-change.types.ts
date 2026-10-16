@@ -13,13 +13,11 @@ export interface PlatformAuthorityChangePayload {
   expectedCurrentStatus?: 'ABSENT' | 'ACTIVE' | 'REVOKED'; // CAS check
   expiresAt?: string | null;
   reasonCode: string;
-  breakGlass?: boolean;
 }
 
 export interface PlatformAuthorityChangeCommand extends PlatformAuthorityChangePayload {
   operationId: string;
   now?: Date;
-  mfaVerified?: boolean;
 }
 
 export interface PlatformAuthorityChangeResultBody {
@@ -49,7 +47,9 @@ export function canonicalizePayload(
 ): string {
   const normalized = {
     actorUserId: payload.actorUserId.toLowerCase(),
-    breakGlass: Boolean(payload.breakGlass),
+    // Keep existing default-false idempotency hashes stable. The command no
+    // longer accepts a caller-controlled break-glass override.
+    breakGlass: false,
     expectedCurrentStatus: payload.expectedCurrentStatus ?? null,
     expiresAt: payload.expiresAt ?? null,
     issuerUserId: payload.issuerUserId.toLowerCase(),

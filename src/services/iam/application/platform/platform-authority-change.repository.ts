@@ -1,4 +1,3 @@
-import type { ClientSession } from 'mongoose';
 import type {
   PlatformAuthorityChangeCommand,
   PlatformAuthorityChangeResult,
@@ -11,6 +10,5 @@ export const PLATFORM_AUTHORITY_CHANGE_REPOSITORY = Symbol(
 export interface PlatformAuthorityChangeRepository {
   execute(
     command: PlatformAuthorityChangeCommand,
-    session?: ClientSession,
   ): Promise<PlatformAuthorityChangeResult>;
 }

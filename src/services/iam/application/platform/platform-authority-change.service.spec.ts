@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import type { PlatformAuthorityChangeAuthorizationPolicy } from './platform-authority-change.authorization';
 import { Types } from 'mongoose';
 import { PlatformAuthorityChangeService } from './platform-authority-change.service';
 import type { PlatformAuthorityChangeRepository } from './platform-authority-change.repository';
@@ -11,6 +12,8 @@ describe('PlatformAuthorityChangeService', () => {
   let service: PlatformAuthorityChangeService;
   let mockExecute: jest.Mock;
   let mockRepository: PlatformAuthorityChangeRepository;
+  let mockAuthorizationPolicy: PlatformAuthorityChangeAuthorizationPolicy;
+  let mockAssertAuthorized: jest.Mock;
 
   const actorUserId = new Types.ObjectId().toHexString();
   const issuerUserId = new Types.ObjectId().toHexString();
@@ -25,7 +28,6 @@ describe('PlatformAuthorityChangeService', () => {
     actorUserId,
     issuerUserId,
     reasonCode: 'APPROVED_PO_AUTH_01_BOOTSTRAP',
-    mfaVerified: true,
   };
 
   const sampleResult: PlatformAuthorityChangeResult = {
@@ -51,7 +53,12 @@ describe('PlatformAuthorityChangeService', () => {
     mockRepository = {
       execute: mockExecute,
     };
-    service = new PlatformAuthorityChangeService(mockRepository);
+    mockAssertAuthorized = jest.fn().mockResolvedValue(undefined);
+    mockAuthorizationPolicy = { assertAuthorized: mockAssertAuthorized };
+    service = new PlatformAuthorityChangeService(
+      mockRepository,
+      mockAuthorizationPolicy,
+    );
   });
 
   describe('Dual Control & Two-Person Separation (Gate 1)', () => {
@@ -145,6 +152,24 @@ describe('PlatformAuthorityChangeService', () => {
   });
 
   describe('Input Validation & Safety Constraints', () => {
+    it('fails closed when no approved issuer and MFA policy is configured', async () => {
+      const unconfiguredService = new PlatformAuthorityChangeService(
+        mockRepository,
+      );
+      const callerSuppliedMfa = {
+        ...validGrantCommand,
+        mfaVerified: true,
+      } as PlatformAuthorityChangeCommand;
+
+      await expect(
+        unconfiguredService.executeChange(callerSuppliedMfa),
+      ).rejects.toMatchObject({
+        status: 503,
+        response: { code: 'PLATFORM_AUTHORITY_WORKFLOW_UNAVAILABLE' },
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
+
     it('rejects invalid principal IDs', async () => {
       await expect(
         service.executeChange({
@@ -184,6 +209,7 @@ describe('PlatformAuthorityChangeService', () => {
     it('delegates valid command to repository and returns result', async () => {
       const res = await service.executeChange(validGrantCommand);
       expect(res).toEqual(sampleResult);
+      expect(mockAssertAuthorized).toHaveBeenCalledWith(validGrantCommand);
       expect(mockExecute).toHaveBeenCalledWith(validGrantCommand);
     });
   });
