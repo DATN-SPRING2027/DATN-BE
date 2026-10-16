@@ -331,6 +331,12 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(403);
 
+    expect(response.body).toEqual({
+      code: expect.any(String) as string,
+      message: 'Insufficient authorization.',
+      details: {},
+      requestId: expect.any(String) as string,
+    });
     expect(loadPlatformPermission).toHaveBeenCalledWith(
       USER_ID,
       'platform.audit.read',
