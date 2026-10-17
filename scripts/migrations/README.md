@@ -266,6 +266,17 @@ indexes and preserves every collection and record; stop or roll back the
 incident API first so writes do not resume without their concurrency/index
 guards.
 
+## Platform user account lifecycle
+
+The additive optional `archivedAt` and `archivedBy` fields on IAM `users` are
+documented in
+[`../../docs/work-packages/platform-user-account-lifecycle-db-v1.md`](../../docs/work-packages/platform-user-account-lifecycle-db-v1.md).
+Existing documents remain valid, so this schema-only change needs no data
+migration, index creation, or database apply. The backend must wait for this
+schema branch to merge before writing archive metadata. Rollback requires
+disabling the archive API and restoring archived users through the application
+before removing the schema fields.
+
 ## Platform request trace lookup
 
 `20261017-platform-request-trace-index.mjs` adds exact `requestId` and
