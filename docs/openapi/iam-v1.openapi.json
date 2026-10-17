@@ -57,7 +57,7 @@
             }
           },
           "400": { "description": "The supplied state is not a UUIDv4 or projectId is malformed." },
-          "404": { "description": "The selected Project is not visible to this Continuum actor." },
+          "404": { "$ref": "#/components/responses/NotFound" },
           "502": { "description": "SAG returned an invalid login response or an upstream error." },
           "503": { "description": "The SAG login integration is not configured or SAG is unavailable." }
         }
