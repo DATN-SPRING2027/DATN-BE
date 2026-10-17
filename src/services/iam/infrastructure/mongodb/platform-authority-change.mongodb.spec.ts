@@ -440,6 +440,54 @@ describe('Platform authority change operations transactional integration', () =>
     expect(ledger?.sourceOperationId).toBe(legacyRows[0].provenanceOperationId);
   });
 
+  it('expands a complete V1 bundle to V2 without replacing existing assignments', async () => {
+    const v1 = await executeChange({
+      operationId: '00000000-0000-4000-8000-000000000121',
+      operationType: 'BOOTSTRAP',
+      bundleVersion: 'V1',
+      targetUserId: targetUserId1.toHexString(),
+      scope: 'PLATFORM',
+      actorUserId: executorId.toHexString(),
+      issuerUserId: issuerId.toHexString(),
+      reasonCode: 'INITIAL_V1',
+    });
+    const v1Ids = new Set(
+      v1.body.assignments.map(({ assignmentId }) => assignmentId),
+    );
+
+    const v2 = await executeChange({
+      operationId: '00000000-0000-4000-8000-000000000122',
+      operationType: 'V2_EXPAND',
+      bundleVersion: 'V2',
+      targetUserId: targetUserId1.toHexString(),
+      scope: 'PLATFORM',
+      actorUserId: executorId.toHexString(),
+      issuerUserId: issuerId.toHexString(),
+      reasonCode: 'PO_AUTH_01_V2_EXPAND',
+    });
+
+    expect(v2.body.assignments).toHaveLength(25);
+    const stored = await connection
+      .db!.collection('platform_authority_assignments')
+      .find({ subjectUserId: targetUserId1 })
+      .toArray();
+    expect(stored).toHaveLength(25);
+    expect(
+      [...v1Ids].every((id) => stored.some((row) => String(row._id) === id)),
+    ).toBe(true);
+    expect(
+      stored.filter((row) => row.provenanceOperationId === v2.operationId),
+    ).toHaveLength(18);
+    const ledger = await connection
+      .db!.collection('platform_authority_change_operations')
+      .findOne({ operationId: v2.operationId });
+    expect(ledger?.operationType).toBe('V2_EXPAND');
+    expect(ledger?.bundleVersion).toBe('V2');
+    expect(ledger?.sourceOperationId).toBe(
+      '00000000-0000-4000-8000-000000000121',
+    );
+  });
+
   it('blocks duplicate bootstrap when target already has a procedure-owned bundle', async () => {
     await executeChange({
       operationId: '00000000-0000-4000-8000-000000000106',

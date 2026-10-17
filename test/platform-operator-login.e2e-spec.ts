@@ -22,12 +22,20 @@ import { OrganizationProvisioningService } from '../src/services/iam/application
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from '../src/services/iam/application/organizations/organization-provisioning.repository';
 import { PlatformAuditService } from '../src/services/iam/application/platform/platform-audit.service';
 import { PlatformAdministrationService } from '../src/services/iam/application/platform/platform-administration.service';
+import { PlatformDashboardOverviewService } from '../src/services/iam/application/platform/platform-dashboard-overview.service';
+import { PlatformServiceOperationsService } from '../src/services/iam/application/platform/platform-service-operations.service';
+import { PlatformJobOperationsService } from '../src/services/iam/application/platform/platform-job-operations.service';
+import { PlatformAiOperationsService } from '../src/services/iam/application/platform/platform-ai-operations.service';
+import { PlatformIntegrationReadService } from '../src/services/iam/application/platform/platform-integration-read.service';
+import { PlatformIntegrationOperationsService } from '../src/services/iam/application/platform/platform-integration-operations.service';
+import { PlatformIncidentService } from '../src/services/iam/application/platform/platform-incident.service';
 import { AuthenticationController } from '../src/services/iam/controllers/authentication.controller';
 import { PlatformController } from '../src/services/iam/controllers/platform.controller';
 import { LeaderDirectedLoginEligibilityPolicy } from '../src/services/iam/application/authentication/leader-directed-login-eligibility.policy';
 
 const USER_ID = '651a2b3c4d5e6f7a8b9c0d1e';
 const ADMIN_ID = '651a2b3c4d5e6f7a8b9c0d20';
+const SESSION_ID = '751a2b3c4d5e6f7a8b9c0d1e';
 const SECRET = 'platform-e2e-secret-at-least-32-characters';
 
 describe('Platform Operator login and provisioning (e2e)', () => {
@@ -76,6 +84,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
       findRefreshSessionForRotation: jest.fn(),
       rotateRefreshSession: jest.fn(),
+      hasActiveRefreshSession: jest.fn().mockResolvedValue(true),
       findAccountById: jest.fn(),
       createRefreshSession: jest.fn().mockResolvedValue(undefined),
     };
@@ -193,6 +202,13 @@ describe('Platform Operator login and provisioning (e2e)', () => {
           useValue: { listOperationalMetadata },
         },
         { provide: PlatformAdministrationService, useValue: administration },
+        { provide: PlatformDashboardOverviewService, useValue: {} },
+        { provide: PlatformServiceOperationsService, useValue: {} },
+        { provide: PlatformJobOperationsService, useValue: {} },
+        { provide: PlatformAiOperationsService, useValue: {} },
+        { provide: PlatformIntegrationReadService, useValue: {} },
+        { provide: PlatformIntegrationOperationsService, useValue: {} },
+        { provide: PlatformIncidentService, useValue: {} },
       ],
     }).compile();
 
@@ -558,6 +574,8 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       sub: USER_ID,
       email: 'operator@example.test',
       context: 'PLATFORM',
+      sid: SESSION_ID,
+      userFence: 0,
     });
   }
 

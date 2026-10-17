@@ -50,9 +50,34 @@ import { MongoOrganizationProvisioningRepository } from './infrastructure/mongod
 import { PlatformAuditService } from './application/platform/platform-audit.service';
 import { PLATFORM_AUDIT_REPOSITORY } from './application/platform/platform-audit.repository';
 import { PlatformAdministrationService } from './application/platform/platform-administration.service';
+import { PlatformDashboardOverviewService } from './application/platform/platform-dashboard-overview.service';
 import { PLATFORM_ADMINISTRATION_REPOSITORY } from './application/platform/platform-administration.repository';
 import { MongoPlatformAdministrationRepository } from './infrastructure/mongodb/platform-administration.repository';
 import { MongoPlatformAuditRepository } from './infrastructure/mongodb/platform-audit.repository';
+import { PLATFORM_SERVICE_OPERATIONS_REPOSITORY } from './application/platform/platform-service-operations.repository';
+import { PlatformServiceOperationsService } from './application/platform/platform-service-operations.service';
+import { HttpPlatformServiceOperationsRepository } from './infrastructure/platform/platform-service-operations.repository';
+import {
+  PLATFORM_BULLMQ_QUEUE_CLIENT_FACTORY,
+  PLATFORM_JOB_OPERATIONS_REPOSITORY,
+} from './application/platform/platform-job-operations.repository';
+import { PlatformJobOperationsService } from './application/platform/platform-job-operations.service';
+import {
+  BullMqPlatformJobOperationsRepository,
+  BullMqPlatformQueueClientFactory,
+} from './infrastructure/platform/platform-job-operations.repository';
+import { PLATFORM_AI_OPERATIONS_REPOSITORY } from './application/platform/platform-ai-operations.repository';
+import { PlatformAiOperationsService } from './application/platform/platform-ai-operations.service';
+import { SagPlatformAiOperationsRepository } from './infrastructure/platform/platform-ai-operations.repository';
+import { PLATFORM_INTEGRATION_READ_REPOSITORY } from './application/platform/platform-integration-read.repository';
+import { PlatformIntegrationReadService } from './application/platform/platform-integration-read.service';
+import { PlatformIntegrationReadHttpRepository } from './infrastructure/platform/platform-integration-read.repository';
+import { PLATFORM_INTEGRATION_OPERATIONS_REPOSITORY } from './application/platform/platform-integration-operations.repository';
+import { PlatformIntegrationOperationsService } from './application/platform/platform-integration-operations.service';
+import { PlatformIntegrationOperationsHttpRepository } from './infrastructure/platform/platform-integration-operations.repository';
+import { PLATFORM_INCIDENT_REPOSITORY } from './application/platform/platform-incident.repository';
+import { PlatformIncidentService } from './application/platform/platform-incident.service';
+import { MongoPlatformIncidentRepository } from './infrastructure/mongodb/platform-incident.repository';
 import { PlatformAuthorityChangeService } from './application/platform/platform-authority-change.service';
 import {
   PLATFORM_AUTHORITY_CHANGE_AUTHORIZATION,
@@ -128,6 +153,13 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     OrganizationMembershipCommandService,
     PlatformAuditService,
     PlatformAdministrationService,
+    PlatformDashboardOverviewService,
+    PlatformServiceOperationsService,
+    PlatformJobOperationsService,
+    PlatformAiOperationsService,
+    PlatformIntegrationReadService,
+    PlatformIntegrationOperationsService,
+    PlatformIncidentService,
     { provide: PROJECT_REPOSITORY, useClass: MongoProjectRepository },
     {
       provide: ORGANIZATION_MEMBERSHIP_READ_REPOSITORY,
@@ -160,6 +192,34 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     {
       provide: PLATFORM_ADMINISTRATION_REPOSITORY,
       useClass: MongoPlatformAdministrationRepository,
+    },
+    {
+      provide: PLATFORM_SERVICE_OPERATIONS_REPOSITORY,
+      useClass: HttpPlatformServiceOperationsRepository,
+    },
+    {
+      provide: PLATFORM_BULLMQ_QUEUE_CLIENT_FACTORY,
+      useClass: BullMqPlatformQueueClientFactory,
+    },
+    {
+      provide: PLATFORM_JOB_OPERATIONS_REPOSITORY,
+      useClass: BullMqPlatformJobOperationsRepository,
+    },
+    {
+      provide: PLATFORM_AI_OPERATIONS_REPOSITORY,
+      useClass: SagPlatformAiOperationsRepository,
+    },
+    {
+      provide: PLATFORM_INTEGRATION_READ_REPOSITORY,
+      useClass: PlatformIntegrationReadHttpRepository,
+    },
+    {
+      provide: PLATFORM_INTEGRATION_OPERATIONS_REPOSITORY,
+      useClass: PlatformIntegrationOperationsHttpRepository,
+    },
+    {
+      provide: PLATFORM_INCIDENT_REPOSITORY,
+      useClass: MongoPlatformIncidentRepository,
     },
     PlatformAuthorityChangeService,
     {

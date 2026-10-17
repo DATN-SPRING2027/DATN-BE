@@ -22,6 +22,7 @@ import type {
   MembershipMutationResult,
   OrganizationMembershipCommand,
   OrganizationMembershipCommandRepository as OrganizationMembershipCommandRepositoryPort,
+  PlatformInvitationCommandInput,
   PlatformMembershipSuspendInput,
 } from '../../application/organizations/organization-membership-command.repository';
 import { IAM_PERSISTENCE } from '../persistence';
@@ -32,6 +33,7 @@ const invitationLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 const invitationQuota = 30;
 const invitationQuotaWindowMs = 60 * 60 * 1000;
 const platformMembershipPermission = 'platform.memberships.lifecycle.manage';
+const platformInvitationPermission = 'platform.memberships.invitation.manage';
 
 function isInvitationCommandReadinessBlocked(
   command: OrganizationMembershipCommand,
@@ -124,6 +126,8 @@ type AuditRecord = {
   organizationId: string;
   actorUserId: string;
   action: string;
+  scope?: 'PLATFORM' | 'ORGANIZATION';
+  result?: 'SUCCESS';
   occurredAt: Date;
   reasonCode: string;
   correlationId?: string;
@@ -358,6 +362,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
             operationId: operationId.toHexString(),
             organizationId: input.organizationId,
             actorUserId: input.actorUserId,
+            scope: 'PLATFORM',
+            result: 'SUCCESS',
             occurredAt: input.now,
             reasonCode: input.command.reasonCode,
             ...(input.correlationId
@@ -544,6 +550,73 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     if (!result)
       throw new Error(
         'Platform membership command transaction returned no result',
+      );
+    return result;
+  }
+
+  async executePlatformInvitationCommand(
+    input: PlatformInvitationCommandInput,
+  ): Promise<MembershipMutationResult> {
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    const organizationId = new Types.ObjectId(input.organizationId);
+    const session = await this.connectionOrThrow().startSession();
+    let result: MembershipMutationResult | undefined;
+    const keyHash = sha256(input.idempotencyKey);
+    const fingerprintHash = this.fingerprint(
+      input.organizationId,
+      input.command,
+      'PLATFORM',
+    );
+    try {
+      await session.withTransaction(async () => {
+        await this.acquirePlatformAuthorityFence(session);
+        if (
+          !(await this.hasPlatformPermissionAt(
+            actorUserId,
+            input.now,
+            session,
+            platformInvitationPermission,
+          ))
+        )
+          throw new ForbiddenException({
+            code: 'FORBIDDEN',
+            message: 'Insufficient authorization.',
+          });
+
+        const prior = await this.operations()
+          .findOne({ actorUserId, organizationId, keyHash })
+          .session(session)
+          .lean()
+          .exec();
+        if (prior && prior.expiresAt.getTime() > input.now.getTime()) {
+          if (prior.fingerprintHash !== fingerprintHash)
+            throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED' });
+          result = {
+            httpStatus: prior.httpStatus,
+            body: prior.resultBody,
+            replayed: true,
+          };
+          return;
+        }
+
+        // Keep the owner-approved A7 notification evidence and A8 cutover gate
+        // fail-closed. No membership, invitation, operation, outbox, or audit
+        // write is allowed until those external readiness decisions are accepted.
+        throw new ServiceUnavailableException({
+          code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+        });
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException({
+        code: 'IAM_MEMBERSHIP_MUTATION_FAILED',
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (!result)
+      throw new Error(
+        'Platform invitation command transaction returned no result',
       );
     return result;
   }
@@ -1087,6 +1160,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     actorUserId: Types.ObjectId,
     now: Date,
     session: ClientSession,
+    permission = platformMembershipPermission,
   ): Promise<boolean> {
     const actor = await this.users()
       .findOne({ _id: actorUserId, status: 'ACTIVE' }, { _id: 1 })
@@ -1099,7 +1173,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     )
       .find({
         subjectUserId: actorUserId,
-        permission: platformMembershipPermission,
+        permission,
         scope: 'PLATFORM',
       })
       .session(session)
@@ -1109,7 +1183,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       (assignment) =>
         assignment.subjectUserId.equals(actorUserId) &&
         assignment.scope === 'PLATFORM' &&
-        assignment.permission === platformMembershipPermission &&
+        assignment.permission === permission &&
         assignment.status === 'ACTIVE' &&
         assignment.revokedAt == null &&
         assignment.grantedBy instanceof Types.ObjectId &&

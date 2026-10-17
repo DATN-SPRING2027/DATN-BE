@@ -54,6 +54,10 @@ describe('OrganizationMembershipCommandService', () => {
           },
         },
       }),
+      executePlatformInvitationCommand: jest.fn().mockRejectedValue({
+        response: { code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE' },
+        status: 503,
+      }),
     };
     service = new OrganizationMembershipCommandService(repository);
   });

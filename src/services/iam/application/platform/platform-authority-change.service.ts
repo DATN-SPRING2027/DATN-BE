@@ -59,7 +59,7 @@ export class PlatformAuthorityChangeService {
       });
     }
 
-    if (!['A04', 'V1'].includes(command.bundleVersion)) {
+    if (!['A04', 'V1', 'V2'].includes(command.bundleVersion)) {
       throw new BadRequestException({
         code: 'INVALID_BUNDLE_VERSION',
         message: 'A supported fixed Platform authority bundle is required.',
@@ -67,14 +67,16 @@ export class PlatformAuthorityChangeService {
     }
 
     if (
-      (command.operationType === 'BOOTSTRAP' ||
-        command.operationType === 'V1_EXPAND') &&
-      command.bundleVersion !== 'V1'
+      (command.operationType === 'BOOTSTRAP' &&
+        !['V1', 'V2'].includes(command.bundleVersion)) ||
+      (command.operationType === 'V1_EXPAND' &&
+        command.bundleVersion !== 'V1') ||
+      (command.operationType === 'V2_EXPAND' && command.bundleVersion !== 'V2')
     ) {
       throw new BadRequestException({
         code: 'INVALID_BUNDLE_VERSION',
         message:
-          'New authority grants and explicit expansion use the V1 bundle.',
+          'The selected authority operation requires its fixed versioned bundle.',
       });
     }
 
@@ -83,7 +85,7 @@ export class PlatformAuthorityChangeService {
       throw new BadRequestException({
         code: 'FIXED_PERMISSION_BUNDLE_REQUIRED',
         message:
-          'PO-AUTH-01 always changes the complete A-04 permission bundle.',
+          'Platform authority operations only accept a complete fixed permission bundle.',
       });
     }
 

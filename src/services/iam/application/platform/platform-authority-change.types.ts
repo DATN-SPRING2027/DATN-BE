@@ -2,26 +2,29 @@ import { createHash } from 'node:crypto';
 import {
   PLATFORM_A04_PERMISSIONS,
   PLATFORM_PERMISSIONS,
+  PLATFORM_V1_PERMISSIONS,
   type PlatformPermission,
 } from '../authorization/authorization.policy';
 
 export const PLATFORM_AUTHORITY_REASON_CODES = {
   BOOTSTRAP: 'PO_AUTH_01_BOOTSTRAP',
   V1_EXPAND: 'PO_AUTH_01_V1_EXPAND',
+  V2_EXPAND: 'PO_AUTH_01_V2_EXPAND',
   REGRANT: 'PO_AUTH_01_REGRANT',
   REVOKE: 'PO_AUTH_01_REVOKE',
 } as const;
 
 export type PlatformAuthorityOperationType =
   keyof typeof PLATFORM_AUTHORITY_REASON_CODES;
-export type PlatformAuthorityBundleVersion = 'A04' | 'V1';
+export type PlatformAuthorityBundleVersion = 'A04' | 'V1' | 'V2';
 
 export const PLATFORM_AUTHORITY_BUNDLES: Record<
   PlatformAuthorityBundleVersion,
   readonly PlatformPermission[]
 > = {
   A04: PLATFORM_A04_PERMISSIONS,
-  V1: PLATFORM_PERMISSIONS,
+  V1: PLATFORM_V1_PERMISSIONS,
+  V2: PLATFORM_PERMISSIONS,
 };
 
 export interface PlatformAuthorityChangePayload {

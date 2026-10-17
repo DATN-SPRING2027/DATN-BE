@@ -8,20 +8,60 @@ export type PlatformPermission =
   | 'platform.audit.read'
   | 'platform.organizations.organization.read'
   | 'platform.users.account.read'
+  | 'platform.users.account.manage'
+  | 'platform.sessions.session.read'
+  | 'platform.sessions.session.manage'
+  | 'platform.organizations.organization.manage'
   | 'platform.memberships.membership.read'
-  | 'platform.memberships.lifecycle.manage';
+  | 'platform.memberships.lifecycle.manage'
+  | 'platform.memberships.invitation.manage'
+  | 'platform.memberships.role.manage'
+  | 'platform.projects.project.read'
+  | 'platform.projects.project.manage'
+  | 'platform.dashboard.summary.read'
+  | 'platform.services.service.read'
+  | 'platform.jobs.job.read'
+  | 'platform.jobs.job.manage'
+  | 'platform.ai.operations.read'
+  | 'platform.integrations.integration.read'
+  | 'platform.integrations.integration.manage'
+  | 'platform.incidents.incident.read'
+  | 'platform.incidents.incident.manage'
+  | 'platform.diagnostics.trace.read';
 export const PLATFORM_A04_PERMISSIONS = [
   'organization.create',
   'platform.health.read',
   'platform.audit.read',
 ] as const satisfies readonly PlatformPermission[];
-export const PLATFORM_PERMISSIONS: readonly PlatformPermission[] = [
+export const PLATFORM_V1_PERMISSIONS: readonly PlatformPermission[] = [
   ...PLATFORM_A04_PERMISSIONS,
   'platform.organizations.organization.read',
   'platform.users.account.read',
   'platform.memberships.membership.read',
   'platform.memberships.lifecycle.manage',
 ];
+export const PLATFORM_V2_PERMISSIONS: readonly PlatformPermission[] = [
+  ...PLATFORM_V1_PERMISSIONS,
+  'platform.users.account.manage',
+  'platform.sessions.session.read',
+  'platform.sessions.session.manage',
+  'platform.organizations.organization.manage',
+  'platform.memberships.invitation.manage',
+  'platform.memberships.role.manage',
+  'platform.projects.project.read',
+  'platform.projects.project.manage',
+  'platform.dashboard.summary.read',
+  'platform.services.service.read',
+  'platform.jobs.job.read',
+  'platform.jobs.job.manage',
+  'platform.ai.operations.read',
+  'platform.integrations.integration.read',
+  'platform.integrations.integration.manage',
+  'platform.incidents.incident.read',
+  'platform.incidents.incident.manage',
+  'platform.diagnostics.trace.read',
+];
+export const PLATFORM_PERMISSIONS = PLATFORM_V2_PERMISSIONS;
 export type ProjectAccessPermission =
   | 'project.visibility.manage'
   | 'project.leader.manage'

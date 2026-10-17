@@ -216,5 +216,18 @@ describe('PlatformAuthorityChangeService', () => {
       expect(mockAssertAuthorized).toHaveBeenCalledWith(validGrantCommand);
       expect(mockExecute).toHaveBeenCalledWith(validGrantCommand);
     });
+
+    it('accepts only the fixed V2 expansion command when the issuer gate is configured', async () => {
+      const command: PlatformAuthorityChangeCommand = {
+        ...validGrantCommand,
+        operationId: '00000000-0000-4000-8000-000000000002',
+        operationType: 'V2_EXPAND',
+        bundleVersion: 'V2',
+        reasonCode: 'PO_AUTH_01_V2_EXPAND',
+      };
+      await service.executeChange(command);
+      expect(mockAssertAuthorized).toHaveBeenCalledWith(command);
+      expect(mockExecute).toHaveBeenCalledWith(command);
+    });
   });
 });

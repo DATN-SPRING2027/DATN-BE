@@ -21,6 +21,7 @@ import {
 import type { PlatformAuthorityChangeRepository } from '../../application/platform/platform-authority-change.repository';
 import {
   PLATFORM_A04_PERMISSIONS,
+  PLATFORM_V1_PERMISSIONS,
   type PlatformPermission,
 } from '../../application/authorization/authorization.policy';
 import {
@@ -274,7 +275,9 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
         const expectedCurrentPermissions =
           command.operationType === 'V1_EXPAND'
             ? PLATFORM_A04_PERMISSIONS
-            : permissions;
+            : command.operationType === 'V2_EXPAND'
+              ? PLATFORM_V1_PERMISSIONS
+              : permissions;
         const expectedCurrentRows = rowsForPermissions(
           expectedCurrentPermissions,
         );
@@ -409,6 +412,51 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             return;
           }
 
+          if (bundleVersion === 'V2') {
+            const v1Rows = bundleRows.filter((row) =>
+              PLATFORM_V1_PERMISSIONS.includes(row.permission as never),
+            );
+            const v2Rows = bundleRows.filter(
+              (row) =>
+                !PLATFORM_V1_PERMISSIONS.includes(row.permission as never),
+            );
+            if (
+              v1Rows.length !== PLATFORM_V1_PERMISSIONS.length ||
+              v2Rows.length !==
+                bundlePermissions.length - PLATFORM_V1_PERMISSIONS.length ||
+              new Set(v2Rows.map((row) => row.provenanceOperationId)).size !== 1
+            )
+              throwLegacyConflict();
+            await assertOwnedBundle(v1Rows, 'V1');
+            const sourceOperationId = v2Rows[0].provenanceOperationId!;
+            const v1AnchorOperationId =
+              v1Rows.find(
+                (row) =>
+                  !PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+              )?.provenanceOperationId ?? v1Rows[0].provenanceOperationId;
+            if (!v1AnchorOperationId) throwLegacyConflict();
+            const expansion = await assertSourceOperation(
+              sourceOperationId,
+              'V2',
+              bundlePermissions,
+              ['V2_EXPAND'],
+            );
+            if (
+              expansion.sourceOperationId !== v1AnchorOperationId ||
+              bundleRows.some(
+                (row) =>
+                  !expansion.resultBody.assignments.some(
+                    (assignment) =>
+                      assignment.assignmentId.toLowerCase() ===
+                        row._id.toHexString() &&
+                      assignment.permission === row.permission,
+                  ),
+              )
+            )
+              throwLegacyConflict();
+            return;
+          }
+
           if (bundleVersion !== 'V1' || provenanceIds.size !== 2)
             throwLegacyConflict();
           const expansionId = bundleRows.find(
@@ -512,6 +560,44 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             { session: transactionSession, ordered: true },
           );
           assignments = [...activeLegacyRows, ...expandedAssignments];
+        } else if (command.operationType === 'V2_EXPAND') {
+          if (currentState !== 'ACTIVE' || !expectedCurrentRows)
+            throw new ConflictException({
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message:
+                'V2 expansion requires one complete active V1 permission bundle.',
+            });
+          const activeV1Rows = expectedCurrentRows;
+          await assertOwnedBundle([...activeV1Rows], 'V1');
+          sourceOperationId =
+            activeV1Rows.find(
+              (row) =>
+                !PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+            )?.provenanceOperationId ?? activeV1Rows[0].provenanceOperationId;
+          if (!sourceOperationId) throwLegacyConflict();
+          const v2OnlyPermissions = permissions.filter(
+            (permission) =>
+              !PLATFORM_V1_PERMISSIONS.includes(permission as never),
+          );
+          const newExpiresAt = command.expiresAt
+            ? new Date(command.expiresAt)
+            : null;
+          const expandedAssignments = await this.assignments().create(
+            v2OnlyPermissions.map((permission) => ({
+              subjectUserId: targetUserId,
+              permission,
+              scope: 'PLATFORM' as const,
+              status: 'ACTIVE' as const,
+              grantedAt: now,
+              grantedBy: issuerUserId,
+              expiresAt: newExpiresAt,
+              revokedAt: null,
+              revokedBy: null,
+              provenanceOperationId: command.operationId,
+            })),
+            { session: transactionSession, ordered: true },
+          );
+          assignments = [...activeV1Rows, ...expandedAssignments];
         } else if (command.operationType === 'BOOTSTRAP') {
           if (rows.length > 0) {
             await assertOwnedBundle(rows, command.bundleVersion);

@@ -52,6 +52,20 @@ export interface MembershipMutationAcknowledgement {
   };
 }
 
+export type PlatformInvitationCommand = Exclude<
+  OrganizationMembershipCommand,
+  { command: 'SUSPEND' }
+>;
+
+export interface PlatformInvitationCommandInput {
+  actorUserId: string;
+  organizationId: string;
+  idempotencyKey: string;
+  command: PlatformInvitationCommand;
+  now: Date;
+  correlationId?: string;
+}
+
 export interface MembershipMutationResult {
   httpStatus: 200 | 201;
   body: MembershipMutationAcknowledgement;
@@ -120,5 +134,8 @@ export interface OrganizationMembershipCommandRepository {
   ): Promise<MembershipMutationResult>;
   executePlatformSuspend(
     input: PlatformMembershipSuspendInput,
+  ): Promise<MembershipMutationResult>;
+  executePlatformInvitationCommand(
+    input: PlatformInvitationCommandInput,
   ): Promise<MembershipMutationResult>;
 }
