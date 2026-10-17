@@ -177,5 +177,6 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
       useClass: MongoPlatformAuthorityChangeRepository,
     },
   ],
+  exports: [AuthenticationApplicationService, ProjectService],
 })
 export class IamModule {}
