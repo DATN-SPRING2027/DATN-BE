@@ -36,6 +36,10 @@ export interface EnvironmentVariables {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   BACKEND_TIMEOUT_MS: number;
+  SAG_API_BASE_URL?: string;
+  SAG_BFF_SERVICE_TOKEN?: string;
+  CONTINUUM_WEB_BASE_URL?: string;
+  SAG_WEB_BASE_URL?: string;
   SWAGGER_ENABLED: boolean;
   [key: string]: unknown;
 }
@@ -95,6 +99,22 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   R2_ACCESS_KEY_ID: Joi.string().allow('').optional(),
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
   BACKEND_TIMEOUT_MS: Joi.number().integer().min(100).max(30000).default(5000),
+  SAG_API_BASE_URL: Joi.string()
+    .trim()
+    .uri({ scheme: ['http', 'https'] })
+    .allow('')
+    .optional(),
+  SAG_BFF_SERVICE_TOKEN: Joi.string().trim().min(32).allow('').optional(),
+  CONTINUUM_WEB_BASE_URL: Joi.string()
+    .trim()
+    .uri({ scheme: ['http', 'https'] })
+    .allow('')
+    .optional(),
+  SAG_WEB_BASE_URL: Joi.string()
+    .trim()
+    .uri({ scheme: ['http', 'https'] })
+    .allow('')
+    .optional(),
   SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
 }).unknown(true);
 
@@ -109,6 +129,37 @@ export function validateEnvironment(
 
   if (result.error) {
     throw new Error(`Environment validation failed: ${result.error.message}`);
+  }
+
+  const sagApiBaseUrl = result.value.SAG_API_BASE_URL?.trim();
+  const sagServiceToken = result.value.SAG_BFF_SERVICE_TOKEN?.trim();
+  if (Boolean(sagApiBaseUrl) !== Boolean(sagServiceToken)) {
+    throw new Error(
+      'Environment validation failed: SAG_API_BASE_URL and SAG_BFF_SERVICE_TOKEN must be configured together.',
+    );
+  }
+  for (const [name, value] of [
+    ['CONTINUUM_WEB_BASE_URL', result.value.CONTINUUM_WEB_BASE_URL],
+    ['SAG_WEB_BASE_URL', result.value.SAG_WEB_BASE_URL],
+  ] as const) {
+    if (!value) continue;
+    const url = new URL(value);
+    if (
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash ||
+      url.username ||
+      url.password
+    ) {
+      throw new Error(
+        `Environment validation failed: ${name} must be an origin URL.`,
+      );
+    }
+    if (result.value.NODE_ENV === 'production' && url.protocol !== 'https:') {
+      throw new Error(
+        `Environment validation failed: ${name} must use HTTPS in production.`,
+      );
+    }
   }
 
   const googleSettings = [
