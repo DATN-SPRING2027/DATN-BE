@@ -459,7 +459,9 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
       orgId: String(new Types.ObjectId()),
       roles: ['ADMIN'],
     });
-    await create(input, `Bearer ${adminToken}`).expect(403);
+    // Organization-context tokens are not valid platform sessions and fail
+    // authentication before platform permission evaluation.
+    await create(input, `Bearer ${adminToken}`).expect(401);
     await connection
       .collection('platform_authority_assignments')
       .updateOne(
