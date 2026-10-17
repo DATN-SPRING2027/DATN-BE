@@ -76,30 +76,6 @@ describe('MongoPlatformIncidentRepository transactional integration', () => {
           .createIndexes();
       }
     }
-    await connection.collection('platform_incidents').createIndexes([
-      { key: { updatedAt: -1, _id: -1 }, name: 'incident_updated_list' },
-      {
-        key: { status: 1, updatedAt: -1, _id: -1 },
-        name: 'incident_status_updated_list',
-      },
-    ]);
-    await connection
-      .collection('platform_incident_history')
-      .createIndex(
-        { incidentId: 1, occurredAt: 1, _id: 1 },
-        { name: 'incident_history_order' },
-      );
-    await connection.collection('platform_incident_operations').createIndexes([
-      {
-        key: { actorUserId: 1, idempotencyKeyHash: 1 },
-        name: 'incident_operation_key',
-        unique: true,
-      },
-      {
-        key: { incidentId: 1, committedAt: -1 },
-        name: 'incident_operation_history',
-      },
-    ]);
     const auditDatabase = connection.useDb(auditDatabaseName, {
       useCache: true,
     });
