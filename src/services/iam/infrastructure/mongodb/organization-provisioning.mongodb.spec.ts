@@ -22,8 +22,15 @@ import { IamApplicationService } from '../../application/iam.service';
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from '../../application/organizations/organization-provisioning.repository';
 import type { ProvisionedOrganization } from '../../application/organizations/organization-provisioning.repository';
 import { OrganizationProvisioningService } from '../../application/organizations/organization-provisioning.service';
+import { PlatformAiOperationsService } from '../../application/platform/platform-ai-operations.service';
 import { PlatformAuditService } from '../../application/platform/platform-audit.service';
 import { PlatformAdministrationService } from '../../application/platform/platform-administration.service';
+import { PlatformDashboardOverviewService } from '../../application/platform/platform-dashboard-overview.service';
+import { PlatformIncidentService } from '../../application/platform/platform-incident.service';
+import { PlatformIntegrationOperationsService } from '../../application/platform/platform-integration-operations.service';
+import { PlatformIntegrationReadService } from '../../application/platform/platform-integration-read.service';
+import { PlatformJobOperationsService } from '../../application/platform/platform-job-operations.service';
+import { PlatformServiceOperationsService } from '../../application/platform/platform-service-operations.service';
 import { PlatformController } from '../../controllers/platform.controller';
 import { IAM_PERSISTENCE } from '../persistence';
 import { AuthenticationRepository } from './authentication.repository';
@@ -174,6 +181,13 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
             suspendMembership: jest.fn(),
           },
         },
+        { provide: PlatformDashboardOverviewService, useValue: {} },
+        { provide: PlatformServiceOperationsService, useValue: {} },
+        { provide: PlatformJobOperationsService, useValue: {} },
+        { provide: PlatformAiOperationsService, useValue: {} },
+        { provide: PlatformIntegrationReadService, useValue: {} },
+        { provide: PlatformIntegrationOperationsService, useValue: {} },
+        { provide: PlatformIncidentService, useValue: {} },
       ],
     }).compile();
     app = module.createNestApplication();
