@@ -8,6 +8,8 @@ import { IAM_PERSISTENCE } from '../persistence';
 import { createCollectionSchema } from './mongodb.schemas';
 import {
   hashAssignmentSnapshot,
+  PLATFORM_AUTHORITY_BUNDLES,
+  PLATFORM_AUTHORITY_REASON_CODES,
   type PlatformAuthorityChangeCommand,
 } from '../../application/platform/platform-authority-change.types';
 
@@ -34,6 +36,53 @@ type RepositoryTestCommand = Omit<
       'bundleVersion' | 'expectedCurrentSnapshotHash'
     >
   >;
+
+const isCompletePlatformAuthorityBundle = (permissions: string[]) =>
+  Object.values(PLATFORM_AUTHORITY_BUNDLES).some(
+    (bundle) =>
+      permissions.length === bundle.length &&
+      new Set(permissions).size === bundle.length &&
+      bundle.every((permission) => permissions.includes(permission)),
+  );
+
+// Keep this behavior suite on the expanded DB contract without mutating shared schemas.
+const createAuthorityIntegrationSchema = (
+  definition: (typeof IAM_PERSISTENCE.collections)[number],
+) => {
+  const schema = createCollectionSchema(definition).clone();
+  if (definition.name !== 'platform_authority_change_operations') return schema;
+
+  const authoritySchema = new mongoose.Schema(
+    {
+      ...schema.obj,
+      operationType: {
+        type: String,
+        enum: [...Object.keys(PLATFORM_AUTHORITY_REASON_CODES)],
+        required: true,
+      },
+      bundleVersion: {
+        type: String,
+        enum: [...Object.keys(PLATFORM_AUTHORITY_BUNDLES)],
+        default: 'A04',
+      },
+      permissions: {
+        type: [{ type: String, enum: [...PLATFORM_AUTHORITY_BUNDLES.V2] }],
+        required: true,
+        validate: {
+          validator: isCompletePlatformAuthorityBundle,
+          message:
+            'permissions must contain one complete approved authority bundle.',
+        },
+      },
+    },
+    schema.options,
+  );
+  for (const [fields, options] of schema.indexes()) {
+    authoritySchema.index(fields, options);
+  }
+
+  return authoritySchema;
+};
 
 describe('Platform authority change operations transactional integration', () => {
   jest.setTimeout(120_000);
@@ -177,7 +226,7 @@ describe('Platform authority change operations transactional integration', () =>
       const def = IAM_PERSISTENCE.collections.find((c) => c.name === name);
       if (def) {
         await connection
-          .model(`continuum_iam_${name}`, createCollectionSchema(def))
+          .model(`continuum_iam_${name}`, createAuthorityIntegrationSchema(def))
           .createIndexes();
       }
     }
