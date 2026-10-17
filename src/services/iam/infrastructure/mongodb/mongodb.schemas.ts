@@ -123,6 +123,8 @@ const iamSchemas: Record<string, Schema> = {
         enum: ['ACTIVE', 'SUSPENDED', 'PENDING_INVITE'],
         required: true,
       },
+      archivedAt: Date,
+      archivedBy: Schema.Types.ObjectId,
       twoFactorEnabled: { type: Boolean, default: false },
       twoFactorSecretEncrypted: String,
       lastLoginAt: Date,
