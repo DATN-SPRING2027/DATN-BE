@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Mongoose query doubles expose driver any types. */
 import { Types } from 'mongoose';
 import type { Connection } from 'mongoose';
 import { AuthenticationRepository } from './authentication.repository';
@@ -40,10 +39,7 @@ describe('AuthenticationRepository', () => {
     ).resolves.toBe(true);
     expect(users.updateOne).toHaveBeenCalledWith(
       { _id: new Types.ObjectId(userId), status: 'ACTIVE' },
-      {
-        $set: { passwordHash: 'new-hash' },
-        $inc: { mutationFence: 1 },
-      },
+      { $set: { passwordHash: 'new-hash' } },
       { session },
     );
     expect(sessions.updateMany).toHaveBeenCalledWith(
@@ -58,15 +54,12 @@ describe('AuthenticationRepository', () => {
   it('looks up only complete refresh-session fields before rotation', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
     const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';
-    const sessionId = '7b4e98c4-4a2d-4e36-9d69-4c42b8a093f1';
     const expiresAt = new Date(Date.now() + 60_000);
     const query = {
       select: jest.fn(),
       lean: jest.fn(),
       exec: jest.fn().mockResolvedValue({
-        _id: new Types.ObjectId(),
         userId: new Types.ObjectId(userId),
-        sessionId,
         organizationId: new Types.ObjectId(organizationId),
         isRevoked: false,
         expiresAt,
@@ -85,18 +78,13 @@ describe('AuthenticationRepository', () => {
     ).resolves.toEqual({
       outcome: 'ACTIVE',
       userId,
-      sessionId,
-      userFence: 0,
       context: 'ORGANIZATION',
       organizationId,
       expiresAt,
     });
     expect(model.findOne).toHaveBeenCalledWith({ tokenHash: 'sha256-digest' });
     expect(query.select).toHaveBeenCalledWith({
-      _id: 1,
       userId: 1,
-      sessionId: 1,
-      userFence: 1,
       organizationId: 1,
       context: 1,
       isRevoked: 1,
@@ -106,15 +94,12 @@ describe('AuthenticationRepository', () => {
 
   it('looks up Platform refresh sessions without requiring an Organization ID', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
-    const sessionId = '7b4e98c4-4a2d-4e36-9d69-4c42b8a093f1';
     const expiresAt = new Date(Date.now() + 60_000);
     const query = {
       select: jest.fn(),
       lean: jest.fn(),
       exec: jest.fn().mockResolvedValue({
-        _id: new Types.ObjectId(),
         userId: new Types.ObjectId(userId),
-        sessionId,
         context: 'PLATFORM',
         isRevoked: false,
         expiresAt,
@@ -134,8 +119,6 @@ describe('AuthenticationRepository', () => {
     ).resolves.toEqual({
       outcome: 'ACTIVE',
       userId,
-      sessionId,
-      userFence: 0,
       context: 'PLATFORM',
       expiresAt,
     });
@@ -143,15 +126,12 @@ describe('AuthenticationRepository', () => {
 
   it('looks up Account refresh sessions without requiring an Organization ID', async () => {
     const userId = '651a2b3c4d5e6f7a8b9c0d1e';
-    const sessionId = '7b4e98c4-4a2d-4e36-9d69-4c42b8a093f1';
     const expiresAt = new Date(Date.now() + 60_000);
     const query = {
       select: jest.fn(),
       lean: jest.fn(),
       exec: jest.fn().mockResolvedValue({
-        _id: new Types.ObjectId(),
         userId: new Types.ObjectId(userId),
-        sessionId,
         context: 'ACCOUNT',
         isRevoked: false,
         expiresAt,
@@ -173,8 +153,6 @@ describe('AuthenticationRepository', () => {
     ).resolves.toEqual({
       outcome: 'ACTIVE',
       userId,
-      sessionId,
-      userFence: 0,
       context: 'ACCOUNT',
       expiresAt,
     });
@@ -384,7 +362,7 @@ describe('AuthenticationRepository', () => {
     );
   });
 
-  it('loads the mutation fence and revokes by token hash', async () => {
+  it('looks up only the profile name and revokes by token hash without new session fields', async () => {
     const profileQuery = {
       lean: jest.fn(),
       exec: jest
@@ -392,68 +370,29 @@ describe('AuthenticationRepository', () => {
         .mockResolvedValue({ fullName: 'Test Person', status: 'ACTIVE' }),
     };
     profileQuery.lean.mockReturnValue(profileQuery);
-    const sessionId = '7b4e98c4-4a2d-4e36-9d69-4c42b8a093f1';
-    const sessionRow = {
-      _id: new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d22'),
-      userId: new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1e'),
-      sessionId,
-      isRevoked: false,
-    };
-    const lookup = {
-      session: jest.fn(),
-      lean: jest.fn(),
-      exec: jest.fn().mockResolvedValue(sessionRow),
-    };
-    lookup.session.mockReturnValue(lookup);
-    lookup.lean.mockReturnValue(lookup);
     const updateQuery = {
-      exec: jest.fn().mockResolvedValue({ modifiedCount: 2 }),
+      exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
     };
     const userModel = { findById: jest.fn().mockReturnValue(profileQuery) };
-    const sessionsModel = {
-      findOne: jest.fn().mockReturnValue(lookup),
-      updateMany: jest.fn().mockReturnValue(updateQuery),
-    };
-    const transaction = {
-      withTransaction: jest.fn(async (callback: () => Promise<boolean>) =>
-        callback(),
-      ),
-      endSession: jest.fn().mockResolvedValue(undefined),
-    };
+    const sessionsModel = { updateOne: jest.fn().mockReturnValue(updateQuery) };
     const connection = {
       models: {
         continuum_iam_users: userModel,
         continuum_iam_refresh_sessions: sessionsModel,
       },
-      startSession: jest.fn().mockResolvedValue(transaction),
     } as unknown as Connection;
     const repository = new AuthenticationRepository(connection);
 
     await expect(
       repository.findProfileById('651a2b3c4d5e6f7a8b9c0d1e'),
-    ).resolves.toEqual({
-      name: 'Test Person',
-      status: 'ACTIVE',
-      mutationFence: 0,
-    });
-    expect(userModel.findById).toHaveBeenCalledWith(
-      new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1e'),
-      { fullName: 1, status: 1, mutationFence: 1 },
-    );
+    ).resolves.toEqual({ name: 'Test Person', status: 'ACTIVE' });
     await expect(
       repository.revokeRefreshSessionByHash('sha256-digest'),
     ).resolves.toBe(true);
-    expect(sessionsModel.updateMany).toHaveBeenCalledWith(
-      {
-        userId: sessionRow.userId,
-        $or: [{ sessionId }],
-        isRevoked: { $ne: true },
-      },
-      { $set: { isRevoked: true, updatedAt: expect.any(Date) } },
-      { session: transaction, timestamps: false },
+    expect(sessionsModel.updateOne).toHaveBeenCalledWith(
+      { tokenHash: 'sha256-digest', isRevoked: { $ne: true } },
+      { $set: { isRevoked: true } },
     );
-    expect(transaction.withTransaction).toHaveBeenCalledTimes(1);
-    expect(transaction.endSession).toHaveBeenCalledTimes(1);
   });
 
   it('finds a passwordless account by its stable Google subject', async () => {

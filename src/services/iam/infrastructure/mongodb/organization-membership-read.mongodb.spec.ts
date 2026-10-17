@@ -33,7 +33,6 @@ const integration =
   process.env.MONGODB_INTEGRATION === 'true' ? describe : describe.skip;
 const collections = [
   'users',
-  'refresh_sessions',
   'organization_memberships',
   'roles',
   'role_assignments',
@@ -64,7 +63,6 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
   const foreignMembershipId = new Types.ObjectId();
   const foreignOrganizationId = new Types.ObjectId();
   const secret = randomBytes(32).toString('hex');
-  const actorSessionId = randomUUID();
   const url = `/api/v1/iam/organizations/${String(organizationId)}/memberships`;
   let connection: Connection | undefined;
   let app: INestApplication | undefined;
@@ -143,7 +141,6 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
       email: 'admin@example.test',
       orgId: organizationId.toHexString(),
       roles: ['ADMIN'],
-      sid: actorSessionId,
     });
   }, 30_000);
   afterAll(async () => {
@@ -182,15 +179,6 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
         googleSubject: `private-google-subject-${index}`,
       })),
     ]);
-    await connection!.collection('refresh_sessions').insertOne({
-      userId: actorId,
-      sessionId: actorSessionId,
-      userFence: 0,
-      context: 'ORGANIZATION',
-      tokenHash: 'c-02-membership-read-session-hash',
-      isRevoked: false,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
     await connection!.collection('organization_memberships').insertMany([
       {
         _id: actorMembershipId,
@@ -370,7 +358,6 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
       email: 'admin@example.test',
       orgId: String(organizationId),
       roles: ['MEMBER'],
-      sid: actorSessionId,
     });
     await get(url, stale).expect(200);
   });
@@ -381,7 +368,6 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
         sub: String(actorId),
         email: 'admin@example.test',
         context,
-        sid: actorSessionId,
       });
       await get(url, credential).expect(401);
     },

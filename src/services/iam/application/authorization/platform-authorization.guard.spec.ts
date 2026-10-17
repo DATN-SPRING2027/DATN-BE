@@ -9,7 +9,6 @@ import {
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import { StructuredExceptionFilter } from '../../../../common/http/structured-exception.filter';
 import { AuthenticationApplicationService } from '../authentication/authentication.application.service';
 import {
   AUTHORIZATION_EVIDENCE_PROVIDER,
@@ -93,7 +92,6 @@ describe('PlatformAuthorizationGuard', () => {
     }).compile();
     app = module.createNestApplication();
     app.setGlobalPrefix('api/v1');
-    app.useGlobalFilters(new StructuredExceptionFilter());
     await app.init();
   });
 
@@ -198,18 +196,10 @@ describe('PlatformAuthorizationGuard', () => {
     evidence.loadPlatformPermission.mockRejectedValueOnce(
       new Error('database unavailable'),
     );
-    const response = await request(app.getHttpServer() as App)
+    await request(app.getHttpServer() as App)
       .get('/api/v1/platform-authorization-test/health')
       .set('Authorization', 'Bearer valid')
-      .expect(503);
-
-    expect(response.body).toMatchObject({
-      code: 'AUTHORIZATION_EVIDENCE_UNAVAILABLE',
-      message: 'Authorization evidence is temporarily unavailable.',
-      details: {},
-      requestId: expect.any(String) as string,
-    });
-    expect(response.text).not.toContain('database unavailable');
+      .expect(403);
   });
 
   it('does not preserve a formerly valid authority after fresh evidence shows revocation', async () => {

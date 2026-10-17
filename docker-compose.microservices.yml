@@ -105,16 +105,7 @@ services:
       SERVICE_DATABASE: continuum_iam
       JWT_SECRET: ${JWT_SECRET:?Set the IAM JWT secret}
       IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
-      PLATFORM_SERVICE_OPS_SECRET: ${PLATFORM_SERVICE_OPS_SECRET:?Set the internal IAM-to-Jira operations secret}
       REDIS_HOST: redis
-      IAM_SERVICE_URL: http://iam:3001
-      CAPTURE_SERVICE_URL: http://capture:3002
-      JIRA_SERVICE_URL: http://jira:3003
-      LIFECYCLE_SERVICE_URL: http://lifecycle:3004
-      CHAT_SERVICE_URL: http://chat:3005
-      HANDOVER_SERVICE_URL: http://handover:3006
-      INGESTION_SERVICE_URL: http://ingestion:3007
-      NOTIFICATION_SERVICE_URL: http://notification:3008
     depends_on:
       redis:
         condition: service_healthy
@@ -143,7 +134,6 @@ services:
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
       SERVICE_DATABASE: continuum_jira
       REDIS_HOST: redis
-      PLATFORM_SERVICE_OPS_SECRET: ${PLATFORM_SERVICE_OPS_SECRET:?Set the internal IAM-to-Jira operations secret}
     depends_on:
       redis:
         condition: service_healthy

@@ -4,7 +4,6 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
@@ -39,32 +38,24 @@ export class PlatformAuthorizationGuard implements CanActivate {
       request.headers.authorization,
       request.headers.cookie,
     );
-    let facts: Awaited<
-      ReturnType<AuthorizationEvidenceProvider['loadPlatformPermission']>
-    >;
     try {
-      facts = await this.evidence.loadPlatformPermission(
+      const facts = await this.evidence.loadPlatformPermission(
         identity.id,
         permission,
       );
+      if (
+        facts &&
+        this.policy.evaluatePlatformPermission({
+          permission,
+          subject: { userId: identity.id, status: 'ACTIVE' },
+          assignments: facts.assignments,
+          now: new Date(),
+        }).allowed
+      )
+        return true;
     } catch {
-      throw new ServiceUnavailableException({
-        code: 'AUTHORIZATION_EVIDENCE_UNAVAILABLE',
-        message: 'Authorization evidence is temporarily unavailable.',
-      });
+      // Missing or unavailable authorization evidence never grants access.
     }
-
-    if (
-      facts &&
-      this.policy.evaluatePlatformPermission({
-        permission,
-        subject: { userId: identity.id, status: 'ACTIVE' },
-        assignments: facts.assignments,
-        now: new Date(),
-      }).allowed
-    )
-      return true;
-
     throw new ForbiddenException({
       code: 'FORBIDDEN',
       message: 'Insufficient authorization.',

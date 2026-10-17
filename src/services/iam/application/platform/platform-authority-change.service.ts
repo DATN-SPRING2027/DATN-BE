@@ -59,64 +59,12 @@ export class PlatformAuthorityChangeService {
       });
     }
 
-    if (!['A04', 'V1', 'V2'].includes(command.bundleVersion)) {
-      throw new BadRequestException({
-        code: 'INVALID_BUNDLE_VERSION',
-        message: 'A supported fixed Platform authority bundle is required.',
-      });
-    }
-
-    if (
-      (command.operationType === 'BOOTSTRAP' &&
-        !['V1', 'V2'].includes(command.bundleVersion)) ||
-      (command.operationType === 'V1_EXPAND' &&
-        command.bundleVersion !== 'V1') ||
-      (command.operationType === 'V2_EXPAND' && command.bundleVersion !== 'V2')
-    ) {
-      throw new BadRequestException({
-        code: 'INVALID_BUNDLE_VERSION',
-        message:
-          'The selected authority operation requires its fixed versioned bundle.',
-      });
-    }
-
     const commandFields = command as unknown as Record<string, unknown>;
     if ('permission' in commandFields || 'permissions' in commandFields) {
       throw new BadRequestException({
         code: 'FIXED_PERMISSION_BUNDLE_REQUIRED',
         message:
-          'Platform authority operations only accept a complete fixed permission bundle.',
-      });
-    }
-
-    const acceptedFields = new Set([
-      'operationId',
-      'operationType',
-      'bundleVersion',
-      'targetUserId',
-      'scope',
-      'actorUserId',
-      'issuerUserId',
-      'expectedCurrentSnapshotHash',
-      'expiresAt',
-      'reasonCode',
-      'now',
-    ]);
-    if (Object.keys(commandFields).some((key) => !acceptedFields.has(key))) {
-      throw new BadRequestException({
-        code: 'UNSUPPORTED_AUTHORITY_FIELD',
-        message: 'The PO-AUTH-01 command contains an unsupported field.',
-      });
-    }
-
-    if (
-      typeof command.expectedCurrentSnapshotHash !== 'string' ||
-      !/^[a-f\d]{64}$/i.test(command.expectedCurrentSnapshotHash)
-    ) {
-      throw new BadRequestException({
-        code: 'EXPECTED_SNAPSHOT_REQUIRED',
-        message:
-          'A SHA-256 hash of the full current assignment snapshot is required.',
+          'PO-AUTH-01 always changes the complete A-04 permission bundle.',
       });
     }
 

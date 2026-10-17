@@ -22,8 +22,6 @@ import type {
   MembershipMutationResult,
   OrganizationMembershipCommand,
   OrganizationMembershipCommandRepository as OrganizationMembershipCommandRepositoryPort,
-  PlatformInvitationCommandInput,
-  PlatformMembershipSuspendInput,
 } from '../../application/organizations/organization-membership-command.repository';
 import { IAM_PERSISTENCE } from '../persistence';
 
@@ -32,8 +30,6 @@ const organizationMembershipManagePermission =
 const invitationLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 const invitationQuota = 30;
 const invitationQuotaWindowMs = 60 * 60 * 1000;
-const platformMembershipPermission = 'platform.memberships.lifecycle.manage';
-const platformInvitationPermission = 'platform.memberships.invitation.manage';
 
 function isInvitationCommandReadinessBlocked(
   command: OrganizationMembershipCommand,
@@ -51,16 +47,6 @@ interface UserDocument {
   _id: Types.ObjectId;
   email: string;
   status: string;
-}
-interface PlatformAuthorityAssignmentDocument {
-  subjectUserId: Types.ObjectId;
-  permission: string;
-  scope: string;
-  status: string;
-  grantedAt: Date;
-  grantedBy: Types.ObjectId;
-  expiresAt?: Date | null;
-  revokedAt?: Date | null;
 }
 interface MembershipDocument {
   _id: Types.ObjectId;
@@ -126,14 +112,10 @@ type AuditRecord = {
   organizationId: string;
   actorUserId: string;
   action: string;
-  scope?: 'PLATFORM' | 'ORGANIZATION';
-  result?: 'SUCCESS';
   occurredAt: Date;
   reasonCode: string;
   correlationId?: string;
   membershipId: string;
-  targetResource?: 'ORGANIZATION_MEMBERSHIP';
-  targetResourceId?: string;
   invitationIds?: string[];
   before: Record<string, string | number>;
   after: Record<string, string | number>;
@@ -362,8 +344,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
             operationId: operationId.toHexString(),
             organizationId: input.organizationId,
             actorUserId: input.actorUserId,
-            scope: 'PLATFORM',
-            result: 'SUCCESS',
             occurredAt: input.now,
             reasonCode: input.command.reasonCode,
             ...(input.correlationId
@@ -406,218 +386,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     }
     if (!result)
       throw new Error('Membership command transaction returned no result');
-    return result;
-  }
-
-  async executePlatformSuspend(
-    input: PlatformMembershipSuspendInput,
-  ): Promise<MembershipMutationResult> {
-    const actorUserId = new Types.ObjectId(input.actorUserId);
-    const organizationId = new Types.ObjectId(input.organizationId);
-    const command: OrganizationMembershipCommand = {
-      command: 'SUSPEND',
-      membershipId: input.membershipId,
-      expectedMembershipVersion: input.expectedMembershipVersion,
-      reasonCode: input.reasonCode,
-    };
-    const session = await this.connectionOrThrow().startSession();
-    let result: MembershipMutationResult | undefined;
-    const keyHash = sha256(input.idempotencyKey);
-    const fingerprintHash = this.fingerprint(
-      input.organizationId,
-      command,
-      'PLATFORM',
-    );
-    try {
-      await session.withTransaction(async () => {
-        await this.acquirePlatformAuthorityFence(session);
-        if (
-          !(await this.hasPlatformPermissionAt(actorUserId, input.now, session))
-        )
-          throw new ForbiddenException({
-            code: 'FORBIDDEN',
-            message: 'Insufficient authorization.',
-          });
-
-        const prior = await this.operations()
-          .findOne({ actorUserId, organizationId, keyHash })
-          .session(session)
-          .lean()
-          .exec();
-        if (prior && prior.expiresAt.getTime() > input.now.getTime()) {
-          if (prior.fingerprintHash !== fingerprintHash)
-            throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED' });
-          result = {
-            httpStatus: prior.httpStatus,
-            body: prior.resultBody,
-            replayed: true,
-          };
-          return;
-        }
-        if (prior)
-          await this.operations()
-            .deleteOne(
-              { _id: prior._id, expiresAt: { $lte: input.now } },
-              { session },
-            )
-            .exec();
-
-        await this.acquireOrganizationAdminFence(organizationId, session);
-        if (
-          !(await this.hasPlatformPermissionAt(actorUserId, input.now, session))
-        )
-          throw new ForbiddenException({
-            code: 'FORBIDDEN',
-            message: 'Insufficient authorization.',
-          });
-
-        const operationId = new Types.ObjectId();
-        const change = await this.suspend(
-          input.organizationId,
-          actorUserId,
-          command,
-          input.now,
-          session,
-        );
-        const body: MembershipMutationAcknowledgement = {
-          operationId: operationId.toHexString(),
-          membership: change.membership,
-        };
-        await this.operations().create(
-          [
-            {
-              _id: operationId,
-              actorUserId,
-              organizationId,
-              membershipId: new Types.ObjectId(body.membership.id),
-              targetUserId: new Types.ObjectId(body.membership.userId),
-              keyHash,
-              fingerprintHash,
-              command: 'SUSPEND',
-              status: 'COMMITTED',
-              httpStatus: 200,
-              resultBody: body,
-              committedAt: input.now,
-              expiresAt: new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
-            },
-          ],
-          { session },
-        );
-        await this.writeAudit(
-          {
-            ...change.audit,
-            eventId: randomUUID(),
-            schemaVersion: 2,
-            operationId: operationId.toHexString(),
-            organizationId: input.organizationId,
-            actorUserId: input.actorUserId,
-            occurredAt: input.now,
-            reasonCode: input.reasonCode,
-            targetResource: 'ORGANIZATION_MEMBERSHIP',
-            targetResourceId: change.audit.membershipId,
-            ...(input.correlationId
-              ? { correlationId: input.correlationId }
-              : {}),
-          },
-          session,
-        );
-        result = { httpStatus: 200, body, replayed: false };
-      });
-    } catch (error) {
-      if (isDuplicateKey(error)) {
-        const prior = await this.operations()
-          .findOne({ actorUserId, organizationId, keyHash })
-          .lean()
-          .exec();
-        if (prior && prior.expiresAt.getTime() > input.now.getTime()) {
-          if (prior.fingerprintHash !== fingerprintHash)
-            throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED' });
-          return {
-            httpStatus: prior.httpStatus,
-            body: prior.resultBody,
-            replayed: true,
-          };
-        }
-        throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
-      }
-      if (error instanceof HttpException) throw error;
-      throw new InternalServerErrorException({
-        code: 'IAM_MEMBERSHIP_MUTATION_FAILED',
-      });
-    } finally {
-      await session.endSession();
-    }
-    if (!result)
-      throw new Error(
-        'Platform membership command transaction returned no result',
-      );
-    return result;
-  }
-
-  async executePlatformInvitationCommand(
-    input: PlatformInvitationCommandInput,
-  ): Promise<MembershipMutationResult> {
-    const actorUserId = new Types.ObjectId(input.actorUserId);
-    const organizationId = new Types.ObjectId(input.organizationId);
-    const session = await this.connectionOrThrow().startSession();
-    let result: MembershipMutationResult | undefined;
-    const keyHash = sha256(input.idempotencyKey);
-    const fingerprintHash = this.fingerprint(
-      input.organizationId,
-      input.command,
-      'PLATFORM',
-    );
-    try {
-      await session.withTransaction(async () => {
-        await this.acquirePlatformAuthorityFence(session);
-        if (
-          !(await this.hasPlatformPermissionAt(
-            actorUserId,
-            input.now,
-            session,
-            platformInvitationPermission,
-          ))
-        )
-          throw new ForbiddenException({
-            code: 'FORBIDDEN',
-            message: 'Insufficient authorization.',
-          });
-
-        const prior = await this.operations()
-          .findOne({ actorUserId, organizationId, keyHash })
-          .session(session)
-          .lean()
-          .exec();
-        if (prior && prior.expiresAt.getTime() > input.now.getTime()) {
-          if (prior.fingerprintHash !== fingerprintHash)
-            throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED' });
-          result = {
-            httpStatus: prior.httpStatus,
-            body: prior.resultBody,
-            replayed: true,
-          };
-          return;
-        }
-
-        // Keep the owner-approved A7 notification evidence and A8 cutover gate
-        // fail-closed. No membership, invitation, operation, outbox, or audit
-        // write is allowed until those external readiness decisions are accepted.
-        throw new ServiceUnavailableException({
-          code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
-        });
-      });
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      throw new InternalServerErrorException({
-        code: 'IAM_MEMBERSHIP_MUTATION_FAILED',
-      });
-    } finally {
-      await session.endSession();
-    }
-    if (!result)
-      throw new Error(
-        'Platform invitation command transaction returned no result',
-      );
     return result;
   }
 
@@ -1156,70 +924,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     return roles.length > 0;
   }
 
-  private async hasPlatformPermissionAt(
-    actorUserId: Types.ObjectId,
-    now: Date,
-    session: ClientSession,
-    permission = platformMembershipPermission,
-  ): Promise<boolean> {
-    const actor = await this.users()
-      .findOne({ _id: actorUserId, status: 'ACTIVE' }, { _id: 1 })
-      .session(session)
-      .lean()
-      .exec();
-    if (!actor) return false;
-    const assignments = await this.model<PlatformAuthorityAssignmentDocument>(
-      'platform_authority_assignments',
-    )
-      .find({
-        subjectUserId: actorUserId,
-        permission,
-        scope: 'PLATFORM',
-      })
-      .session(session)
-      .lean()
-      .exec();
-    const validAssignments = assignments.filter(
-      (assignment) =>
-        assignment.subjectUserId.equals(actorUserId) &&
-        assignment.scope === 'PLATFORM' &&
-        assignment.permission === permission &&
-        assignment.status === 'ACTIVE' &&
-        assignment.revokedAt == null &&
-        assignment.grantedBy instanceof Types.ObjectId &&
-        !assignment.grantedBy.equals(actorUserId) &&
-        assignment.grantedAt instanceof Date &&
-        Number.isFinite(assignment.grantedAt.getTime()) &&
-        assignment.grantedAt.getTime() <= now.getTime() &&
-        (assignment.expiresAt == null ||
-          (assignment.expiresAt instanceof Date &&
-            Number.isFinite(assignment.expiresAt.getTime()) &&
-            assignment.expiresAt.getTime() > now.getTime())),
-    );
-    return validAssignments.length === 1;
-  }
-
-  private async acquirePlatformAuthorityFence(
-    session: ClientSession,
-  ): Promise<void> {
-    const fence = await this.model<{ _id: Types.ObjectId }>(
-      'platform_authority_change_locks',
-    )
-      .updateOne(
-        {
-          permission: 'PLATFORM_OPERATOR_LIFECYCLE',
-          scope: 'PLATFORM',
-        },
-        { $inc: { version: 1 } },
-        { session },
-      )
-      .exec();
-    if (fence.matchedCount !== 1)
-      throw new ServiceUnavailableException({
-        code: 'PLATFORM_AUTHORITY_LOCKS_UNAVAILABLE',
-      });
-  }
-
   private async eligibleAdminIds(
     organizationId: Types.ObjectId,
     session: ClientSession,
@@ -1447,15 +1151,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
   private fingerprint(
     organizationId: string,
     command: OrganizationMembershipCommand,
-    actorContext: 'ORGANIZATION' | 'PLATFORM' = 'ORGANIZATION',
   ): string {
-    return sha256(
-      JSON.stringify({
-        organizationId,
-        ...command,
-        ...(actorContext === 'PLATFORM' ? { actorContext } : {}),
-      }),
-    );
+    return sha256(JSON.stringify({ organizationId, ...command }));
   }
 
   private mapMembership(

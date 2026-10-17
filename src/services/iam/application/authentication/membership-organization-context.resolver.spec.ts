@@ -27,7 +27,6 @@ describe('MembershipOrganizationContextResolver', () => {
       revokeRefreshSessionByHash: jest.fn(),
       findRefreshSessionForRotation: jest.fn(),
       rotateRefreshSession: jest.fn(),
-      hasActiveRefreshSession: jest.fn(),
       findAccountById: jest.fn(),
       createRefreshSession: jest.fn(),
     };

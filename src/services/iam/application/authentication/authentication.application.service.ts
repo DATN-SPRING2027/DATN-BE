@@ -6,12 +6,7 @@ import {
   HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
-import {
-  createHash,
-  randomBytes,
-  randomUUID,
-  timingSafeEqual,
-} from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
 import type { AccessTokenClaims } from './access-token.types';
 import {
@@ -45,7 +40,6 @@ import {
   AuthorizationPolicy,
   PLATFORM_PERMISSIONS,
 } from '../authorization/authorization.policy';
-import type { PlatformPermission } from '../authorization/authorization.policy';
 
 export interface LoginInput {
   email: string;
@@ -80,11 +74,6 @@ export interface AuthenticatedPlatformSubject {
   id: string;
   email: string;
   name: string;
-}
-
-export interface AuthenticatedPlatformSession extends AuthenticatedPlatformSubject {
-  context: 'PLATFORM';
-  permissions: PlatformPermission[];
 }
 
 export interface LoginResult {
@@ -627,11 +616,6 @@ export class AuthenticationApplicationService {
   ): Promise<{ accessToken: string; refreshToken: string; csrfToken: string }> {
     const refreshToken = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
-    const sessionId = randomUUID();
-    const profile = await this.repository.findProfileById(userId);
-    if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
-    const userFence = profile.mutationFence ?? 0;
-    const tokenClaims = { ...claims, sid: sessionId, userFence };
     const sessionTokenHash = createHash('sha256')
       .update(refreshToken)
       .digest('hex');
@@ -644,8 +628,6 @@ export class AuthenticationApplicationService {
         userId,
         context,
         organizationId: claims.orgId,
-        sessionId,
-        userFence,
         tokenHash: sessionTokenHash,
         expiresAt,
       };
@@ -655,8 +637,6 @@ export class AuthenticationApplicationService {
       session = {
         userId,
         context,
-        sessionId,
-        userFence,
         tokenHash: sessionTokenHash,
         expiresAt,
       };
@@ -695,7 +675,7 @@ export class AuthenticationApplicationService {
 
     let accessToken: string;
     try {
-      accessToken = this.accessTokens.signAccessToken(tokenClaims);
+      accessToken = this.accessTokens.signAccessToken(claims);
     } catch (error) {
       if (googleOAuthRequestId) {
         logGoogleOAuthStage({
@@ -887,52 +867,7 @@ export class AuthenticationApplicationService {
       authorization,
       cookieHeader,
     );
-    if (claims.context !== 'PLATFORM') throw unauthorized();
     return { id: claims.sub, email: claims.email, name: profile.name };
-  }
-
-  async getCurrentPlatformSessionIdentity(
-    authorization: string | undefined,
-    cookieHeader: string | undefined,
-  ): Promise<AuthenticatedPlatformSession> {
-    const { claims, profile } = await this.getVerifiedActiveSubject(
-      authorization,
-      cookieHeader,
-    );
-    if (claims.context !== 'PLATFORM') throw unauthorized();
-
-    const now = new Date();
-    const permissions: PlatformPermission[] = [];
-    for (const permission of PLATFORM_PERMISSIONS) {
-      try {
-        const evidence =
-          await this.authorizationEvidence.loadPlatformPermission(
-            claims.sub,
-            permission,
-          );
-        if (
-          evidence &&
-          this.authorizationPolicy.evaluatePlatformPermission({
-            permission,
-            subject: { userId: claims.sub, status: profile.status },
-            assignments: evidence.assignments,
-            now,
-          }).allowed
-        )
-          permissions.push(permission);
-      } catch {
-        // A partial or unavailable evidence store must never advertise rights.
-      }
-    }
-    if (permissions.length === 0) throw unauthorized();
-
-    return {
-      id: claims.sub,
-      email: claims.email,
-      name: profile.name,
-      context: 'PLATFORM',
-      permissions,
-    };
   }
 
   private async getVerifiedActiveSubject(
@@ -954,9 +889,6 @@ export class AuthenticationApplicationService {
       if (error instanceof AccessTokenError) throw unauthorized();
       throw error;
     }
-    // Legacy access JWTs without a refresh-session family cannot be revoked
-    // individually. They must refresh once to receive the family-bound claim.
-    if (!claims.sid) throw unauthorized();
 
     if (
       await this.securityStore.isTokenRevoked(
@@ -968,17 +900,6 @@ export class AuthenticationApplicationService {
 
     const profile = await this.repository.findProfileById(claims.sub);
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
-    if ((claims.userFence ?? 0) !== (profile.mutationFence ?? 0))
-      throw unauthorized();
-    if (
-      claims.sid &&
-      !(await this.repository.hasActiveRefreshSession(
-        claims.sub,
-        claims.sid,
-        new Date(),
-      ))
-    )
-      throw unauthorized();
     return { claims, profile };
   }
 
@@ -1032,7 +953,6 @@ export class AuthenticationApplicationService {
         createHash('sha256').update(replacement).digest('hex'),
         new Date(now.getTime() + REFRESH_LIFETIME_MS),
         now,
-        current.sessionId,
       );
       throw unauthorized();
     }
@@ -1042,18 +962,12 @@ export class AuthenticationApplicationService {
     if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
       throw unauthorized();
     }
-    const profile = await this.repository.findProfileById(current.userId);
-    if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
-    const userFence = profile.mutationFence ?? 0;
-    if (current.userFence !== userFence) throw unauthorized();
     let accessToken: string;
     if (current.context === 'ACCOUNT') {
       accessToken = this.accessTokens.signAccessToken({
         sub: current.userId,
         email: account.email,
         context: 'ACCOUNT',
-        sid: current.sessionId,
-        userFence,
       });
     } else if (current.context === 'PLATFORM') {
       if (
@@ -1067,8 +981,6 @@ export class AuthenticationApplicationService {
         sub: current.userId,
         email: account.email,
         context: 'PLATFORM',
-        sid: current.sessionId,
-        userFence,
       });
     } else {
       const organization = await this.organizationResolver.resolveForUser(
@@ -1083,8 +995,6 @@ export class AuthenticationApplicationService {
         email: account.email,
         orgId: current.organizationId,
         roles: organization.context.roles,
-        sid: current.sessionId,
-        userFence,
       });
     }
     const rotation = await this.repository.rotateRefreshSession(
@@ -1092,7 +1002,6 @@ export class AuthenticationApplicationService {
       createHash('sha256').update(replacement).digest('hex'),
       new Date(now.getTime() + REFRESH_LIFETIME_MS),
       now,
-      current.sessionId,
     );
     if (rotation.outcome !== 'ROTATED') throw unauthorized();
     return { accessToken, refreshToken: replacement };

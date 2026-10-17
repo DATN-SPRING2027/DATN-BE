@@ -25,7 +25,6 @@ interface UserDocument {
   fullName: string;
   status: string;
   twoFactorEnabled?: boolean;
-  mutationFence?: number;
 }
 
 interface RoleAssignmentDocument {
@@ -45,8 +44,6 @@ interface OrganizationDocument {
 interface RefreshSessionDocument {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
-  sessionId?: string;
-  userFence?: number;
   organizationId?: Types.ObjectId | null;
   context?: string;
   tokenHash: string;
@@ -300,21 +297,10 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       'USER_MODEL_UNAVAILABLE',
     );
     const user = await model
-      .findById(new Types.ObjectId(userId), {
-        fullName: 1,
-        status: 1,
-        mutationFence: 1,
-      })
+      .findById(new Types.ObjectId(userId), { fullName: 1, status: 1 })
       .lean()
       .exec();
-    if (!user) return null;
-    const mutationFence = user.mutationFence ?? 0;
-    if (!Number.isSafeInteger(mutationFence) || mutationFence < 0) {
-      throw new AuthenticationRepositoryUnavailableError(
-        'USER_MODEL_UNAVAILABLE',
-      );
-    }
-    return { name: user.fullName, status: user.status, mutationFence };
+    return user ? { name: user.fullName, status: user.status } : null;
   }
 
   async replacePasswordHashIfCurrent(
@@ -361,10 +347,7 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
         const updated = await users
           .updateOne(
             { _id: accountId, status: 'ACTIVE' },
-            {
-              $set: { passwordHash: replacementHash },
-              $inc: { mutationFence: 1 },
-            },
+            { $set: { passwordHash: replacementHash } },
             { session },
           )
           .exec();
@@ -390,51 +373,13 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       REFRESH_SESSIONS_MODEL,
       'REFRESH_SESSION_MODEL_UNAVAILABLE',
     );
-    if (!this.connection) {
-      throw new AuthenticationRepositoryUnavailableError(
-        'CONNECTION_UNAVAILABLE',
-      );
-    }
-    const session = await this.connection.startSession();
-    try {
-      const revoked = await session.withTransaction(async () => {
-        const row = await model
-          .findOne({ tokenHash })
-          .session(session)
-          .lean()
-          .exec();
-        if (
-          !row ||
-          row.isRevoked === true ||
-          !(row.userId instanceof Types.ObjectId)
-        )
-          return false;
-        const sessionId =
-          typeof row.sessionId === 'string'
-            ? row.sessionId
-            : row._id.toHexString();
-        const familyMatch: Record<string, unknown> = {
-          userId: row.userId,
-          $or: [{ sessionId }],
-        };
-        if (!row.sessionId)
-          (familyMatch.$or as Record<string, unknown>[]).push({
-            _id: row._id,
-            sessionId: { $exists: false },
-          });
-        const result = await model
-          .updateMany(
-            { ...familyMatch, isRevoked: { $ne: true } },
-            { $set: { isRevoked: true, updatedAt: new Date() } },
-            { session, timestamps: false },
-          )
-          .exec();
-        return result.modifiedCount > 0;
-      });
-      return revoked === true;
-    } finally {
-      await session.endSession();
-    }
+    const result = await model
+      .updateOne(
+        { tokenHash, isRevoked: { $ne: true } },
+        { $set: { isRevoked: true } },
+      )
+      .exec();
+    return result.modifiedCount > 0;
   }
 
   async findRefreshSessionForRotation(
@@ -447,10 +392,7 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     const row = await model
       .findOne({ tokenHash })
       .select({
-        _id: 1,
         userId: 1,
-        sessionId: 1,
-        userFence: 1,
         organizationId: 1,
         context: 1,
         isRevoked: 1,
@@ -459,16 +401,13 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       .lean()
       .exec();
     const sessionContext = row ? refreshSessionContext(row) : null;
-    const userFence = row?.userFence ?? 0;
     if (
       !row ||
       !(row.userId instanceof Types.ObjectId) ||
       !sessionContext ||
       typeof row.isRevoked !== 'boolean' ||
       !(row.expiresAt instanceof Date) ||
-      !Number.isFinite(row.expiresAt.getTime()) ||
-      !Number.isSafeInteger(userFence) ||
-      userFence < 0
+      !Number.isFinite(row.expiresAt.getTime())
     ) {
       return { outcome: 'INVALID' };
     }
@@ -476,11 +415,6 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       ? {
           outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
           userId: String(row.userId),
-          sessionId:
-            typeof row.sessionId === 'string'
-              ? row.sessionId
-              : row._id.toHexString(),
-          userFence,
           context: sessionContext.context,
           organizationId: String(sessionContext.organizationId),
           expiresAt: row.expiresAt,
@@ -488,11 +422,6 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       : {
           outcome: row.isRevoked ? 'REVOKED' : 'ACTIVE',
           userId: String(row.userId),
-          sessionId:
-            typeof row.sessionId === 'string'
-              ? row.sessionId
-              : row._id.toHexString(),
-          userFence,
           context: sessionContext.context,
           expiresAt: row.expiresAt,
         };
@@ -503,7 +432,6 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     replacementHash: string,
     expiresAt: Date,
     now: Date,
-    requestedSessionId?: string,
   ): Promise<RefreshRotationResult> {
     const model = this.getModel<RefreshSessionDocument>(
       REFRESH_SESSIONS_MODEL,
@@ -542,27 +470,11 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
               { session },
             )
             .exec();
-          const users = this.getModel<UserDocument>(
-            USERS_MODEL,
-            'USER_MODEL_UNAVAILABLE',
-          );
-          await users
-            .updateOne(
-              { _id: row.userId },
-              { $inc: { mutationFence: 1 } },
-              { session },
-            )
-            .exec();
           return { outcome: 'REPLAYED' } as const;
         }
         if (row.expiresAt.getTime() <= effectiveNow.getTime()) {
           return { outcome: 'INVALID' } as const;
         }
-        const sessionId =
-          requestedSessionId ??
-          (typeof row.sessionId === 'string'
-            ? row.sessionId
-            : row._id.toHexString());
         const consumed = await model
           .updateOne(
             {
@@ -582,8 +494,6 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
           [
             {
               userId: row.userId,
-              sessionId,
-              userFence: row.userFence ?? 0,
               ...(sessionContext.context === 'ORGANIZATION'
                 ? { organizationId: sessionContext.organizationId }
                 : {}),
@@ -634,42 +544,11 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
       ...(session.context === 'ORGANIZATION'
         ? { organizationId: new Types.ObjectId(session.organizationId) }
         : {}),
-      sessionId: session.sessionId,
-      userFence: session.userFence,
       context: session.context,
       tokenHash: session.tokenHash,
       isRevoked: false,
       expiresAt: session.expiresAt,
     });
-  }
-
-  async hasActiveRefreshSession(
-    userId: string,
-    sessionId: string,
-    now: Date,
-  ): Promise<boolean> {
-    if (!Types.ObjectId.isValid(userId)) return false;
-    const alternatives: Record<string, unknown>[] = [{ sessionId }];
-    if (/^[a-f\d]{24}$/i.test(sessionId)) {
-      alternatives.push({
-        _id: new Types.ObjectId(sessionId),
-        sessionId: { $exists: false },
-      });
-    }
-    const model = this.getModel<RefreshSessionDocument>(
-      REFRESH_SESSIONS_MODEL,
-      'REFRESH_SESSION_MODEL_UNAVAILABLE',
-    );
-    return Boolean(
-      await model
-        .exists({
-          userId: new Types.ObjectId(userId),
-          isRevoked: false,
-          expiresAt: { $gt: now },
-          $or: alternatives,
-        })
-        .exec(),
-    );
   }
 
   private toAuthenticationAccount(user: UserDocument): AuthenticationAccount {

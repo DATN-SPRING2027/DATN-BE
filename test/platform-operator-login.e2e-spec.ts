@@ -21,21 +21,12 @@ import { IamApplicationService } from '../src/services/iam/application/iam.servi
 import { OrganizationProvisioningService } from '../src/services/iam/application/organizations/organization-provisioning.service';
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from '../src/services/iam/application/organizations/organization-provisioning.repository';
 import { PlatformAuditService } from '../src/services/iam/application/platform/platform-audit.service';
-import { PlatformAdministrationService } from '../src/services/iam/application/platform/platform-administration.service';
-import { PlatformDashboardOverviewService } from '../src/services/iam/application/platform/platform-dashboard-overview.service';
-import { PlatformServiceOperationsService } from '../src/services/iam/application/platform/platform-service-operations.service';
-import { PlatformJobOperationsService } from '../src/services/iam/application/platform/platform-job-operations.service';
-import { PlatformAiOperationsService } from '../src/services/iam/application/platform/platform-ai-operations.service';
-import { PlatformIntegrationReadService } from '../src/services/iam/application/platform/platform-integration-read.service';
-import { PlatformIntegrationOperationsService } from '../src/services/iam/application/platform/platform-integration-operations.service';
-import { PlatformIncidentService } from '../src/services/iam/application/platform/platform-incident.service';
 import { AuthenticationController } from '../src/services/iam/controllers/authentication.controller';
 import { PlatformController } from '../src/services/iam/controllers/platform.controller';
 import { LeaderDirectedLoginEligibilityPolicy } from '../src/services/iam/application/authentication/leader-directed-login-eligibility.policy';
 
 const USER_ID = '651a2b3c4d5e6f7a8b9c0d1e';
 const ADMIN_ID = '651a2b3c4d5e6f7a8b9c0d20';
-const SESSION_ID = '751a2b3c4d5e6f7a8b9c0d1e';
 const SECRET = 'platform-e2e-secret-at-least-32-characters';
 
 describe('Platform Operator login and provisioning (e2e)', () => {
@@ -46,16 +37,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
   let createOrganization: jest.Mock;
   let loadPlatformPermission: jest.Mock;
   let listOperationalMetadata: jest.Mock;
-  let administration: jest.Mocked<
-    Pick<
-      PlatformAdministrationService,
-      | 'listOrganizations'
-      | 'findOrganization'
-      | 'lookupActiveUser'
-      | 'listOrganizationMemberships'
-      | 'suspendMembership'
-    >
-  >;
 
   beforeAll(async () => {
     assignmentActive = true;
@@ -84,7 +65,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       revokeRefreshSessionByHash: jest.fn().mockResolvedValue(true),
       findRefreshSessionForRotation: jest.fn(),
       rotateRefreshSession: jest.fn(),
-      hasActiveRefreshSession: jest.fn().mockResolvedValue(true),
       findAccountById: jest.fn(),
       createRefreshSession: jest.fn().mockResolvedValue(undefined),
     };
@@ -118,32 +98,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       updatedAt: '2026-10-08T00:00:00.000Z',
     });
     listOperationalMetadata = jest.fn().mockResolvedValue([]);
-    administration = {
-      listOrganizations: jest.fn().mockResolvedValue({
-        data: [],
-        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
-      }),
-      findOrganization: jest.fn(),
-      lookupActiveUser: jest.fn(),
-      listOrganizationMemberships: jest.fn().mockResolvedValue({
-        data: [],
-        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
-      }),
-      suspendMembership: jest.fn().mockResolvedValue({
-        httpStatus: 200,
-        replayed: false,
-        body: {
-          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
-          membership: {
-            id: '951a2b3c4d5e6f7a8b9c0d1f',
-            organizationId: '651a2b3c4d5e6f7a8b9c0d1f',
-            userId: 'a51a2b3c4d5e6f7a8b9c0d1f',
-            status: 'SUSPENDED',
-            version: 2,
-          },
-        },
-      }),
-    };
 
     const module = await Test.createTestingModule({
       controllers: [AuthenticationController, PlatformController],
@@ -201,14 +155,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
           provide: PlatformAuditService,
           useValue: { listOperationalMetadata },
         },
-        { provide: PlatformAdministrationService, useValue: administration },
-        { provide: PlatformDashboardOverviewService, useValue: {} },
-        { provide: PlatformServiceOperationsService, useValue: {} },
-        { provide: PlatformJobOperationsService, useValue: {} },
-        { provide: PlatformAiOperationsService, useValue: {} },
-        { provide: PlatformIntegrationReadService, useValue: {} },
-        { provide: PlatformIntegrationOperationsService, useValue: {} },
-        { provide: PlatformIncidentService, useValue: {} },
       ],
     }).compile();
 
@@ -226,16 +172,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     assignedPermission = 'organization.create';
     jest.clearAllMocks();
     listOperationalMetadata.mockResolvedValue([]);
-    administration.listOrganizations.mockResolvedValue({
-      data: [],
-      pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
-    });
-    administration.lookupActiveUser.mockReset();
-    administration.listOrganizationMemberships.mockResolvedValue({
-      data: [],
-      pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
-    });
-    administration.suspendMembership.mockClear();
     repository.findAccountByEmail.mockResolvedValue({
       userId: USER_ID,
       email: 'operator@example.test',
@@ -284,30 +220,9 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     const accessCookie = cookies.find((cookie: string) =>
       cookie.startsWith('continuum_access='),
     ) as string;
-    const csrfCookie = cookies.find((cookie: string) =>
-      cookie.startsWith('__Host-csrf='),
-    ) as string;
-    const accessCookieValue = accessCookie.split(';', 1)[0];
-    const csrfCookieValue = csrfCookie.split(';', 1)[0];
-    const csrfToken = csrfCookieValue.slice('__Host-csrf='.length);
-
-    await request(server)
-      .post('/api/v1/iam/platform/organizations')
-      .type('form')
-      .set('Cookie', `${accessCookieValue}; ${csrfCookieValue}`)
-      .send({
-        name: 'Forged Organization',
-        slug: 'forged-organization',
-        plan: 'FREE',
-        firstAdminUserId: ADMIN_ID,
-      })
-      .expect(403);
-    expect(createOrganization).not.toHaveBeenCalled();
-
     const provision = await request(server)
       .post('/api/v1/iam/platform/organizations')
-      .set('Cookie', `${accessCookieValue}; ${csrfCookieValue}`)
-      .set('X-CSRF-Token', csrfToken)
+      .set('Cookie', accessCookie.split(';', 1)[0])
       .send({
         name: 'First Organization',
         slug: 'first-organization',
@@ -339,16 +254,11 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     const accessCookie = cookies.find((cookie: string) =>
       cookie.startsWith('continuum_access='),
     ) as string;
-    const csrfCookie = cookies.find((cookie: string) =>
-      cookie.startsWith('__Host-csrf='),
-    ) as string;
-    const csrfCookieValue = csrfCookie.split(';', 1)[0];
 
     assignmentActive = false;
     await request(server)
       .post('/api/v1/iam/platform/organizations')
-      .set('Cookie', `${accessCookie.split(';', 1)[0]}; ${csrfCookieValue}`)
-      .set('X-CSRF-Token', csrfCookieValue.slice('__Host-csrf='.length))
+      .set('Cookie', accessCookie.split(';', 1)[0])
       .send({
         name: 'Denied Organization',
         slug: 'denied-organization',
@@ -358,24 +268,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       .expect(403);
 
     expect(createOrganization).not.toHaveBeenCalled();
-  });
-
-  it('returns only current exact permissions to the signed-in Platform principal', async () => {
-    assignedPermission = 'platform.organizations.organization.read';
-    const response = await request(app.getHttpServer() as App)
-      .get('/api/v1/auth/platform/me')
-      .set('Authorization', `Bearer ${operatorToken()}`)
-      .expect(200);
-
-    expect(response.body).toEqual({
-      id: USER_ID,
-      email: 'operator@example.test',
-      name: 'Platform Operator',
-      context: 'PLATFORM',
-      permissions: ['platform.organizations.organization.read'],
-    });
-    expect(response.headers['cache-control']).toContain('no-store');
-    expect(response.text).not.toContain(SECRET);
   });
 
   it('serves the documented IAM liveness response for a health-only Platform assignment', async () => {
@@ -430,113 +322,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     expect(listOperationalMetadata).toHaveBeenCalledTimes(1);
   });
 
-  it('serves the minimal administration projections only with their exact permissions', async () => {
-    assignedPermission = 'platform.organizations.organization.read';
-    administration.listOrganizations.mockResolvedValue({
-      data: [
-        {
-          id: '651a2b3c4d5e6f7a8b9c0d21',
-          name: 'Organization A',
-          slug: 'organization-a',
-          plan: 'FREE',
-          createdAt: '2026-10-08T00:00:00.000Z',
-          updatedAt: '2026-10-08T00:00:00.000Z',
-        },
-      ],
-      pagination: { page: 1, pageSize: 20, totalItems: 1, totalPages: 1 },
-    });
-    const server = app.getHttpServer() as App;
-    const organizationResponse = await request(server)
-      .get('/api/v1/iam/platform/organizations')
-      .set('Authorization', `Bearer ${operatorToken()}`)
-      .expect(200);
-    expect(organizationResponse.body).toMatchObject({
-      data: [
-        {
-          id: '651a2b3c4d5e6f7a8b9c0d21',
-          name: 'Organization A',
-          slug: 'organization-a',
-          plan: 'FREE',
-        },
-      ],
-    });
-    expect(organizationResponse.headers['cache-control']).toContain('no-store');
-    expect(administration.listOrganizations).toHaveBeenCalledWith(1, 20);
-
-    assignedPermission = 'platform.users.account.read';
-    administration.lookupActiveUser.mockResolvedValue({
-      id: ADMIN_ID,
-      email: 'admin@example.test',
-      fullName: 'First Admin',
-      status: 'ACTIVE',
-    });
-    const lookupResponse = await request(server)
-      .post('/api/v1/iam/platform/users/lookup')
-      .set('Authorization', `Bearer ${operatorToken()}`)
-      .set('Cookie', '__Host-csrf=csrf-value')
-      .set('X-CSRF-Token', 'csrf-value')
-      .send({ email: ' Admin@Example.test ' })
-      .expect(200);
-    expect(lookupResponse.body).toEqual({
-      id: ADMIN_ID,
-      email: 'admin@example.test',
-      fullName: 'First Admin',
-      status: 'ACTIVE',
-    });
-    expect(lookupResponse.headers['cache-control']).toContain('no-store');
-    expect(administration.lookupActiveUser).toHaveBeenCalledWith(
-      ' Admin@Example.test ',
-    );
-  });
-
-  it('requires exact membership permission and CSRF before suspending a scoped membership', async () => {
-    assignedPermission = 'platform.memberships.membership.read';
-    const server = app.getHttpServer() as App;
-    const denied = await request(server)
-      .post(
-        `/api/v1/iam/platform/organizations/${ADMIN_ID}/memberships/${USER_ID}/suspend`,
-      )
-      .set('Authorization', `Bearer ${operatorToken()}`)
-      .set('Cookie', '__Host-csrf=csrf-value')
-      .set('X-CSRF-Token', 'csrf-value')
-      .send({ expectedMembershipVersion: 1, reasonCode: 'ACCESS_REVIEW' })
-      .expect(403);
-    expect(denied.body).toMatchObject({
-      code: expect.any(String) as string,
-      message: 'Insufficient authorization.',
-      details: {},
-      requestId: expect.any(String) as string,
-    });
-    expect(administration.suspendMembership).not.toHaveBeenCalled();
-
-    assignedPermission = 'platform.memberships.lifecycle.manage';
-    await request(server)
-      .post(
-        `/api/v1/iam/platform/organizations/${ADMIN_ID}/memberships/${USER_ID}/suspend`,
-      )
-      .set('Authorization', `Bearer ${operatorToken()}`)
-      .set('Cookie', '__Host-csrf=csrf-value')
-      .set('X-CSRF-Token', 'csrf-value')
-      .set('Idempotency-Key', 'platform-suspend-membership-001')
-      .send({ expectedMembershipVersion: 1, reasonCode: 'ACCESS_REVIEW' })
-      .expect(200)
-      .expect(({ body, headers }) => {
-        expect(body).toMatchObject({
-          membership: { status: 'SUSPENDED' },
-        });
-        expect(headers['cache-control']).toContain('no-store');
-        expect(headers['x-idempotent-replay']).toBe('false');
-      });
-    expect(administration.suspendMembership).toHaveBeenCalledWith({
-      actorUserId: USER_ID,
-      organizationId: ADMIN_ID,
-      membershipId: USER_ID,
-      idempotencyKey: 'platform-suspend-membership-001',
-      expectedMembershipVersion: 1,
-      reasonCode: 'ACCESS_REVIEW',
-    });
-  });
-
   it('denies audit access when the current assignment grants only health read', async () => {
     assignedPermission = 'platform.health.read';
     const token = operatorToken();
@@ -574,8 +359,6 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       sub: USER_ID,
       email: 'operator@example.test',
       context: 'PLATFORM',
-      sid: SESSION_ID,
-      userFence: 0,
     });
   }
 

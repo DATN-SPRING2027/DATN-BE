@@ -52,35 +52,10 @@ export interface MembershipMutationAcknowledgement {
   };
 }
 
-export type PlatformInvitationCommand = Exclude<
-  OrganizationMembershipCommand,
-  { command: 'SUSPEND' }
->;
-
-export interface PlatformInvitationCommandInput {
-  actorUserId: string;
-  organizationId: string;
-  idempotencyKey: string;
-  command: PlatformInvitationCommand;
-  now: Date;
-  correlationId?: string;
-}
-
 export interface MembershipMutationResult {
   httpStatus: 200 | 201;
   body: MembershipMutationAcknowledgement;
   replayed: boolean;
-}
-
-export interface PlatformMembershipSuspendInput {
-  actorUserId: string;
-  organizationId: string;
-  membershipId: string;
-  idempotencyKey: string;
-  expectedMembershipVersion: number;
-  reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
-  now: Date;
-  correlationId?: string;
 }
 
 export interface AdminInvitationSummary {
@@ -131,11 +106,5 @@ export interface OrganizationMembershipCommandRepository {
       now: Date;
       correlationId?: string;
     },
-  ): Promise<MembershipMutationResult>;
-  executePlatformSuspend(
-    input: PlatformMembershipSuspendInput,
-  ): Promise<MembershipMutationResult>;
-  executePlatformInvitationCommand(
-    input: PlatformInvitationCommandInput,
   ): Promise<MembershipMutationResult>;
 }

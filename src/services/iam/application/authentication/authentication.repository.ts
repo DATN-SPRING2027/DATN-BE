@@ -29,7 +29,6 @@ export interface LoginOrganizationOption {
 export interface AuthenticationProfile {
   name: string;
   status: string;
-  mutationFence?: number;
 }
 
 export interface RefreshAccount {
@@ -44,8 +43,6 @@ export type NewRefreshSession =
   | {
       userId: string;
       context: 'ACCOUNT';
-      sessionId: string;
-      userFence: number;
       tokenHash: string;
       expiresAt: Date;
     }
@@ -53,16 +50,12 @@ export type NewRefreshSession =
       userId: string;
       context: 'ORGANIZATION';
       organizationId: string;
-      sessionId: string;
-      userFence: number;
       tokenHash: string;
       expiresAt: Date;
     }
   | {
       userId: string;
       context: 'PLATFORM';
-      sessionId: string;
-      userFence: number;
       tokenHash: string;
       expiresAt: Date;
     };
@@ -90,16 +83,12 @@ export type RefreshSessionLookup =
   | {
       outcome: 'ACTIVE' | 'REVOKED';
       userId: string;
-      sessionId: string;
-      userFence: number;
       context: 'ACCOUNT';
       expiresAt: Date;
     }
   | {
       outcome: 'ACTIVE' | 'REVOKED';
       userId: string;
-      sessionId: string;
-      userFence: number;
       context: 'ORGANIZATION';
       organizationId: string;
       expiresAt: Date;
@@ -107,8 +96,6 @@ export type RefreshSessionLookup =
   | {
       outcome: 'ACTIVE' | 'REVOKED';
       userId: string;
-      sessionId: string;
-      userFence: number;
       context: 'PLATFORM';
       expiresAt: Date;
     }
@@ -152,13 +139,7 @@ export interface AuthenticationRepositoryPort {
     replacementHash: string,
     expiresAt: Date,
     now: Date,
-    sessionId?: string,
   ): Promise<RefreshRotationResult>;
-  hasActiveRefreshSession(
-    userId: string,
-    sessionId: string,
-    now: Date,
-  ): Promise<boolean>;
   findAccountById(userId: string): Promise<RefreshAccount | null>;
   createRefreshSession(this: void, session: NewRefreshSession): Promise<void>;
 }

@@ -4,8 +4,6 @@ interface AccessTokenBaseClaims {
   iat: number;
   exp: number;
   jti: string;
-  sid?: string;
-  userFence?: number;
 }
 
 export type AccessTokenClaims =
@@ -34,15 +32,11 @@ export type AccessTokenClaimsInput =
       sub: string;
       email: string;
       context: 'ACCOUNT';
-      sid?: string;
-      userFence?: number;
     }
   | {
       sub: string;
       email: string;
       context: 'PLATFORM';
-      sid?: string;
-      userFence?: number;
     }
   | {
       sub: string;
@@ -52,8 +46,6 @@ export type AccessTokenClaimsInput =
       orgId: string;
       roles: string[];
       activeProjectId?: string;
-      sid?: string;
-      userFence?: number;
     };
 
 export type AccessTokenClaimsFailure =
@@ -76,8 +68,6 @@ const ALLOWED_CLAIM_NAMES = new Set([
   'iat',
   'exp',
   'jti',
-  'sid',
-  'userFence',
 ]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -116,14 +106,7 @@ export function validateAccessTokenClaims(
     !Number.isSafeInteger(claims.iat) ||
     !Number.isSafeInteger(claims.exp) ||
     typeof claims.jti !== 'string' ||
-    !UUID_PATTERN.test(claims.jti) ||
-    (claims.sid !== undefined &&
-      (typeof claims.sid !== 'string' ||
-        (!UUID_PATTERN.test(claims.sid) &&
-          !/^[a-f\d]{24}$/i.test(claims.sid)))) ||
-    (claims.userFence !== undefined &&
-      (!Number.isSafeInteger(claims.userFence) ||
-        (claims.userFence as number) < 0))
+    !UUID_PATTERN.test(claims.jti)
   ) {
     throw new AccessTokenClaimsError('INVALID_CLAIMS');
   }
@@ -165,10 +148,6 @@ export function validateAccessTokenClaims(
     iat: issuedAt,
     exp: expiresAt,
     jti: claims.jti,
-    ...(typeof claims.sid === 'string' ? { sid: claims.sid } : {}),
-    ...(typeof claims.userFence === 'number'
-      ? { userFence: claims.userFence }
-      : {}),
   };
 
   if (context === 'PLATFORM') return { ...common, context: 'PLATFORM' };

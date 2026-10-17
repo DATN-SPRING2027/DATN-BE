@@ -292,11 +292,7 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           }
         }
         await this.users()
-          .updateOne(
-            { _id: userObjectId },
-            { $set: changes, $inc: { mutationFence: 1 } },
-            { session },
-          )
+          .updateOne({ _id: userObjectId }, { $set: changes }, { session })
           .exec();
       });
     } finally {
