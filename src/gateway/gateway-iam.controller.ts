@@ -68,6 +68,22 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('auth/registrations')
+  requestEmailRegistration(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('auth/registrations/verify')
+  verifyEmailRegistration(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Post('auth/password-reset/request')
   requestPasswordReset(
     @Req() request: Request,
@@ -319,7 +335,7 @@ export class GatewayIamController {
       if (typeof value === 'string') headers[name] = value;
     }
     if (
-      /^\/api\/v1\/auth\/(?:login|password-reset\/(?:request|confirm))$/.test(
+      /^\/api\/v1\/auth\/(?:login|password-reset\/(?:request|confirm)|registrations(?:\/verify)?)$/.test(
         request.path,
       )
     ) {

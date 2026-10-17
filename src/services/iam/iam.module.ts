@@ -6,6 +6,10 @@ import { AuthenticationApplicationService } from './application/authentication/a
 import { PasswordResetOutboxWorker } from './infrastructure/email/password-reset-outbox.worker';
 import { PASSWORD_RESET_MAILER } from './application/authentication/password-reset.mailer';
 import { PasswordResetService } from './application/authentication/password-reset.service';
+import { EmailRegistrationService } from './application/authentication/email-registration.service';
+import { EmailRegistrationOutboxWorker } from './infrastructure/email/email-registration-outbox.worker';
+import { EMAIL_REGISTRATION_MAILER } from './application/authentication/email-registration.mailer';
+import { SmtpEmailRegistrationMailer } from './infrastructure/email/smtp-email-registration.mailer';
 import { GoogleOAuthService } from './application/authentication/google-oauth.service';
 import { AUTHENTICATION_REPOSITORY } from './application/authentication/authentication.repository';
 import { LeaderDirectedLoginEligibilityPolicy } from './application/authentication/leader-directed-login-eligibility.policy';
@@ -19,6 +23,7 @@ import { ProjectCreateAuthorizationGuard } from './application/authorization/pro
 import { PlatformAuthorizationGuard } from './application/authorization/platform-authorization.guard';
 import { IamApplicationService } from './application/iam.service';
 import { AuthenticationController } from './controllers/authentication.controller';
+import { EmailRegistrationController } from './controllers/email-registration.controller';
 import { IamController } from './controllers/iam.controller';
 import { IamInfrastructureModule } from './infrastructure/iam.infrastructure.module';
 import { AuthenticationRepository } from './infrastructure/mongodb/authentication.repository';
@@ -73,6 +78,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
   controllers: [
     IamController,
     AuthenticationController,
+    EmailRegistrationController,
     UserDirectoryController,
     OrganizationMembershipReadController,
     ProjectController,
@@ -87,11 +93,19 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     AccessTokenService,
     AuthenticationApplicationService,
     PasswordResetService,
+    EmailRegistrationService,
     GoogleOAuthService,
     { provide: AUTH_SECURITY_STORE, useExisting: RedisService },
     { provide: PASSWORD_RESET_MAILER, useClass: SmtpPasswordResetMailer },
+    {
+      provide: EMAIL_REGISTRATION_MAILER,
+      useClass: SmtpEmailRegistrationMailer,
+    },
     ...(process.env.INFRA_ENABLED === 'true'
       ? [PasswordResetOutboxWorker]
+      : []),
+    ...(process.env.INFRA_ENABLED === 'true'
+      ? [EmailRegistrationOutboxWorker]
       : []),
     LeaderDirectedLoginEligibilityPolicy,
     MembershipOrganizationContextResolver,
