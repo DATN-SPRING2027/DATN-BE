@@ -42,6 +42,7 @@ const integration =
   process.env.MONGODB_INTEGRATION === 'true' ? describe : describe.skip;
 const collections = [
   'users',
+  'refresh_sessions',
   'organizations',
   'organization_memberships',
   'roles',
@@ -58,6 +59,7 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
   const adminId = new Types.ObjectId();
   const roleId = new Types.ObjectId();
   const secret = randomBytes(32).toString('hex');
+  const operatorSessionId = randomUUID();
   let connection: Connection;
   let app: INestApplication | undefined;
   let token: string;
@@ -197,6 +199,7 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
       sub: String(operatorId),
       email: 'operator@example.test',
       context: 'PLATFORM',
+      sid: operatorSessionId,
     });
   }, 30_000);
 
@@ -222,6 +225,14 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
         status: 'ACTIVE',
       },
     ]);
+    await connection.collection('refresh_sessions').insertOne({
+      userId: operatorId,
+      sessionId: operatorSessionId,
+      context: 'PLATFORM',
+      tokenHash: 'a-05-test-session-hash',
+      isRevoked: false,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
     await connection.collection('roles').insertOne({
       _id: roleId,
       code: 'ADMIN',
