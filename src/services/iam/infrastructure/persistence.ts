@@ -117,10 +117,71 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
+      name: 'platform_incidents',
+      indexes: [
+        index(
+          { status: 1, updatedAt: -1, _id: -1 },
+          { name: 'platform_incident_status_list' },
+        ),
+        index(
+          { affectedServiceId: 1, status: 1, updatedAt: -1, _id: -1 },
+          { name: 'platform_incident_service_status_list' },
+        ),
+      ],
+    },
+    {
+      name: 'platform_incident_history',
+      indexes: [
+        index(
+          { incidentId: 1, occurredAt: 1, _id: 1 },
+          { name: 'platform_incident_history_order' },
+        ),
+      ],
+    },
+    {
+      name: 'platform_incident_operations',
+      indexes: [
+        index(
+          { actorUserId: 1, idempotencyKeyHash: 1 },
+          { name: 'platform_incident_operation_key', unique: true },
+        ),
+        index(
+          { incidentId: 1, committedAt: -1 },
+          { name: 'platform_incident_operation_history' },
+        ),
+      ],
+    },
+    {
       name: 'platform_authority_assignments',
       indexes: [
         index({ subjectUserId: 1, permission: 1, scope: 1 }, { unique: true }),
         index({ subjectUserId: 1, status: 1, permission: 1 }),
+      ],
+    },
+    {
+      name: 'platform_authority_change_operations',
+      indexes: [
+        index(
+          { operationId: 1 },
+          { name: 'platform_authority_operation_id', unique: true },
+        ),
+        index(
+          { targetUserId: 1, committedAt: -1 },
+          { name: 'platform_authority_operation_target_v2' },
+        ),
+        index(
+          { actorUserId: 1, committedAt: -1 },
+          { name: 'platform_authority_operation_actor' },
+        ),
+      ],
+    },
+    {
+      name: 'platform_authority_change_locks',
+      indexes: [
+        index(
+          { permission: 1, scope: 1 },
+          { name: 'platform_authority_change_lock_key', unique: true },
+        ),
       ],
     },
     {

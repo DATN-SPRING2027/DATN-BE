@@ -242,10 +242,23 @@ test('derives all service collections and indexes from current Mongoose schemas'
     ],
   );
 
+  const iamTarget = plan.find(
+    ({ databaseName }) => databaseName === 'continuum_iam',
+  );
+  assert.equal(
+    iamTarget.collections.some(({ name }) => name === 'team_operations'),
+    false,
+  );
+
   const auditCollection = plan
     .find(({ databaseName }) => databaseName === 'continuum_audit')
     .collections.find(({ name }) => name === 'audit_logs_iam');
-  assert.deepEqual(auditCollection.indexes, []);
+  assert.equal(
+    auditCollection.indexes.some(
+      ({ name }) => name === 'team_audit_command_dedupe',
+    ),
+    false,
+  );
 });
 
 test('creates missing schemas/indexes idempotently without replacing existing data', async () => {
@@ -274,6 +287,21 @@ test('creates only fresh deterministic synthetic IAM data and reruns without ove
   const password = 'test-only password not shown in output';
   const first = await seedDevelopmentDataset(connection, password);
   const iam = connection.useDb('continuum_iam').db;
+  const adminRole = iam
+    .collection('roles')
+    .documents.find((role) => role.code === 'ADMIN');
+  assert.deepEqual(adminRole.permissions, [
+    'organization.memberships.read',
+    'organization.memberships.manage',
+    'project.visibility.manage',
+    'project.leader.manage',
+  ]);
+  assert.ok(
+    iam
+      .collection('organization_memberships')
+      .documents.every((membership) => membership.version === 1),
+    'the synthetic ACTIVE memberships must include the lifecycle migration version',
+  );
   const originalPasswordHash =
     iam.collection('users').documents[0].passwordHash;
   const second = await seedDevelopmentDataset(connection, password);

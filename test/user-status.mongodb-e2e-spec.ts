@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { ConflictException } from '@nestjs/common';
 import { createConnection, Types } from 'mongoose';
 import type { Connection } from 'mongoose';
 import { MongoUserDirectoryRepository } from '../src/services/iam/infrastructure/mongodb/user-directory.repository';
@@ -138,12 +137,18 @@ integration('User status invariants in continuum_iam', () => {
       userId: sharedAdmin,
     });
     const results = await Promise.allSettled([
-      repository.update(organizationA.toHexString(), adminA.toHexString(), {
-        status: 'SUSPENDED',
-      }),
-      repository.update(organizationA.toHexString(), adminB.toHexString(), {
-        status: 'SUSPENDED',
-      }),
+      repository.update(
+        organizationA.toHexString(),
+        adminA.toHexString(),
+        { status: 'SUSPENDED' },
+        adminB.toHexString(),
+      ),
+      repository.update(
+        organizationA.toHexString(),
+        adminB.toHexString(),
+        { status: 'SUSPENDED' },
+        adminA.toHexString(),
+      ),
     ]);
     expect(
       results.filter((result) => result.status === 'fulfilled'),
@@ -151,19 +156,26 @@ integration('User status invariants in continuum_iam', () => {
     expect(
       results.filter((result) => result.status === 'rejected'),
     ).toHaveLength(1);
-    expect(
-      (
-        results.find(
-          (result) => result.status === 'rejected',
-        ) as PromiseRejectedResult
-      ).reason,
-    ).toBeInstanceOf(ConflictException);
-    expect(
-      await repository.countActiveAdmins(organizationA.toHexString()),
-    ).toBe(1);
+    const rejected = results.find(
+      (result) => result.status === 'rejected',
+    ) as PromiseRejectedResult;
+    const rejectionCode = (rejected.reason as { response: { code: string } })
+      .response.code;
+    expect(['LAST_ELIGIBLE_ADMIN', 'USER_MANAGEMENT_FORBIDDEN']).toContain(
+      rejectionCode,
+    );
+    const activeAdmins = await Promise.all(
+      userIds.map((userId) =>
+        repository.isAdmin(organizationA.toHexString(), userId.toHexString()),
+      ),
+    );
+    expect(activeAdmins.filter(Boolean)).toHaveLength(1);
   }, 30000);
 
   it('rejects a status change to an account shared with another organization', async () => {
+    await connection
+      .collection('users')
+      .updateMany({ _id: { $in: userIds } }, { $set: { status: 'ACTIVE' } });
     await connection.collection('role_assignments').insertOne({
       organizationId: organizationA,
       userId: sharedAdmin,
@@ -180,12 +192,16 @@ integration('User status invariants in continuum_iam', () => {
         {
           status: 'SUSPENDED',
         },
+        adminA.toHexString(),
       ),
     ).rejects.toMatchObject({
       response: { code: 'SHARED_ACCOUNT_STATUS_CHANGE' },
     });
     expect(
-      await repository.countActiveAdmins(organizationB.toHexString()),
-    ).toBe(1);
+      await repository.isAdmin(
+        organizationB.toHexString(),
+        sharedAdmin.toHexString(),
+      ),
+    ).toBe(true);
   }, 30000);
 });

@@ -49,7 +49,11 @@ describe('PasswordResetPayloadCipher', () => {
         tokenHash: 'b'.repeat(64),
       },
     );
-    const altered = `${encrypted.slice(0, -1)}x`;
+    const [version, iv, authTag, encodedCiphertext] = encrypted.split('.');
+    const tamperedCiphertext = `${
+      encodedCiphertext[0] === 'A' ? 'B' : 'A'
+    }${encodedCiphertext.slice(1)}`;
+    const altered = [version, iv, authTag, tamperedCiphertext].join('.');
     expect(() =>
       cipher.decrypt(altered, {
         userScopeHash: 'a'.repeat(64),

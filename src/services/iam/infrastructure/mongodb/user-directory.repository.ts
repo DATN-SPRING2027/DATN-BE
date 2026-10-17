@@ -1,7 +1,12 @@
-import { ConflictException, Injectable, Optional } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Optional,
+} from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
-import type { Connection, Model, PipelineStage } from 'mongoose';
+import type { ClientSession, Connection, Model, PipelineStage } from 'mongoose';
 import type {
   UserDirectoryRepository as UserDirectoryRepositoryPort,
   UserListQuery,
@@ -24,6 +29,12 @@ interface UserDocument {
 interface AssignmentDocument {
   userId: Types.ObjectId;
   roleCode: string;
+  roleId: Types.ObjectId;
+}
+interface RoleDocument {
+  _id: Types.ObjectId;
+  code: string;
+  permissions: string[];
 }
 interface MembershipDocument {
   userId: Types.ObjectId;
@@ -39,6 +50,8 @@ const modelName = (name: string) => `${IAM_PERSISTENCE.databaseName}_${name}`;
 const organizationLevel = {
   $or: [{ projectId: { $exists: false } }, { projectId: null }],
 };
+const organizationMembershipManagePermission =
+  'organization.memberships.manage';
 const publicUserFields = {
   email: 1,
   fullName: 1,
@@ -63,24 +76,12 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       !Types.ObjectId.isValid(actorId)
     )
       return false;
-    const membership = await this.memberships().exists({
-      organizationId: new Types.ObjectId(organizationId),
-      userId: new Types.ObjectId(actorId),
-      status: 'ACTIVE',
-    });
-    if (!membership) return false;
-    const assignment = await this.assignments().exists({
-      organizationId: new Types.ObjectId(organizationId),
-      userId: new Types.ObjectId(actorId),
-      roleCode: 'ADMIN',
-      ...organizationLevel,
-    });
-    if (!assignment) return false;
-    const active = await this.users().exists({
-      _id: new Types.ObjectId(actorId),
-      status: 'ACTIVE',
-    });
-    return Boolean(active);
+    const eligibleAdminIds = await this.eligibleAdminIds(
+      new Types.ObjectId(organizationId),
+    );
+    return eligibleAdminIds.some(
+      (id) => id.toHexString() === actorId.toLowerCase(),
+    );
   }
 
   async list(organizationId: string, query: UserListQuery) {
@@ -191,10 +192,16 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     organizationId: string,
     userId: string,
     changes: UserUpdate,
+    actorId: string,
   ): Promise<UserRecord | null> {
     if (!(await this.find(organizationId, userId))) return null;
     if (changes.status !== undefined) {
-      await this.updateStatusAtomically(organizationId, userId, changes);
+      await this.updateStatusAtomically(
+        organizationId,
+        userId,
+        actorId,
+        changes,
+      );
       return this.find(organizationId, userId);
     }
     await this.users()
@@ -206,15 +213,49 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
   private async updateStatusAtomically(
     organizationId: string,
     userId: string,
+    actorId: string,
     changes: UserUpdate,
   ): Promise<void> {
     if (!this.connection)
       throw new Error('User directory persistence unavailable');
     const session = await this.connection.startSession();
     const userObjectId = new Types.ObjectId(userId);
+    const actorObjectId = new Types.ObjectId(actorId);
     const organizationObjectId = new Types.ObjectId(organizationId);
     try {
       await session.withTransaction(async () => {
+        // Every status update writes the same organization document before
+        // counting admins. Concurrent transactions then conflict and retry.
+        const guard = await this.organizations()
+          .updateOne(
+            { _id: organizationObjectId },
+            {
+              $inc: { membershipAdminRevision: 1 },
+              $currentDate: { updatedAt: true },
+            },
+            { session },
+          )
+          .exec();
+        if (guard.matchedCount !== 1) {
+          throw new ConflictException({
+            code: 'ORGANIZATION_NOT_FOUND',
+            message: 'Organization is unavailable.',
+          });
+        }
+
+        // Recheck the actor from current IAM records only after taking the
+        // Organization fence. This callback runs again on transaction retry.
+        const eligibleAdminIds = await this.eligibleAdminIds(
+          organizationObjectId,
+          session,
+        );
+        if (!eligibleAdminIds.some((id) => id.equals(actorObjectId))) {
+          throw new ForbiddenException({
+            code: 'USER_MANAGEMENT_FORBIDDEN',
+            message: 'Organization admin access required.',
+          });
+        }
+
         const organizations = await this.memberships()
           .distinct('organizationId', {
             userId: userObjectId,
@@ -232,22 +273,6 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           });
         }
 
-        // Every status update writes the same organization document before
-        // counting admins. Concurrent transactions then conflict and retry.
-        const guard = await this.organizations()
-          .updateOne(
-            { _id: organizationObjectId },
-            { $currentDate: { updatedAt: true } },
-            { session },
-          )
-          .exec();
-        if (guard.matchedCount !== 1) {
-          throw new ConflictException({
-            code: 'ORGANIZATION_NOT_FOUND',
-            message: 'Organization is unavailable.',
-          });
-        }
-
         const existing = await this.users()
           .findById(userObjectId, { status: 1 })
           .session(session)
@@ -255,45 +280,15 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           .exec();
         if (!existing) return;
         if (existing.status === 'ACTIVE' && changes.status !== 'ACTIVE') {
-          const assignment = await this.assignments()
-            .exists({
-              organizationId: organizationObjectId,
-              userId: userObjectId,
-              roleCode: 'ADMIN',
-              ...organizationLevel,
-            })
-            .session(session);
-          if (assignment) {
-            const ids = await this.assignments()
-              .distinct('userId', {
-                organizationId: organizationObjectId,
-                roleCode: 'ADMIN',
-                ...organizationLevel,
-              })
-              .session(session)
-              .exec();
-            const activeMemberIds = await this.memberships()
-              .distinct('userId', {
-                organizationId: organizationObjectId,
-                userId: { $in: ids },
-                status: 'ACTIVE',
-              })
-              .session(session)
-              .exec();
-            const count = await this.users()
-              .countDocuments({
-                _id: { $in: activeMemberIds },
-                status: 'ACTIVE',
-              })
-              .session(session)
-              .exec();
-            if (count <= 1) {
-              throw new ConflictException({
-                code: 'LAST_ACTIVE_ADMIN',
-                message:
-                  'The last active organization admin cannot be suspended.',
-              });
-            }
+          if (
+            eligibleAdminIds.some((id) => id.equals(userObjectId)) &&
+            eligibleAdminIds.length <= 1
+          ) {
+            throw new ConflictException({
+              code: 'LAST_ELIGIBLE_ADMIN',
+              message:
+                'The last active organization admin cannot be suspended.',
+            });
           }
         }
         await this.users()
@@ -305,23 +300,65 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     }
   }
 
-  async countActiveAdmins(organizationId: string): Promise<number> {
-    const ids = await this.assignments()
-      .distinct('userId', {
-        organizationId: new Types.ObjectId(organizationId),
-        roleCode: 'ADMIN',
-        ...organizationLevel,
-      })
+  private async eligibleAdminIds(
+    organizationId: Types.ObjectId,
+    session?: ClientSession,
+  ): Promise<Types.ObjectId[]> {
+    const assignments = await this.assignments()
+      .find(
+        {
+          organizationId,
+          roleCode: 'ADMIN',
+          ...organizationLevel,
+        },
+        { userId: 1, roleId: 1 },
+      )
+      .session(session ?? null)
+      .lean()
       .exec();
-    const activeMemberIds = await this.memberships()
+    if (assignments.length === 0) return [];
+    const roles = await this.roles()
+      .find(
+        {
+          _id: { $in: assignments.map((assignment) => assignment.roleId) },
+          code: 'ADMIN',
+          permissions: organizationMembershipManagePermission,
+        },
+        { _id: 1 },
+      )
+      .session(session ?? null)
+      .lean()
+      .exec();
+    const eligibleRoleIds = new Set(
+      roles.map((role) => role._id.toHexString()),
+    );
+    const assignmentUserIds = [
+      ...new Map(
+        assignments
+          .filter((assignment) =>
+            eligibleRoleIds.has(assignment.roleId.toHexString()),
+          )
+          .map((assignment) => [
+            assignment.userId.toHexString(),
+            assignment.userId,
+          ]),
+      ).values(),
+    ];
+    if (assignmentUserIds.length === 0) return [];
+    const activeMembershipUserIds = await this.memberships()
       .distinct('userId', {
-        organizationId: new Types.ObjectId(organizationId),
-        userId: { $in: ids },
+        organizationId,
+        userId: { $in: assignmentUserIds },
         status: 'ACTIVE',
       })
+      .session(session ?? null)
       .exec();
     return this.users()
-      .countDocuments({ _id: { $in: activeMemberIds }, status: 'ACTIVE' })
+      .distinct('_id', {
+        _id: { $in: activeMembershipUserIds },
+        status: 'ACTIVE',
+      })
+      .session(session ?? null)
       .exec();
   }
 
@@ -380,6 +417,14 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       throw new Error(
         'User directory persistence unavailable: assignments model',
       );
+    return model;
+  }
+
+  private roles(): Model<RoleDocument> {
+    const model = this.connection?.models[modelName('roles')] as
+      Model<RoleDocument> | undefined;
+    if (!model)
+      throw new Error('User directory persistence unavailable: roles model');
     return model;
   }
 

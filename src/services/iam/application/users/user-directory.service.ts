@@ -1,5 +1,4 @@
 import {
-  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -68,26 +67,11 @@ export class UserDirectoryService {
         message: 'User not found.',
       });
 
-    if (
-      existing.status === 'ACTIVE' &&
-      changes.status !== undefined &&
-      changes.status !== 'ACTIVE' &&
-      existing.roleCodes.includes('ADMIN')
-    ) {
-      if (
-        (await this.repository.countActiveAdmins(actor.organizationId)) <= 1
-      ) {
-        throw new ConflictException({
-          code: 'LAST_ACTIVE_ADMIN',
-          message: 'The last active organization admin cannot be suspended.',
-        });
-      }
-    }
-
     const updated = await this.repository.update(
       actor.organizationId,
       userId,
       changes,
+      actor.id,
     );
     if (!updated)
       throw new NotFoundException({

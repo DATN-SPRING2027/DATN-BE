@@ -40,9 +40,12 @@ export class StructuredExceptionFilter implements ExceptionFilter {
       request.requestId ??
       response.getHeader(REQUEST_ID_HEADER)?.toString() ??
       'unknown';
+    const code = typeof body?.code === 'string' ? body.code : `HTTP_${status}`;
+
+    if (code === 'RETRY_LATER') response.setHeader('Retry-After', '1');
 
     response.status(status).json({
-      code: typeof body?.code === 'string' ? body.code : `HTTP_${status}`,
+      code,
       message,
       details:
         status >= 500
