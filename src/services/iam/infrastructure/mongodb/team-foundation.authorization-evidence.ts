@@ -1,5 +1,9 @@
+import { HttpException } from '@nestjs/common';
 import type { ClientSession, Connection, Model } from 'mongoose';
-import { TeamAuthorizationPolicy } from '../../application/teams/team-authorization.policy';
+import {
+  TEAM_OPERATION_PERMISSIONS,
+  TeamAuthorizationPolicy,
+} from '../../application/teams/team-authorization.policy';
 import type { TeamAuthorizationEvaluationInput } from '../../application/teams/team-authorization.policy';
 import {
   actionForbidden,
@@ -163,7 +167,11 @@ export class TeamAuthorizationEvidence {
           }
         : null,
       assignments: facts.assignments.map((assignment) => assignment.evidence),
-      explicitDeny: 'CLEAR',
+      // The current IAM role/assignment sources persist positive permissions
+      // only. No authoritative Team deny source is available to assess CLEAR.
+      // Preserve DEC-002 fail-closed behavior until a deny-capable source is
+      // selected and exposed through the evidence provider.
+      explicitDeny: 'UNKNOWN',
     };
   }
 
@@ -182,16 +190,18 @@ export class TeamAuthorizationEvidence {
       !facts.projectMembership
     )
       throw actionForbidden();
+    const requiredPermissions = TEAM_OPERATION_PERMISSIONS[command.permission];
     const assignment = facts.assignments.find(
       (candidate) =>
         candidate.evidence.roleCode === 'TEAM_LEADER' &&
         candidate.evidence.resolvedRoleCode === 'TEAM_LEADER' &&
         candidate.evidence.projectId?.toLowerCase() ===
           projectId.toLowerCase() &&
-        candidate.evidence.permissions.includes('team:children.manage'),
+        requiredPermissions.every((permission) =>
+          candidate.evidence.permissions.includes(permission),
+        ),
     );
     if (!assignment?.role) throw actionForbidden();
-    const requiredPermissions = ['team:children.manage'];
     const fences: Array<{ modifiedCount: number }> = [];
     fences.push(
       await this.model<UserDocument>('users').updateOne(
@@ -270,9 +280,14 @@ export class TeamAuthorizationEvidence {
     filter: Record<string, unknown>,
     session?: ClientSession,
   ): Promise<T | null> {
-    let query = this.model<T>(collection).findOne(filter);
-    if (session) query = query.session(session);
-    return (await query.lean().exec()) as unknown as T | null;
+    try {
+      let query = this.model<T>(collection).findOne(filter);
+      if (session) query = query.session(session);
+      return (await query.lean().exec()) as unknown as T | null;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw policyNotReady();
+    }
   }
 
   private async findMany<T>(
@@ -280,9 +295,14 @@ export class TeamAuthorizationEvidence {
     filter: Record<string, unknown>,
     session?: ClientSession,
   ): Promise<T[]> {
-    let query = this.model<T>(collection).find(filter);
-    if (session) query = query.session(session);
-    return (await query.lean().exec()) as unknown as T[];
+    try {
+      let query = this.model<T>(collection).find(filter);
+      if (session) query = query.session(session);
+      return (await query.lean().exec()) as unknown as T[];
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw policyNotReady();
+    }
   }
 
   private model<T>(collection: string): Model<T> {
