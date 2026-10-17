@@ -236,3 +236,54 @@ assignments. It binds the reviewed hash to the target endpoint and database,
 without printing connection credentials. Do not apply it as part of this code
 review; the migration PR must first be reviewed and the environment's dry-run
 report must be clean.
+
+## Platform incidents
+
+The additive Platform incident storage is documented in
+[`../../docs/work-packages/platform-incidents-storage-db-v1.md`](../../docs/work-packages/platform-incidents-storage-db-v1.md).
+The report-first migration creates `platform_incidents`,
+`platform_incident_history`, and `platform_incident_operations` with their
+approved indexes. It does not migrate or delete existing records. The
+idempotency key index is unique; the dry-run blocks duplicate key tuples and
+incompatible collection/index objects.
+
+Do not load `.env` for this migration. Provide the Mongo variables in the
+invoking process, review the dry-run report and target fingerprint, then pass
+the exact `reportSha256` to `--apply`. Rollback drops only the named incident
+indexes and preserves every collection and record; stop or roll back the
+incident API first so writes do not resume without their concurrency/index
+guards.
+
+## Platform request trace lookup
+
+`20261017-platform-request-trace-index.mjs` adds exact `requestId` and
+`correlationId` lookup indexes to the existing `continuum_audit.audit_logs_iam`
+collection. It refuses a missing or non-collection audit owner and never
+creates the audit collection, changes validators, rewrites events, or drops
+documents. Its report is target-bound and hash-bound; rollback drops only the
+two exact named indexes.
+
+```sh
+npm run migrate:platform-request-trace-index
+```
+
+Review a clean report before applying its exact `reportSha256`:
+
+```sh
+npm run migrate:platform-request-trace-index -- --apply --expected-report-sha256=<reportSha256>
+```
+
+Rollback requires stopping the trace API first, then the reviewed rollback
+report hash:
+
+```sh
+npm run migrate:platform-request-trace-index -- --rollback --expected-report-sha256=<reportSha256>
+```
+
+## Platform session fence and V2 authority schema
+
+The additive Mongoose schema changes for optional refresh-session `sessionId`
+and `userFence`, plus V1/V2 authority-operation validation, are documented in
+[`../../docs/work-packages/platform-session-fence-and-v2-authority-schema-db-v1.md`](../../docs/work-packages/platform-session-fence-and-v2-authority-schema-db-v1.md).
+They require no data migration or index command. Merge the DB schema branch
+before enabling backend writes of V2 expansion records or session-fence fields.
