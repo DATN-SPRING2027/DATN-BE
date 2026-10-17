@@ -382,7 +382,7 @@ const iamSchemas: Record<string, Schema> = {
       bundleVersion: {
         type: String,
         enum: ['A04', 'V1', 'V2'],
-        required: true,
+        default: 'A04',
       },
       sourceOperationId: { type: String },
       targetUserId: { type: Schema.Types.ObjectId, required: true },

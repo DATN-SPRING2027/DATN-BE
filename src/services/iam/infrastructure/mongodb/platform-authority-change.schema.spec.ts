@@ -111,6 +111,27 @@ describe('platform_authority_change_operations persistence contract', () => {
     expect(valid.validateSync()).toBeUndefined();
   });
 
+  it('defaults the bundle version for legacy A-04 operation writers', () => {
+    const legacyWriter = new Operation({
+      operationId: '00000000-0000-4000-8000-000000000008',
+      payloadHash: 'c'.repeat(64),
+      actorUserId: new Types.ObjectId(),
+      issuerUserId: new Types.ObjectId(),
+      operationType: 'BOOTSTRAP',
+      targetUserId: new Types.ObjectId(),
+      permissions: [...platformA04Permissions],
+      scope: 'PLATFORM',
+      auditEventId: 'evt-legacy-a04',
+      status: 'COMMITTED',
+      httpStatus: 201,
+      resultBody: {},
+      committedAt: new Date(),
+    });
+
+    expect(legacyWriter.bundleVersion).toBe('A04');
+    expect(legacyWriter.validateSync()).toBeUndefined();
+  });
+
   it('rejects malformed payloadHash', () => {
     const doc = new Operation({
       operationId: 'op-ledger-02',

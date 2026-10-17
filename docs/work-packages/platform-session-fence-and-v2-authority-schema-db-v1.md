@@ -5,12 +5,12 @@
 This database deliverable adds Mongoose persistence support for the Platform Operator V2 permission bundle and session-family revocation metadata:
 
 - `platform_authority_assignments.permission` accepts the approved V2 permissions.
-- `platform_authority_change_operations` accepts `V1_EXPAND` and `V2_EXPAND`, stores `bundleVersion` and optional `sourceOperationId`, and validates only complete A-04, V1, or V2 permission bundles.
+- `platform_authority_change_operations` accepts `V1_EXPAND` and `V2_EXPAND`, stores `bundleVersion` and optional `sourceOperationId`, and validates only complete A-04, V1, or V2 permission bundles. `bundleVersion` defaults to `A04` for compatibility with existing writers; V1/V2 expansion writers set their version explicitly.
 - `refresh_sessions` accepts optional `sessionId` and non-negative safe-integer `userFence` fields.
 
 ## Data and migration impact
 
-This is an additive application-schema change. It does not rewrite existing records, create collections, or add indexes. Existing refresh-session documents without `sessionId` or `userFence` remain valid; the backend reads missing values using its legacy fallback. Existing authority-operation documents remain readable, while new expansion operations require `bundleVersion`.
+This is an additive application-schema change. It does not rewrite existing records, create collections, or add indexes. Existing refresh-session documents without `sessionId` or `userFence` remain valid; the backend reads missing values using its legacy fallback. Existing authority-operation documents remain readable, and legacy A-04 writers receive the matching default bundle version.
 
 No data migration is required. The database schema branch must be merged before the backend branch begins writing V2 operation records or session-fence fields.
 
