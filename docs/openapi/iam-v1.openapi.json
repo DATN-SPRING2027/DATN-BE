@@ -1524,7 +1524,7 @@
       "get": {
         "tags": ["Platform"],
         "summary": "List memberships for one Organization",
-        "description": "Requires platform.memberships.membership.read at PLATFORM scope. The server resolves the Organization and fences every membership row to that exact persisted Organization. Only safe identity and Organization-role metadata are returned.",
+        "description": "Requires platform.memberships.membership.read at PLATFORM scope. The server resolves the Organization and fences every membership row to that exact persisted Organization. Legacy rows missing a persisted version are returned with schema default version 1 and hasPersistedVersion false; suspension remains unavailable until lifecycle tracking is initialized. Only safe identity and Organization-role metadata are returned.",
         "operationId": "listPlatformOrganizationMemberships",
         "x-platform-permission": "platform.memberships.membership.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -5391,6 +5391,10 @@
             "$ref": "#/components/schemas/OrganizationMembershipStatus"
           },
           "version": { "type": "integer", "minimum": 1 },
+          "hasPersistedVersion": {
+            "type": "boolean",
+            "description": "False when the legacy membership document has not yet received its lifecycle version field; lifecycle mutations are unavailable until migration."
+          },
           "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "user": {

@@ -28,6 +28,7 @@ export interface PlatformMembershipSummary {
   userId: string;
   status: OrganizationMembershipStatus;
   version: number;
+  hasPersistedVersion: boolean;
   createdAt: string;
   updatedAt: string;
   user: {

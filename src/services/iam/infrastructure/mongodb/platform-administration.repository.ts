@@ -155,7 +155,7 @@ interface MembershipDocument {
   organizationId: Types.ObjectId;
   userId: Types.ObjectId;
   status: OrganizationMembershipStatus;
-  version: number;
+  version?: number;
   createdAt: Date;
   updatedAt: Date;
   user?: {
@@ -263,6 +263,7 @@ function mapOrganization(
 }
 
 function mapMembership(row: MembershipDocument): PlatformMembershipSummary {
+  const version = row.version;
   if (
     !(row._id instanceof Types.ObjectId) ||
     !(row.organizationId instanceof Types.ObjectId) ||
@@ -270,8 +271,8 @@ function mapMembership(row: MembershipDocument): PlatformMembershipSummary {
     !['PENDING_INVITE', 'ACTIVE', 'SUSPENDED', 'REMOVED'].includes(
       row.status,
     ) ||
-    !Number.isSafeInteger(row.version) ||
-    row.version < 1 ||
+    (version !== undefined &&
+      (!Number.isSafeInteger(version) || version < 1)) ||
     !(row.createdAt instanceof Date) ||
     !Number.isFinite(row.createdAt.getTime()) ||
     !(row.updatedAt instanceof Date) ||
@@ -302,7 +303,8 @@ function mapMembership(row: MembershipDocument): PlatformMembershipSummary {
     organizationId: row.organizationId.toHexString(),
     userId: row.userId.toHexString(),
     status: row.status,
-    version: row.version,
+    version: version ?? 1,
+    hasPersistedVersion: version !== undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     user: user
