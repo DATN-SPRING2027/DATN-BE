@@ -7,6 +7,7 @@
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
+    { "name": "AI Engine", "description": "BE-authenticated integration entry points for SAG." },
     { "name": "Users", "description": "Organization user directory." },
     { "name": "Platform", "description": "A-04 PLATFORM-scoped operations." },
     { "name": "Projects", "description": "Organization projects." },
@@ -20,6 +21,48 @@
   ],
   "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
   "paths": {
+    "/api/v1/ai-engine/auth/sag-login": {
+      "get": {
+        "tags": ["AI Engine"],
+        "summary": "Continue to SAG with the current Continuum session",
+        "description": "Validates the current Continuum session and active Organization. If it is absent or expired, redirects to the Continuum sign-in page and returns to this flow. Without projectId, BE lists only the actor's visible Projects and redirects to the SAG Project chooser. With projectId, BE revalidates access through ProjectService.get, calls SAG privately with that single Project scope, and redirects with a SAG-only short-lived token in the URL fragment. The Continuum access token is never sent to SAG or placed in the redirect URL; Project options in the fragment are display data and do not grant access.",
+        "operationId": "continueToSagLogin",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "description": "A client-generated UUIDv4 retained by the SAG browser session and checked by the SAG callback page.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            }
+          },
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "description": "Optional Project selected in SAG. This value is only a request; BE checks Project access again before issuing a Project-scoped SAG session.",
+            "schema": { "type": "string", "maxLength": 64 }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirects to Continuum sign-in when the Continuum session or active Organization is missing. Without projectId, redirects to the SAG Project chooser with visible Project options in the URL fragment. With an authorized projectId, redirects to the SAG callback with a Project-scoped SAG token in the URL fragment.",
+            "headers": {
+              "Location": { "schema": { "type": "string", "format": "uri-reference" } },
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            }
+          },
+          "400": { "description": "The supplied state is not a UUIDv4 or projectId is malformed." },
+          "404": { "description": "The selected Project is not visible to this Continuum actor." },
+          "502": { "description": "SAG returned an invalid login response or an upstream error." },
+          "503": { "description": "The SAG login integration is not configured or SAG is unavailable." }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": ["Auth"],

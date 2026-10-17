@@ -14,6 +14,7 @@ describes implemented routes.
 | Area               | Operations                                  |
 | ------------------ | ------------------------------------------- |
 | Auth               | Email registration/verification, login/reset, Google OAuth, current user, logout and the A-02 backend refresh HTTP route |
+| AI Engine          | BE-authenticated SAG login and Project-scoped session redirect |
 | User               | List, read and partial update               |
 | Project            | List, create, read and partial update       |
 | Project Membership | List, create and idempotent removal; generic update proposed only and not enabled in Project Access V1 |
