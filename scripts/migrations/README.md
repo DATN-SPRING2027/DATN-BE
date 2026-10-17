@@ -48,6 +48,18 @@ still write Google identities. Coordinate the rollback with the code rollback
 and stop OAuth writes first. Re-run the dry-run after any partial failure and
 review current state before retrying.
 
+## Email/password registration outbox
+
+The registration pending-email collection and its unique token/email, TTL,
+worker-polling, and lease-recovery indexes are defined in the approved
+[email/password registration DB work package](../../docs/work-packages/email-password-registration-db-proposal-v1.md).
+The report-first migration is documented in
+[20261018-email-registration-outbox.README.md](20261018-email-registration-outbox.README.md).
+Apply its reviewed dry-run before enabling the BE routes or mail worker. The
+migration preserves all documents on rollback; stop registration writes and
+the worker before dropping its indexes. It has not been applied by this code
+change.
+
 The A-04 platform authority assignment collection and index migration is
 documented in [20261005-platform-authority-assignments.README.md](20261005-platform-authority-assignments.README.md).
 The additive platform authority change operations ledger collection and index migration is

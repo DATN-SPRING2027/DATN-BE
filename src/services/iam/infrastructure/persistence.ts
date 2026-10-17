@@ -218,6 +218,31 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
+      name: 'email_registration_outbox',
+      indexes: [
+        index(
+          { normalizedEmail: 1 },
+          { unique: true, name: 'email_registration_current_email' },
+        ),
+        index(
+          { tokenHash: 1 },
+          { unique: true, name: 'email_registration_token_hash' },
+        ),
+        index(
+          { expiresAt: 1 },
+          { expireAfterSeconds: 0, name: 'email_registration_expiry' },
+        ),
+        index(
+          { deliveryStatus: 1, nextAttemptAt: 1, expiresAt: 1, createdAt: 1 },
+          { name: 'email_registration_pending_jobs' },
+        ),
+        index(
+          { deliveryStatus: 1, leaseUntil: 1, expiresAt: 1, createdAt: 1 },
+          { name: 'email_registration_expired_leases' },
+        ),
+      ],
+    },
+    {
       name: 'sme_assignments',
       indexes: [index({ projectId: 1, userId: 1, domainModule: 1 })],
     },
