@@ -22,7 +22,15 @@ import { IamApplicationService } from '../../application/iam.service';
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from '../../application/organizations/organization-provisioning.repository';
 import type { ProvisionedOrganization } from '../../application/organizations/organization-provisioning.repository';
 import { OrganizationProvisioningService } from '../../application/organizations/organization-provisioning.service';
+import { PlatformAiOperationsService } from '../../application/platform/platform-ai-operations.service';
 import { PlatformAuditService } from '../../application/platform/platform-audit.service';
+import { PlatformAdministrationService } from '../../application/platform/platform-administration.service';
+import { PlatformDashboardOverviewService } from '../../application/platform/platform-dashboard-overview.service';
+import { PlatformIncidentService } from '../../application/platform/platform-incident.service';
+import { PlatformIntegrationOperationsService } from '../../application/platform/platform-integration-operations.service';
+import { PlatformIntegrationReadService } from '../../application/platform/platform-integration-read.service';
+import { PlatformJobOperationsService } from '../../application/platform/platform-job-operations.service';
+import { PlatformServiceOperationsService } from '../../application/platform/platform-service-operations.service';
 import { PlatformController } from '../../controllers/platform.controller';
 import { IAM_PERSISTENCE } from '../persistence';
 import { AuthenticationRepository } from './authentication.repository';
@@ -34,6 +42,7 @@ const integration =
   process.env.MONGODB_INTEGRATION === 'true' ? describe : describe.skip;
 const collections = [
   'users',
+  'refresh_sessions',
   'organizations',
   'organization_memberships',
   'roles',
@@ -50,6 +59,7 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
   const adminId = new Types.ObjectId();
   const roleId = new Types.ObjectId();
   const secret = randomBytes(32).toString('hex');
+  const operatorSessionId = randomUUID();
   let connection: Connection;
   let app: INestApplication | undefined;
   let token: string;
@@ -145,6 +155,41 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
           provide: PlatformAuditService,
           useValue: { listOperationalMetadata: () => Promise.resolve([]) },
         },
+        {
+          provide: PlatformAdministrationService,
+          useValue: {
+            listOrganizations: () =>
+              Promise.resolve({
+                data: [],
+                pagination: {
+                  page: 1,
+                  pageSize: 20,
+                  totalItems: 0,
+                  totalPages: 0,
+                },
+              }),
+            findOrganization: jest.fn(),
+            lookupActiveUser: jest.fn(),
+            listOrganizationMemberships: () =>
+              Promise.resolve({
+                data: [],
+                pagination: {
+                  page: 1,
+                  pageSize: 20,
+                  totalItems: 0,
+                  totalPages: 0,
+                },
+              }),
+            suspendMembership: jest.fn(),
+          },
+        },
+        { provide: PlatformDashboardOverviewService, useValue: {} },
+        { provide: PlatformServiceOperationsService, useValue: {} },
+        { provide: PlatformJobOperationsService, useValue: {} },
+        { provide: PlatformAiOperationsService, useValue: {} },
+        { provide: PlatformIntegrationReadService, useValue: {} },
+        { provide: PlatformIntegrationOperationsService, useValue: {} },
+        { provide: PlatformIncidentService, useValue: {} },
       ],
     }).compile();
     app = module.createNestApplication();
@@ -154,6 +199,7 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
       sub: String(operatorId),
       email: 'operator@example.test',
       context: 'PLATFORM',
+      sid: operatorSessionId,
     });
   }, 30_000);
 
@@ -179,6 +225,14 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
         status: 'ACTIVE',
       },
     ]);
+    await connection.collection('refresh_sessions').insertOne({
+      userId: operatorId,
+      sessionId: operatorSessionId,
+      context: 'PLATFORM',
+      tokenHash: 'a-05-test-session-hash',
+      isRevoked: false,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
     await connection.collection('roles').insertOne({
       _id: roleId,
       code: 'ADMIN',
@@ -405,7 +459,9 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
       orgId: String(new Types.ObjectId()),
       roles: ['ADMIN'],
     });
-    await create(input, `Bearer ${adminToken}`).expect(403);
+    // Organization-context tokens are not valid platform sessions and fail
+    // authentication before platform permission evaluation.
+    await create(input, `Bearer ${adminToken}`).expect(401);
     await connection
       .collection('platform_authority_assignments')
       .updateOne(

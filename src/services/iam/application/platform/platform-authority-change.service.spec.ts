@@ -7,6 +7,7 @@ import type {
   PlatformAuthorityChangeCommand,
   PlatformAuthorityChangeResult,
 } from './platform-authority-change.types';
+import { hashAssignmentSnapshot } from './platform-authority-change.types';
 
 describe('PlatformAuthorityChangeService', () => {
   let service: PlatformAuthorityChangeService;
@@ -22,10 +23,12 @@ describe('PlatformAuthorityChangeService', () => {
   const validGrantCommand: PlatformAuthorityChangeCommand = {
     operationId: '00000000-0000-4000-8000-000000000001',
     operationType: 'BOOTSTRAP',
+    bundleVersion: 'V1',
     targetUserId,
     scope: 'PLATFORM',
     actorUserId,
     issuerUserId,
+    expectedCurrentSnapshotHash: hashAssignmentSnapshot([]),
     reasonCode: 'PO_AUTH_01_BOOTSTRAP',
   };
 
@@ -43,12 +46,14 @@ describe('PlatformAuthorityChangeService', () => {
         'organization.create',
         'platform.health.read',
         'platform.audit.read',
+        'platform.organizations.organization.read',
+        'platform.users.account.read',
+        'platform.memberships.membership.read',
+        'platform.memberships.lifecycle.manage',
       ].map((permission) => ({
         assignmentId: new Types.ObjectId().toHexString(),
-        permission: permission as
-          | 'organization.create'
-          | 'platform.health.read'
-          | 'platform.audit.read',
+        permission:
+          permission as PlatformAuthorityChangeResult['body']['assignments'][number]['permission'],
         status: 'ACTIVE' as const,
         grantedBy: issuerUserId,
         grantedAt: new Date().toISOString(),
@@ -116,7 +121,7 @@ describe('PlatformAuthorityChangeService', () => {
     });
   });
 
-  describe('Fixed A-04 permission bundle', () => {
+  describe('Fixed versioned permission bundles and CAS', () => {
     it('rejects a caller-selected single permission', async () => {
       await expect(
         service.executeChange({
@@ -128,6 +133,30 @@ describe('PlatformAuthorityChangeService', () => {
       });
       expect(mockExecute).not.toHaveBeenCalled();
     });
+
+    it('requires a full assignment snapshot hash', async () => {
+      await expect(
+        service.executeChange({
+          ...validGrantCommand,
+          expectedCurrentSnapshotHash: '',
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'EXPECTED_SNAPSHOT_REQUIRED' },
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
+
+    it('rejects privilege-escalation flags rather than trusting caller fields', async () => {
+      await expect(
+        service.executeChange({
+          ...validGrantCommand,
+          breakGlass: true,
+        } as PlatformAuthorityChangeCommand),
+      ).rejects.toMatchObject({
+        response: { code: 'UNSUPPORTED_AUTHORITY_FIELD' },
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
   });
 
   describe('Input Validation & Safety Constraints', () => {
@@ -135,13 +164,9 @@ describe('PlatformAuthorityChangeService', () => {
       const unconfiguredService = new PlatformAuthorityChangeService(
         mockRepository,
       );
-      const callerSuppliedMfa = {
-        ...validGrantCommand,
-        mfaVerified: true,
-      } as PlatformAuthorityChangeCommand;
 
       await expect(
-        unconfiguredService.executeChange(callerSuppliedMfa),
+        unconfiguredService.executeChange(validGrantCommand),
       ).rejects.toMatchObject({
         status: 503,
         response: { code: 'PLATFORM_AUTHORITY_WORKFLOW_UNAVAILABLE' },
@@ -190,6 +215,19 @@ describe('PlatformAuthorityChangeService', () => {
       expect(res).toEqual(sampleResult);
       expect(mockAssertAuthorized).toHaveBeenCalledWith(validGrantCommand);
       expect(mockExecute).toHaveBeenCalledWith(validGrantCommand);
+    });
+
+    it('accepts only the fixed V2 expansion command when the issuer gate is configured', async () => {
+      const command: PlatformAuthorityChangeCommand = {
+        ...validGrantCommand,
+        operationId: '00000000-0000-4000-8000-000000000002',
+        operationType: 'V2_EXPAND',
+        bundleVersion: 'V2',
+        reasonCode: 'PO_AUTH_01_V2_EXPAND',
+      };
+      await service.executeChange(command);
+      expect(mockAssertAuthorized).toHaveBeenCalledWith(command);
+      expect(mockExecute).toHaveBeenCalledWith(command);
     });
   });
 });

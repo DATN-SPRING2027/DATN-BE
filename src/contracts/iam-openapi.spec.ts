@@ -1,5 +1,13 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Jest asymmetric matchers are typed as any. */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { RequestMethod } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { PlatformController } from '../services/iam/controllers/platform.controller';
+import {
+  PLATFORM_A04_PERMISSIONS,
+  PLATFORM_V2_PERMISSIONS,
+} from '../services/iam/application/authorization/authorization.policy';
 
 type JsonObject = Record<string, unknown>;
 
@@ -85,6 +93,28 @@ describe('IAM OpenAPI contract', () => {
     expect(new Set(operationIds).size).toBe(operationIds.length);
   });
 
+  it('documents the required permission and PLATFORM scope for every Platform operation', () => {
+    const methods = ['get', 'post', 'patch', 'put', 'delete'];
+    const platformOperations = Object.entries(contract.paths)
+      .filter(([path]) => path.startsWith('/api/v1/iam/platform'))
+      .flatMap(([path, pathItem]) =>
+        Object.entries(pathItem)
+          .filter(([method]) => methods.includes(method))
+          .map(([method, operation]) => ({
+            path,
+            method,
+            operation: operation as OpenApiOperation,
+          })),
+      );
+
+    expect(platformOperations.length).toBeGreaterThan(0);
+    for (const { operation } of platformOperations) {
+      expect(operation['x-platform-permission']).toEqual(expect.any(String));
+      expect(operation.description).toMatch(/PLATFORM scope/i);
+      expect(operation.operationId).toEqual(expect.any(String));
+    }
+  });
+
   it('documents the generic one-time password reset contract', () => {
     const request = contract.paths['/api/v1/auth/password-reset/request'].post;
     const confirm = contract.paths['/api/v1/auth/password-reset/confirm'].post;
@@ -119,7 +149,7 @@ describe('IAM OpenAPI contract', () => {
     expect(JSON.stringify(confirmSchema)).toContain('72 UTF-8 bytes');
   });
 
-  it('documents only the three approved A-04 platform permissions and boundaries', () => {
+  it('preserves A-04 semantics and documents the separately versioned V2 permission registry', () => {
     const organization =
       contract.paths['/api/v1/iam/platform/organizations'].post;
     const health = contract.paths['/api/v1/iam/platform/health'].get;
@@ -138,17 +168,533 @@ describe('IAM OpenAPI contract', () => {
     );
     expect(audit?.['x-platform-permission']).toBe('platform.audit.read');
     expect(audit?.description).toContain('Project records');
-    expect(contract.components.schemas.PlatformPermission).toEqual({
-      type: 'string',
-      enum: [
-        'organization.create',
-        'platform.health.read',
-        'platform.audit.read',
-      ],
-    });
+    const platformPermission = contract.components.schemas
+      .PlatformPermission as {
+      type: string;
+      enum: string[];
+    };
+    expect(platformPermission.type).toBe('string');
+    expect(platformPermission.enum).toEqual([...PLATFORM_V2_PERMISSIONS]);
+    expect(
+      platformPermission.enum.filter((permission) =>
+        PLATFORM_A04_PERMISSIONS.includes(permission as never),
+      ),
+    ).toEqual([...PLATFORM_A04_PERMISSIONS]);
     expect(
       JSON.stringify(contract.components.schemas.PlatformPermission),
     ).not.toContain('platform.configuration');
+  });
+
+  it('documents Platform-safe project projections and real IAM dashboard counts', () => {
+    const projectList = contract.paths['/api/v1/iam/platform/projects'].get;
+    const projectDetail =
+      contract.paths['/api/v1/iam/platform/projects/{projectId}'].get;
+    const dashboard = contract.paths['/api/v1/iam/platform/dashboard'].get;
+    expect(projectList?.operationId).toBe('listPlatformProjects');
+    expect(projectList?.['x-platform-permission']).toBe(
+      'platform.projects.project.read',
+    );
+    expect(projectList?.parameters).toEqual(
+      expect.arrayContaining([
+        { $ref: '#/components/parameters/Page' },
+        { $ref: '#/components/parameters/PageSize' },
+      ]),
+    );
+    expect(projectList?.description).toContain(
+      'documents, chunks, prompts and tenant content are excluded',
+    );
+    expect(projectDetail?.responses['200']).toBeDefined();
+    expect(dashboard?.['x-platform-permission']).toBe(
+      'platform.dashboard.summary.read',
+    );
+    expect(dashboard?.operationId).toBe('readPlatformDashboardOverview');
+    expect(dashboard?.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/PlatformDashboardOverview',
+          },
+        },
+      },
+    });
+    expect(dashboard?.description).toContain('bounded readiness probes');
+    expect(contract.components.schemas.PlatformProjectSummary).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining(['organization', 'memberCount']),
+    });
+    expect(contract.components.schemas.PlatformDashboardSummary).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        'organizations',
+        'users',
+        'projects',
+        'memberships',
+      ]),
+    });
+    expect(contract.components.schemas.PlatformDashboardOverview).toMatchObject(
+      {
+        additionalProperties: false,
+        required: expect.arrayContaining([
+          'serviceHealth',
+          'recentOperationalActivity',
+        ]),
+      },
+    );
+    expect(
+      JSON.stringify(contract.components.schemas.PlatformDashboardOverview),
+    ).not.toMatch(/actorUserId|resourceId|rawError|responseBody/i);
+  });
+
+  it('documents global Platform membership search, filters and safe detail', () => {
+    const list = contract.paths['/api/v1/iam/platform/memberships'].get;
+    const detail =
+      contract.paths['/api/v1/iam/platform/memberships/{membershipId}'].get;
+    expect(list?.operationId).toBe('listPlatformMemberships');
+    expect(list?.['x-platform-permission']).toBe(
+      'platform.memberships.membership.read',
+    );
+    expect(list?.description).toContain('stably sorted');
+    expect(list?.parameters).toEqual(
+      expect.arrayContaining([
+        { $ref: '#/components/parameters/Page' },
+        { $ref: '#/components/parameters/PageSize' },
+        expect.objectContaining({ name: 'organizationId', in: 'query' }),
+        expect.objectContaining({ name: 'status', in: 'query' }),
+        expect.objectContaining({ name: 'roleCode', in: 'query' }),
+      ]),
+    );
+    expect(detail?.operationId).toBe('readPlatformMembership');
+    expect(detail?.['x-platform-permission']).toBe(
+      'platform.memberships.membership.read',
+    );
+    expect(detail?.responses['404']).toBeDefined();
+    expect(contract.components.schemas.PlatformMembershipSummary).toMatchObject(
+      {
+        additionalProperties: false,
+        properties: {
+          organization: {
+            oneOf: expect.arrayContaining([
+              { $ref: '#/components/schemas/PlatformProjectOrganization' },
+            ]),
+          },
+        },
+      },
+    );
+  });
+
+  it('documents Platform project membership metadata with both resource scope keys', () => {
+    const operation =
+      contract.paths['/api/v1/iam/platform/projects/{projectId}/memberships']
+        .get;
+    const schema = contract.components.schemas.PlatformProjectMemberSummary;
+    expect(operation?.operationId).toBe('listPlatformProjectMemberships');
+    expect(operation?.['x-platform-permission']).toBe(
+      'platform.projects.project.read',
+    );
+    expect(operation?.description).toContain(
+      'fences membership rows to both identifiers',
+    );
+    expect(operation?.responses['404']).toBeDefined();
+    expect(schema).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        'projectId',
+        'organizationId',
+        'userId',
+        'status',
+        'joinedAt',
+      ]),
+    });
+    expect(JSON.stringify(schema)).not.toMatch(
+      /description|document|chunk|prompt|content|roleId/i,
+    );
+  });
+
+  it('documents Platform pending invitation metadata under the membership read permission', () => {
+    const invitations =
+      contract.paths[
+        '/api/v1/iam/platform/organizations/{organizationId}/invitations'
+      ].get;
+    expect(invitations?.operationId).toBe(
+      'listPlatformOrganizationInvitations',
+    );
+    expect(invitations?.['x-platform-permission']).toBe(
+      'platform.memberships.membership.read',
+    );
+    expect(invitations?.responses['404']).toBeDefined();
+    expect(invitations?.description).toContain(
+      'unexpired V2 invitation metadata',
+    );
+    expect(
+      JSON.stringify(contract.components.schemas.C02AdminInvitation),
+    ).not.toMatch(/token|secret|credential/i);
+  });
+
+  it('documents Platform invitation commands with the no-write A7/A8 runtime gate', () => {
+    const invite =
+      contract.paths[
+        '/api/v1/iam/platform/organizations/{organizationId}/invitations'
+      ].post;
+    const resend =
+      contract.paths[
+        '/api/v1/iam/platform/organizations/{organizationId}/invitations/{invitationId}/resend'
+      ].post;
+    const cancel =
+      contract.paths[
+        '/api/v1/iam/platform/organizations/{organizationId}/invitations/{invitationId}/cancel'
+      ].post;
+
+    expect(invite?.operationId).toBe('createPlatformOrganizationInvitation');
+    expect(resend?.operationId).toBe('resendPlatformOrganizationInvitation');
+    expect(cancel?.operationId).toBe('cancelPlatformOrganizationInvitation');
+    for (const operation of [invite, resend, cancel]) {
+      expect(operation).toMatchObject({
+        'x-platform-permission': 'platform.memberships.invitation.manage',
+        'x-contract-status': 'USER_APPROVED',
+        'x-runtime-status': 'BLOCKED_A7_A8',
+        'x-readiness-gates': [
+          'A7_NOTIFICATION_CONTRACT_PROVIDER',
+          'A8_COORDINATED_CUTOVER',
+        ],
+      });
+      expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
+        expect.arrayContaining([
+          'Idempotency-Key',
+          'X-CSRF-Token',
+          '__Host-csrf',
+        ]),
+      );
+      expect(operation?.responses['503']?.description).toContain(
+        'performs no membership, invitation, operation, outbox, or audit mutation',
+      );
+    }
+    expect(invite?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/C02InviteMemberRequest' },
+        },
+      },
+    });
+    expect(resend?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/C02ResendInvitationRequest' },
+        },
+      },
+    });
+    expect(cancel?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/C02CancelInvitationRequest' },
+        },
+      },
+    });
+  });
+
+  it('documents Platform service health probes with bounded safe projections', () => {
+    const list = contract.paths['/api/v1/iam/platform/services'].get;
+    const detail =
+      contract.paths['/api/v1/iam/platform/services/{serviceId}'].get;
+    const summary =
+      contract.components.schemas.PlatformServiceOperationsSummary;
+    expect(list?.operationId).toBe('listPlatformServices');
+    expect(detail?.operationId).toBe('readPlatformService');
+    expect(list?.['x-platform-permission']).toBe(
+      'platform.services.service.read',
+    );
+    expect(detail?.['x-platform-permission']).toBe(
+      'platform.services.service.read',
+    );
+    expect(list?.description).toContain('readiness endpoint');
+    expect(summary).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        'status',
+        'availability',
+        'liveness',
+        'readiness',
+        'dependencies',
+        'lastCheckedAt',
+      ]),
+    });
+    expect(JSON.stringify(summary)).not.toMatch(
+      /credential|token|secret|payload|responseBody/i,
+    );
+  });
+
+  it('documents BullMQ queue and job reads with payload-safe projections', () => {
+    const jobs = contract.paths['/api/v1/iam/platform/jobs'].get;
+    const job =
+      contract.paths['/api/v1/iam/platform/jobs/{queueId}/{jobId}'].get;
+    const queues = contract.paths['/api/v1/iam/platform/queues'].get;
+    const queue = contract.paths['/api/v1/iam/platform/queues/{queueId}'].get;
+    const summary = contract.components.schemas.PlatformJobSummary;
+    const properties = summary.properties as Record<string, unknown>;
+    for (const operation of [jobs, job, queues, queue]) {
+      expect(operation?.['x-platform-permission']).toBe(
+        'platform.jobs.job.read',
+      );
+    }
+    expect(jobs?.responses['200']).toBeDefined();
+    expect(queue?.responses['404']).toBeDefined();
+    expect(properties).not.toHaveProperty('data');
+    expect(properties).not.toHaveProperty('result');
+    expect(properties).not.toHaveProperty('payload');
+    expect(properties).not.toHaveProperty('failedReason');
+    expect(
+      contract.components.schemas.PlatformQueueOperationsSummary,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining(['depth', 'counts', 'availability']),
+    });
+  });
+
+  it('documents retry and cancel with manage permission, CSRF, idempotency, and bounded results', () => {
+    const retry =
+      contract.paths['/api/v1/iam/platform/jobs/{queueId}/{jobId}/retry'].post;
+    const cancel =
+      contract.paths['/api/v1/iam/platform/jobs/{queueId}/{jobId}/cancel'].post;
+    for (const operation of [retry, cancel]) {
+      expect(operation?.['x-platform-permission']).toBe(
+        'platform.jobs.job.manage',
+      );
+      expect(operation?.responses['200']).toBeDefined();
+      expect(operation?.responses['409']).toBeDefined();
+      expect(operation?.responses['503']).toBeDefined();
+      expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
+        expect.arrayContaining([
+          'X-CSRF-Token',
+          '__Host-csrf',
+          'Idempotency-Key',
+        ]),
+      );
+    }
+    expect(retry?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/PlatformJobRetryRequest' },
+        },
+      },
+    });
+    expect(cancel?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/PlatformJobCancelRequest' },
+        },
+      },
+    });
+  });
+
+  it('documents SAG as an external operational owner with explicit safe unavailable fields', () => {
+    const operation = contract.paths['/api/v1/iam/platform/ai/operations'].get;
+    const schema = contract.components.schemas.PlatformAiOperationsSummary;
+    expect(operation?.['x-platform-permission']).toBe(
+      'platform.ai.operations.read',
+    );
+    expect(operation?.description).toContain('current SAG operational API');
+    expect(schema).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        'liveness',
+        'readiness',
+        'dependencies',
+        'lastCheckedAt',
+      ]),
+    });
+    expect(JSON.stringify(schema)).not.toMatch(
+      /apiKey|credential|token|prompt|document|chunk|embedding/i,
+    );
+  });
+
+  it('documents Jira-owned integration metadata without credential fields', () => {
+    const list = contract.paths['/api/v1/iam/platform/integrations'].get;
+    const detail =
+      contract.paths['/api/v1/iam/platform/integrations/{integrationId}'].get;
+    const summary = contract.components.schemas.PlatformIntegrationSummary;
+    const properties = summary.properties as Record<string, unknown>;
+    expect(list?.['x-platform-permission']).toBe(
+      'platform.integrations.integration.read',
+    );
+    expect(detail?.['x-platform-permission']).toBe(
+      'platform.integrations.integration.read',
+    );
+    expect(list?.description).toContain('signed internal request');
+    expect(list?.description).toContain(
+      'Jira owner has no credential decryptor/provider client',
+    );
+    expect(summary).toMatchObject({ additionalProperties: false });
+    expect(properties).not.toHaveProperty('credentialsEncrypted');
+    expect(properties).not.toHaveProperty('webhookSecret');
+    expect(properties).not.toHaveProperty('atlassianUrl');
+    expect(properties).not.toHaveProperty('errorLog');
+  });
+
+  it('documents blocked Jira connection commands with safe unavailable contracts', () => {
+    const test =
+      contract.paths['/api/v1/iam/platform/integrations/{integrationId}/test']
+        .post;
+    const reconnect =
+      contract.paths[
+        '/api/v1/iam/platform/integrations/{integrationId}/reconnect'
+      ].post;
+    expect(test?.['x-platform-permission']).toBe(
+      'platform.integrations.integration.manage',
+    );
+    expect(reconnect?.['x-platform-permission']).toBe(
+      'platform.integrations.integration.manage',
+    );
+    expect(test?.['x-runtime-status']).toBe('BLOCKED_EXTERNAL_DEPENDENCY');
+    expect(reconnect?.['x-runtime-status']).toBe('BLOCKED_EXTERNAL_DEPENDENCY');
+    expect(test?.responses['503']).toBeDefined();
+    expect(reconnect?.responses['503']).toBeDefined();
+    expect(test?.description).toContain('never fabricate a successful test');
+    expect(reconnect?.description).toContain('never fabricate a reconnect');
+    expect(reconnect?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/PlatformIntegrationReconnectRequest',
+          },
+        },
+      },
+    });
+    expect(
+      contract.components.schemas.PlatformIntegrationReconnectRequest,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: ['expectedUpdatedAt'],
+    });
+    for (const operation of [test, reconnect]) {
+      expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
+        expect.arrayContaining([
+          'integrationId',
+          'X-CSRF-Token',
+          '__Host-csrf',
+          'Idempotency-Key',
+        ]),
+      );
+    }
+  });
+
+  it('documents filtered, paginated Platform audit event and resource history APIs', () => {
+    const events = contract.paths['/api/v1/iam/platform/audit/events'].get;
+    const detail =
+      contract.paths['/api/v1/iam/platform/audit/events/{eventId}'].get;
+    const history =
+      contract.paths[
+        '/api/v1/iam/platform/audit/resources/{resourceType}/{resourceId}/history'
+      ].get;
+    expect(events?.operationId).toBe('listPlatformAuditEvents');
+    expect(events?.['x-platform-permission']).toBe('platform.audit.read');
+    expect(events?.parameters).toEqual(
+      expect.arrayContaining([
+        { $ref: '#/components/parameters/Page' },
+        { $ref: '#/components/parameters/PageSize' },
+      ]),
+    );
+    expect(events?.parameters?.map((parameter) => parameter.name)).toEqual(
+      expect.arrayContaining([
+        'actorUserId',
+        'action',
+        'resourceType',
+        'resourceId',
+        'organizationId',
+        'from',
+        'to',
+      ]),
+    );
+    expect(detail?.responses['200']).toBeDefined();
+    expect(history?.['x-platform-permission']).toBe('platform.audit.read');
+    expect(contract.components.schemas.PlatformAuditEvent).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        'eventId',
+        'occurredAt',
+        'actorUserId',
+        'action',
+        'resourceType',
+        'resourceId',
+        'scope',
+        'result',
+      ]),
+    });
+    expect(contract.components.schemas.PlatformAuditAction.enum).toEqual(
+      expect.arrayContaining([
+        'platform.session.revoked',
+        'platform.sessions.revoked_all',
+      ]),
+    );
+    expect(
+      contract.components.schemas.PlatformAuditResourceType.enum,
+    ).toContain('SESSION');
+  });
+
+  it('documents Platform session administration with safe projections and matching permissions', () => {
+    const paths = [
+      {
+        path: '/api/v1/iam/platform/users/{userId}/sessions',
+        method: 'get',
+        permission: 'platform.sessions.session.read',
+        operationId: 'listPlatformUserSessions',
+      },
+      {
+        path: '/api/v1/iam/platform/users/{userId}/sessions/{sessionId}',
+        method: 'get',
+        permission: 'platform.sessions.session.read',
+        operationId: 'readPlatformUserSession',
+      },
+      {
+        path: '/api/v1/iam/platform/users/{userId}/sessions/{sessionId}/revoke',
+        method: 'post',
+        permission: 'platform.sessions.session.manage',
+        operationId: 'revokePlatformUserSession',
+      },
+      {
+        path: '/api/v1/iam/platform/users/{userId}/sessions/revoke-bulk',
+        method: 'post',
+        permission: 'platform.sessions.session.manage',
+        operationId: 'revokePlatformUserSessions',
+      },
+      {
+        path: '/api/v1/iam/platform/users/{userId}/sessions/revoke-all',
+        method: 'post',
+        permission: 'platform.sessions.session.manage',
+        operationId: 'revokeAllPlatformUserSessions',
+      },
+    ] as const;
+
+    for (const { path, method, permission, operationId } of paths) {
+      const operation = contract.paths[path][method];
+      expect(operation?.operationId).toBe(operationId);
+      expect(operation?.['x-platform-permission']).toBe(permission);
+      expect(operation?.responses['401']).toBeDefined();
+      expect(operation?.responses['403']).toBeDefined();
+      expect(operation?.responses['422']).toBeDefined();
+      expect(operation?.responses['503']).toBeDefined();
+    }
+
+    const safeSession = contract.components.schemas.PlatformSessionSummary;
+    expect(safeSession).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        'id',
+        'userId',
+        'context',
+        'status',
+        'createdAt',
+        'updatedAt',
+        'expiresAt',
+      ]),
+    });
+    expect(JSON.stringify(safeSession)).not.toMatch(
+      /tokenHash|refreshToken|accessToken|ipAddress|userAgent/i,
+    );
+    expect(
+      contract.components.schemas.PlatformSessionBulkRevokeRequest,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: ['sessions', 'reasonCode'],
+    });
   });
 
   it('documents ACTIVE Organization Membership as the project.create boundary', () => {
@@ -755,11 +1301,196 @@ describe('IAM OpenAPI contract', () => {
     }
   });
 
+  it('documents the bounded request trace API as an audit-backed safe projection', () => {
+    const operation =
+      contract.paths['/api/v1/iam/platform/diagnostics/traces/{requestId}'].get;
+    expect(operation?.operationId).toBe('findPlatformRequestTrace');
+    expect(operation?.['x-platform-permission']).toBe(
+      'platform.diagnostics.trace.read',
+    );
+    expect(operation?.responses['200']).toBeDefined();
+    expect(operation?.responses['404']).toBeDefined();
+    expect(operation?.responses['503']).toBeDefined();
+    expect(operation?.description).toMatch(/at most 50/i);
+    expect(operation?.description).toMatch(/raw application logs/i);
+    expect(contract.components.schemas.PlatformRequestTrace).toMatchObject({
+      additionalProperties: false,
+      required: ['requestId', 'events', 'truncated'],
+    });
+  });
+
+  it('documents incident workflows, optimistic concurrency, redaction, and audit filters', () => {
+    const operationsToCheck = [
+      {
+        path: '/api/v1/iam/platform/incidents',
+        method: 'get',
+        permission: 'platform.incidents.incident.read',
+        status: '200',
+      },
+      {
+        path: '/api/v1/iam/platform/incidents',
+        method: 'post',
+        permission: 'platform.incidents.incident.manage',
+        status: '201',
+      },
+      {
+        path: '/api/v1/iam/platform/incidents/{incidentId}',
+        method: 'get',
+        permission: 'platform.incidents.incident.read',
+        status: '200',
+      },
+      {
+        path: '/api/v1/iam/platform/incidents/{incidentId}/history',
+        method: 'get',
+        permission: 'platform.incidents.incident.read',
+        status: '200',
+      },
+      {
+        path: '/api/v1/iam/platform/incidents/{incidentId}/acknowledge',
+        method: 'post',
+        permission: 'platform.incidents.incident.manage',
+        status: '200',
+      },
+      {
+        path: '/api/v1/iam/platform/incidents/{incidentId}/resolve',
+        method: 'post',
+        permission: 'platform.incidents.incident.manage',
+        status: '200',
+      },
+      {
+        path: '/api/v1/iam/platform/incidents/{incidentId}/notes',
+        method: 'post',
+        permission: 'platform.incidents.incident.manage',
+        status: '200',
+      },
+    ] as const;
+
+    for (const { path, method, permission, status } of operationsToCheck) {
+      const operation = contract.paths[path][method];
+      expect(operation?.['x-platform-permission']).toBe(permission);
+      expect(operation?.responses[status]).toBeDefined();
+      expect(operation?.responses['401']).toBeDefined();
+      expect(operation?.responses['403']).toBeDefined();
+      expect(operation?.responses['503']).toBeDefined();
+    }
+
+    const createRequest =
+      contract.components.schemas.PlatformIncidentCreateRequest;
+    expect(createRequest).toMatchObject({
+      additionalProperties: false,
+      required: ['title', 'severity', 'affectedServiceId'],
+    });
+    const actionRequest =
+      contract.components.schemas.PlatformIncidentActionRequest;
+    expect(actionRequest).toMatchObject({
+      additionalProperties: false,
+      required: ['expectedVersion', 'note'],
+    });
+    expect(
+      JSON.stringify(
+        contract.paths['/api/v1/iam/platform/incidents/{incidentId}/notes']
+          ?.post,
+      ),
+    ).toMatch(/redact/i);
+    expect(contract.components.schemas.PlatformAuditAction.enum).toEqual(
+      expect.arrayContaining([
+        'platform.incident.created',
+        'platform.incident.acknowledged',
+        'platform.incident.resolved',
+        'platform.incident.note.added',
+      ]),
+    );
+    expect(
+      contract.components.schemas.PlatformAuditResourceType.enum,
+    ).toContain('INCIDENT');
+  });
+
   it('resolves every local reference', () => {
     const references = JSON.stringify(contract).match(/#\/components\/[^"]+/g);
 
     for (const reference of new Set(references ?? [])) {
       expect(resolveLocalReference(contract, reference)).toBeDefined();
+    }
+  });
+
+  it('documents every runtime PlatformController route and method', () => {
+    const prefix = String(
+      Reflect.getMetadata(PATH_METADATA, PlatformController),
+    );
+    const methodNames = new Map<number, keyof OpenApiPathItem>([
+      [RequestMethod.GET, 'get'],
+      [RequestMethod.POST, 'post'],
+      [RequestMethod.PATCH, 'patch'],
+      [RequestMethod.PUT, 'put'],
+      [RequestMethod.DELETE, 'delete'],
+    ]);
+    const prototype = PlatformController.prototype as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const name of Object.getOwnPropertyNames(prototype)) {
+      if (name === 'constructor') continue;
+      const handler = prototype[name];
+      if (
+        typeof handler !== 'function' ||
+        !Reflect.hasMetadata(PATH_METADATA, handler)
+      )
+        continue;
+      const routePaths = Reflect.getMetadata(PATH_METADATA, handler);
+      const paths = typeof routePaths === 'string' ? [routePaths] : routePaths;
+      const method = methodNames.get(
+        Reflect.getMetadata(METHOD_METADATA, handler) as number,
+      );
+      expect(method).toBeDefined();
+      for (const routePath of paths as string[]) {
+        const openApiPath = `/api/v1/${prefix}/${routePath.replace(/:([A-Za-z0-9]+)/g, '{$1}')}`;
+        if (!contract.paths[openApiPath]?.[method!])
+          throw new Error(
+            `Missing OpenAPI operation: ${method} ${openApiPath}`,
+          );
+      }
+    }
+  });
+
+  it('does not leave Platform OpenAPI operations without a runtime controller route', () => {
+    const methodNames = new Map<string, RequestMethod>([
+      ['get', RequestMethod.GET],
+      ['post', RequestMethod.POST],
+      ['patch', RequestMethod.PATCH],
+      ['put', RequestMethod.PUT],
+      ['delete', RequestMethod.DELETE],
+    ]);
+    const runtimeRoutes = new Set<string>();
+    const prefix = String(
+      Reflect.getMetadata(PATH_METADATA, PlatformController),
+    );
+    const prototype = PlatformController.prototype as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const name of Object.getOwnPropertyNames(prototype)) {
+      if (name === 'constructor') continue;
+      const handler = prototype[name];
+      if (
+        typeof handler !== 'function' ||
+        !Reflect.hasMetadata(PATH_METADATA, handler)
+      )
+        continue;
+      const routePaths = Reflect.getMetadata(PATH_METADATA, handler);
+      const paths = typeof routePaths === 'string' ? [routePaths] : routePaths;
+      const method = Reflect.getMetadata(METHOD_METADATA, handler) as number;
+      for (const routePath of paths as string[]) {
+        runtimeRoutes.add(
+          `${method}:${`/api/v1/${prefix}/${routePath.replace(/:([A-Za-z0-9]+)/g, '{$1}')}`}`,
+        );
+      }
+    }
+    for (const [path, pathItem] of Object.entries(contract.paths)) {
+      if (!path.startsWith('/api/v1/iam/platform/')) continue;
+      for (const [method, requestMethod] of methodNames) {
+        if (!pathItem[method as keyof OpenApiPathItem]) continue;
+        expect(runtimeRoutes).toContain(`${requestMethod}:${path}`);
+      }
     }
   });
 
