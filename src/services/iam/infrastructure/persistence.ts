@@ -157,6 +157,15 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       indexes: [
         index({ subjectUserId: 1, permission: 1, scope: 1 }, { unique: true }),
         index({ subjectUserId: 1, status: 1, permission: 1 }),
+        index(
+          {
+            subjectUserId: 1,
+            scope: 1,
+            provenanceOperationId: 1,
+            permission: 1,
+          },
+          { name: 'platform_authority_snapshot_provenance' },
+        ),
       ],
     },
     {

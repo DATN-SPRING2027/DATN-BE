@@ -19,7 +19,16 @@ export interface EnvironmentVariables {
   GATEWAY_PORT: number;
   SERVICE_PORT: number;
   IAM_SERVICE_URL: string;
+  CAPTURE_SERVICE_URL: string;
+  JIRA_SERVICE_URL: string;
+  LIFECYCLE_SERVICE_URL: string;
+  CHAT_SERVICE_URL: string;
+  HANDOVER_SERVICE_URL: string;
+  INGESTION_SERVICE_URL: string;
+  NOTIFICATION_SERVICE_URL: string;
+  SAG_SERVICE_URL: string;
   IAM_GATEWAY_SECRET?: string;
+  PLATFORM_SERVICE_OPS_SECRET?: string;
   GATEWAY_TRUSTED_PROXY_CIDRS: string;
   REDIS_HOST: string;
   REDIS_PORT: number;
@@ -61,7 +70,32 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   GATEWAY_PORT: Joi.number().integer().min(1).max(65535).default(3000),
   SERVICE_PORT: Joi.number().integer().min(1).max(65535).default(3001),
   IAM_SERVICE_URL: Joi.string().uri().default('http://127.0.0.1:3001'),
+  CAPTURE_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3002'),
+  JIRA_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3003'),
+  LIFECYCLE_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3004'),
+  CHAT_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3005'),
+  HANDOVER_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3006'),
+  INGESTION_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3007'),
+  NOTIFICATION_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:3008'),
+  SAG_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://127.0.0.1:8000'),
   IAM_GATEWAY_SECRET: Joi.string().min(32).allow('').optional(),
+  PLATFORM_SERVICE_OPS_SECRET: Joi.string().min(32).allow('').optional(),
   GATEWAY_TRUSTED_PROXY_CIDRS: Joi.string()
     .allow('')
     .default('')

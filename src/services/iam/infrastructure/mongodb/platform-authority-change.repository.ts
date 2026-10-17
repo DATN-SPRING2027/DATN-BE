@@ -20,11 +20,15 @@ import {
 } from '../../../../common/mongodb/database-names';
 import type { PlatformAuthorityChangeRepository } from '../../application/platform/platform-authority-change.repository';
 import {
-  PLATFORM_PERMISSIONS,
+  PLATFORM_A04_PERMISSIONS,
+  PLATFORM_V1_PERMISSIONS,
   type PlatformPermission,
 } from '../../application/authorization/authorization.policy';
 import {
+  PLATFORM_AUTHORITY_BUNDLES,
+  hashAssignmentSnapshot,
   hashPayload,
+  type PlatformAuthorityBundleVersion,
   type PlatformAuthorityAssignmentResult,
   type PlatformAuthorityChangeCommand,
   type PlatformAuthorityChangeResult,
@@ -62,6 +66,8 @@ interface PlatformAuthorityOperationDocument {
   actorUserId: Types.ObjectId;
   issuerUserId: Types.ObjectId;
   operationType: PlatformAuthorityOperationType;
+  bundleVersion?: PlatformAuthorityBundleVersion;
+  sourceOperationId?: string;
   targetUserId: Types.ObjectId;
   permissions: PlatformPermission[];
   scope: 'PLATFORM';
@@ -210,33 +216,82 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           });
         }
 
-        const permissions = [...PLATFORM_PERMISSIONS];
+        const permissions = [
+          ...PLATFORM_AUTHORITY_BUNDLES[command.bundleVersion],
+        ];
         const rows = await this.assignments()
           .find({
             subjectUserId: targetUserId,
-            permission: { $in: permissions },
             scope: 'PLATFORM',
           })
           .session(transactionSession)
           .exec();
-        const rowsByPermission = new Map(
-          rows.map((row) => [row.permission, row] as const),
+        const currentSnapshotHash = hashAssignmentSnapshot(
+          rows.map((row) => ({
+            assignmentId: row._id.toHexString(),
+            permission: row.permission,
+            scope: row.scope,
+            status: row.status,
+            grantedAt: row.grantedAt,
+            grantedBy: row.grantedBy.toHexString(),
+            expiresAt: row.expiresAt ?? null,
+            revokedAt: row.revokedAt ?? null,
+            revokedBy: row.revokedBy?.toHexString() ?? null,
+            provenanceOperationId: row.provenanceOperationId ?? null,
+          })),
         );
-        const completeBundle =
-          rows.length === permissions.length &&
-          permissions.every((permission) => rowsByPermission.has(permission));
+        if (
+          currentSnapshotHash !==
+          command.expectedCurrentSnapshotHash.toLowerCase()
+        ) {
+          throw new ConflictException({
+            code: 'PLATFORM_AUTHORITY_STALE',
+            message:
+              'The platform authority assignment snapshot changed before this operation.',
+          });
+        }
+
+        const rowsForPermissions = (
+          expectedPermissions: readonly PlatformPermission[],
+        ) => {
+          const byPermission = new Map<
+            string,
+            PlatformAuthorityAssignmentDocument[]
+          >();
+          for (const row of rows) {
+            const permissionRows = byPermission.get(row.permission) ?? [];
+            permissionRows.push(row);
+            byPermission.set(row.permission, permissionRows);
+          }
+          return expectedPermissions.length === rows.length &&
+            expectedPermissions.every(
+              (permission) => byPermission.get(permission)?.length === 1,
+            )
+            ? expectedPermissions.map(
+                (permission) => byPermission.get(permission)![0],
+              )
+            : null;
+        };
+        const expectedCurrentPermissions =
+          command.operationType === 'V1_EXPAND'
+            ? PLATFORM_A04_PERMISSIONS
+            : command.operationType === 'V2_EXPAND'
+              ? PLATFORM_V1_PERMISSIONS
+              : permissions;
+        const expectedCurrentRows = rowsForPermissions(
+          expectedCurrentPermissions,
+        );
+        if (rows.length > 0 && !expectedCurrentRows) throwLegacyConflict();
+        if (rows.length === 0 && command.operationType !== 'BOOTSTRAP')
+          throwLegacyConflict();
         const isCurrent = (row: PlatformAuthorityAssignmentDocument) =>
           row.status === 'ACTIVE' &&
           (row.expiresAt == null || row.expiresAt.getTime() > now.getTime());
         const allCurrent =
-          completeBundle &&
-          permissions.every((permission) =>
-            isCurrent(rowsByPermission.get(permission)!),
-          );
+          expectedCurrentRows !== null && expectedCurrentRows.every(isCurrent);
         const allInactive =
-          completeBundle &&
-          permissions.every((permission) => {
-            const row = rowsByPermission.get(permission)!;
+          expectedCurrentRows !== null &&
+          expectedCurrentRows.every((row) => {
             return (
               row.status === 'REVOKED' ||
               (row.status === 'ACTIVE' &&
@@ -253,39 +308,27 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
                 ? 'REVOKED'
                 : null;
 
-        if (rows.length > 0 && !completeBundle) throwLegacyConflict();
         if (currentState === null) throwLegacyConflict();
-        if (
-          command.expectedCurrentStatus &&
-          command.expectedCurrentStatus !== currentState
-        ) {
-          throw new ConflictException({
-            code: 'AUTHORITY_STATE_CONFLICT',
-            message:
-              'The complete permission bundle no longer matches the expected state.',
-          });
-        }
 
-        const assertOwnedBundle = async () => {
-          if (
-            !completeBundle ||
-            rows.some((row) => !row.provenanceOperationId) ||
-            new Set(rows.map((row) => row.provenanceOperationId)).size !== 1
-          ) {
-            throwLegacyConflict();
-          }
-
-          const provenanceOperationId = rows[0].provenanceOperationId!;
+        const assertSourceOperation = async (
+          operationId: string,
+          expectedVersion: PlatformAuthorityBundleVersion,
+          sourcePermissions: readonly PlatformPermission[],
+          allowedTypes: readonly PlatformAuthorityOperationType[],
+        ): Promise<PlatformAuthorityOperationDocument> => {
           const source = await this.operations()
-            .findOne({
-              operationId: provenanceOperationId,
-              targetUserId,
-              operationType: { $in: ['BOOTSTRAP', 'REGRANT'] },
-              permissions: { $all: permissions, $size: permissions.length },
-            })
+            .findOne({ operationId, targetUserId })
             .session(transactionSession)
             .lean()
             .exec();
+          const sourceBody = source?.resultBody as
+            Partial<PlatformAuthorityChangeResultBody> | undefined;
+          const storedPermissions = source?.permissions ?? [];
+          const storedVersion =
+            source?.bundleVersion ??
+            (storedPermissions.length === PLATFORM_A04_PERMISSIONS.length
+              ? 'A04'
+              : undefined);
           if (!source) {
             throw new ConflictException({
               code: 'LEGACY_ASSIGNMENT_CONFLICT',
@@ -293,9 +336,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
                 'The complete authority bundle lacks matching PO-AUTH-01 provenance.',
             });
           }
-          const sourceBody =
-            source.resultBody as Partial<PlatformAuthorityChangeResultBody> | null;
-          if (sourceBody === null) {
+          if (!sourceBody) {
             throw new ConflictException({
               code: 'LEGACY_ASSIGNMENT_CONFLICT',
               message:
@@ -303,57 +344,175 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             });
           }
           if (
+            !allowedTypes.includes(source.operationType) ||
             source.status !== 'COMMITTED' ||
             source.scope !== 'PLATFORM' ||
             !source.auditEventId ||
-            sourceBody.operationId !== provenanceOperationId ||
-            typeof sourceBody.targetUserId !== 'string' ||
-            sourceBody.targetUserId.toLowerCase() !==
+            storedVersion !== expectedVersion ||
+            storedPermissions.length !== sourcePermissions.length ||
+            !sourcePermissions.every((permission) =>
+              storedPermissions.includes(permission),
+            ) ||
+            sourceBody.operationId !== operationId ||
+            sourceBody.targetUserId?.toLowerCase() !==
               targetUserId.toHexString() ||
             sourceBody.scope !== 'PLATFORM' ||
-            sourceBody.status !== 'ACTIVE'
-          ) {
-            throwLegacyConflict();
-          }
-          if (!Array.isArray(sourceBody.assignments)) {
-            throw new ConflictException({
-              code: 'LEGACY_ASSIGNMENT_CONFLICT',
-              message:
-                'The complete authority bundle lacks matching PO-AUTH-01 provenance.',
-            });
-          }
-          const provenanceAssignments = sourceBody.assignments;
-          if (
-            provenanceAssignments.length !== permissions.length ||
-            provenanceAssignments.some(
+            sourceBody.status !== 'ACTIVE' ||
+            !Array.isArray(sourceBody.assignments) ||
+            sourceBody.assignments.length !== sourcePermissions.length ||
+            sourceBody.assignments.some(
               (assignment) =>
                 !assignment ||
                 typeof assignment.assignmentId !== 'string' ||
                 typeof assignment.permission !== 'string' ||
                 assignment.status !== 'ACTIVE',
             )
-          ) {
+          )
             throwLegacyConflict();
+          return source;
+        };
+
+        const assertOwnedBundle = async (
+          bundleRows: PlatformAuthorityAssignmentDocument[],
+          bundleVersion: PlatformAuthorityBundleVersion,
+        ) => {
+          const bundlePermissions = PLATFORM_AUTHORITY_BUNDLES[bundleVersion];
+          if (
+            bundleRows.length !== bundlePermissions.length ||
+            bundleRows.some((row) => !row.provenanceOperationId)
+          )
+            throwLegacyConflict();
+
+          const provenanceIds = new Set(
+            bundleRows.map((row) => row.provenanceOperationId!),
+          );
+          if (provenanceIds.size === 1) {
+            const provenanceOperationId = [...provenanceIds][0];
+            const source = await assertSourceOperation(
+              provenanceOperationId,
+              bundleVersion,
+              bundlePermissions,
+              ['BOOTSTRAP', 'REGRANT'],
+            );
+            const sourceAssignments = new Set(
+              source.resultBody.assignments.map(
+                (assignment) =>
+                  `${assignment.permission}:${assignment.assignmentId.toLowerCase()}`,
+              ),
+            );
+            if (
+              bundleRows.some(
+                (row) =>
+                  !sourceAssignments.has(
+                    `${row.permission}:${row._id.toHexString()}`,
+                  ),
+              )
+            )
+              throwLegacyConflict();
+            return;
           }
 
-          const sourceAssignments = new Set(
-            provenanceAssignments.map(
-              (assignment) =>
-                assignment.permission +
-                ':' +
-                assignment.assignmentId.toLowerCase(),
-            ),
+          if (bundleVersion === 'V2') {
+            const v1Rows = bundleRows.filter((row) =>
+              PLATFORM_V1_PERMISSIONS.includes(row.permission as never),
+            );
+            const v2Rows = bundleRows.filter(
+              (row) =>
+                !PLATFORM_V1_PERMISSIONS.includes(row.permission as never),
+            );
+            if (
+              v1Rows.length !== PLATFORM_V1_PERMISSIONS.length ||
+              v2Rows.length !==
+                bundlePermissions.length - PLATFORM_V1_PERMISSIONS.length ||
+              new Set(v2Rows.map((row) => row.provenanceOperationId)).size !== 1
+            )
+              throwLegacyConflict();
+            await assertOwnedBundle(v1Rows, 'V1');
+            const sourceOperationId = v2Rows[0].provenanceOperationId!;
+            const v1AnchorOperationId =
+              v1Rows.find(
+                (row) =>
+                  !PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+              )?.provenanceOperationId ?? v1Rows[0].provenanceOperationId;
+            if (!v1AnchorOperationId) throwLegacyConflict();
+            const expansion = await assertSourceOperation(
+              sourceOperationId,
+              'V2',
+              bundlePermissions,
+              ['V2_EXPAND'],
+            );
+            if (
+              expansion.sourceOperationId !== v1AnchorOperationId ||
+              bundleRows.some(
+                (row) =>
+                  !expansion.resultBody.assignments.some(
+                    (assignment) =>
+                      assignment.assignmentId.toLowerCase() ===
+                        row._id.toHexString() &&
+                      assignment.permission === row.permission,
+                  ),
+              )
+            )
+              throwLegacyConflict();
+            return;
+          }
+
+          if (bundleVersion !== 'V1' || provenanceIds.size !== 2)
+            throwLegacyConflict();
+          const expansionId = bundleRows.find(
+            (row) =>
+              row.provenanceOperationId &&
+              !PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+          )?.provenanceOperationId;
+          const legacyId = bundleRows.find((row) =>
+            PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+          )?.provenanceOperationId;
+          if (!expansionId || !legacyId || expansionId === legacyId)
+            throwLegacyConflict();
+          const validExpansionId = expansionId as string;
+          const validLegacyId = legacyId as string;
+          const legacyRows = bundleRows.filter((row) =>
+            PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+          );
+          const expandedRows = bundleRows.filter(
+            (row) =>
+              !PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
           );
           if (
-            rows.some(
+            legacyRows.length !== PLATFORM_A04_PERMISSIONS.length ||
+            expandedRows.length !==
+              bundlePermissions.length - PLATFORM_A04_PERMISSIONS.length ||
+            legacyRows.some((row) => row.provenanceOperationId !== legacyId) ||
+            expandedRows.some(
+              (row) => row.provenanceOperationId !== expansionId,
+            )
+          )
+            throwLegacyConflict();
+          await assertSourceOperation(
+            validLegacyId,
+            'A04',
+            PLATFORM_A04_PERMISSIONS,
+            ['BOOTSTRAP', 'REGRANT'],
+          );
+          const expansion = await assertSourceOperation(
+            validExpansionId,
+            'V1',
+            bundlePermissions,
+            ['V1_EXPAND'],
+          );
+          if (
+            expansion.sourceOperationId !== validLegacyId ||
+            bundleRows.some(
               (row) =>
-                !sourceAssignments.has(
-                  row.permission + ':' + row._id.toHexString(),
+                !expansion.resultBody.assignments.some(
+                  (assignment) =>
+                    assignment.assignmentId.toLowerCase() ===
+                      row._id.toHexString() &&
+                    assignment.permission === row.permission,
                 ),
             )
-          ) {
+          )
             throwLegacyConflict();
-          }
         };
 
         const httpStatus: 200 | 201 =
@@ -366,10 +525,82 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           status: row.status,
         }));
         let assignments: PlatformAuthorityAssignmentDocument[];
+        let sourceOperationId: string | undefined;
 
-        if (command.operationType === 'BOOTSTRAP') {
+        if (command.operationType === 'V1_EXPAND') {
+          if (currentState !== 'ACTIVE' || !expectedCurrentRows)
+            throw new ConflictException({
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message:
+                'V1 expansion requires one complete active A-04 permission bundle.',
+            });
+          const activeLegacyRows = expectedCurrentRows;
+          await assertOwnedBundle([...activeLegacyRows], 'A04');
+          sourceOperationId = activeLegacyRows[0].provenanceOperationId;
+          const v1OnlyPermissions = permissions.filter(
+            (permission) =>
+              !PLATFORM_A04_PERMISSIONS.includes(permission as never),
+          );
+          const newExpiresAt = command.expiresAt
+            ? new Date(command.expiresAt)
+            : null;
+          const expandedAssignments = await this.assignments().create(
+            v1OnlyPermissions.map((permission) => ({
+              subjectUserId: targetUserId,
+              permission,
+              scope: 'PLATFORM' as const,
+              status: 'ACTIVE' as const,
+              grantedAt: now,
+              grantedBy: issuerUserId,
+              expiresAt: newExpiresAt,
+              revokedAt: null,
+              revokedBy: null,
+              provenanceOperationId: command.operationId,
+            })),
+            { session: transactionSession, ordered: true },
+          );
+          assignments = [...activeLegacyRows, ...expandedAssignments];
+        } else if (command.operationType === 'V2_EXPAND') {
+          if (currentState !== 'ACTIVE' || !expectedCurrentRows)
+            throw new ConflictException({
+              code: 'AUTHORITY_STATE_CONFLICT',
+              message:
+                'V2 expansion requires one complete active V1 permission bundle.',
+            });
+          const activeV1Rows = expectedCurrentRows;
+          await assertOwnedBundle([...activeV1Rows], 'V1');
+          sourceOperationId =
+            activeV1Rows.find(
+              (row) =>
+                !PLATFORM_A04_PERMISSIONS.includes(row.permission as never),
+            )?.provenanceOperationId ?? activeV1Rows[0].provenanceOperationId;
+          if (!sourceOperationId) throwLegacyConflict();
+          const v2OnlyPermissions = permissions.filter(
+            (permission) =>
+              !PLATFORM_V1_PERMISSIONS.includes(permission as never),
+          );
+          const newExpiresAt = command.expiresAt
+            ? new Date(command.expiresAt)
+            : null;
+          const expandedAssignments = await this.assignments().create(
+            v2OnlyPermissions.map((permission) => ({
+              subjectUserId: targetUserId,
+              permission,
+              scope: 'PLATFORM' as const,
+              status: 'ACTIVE' as const,
+              grantedAt: now,
+              grantedBy: issuerUserId,
+              expiresAt: newExpiresAt,
+              revokedAt: null,
+              revokedBy: null,
+              provenanceOperationId: command.operationId,
+            })),
+            { session: transactionSession, ordered: true },
+          );
+          assignments = [...activeV1Rows, ...expandedAssignments];
+        } else if (command.operationType === 'BOOTSTRAP') {
           if (rows.length > 0) {
-            await assertOwnedBundle();
+            await assertOwnedBundle(rows, command.bundleVersion);
             if (currentState === 'ACTIVE') {
               throw new ConflictException({
                 code: 'PLATFORM_AUTHORITY_ALREADY_ACTIVE',
@@ -401,7 +632,11 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             { session: transactionSession, ordered: true },
           );
         } else if (command.operationType === 'REGRANT') {
-          await assertOwnedBundle();
+          if (!expectedCurrentRows) throwLegacyConflict();
+          await assertOwnedBundle(
+            expectedCurrentRows as PlatformAuthorityAssignmentDocument[],
+            command.bundleVersion,
+          );
           if (currentState === 'ACTIVE') {
             throw new ConflictException({
               code: 'PLATFORM_AUTHORITY_ALREADY_ACTIVE',
@@ -453,7 +688,11 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             assignment.provenanceOperationId = command.operationId;
           }
         } else {
-          await assertOwnedBundle();
+          if (!expectedCurrentRows) throwLegacyConflict();
+          await assertOwnedBundle(
+            expectedCurrentRows as PlatformAuthorityAssignmentDocument[],
+            command.bundleVersion,
+          );
           if (rows.every((row) => row.status === 'REVOKED')) {
             throw new ConflictException({
               code: 'PLATFORM_AUTHORITY_ALREADY_REVOKED',
@@ -513,7 +752,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
             throw new ConflictException({
               code: 'LAST_OPERATOR_REQUIRED',
               message:
-                'Revocation must leave another ACTIVE user with all three current, unexpired A-04 permissions.',
+                'Revocation must leave another ACTIVE user with the complete current, unexpired permission bundle.',
             });
           }
 
@@ -589,6 +828,8 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
               actorUserId,
               issuerUserId,
               operationType: command.operationType,
+              bundleVersion: command.bundleVersion,
+              ...(sourceOperationId ? { sourceOperationId } : {}),
               targetUserId,
               permissions,
               scope: 'PLATFORM',

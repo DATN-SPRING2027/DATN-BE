@@ -53,6 +53,8 @@ integration('refresh session rotation on MongoDB replica set', () => {
         userId: String(userId),
         context: 'ORGANIZATION',
         organizationId: String(organizationId),
+        sessionId: randomUUID(),
+        userFence: 0,
         tokenHash: initialHash,
         expiresAt,
       });
@@ -95,6 +97,8 @@ integration('refresh session rotation on MongoDB replica set', () => {
       await repository.createRefreshSession({
         userId: String(userId),
         context: 'PLATFORM',
+        sessionId: randomUUID(),
+        userFence: 0,
         tokenHash: 'platform-initial',
         expiresAt,
       });

@@ -8,7 +8,10 @@ import {
   AUDIT_DATABASE_NAME,
   IAM_AUDIT_COLLECTION_NAME,
 } from '../../../../common/mongodb/database-names';
-import type { OrganizationMembershipCommand } from '../../application/organizations/organization-membership-command.repository';
+import type {
+  OrganizationMembershipCommand,
+  PlatformInvitationCommand,
+} from '../../application/organizations/organization-membership-command.repository';
 import { IAM_PERSISTENCE } from '../persistence';
 import { createCollectionSchema, outboxSchema } from './mongodb.schemas';
 import { MongoOrganizationMembershipCommandRepository } from './organization-membership-command.repository';
@@ -25,6 +28,8 @@ const collections = [
   'membership_operations',
   'roles',
   'role_assignments',
+  'platform_authority_assignments',
+  'platform_authority_change_locks',
 ];
 
 integration('C-02 membership commands on disposable MongoDB 7', () => {
@@ -56,6 +61,19 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     return repository.execute({
       actorUserId: actorUserId.toHexString(),
       organizationId: scope.toHexString(),
+      idempotencyKey,
+      command,
+      now: new Date('2026-10-14T03:00:00.000Z'),
+    });
+  }
+
+  async function invokePlatformInvitation(
+    command: PlatformInvitationCommand,
+    idempotencyKey = `platform-invite-${randomUUID()}`,
+  ) {
+    return repository.executePlatformInvitationCommand({
+      actorUserId: actorId.toHexString(),
+      organizationId: organizationId.toHexString(),
       idempotencyKey,
       command,
       now: new Date('2026-10-14T03:00:00.000Z'),
@@ -233,6 +251,11 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       { organizationId, userId: actorId, roleId, roleCode: 'ADMIN' },
       { organizationId, userId: secondAdminId, roleId, roleCode: 'ADMIN' },
     ]);
+    await connection!.collection('platform_authority_change_locks').insertOne({
+      permission: 'PLATFORM_OPERATOR_LIFECYCLE',
+      scope: 'PLATFORM',
+      version: 0,
+    });
     await connection!.collection('organization_memberships').insertOne({
       _id: new Types.ObjectId(),
       organizationId: foreignOrganizationId,
@@ -272,6 +295,98 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       expectedInvitationVersion: 1,
       reasonCode: 'INVITATION_CANCELLED',
     });
+  });
+
+  it('checks fresh Platform invitation authority, then performs no writes while A7/A8 are blocked', async () => {
+    await connection!.collection('platform_authority_assignments').insertOne({
+      subjectUserId: actorId,
+      permission: 'platform.memberships.invitation.manage',
+      scope: 'PLATFORM',
+      status: 'ACTIVE',
+      grantedAt: new Date('2026-10-01T00:00:00.000Z'),
+      grantedBy: secondAdminId,
+      expiresAt: null,
+      revokedAt: null,
+      revokedBy: null,
+      provenanceOperationId: `test-${randomUUID()}`,
+    });
+
+    const error = await invokePlatformInvitation({
+      command: 'INVITE',
+      email: 'invitee@example.test',
+      reasonCode: 'ACCESS_REQUEST',
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getStatus()).toBe(503);
+    expect((error as ServiceUnavailableException).getResponse()).toEqual({
+      code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+    });
+    expect(
+      await connection!.collection('organization_memberships').countDocuments({
+        organizationId,
+      }),
+    ).toBe(3);
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+      }),
+    ).toBe(0);
+    expect(
+      await connection!.collection('platform_authority_change_locks').findOne({
+        permission: 'PLATFORM_OPERATOR_LIFECYCLE',
+        scope: 'PLATFORM',
+      }),
+    ).toMatchObject({ version: 0 });
+  });
+
+  it('rejects Platform invitation commands without fresh invitation authority and writes nothing', async () => {
+    const error = await invokePlatformInvitation({
+      command: 'INVITE',
+      email: 'invitee@example.test',
+      reasonCode: 'ACCESS_REQUEST',
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect((error as ForbiddenException).getStatus()).toBe(403);
+    expect((error as ForbiddenException).getResponse()).toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+      }),
+    ).toBe(0);
+    expect(
+      await connection!.collection('platform_authority_change_locks').findOne({
+        permission: 'PLATFORM_OPERATOR_LIFECYCLE',
+        scope: 'PLATFORM',
+      }),
+    ).toMatchObject({ version: 0 });
   });
 
   it('replays a committed suspension before checking new-attempt preconditions', async () => {
