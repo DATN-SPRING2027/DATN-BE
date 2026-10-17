@@ -379,7 +379,7 @@ describe('IAM OpenAPI contract', () => {
             continue;
           }
           if (
-            status === '422' &&
+            (status === '422' || status === '429') &&
             (operation.operationId === 'requestEmailRegistration' ||
               operation.operationId === 'verifyEmailRegistration')
           ) {
@@ -396,6 +396,12 @@ describe('IAM OpenAPI contract', () => {
               'content.application/json.schema.$ref',
               '#/components/schemas/ErrorResponse',
             );
+            if (status === '429') {
+              expect(response.headers).toHaveProperty(
+                'Retry-After.schema.type',
+                'string',
+              );
+            }
             continue;
           }
           expect(response).toEqual({
