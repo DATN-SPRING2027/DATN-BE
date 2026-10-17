@@ -1,7 +1,8 @@
 # IAM OpenAPI v1
 
 `iam-v1.openapi.json` is the review-first contract for the IAM slice.
-Login, current user, logout and user directory are implemented. The
+Password login/reset, verified email/password registration, Google OAuth,
+current user, logout and user directory are implemented. The
 [A-01 session contract](../decisions/auth-session-contract-a-01.md) records the
 approved refresh behavior and its dated A-02 HTTP decision closure. The backend
 refresh route is implemented; the browser-facing BFF route lives in DATN-FE.
@@ -12,7 +13,7 @@ describes implemented routes.
 
 | Area               | Operations                                  |
 | ------------------ | ------------------------------------------- |
-| Auth               | Login, current user, logout and the A-02 backend refresh HTTP route |
+| Auth               | Email registration/verification, login/reset, Google OAuth, current user, logout and the A-02 backend refresh HTTP route |
 | User               | List, read and partial update               |
 | Project            | List, create, read and partial update       |
 | Project Membership | List, create and idempotent removal; generic update proposed only and not enabled in Project Access V1 |
