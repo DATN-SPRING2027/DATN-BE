@@ -1425,7 +1425,11 @@ export class PlatformController {
 
   @Get('queues/:queueId')
   @RequirePlatformPermission('platform.jobs.job.read')
-  @ApiOperation({ summary: 'Read one BullMQ queue operational projection' })
+  @ApiOperation({
+    summary: 'Read one BullMQ queue operational projection',
+    description:
+      'Requires platform.jobs.job.read at PLATFORM scope. Returns live queue health from the configured BullMQ runtime.',
+  })
   @ApiOkResponse({ description: 'Safe queue health projection.' })
   findQueue(
     @Param('queueId') queueId: string,
@@ -1456,7 +1460,7 @@ export class PlatformController {
   @ApiOperation({
     summary: 'Read one BullMQ job using a safe metadata projection',
     description:
-      'Returns job lifecycle timestamps and attempt counts only. Payload, result, and raw failure text are withheld.',
+      'Requires platform.jobs.job.read at PLATFORM scope. Returns job lifecycle timestamps and attempt counts only. Payload, result, and raw failure text are withheld.',
   })
   @ApiOkResponse({ description: 'Safe job metadata projection.' })
   findJob(
@@ -1553,7 +1557,11 @@ export class PlatformController {
 
   @Get('integrations/:integrationId')
   @RequirePlatformPermission('platform.integrations.integration.read')
-  @ApiOperation({ summary: 'Read safe metadata for one Jira integration' })
+  @ApiOperation({
+    summary: 'Read safe metadata for one Jira integration',
+    description:
+      'Requires platform.integrations.integration.read at PLATFORM scope. Credentials, webhook secrets, and site URLs are excluded.',
+  })
   @ApiOkResponse({ description: 'Safe Jira integration metadata projection.' })
   findIntegration(
     @Param('integrationId') integrationId: string,

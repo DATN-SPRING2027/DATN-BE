@@ -93,6 +93,28 @@ describe('IAM OpenAPI contract', () => {
     expect(new Set(operationIds).size).toBe(operationIds.length);
   });
 
+  it('documents the required permission and PLATFORM scope for every Platform operation', () => {
+    const methods = ['get', 'post', 'patch', 'put', 'delete'];
+    const platformOperations = Object.entries(contract.paths)
+      .filter(([path]) => path.startsWith('/api/v1/iam/platform'))
+      .flatMap(([path, pathItem]) =>
+        Object.entries(pathItem)
+          .filter(([method]) => methods.includes(method))
+          .map(([method, operation]) => ({
+            path,
+            method,
+            operation: operation as OpenApiOperation,
+          })),
+      );
+
+    expect(platformOperations.length).toBeGreaterThan(0);
+    for (const { operation } of platformOperations) {
+      expect(operation['x-platform-permission']).toEqual(expect.any(String));
+      expect(operation.description).toMatch(/PLATFORM scope/i);
+      expect(operation.operationId).toEqual(expect.any(String));
+    }
+  });
+
   it('documents the generic one-time password reset contract', () => {
     const request = contract.paths['/api/v1/auth/password-reset/request'].post;
     const confirm = contract.paths['/api/v1/auth/password-reset/confirm'].post;

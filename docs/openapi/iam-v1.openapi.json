@@ -2884,6 +2884,7 @@
       "get": {
         "tags": ["Platform", "Operations"],
         "summary": "Read one BullMQ queue health projection",
+        "description": "Requires platform.jobs.job.read at PLATFORM scope. Returns live queue health from the configured BullMQ runtime.",
         "operationId": "readPlatformQueue",
         "x-platform-permission": "platform.jobs.job.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -2958,6 +2959,7 @@
       "get": {
         "tags": ["Platform", "Operations"],
         "summary": "Read one BullMQ job with safe metadata only",
+        "description": "Requires platform.jobs.job.read at PLATFORM scope. Returns job lifecycle timestamps and attempt counts only. Payload, result, and raw failure text are withheld.",
         "operationId": "readPlatformJob",
         "x-platform-permission": "platform.jobs.job.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -3257,6 +3259,7 @@
       "get": {
         "tags": ["Platform", "Integrations"],
         "summary": "Read safe metadata for one Jira integration",
+        "description": "Requires platform.integrations.integration.read at PLATFORM scope. Credentials, webhook secrets, and site URLs are excluded.",
         "operationId": "readPlatformIntegration",
         "x-platform-permission": "platform.integrations.integration.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
