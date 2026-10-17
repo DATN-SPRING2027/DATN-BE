@@ -3,7 +3,7 @@
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
-    "description": "IAM contract. Password login and reset, Google OAuth login/signup, account-only sessions, Organization onboarding, current identity, logout and refresh are implemented. Authentication establishes a User identity; Organization APIs require a separate current ACTIVE membership. Browser authentication uses HttpOnly cookies through the FE BFF."
+    "description": "IAM contract. Password login and reset, verified email/password registration, Google OAuth login/signup, account-only sessions, Organization onboarding, current identity, logout and refresh are implemented. Authentication establishes a User identity; Organization APIs require a separate current ACTIVE membership. Browser authentication uses HttpOnly cookies through the FE BFF."
   },
   "tags": [
     { "name": "Auth", "description": "Authentication and session rotation." },
@@ -62,6 +62,121 @@
           },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/auth/registrations": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Request email/password registration",
+        "description": "Accepts a name and email only; no User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
+        "operationId": "requestEmailRegistration",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EmailRegistrationRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Generic acknowledgement; does not confirm account existence or email delivery.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EmailRegistrationAccepted" }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed name or email.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "429": {
+            "description": "Registration request limit exceeded.",
+            "headers": {
+              "Retry-After": { "schema": { "type": "string" } },
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "A durable pending registration or encrypted email intent could not be stored.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/registrations/verify": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Verify email and choose the account password",
+        "description": "Accepts the one-time token from the FE URL fragment and a password chosen by the recipient. The token digest is claimed once; account creation or attaching a password to the matching ACTIVE Google-only User and token consumption commit atomically. Existing password accounts and ineligible users are not changed. No session cookie is issued; the user signs in normally.",
+        "operationId": "verifyEmailRegistration",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EmailRegistrationVerify" }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Email verified and password credential committed; no session is created.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            }
+          },
+          "400": {
+            "description": "Token is missing, expired, superseded, already used or belongs to an ineligible account.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "422": {
+            "description": "Malformed token or password policy violation.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "429": {
+            "description": "Verification attempt limit exceeded.",
+            "headers": {
+              "Retry-After": { "schema": { "type": "string" } },
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "Token store or account transaction is unavailable; an uncommitted verification can be retried.",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } },
+              "Referrer-Policy": { "schema": { "type": "string", "const": "no-referrer" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
         }
       }
     },
@@ -6796,6 +6911,30 @@
             "writeOnly": true
           }
         }
+      },
+      "EmailRegistrationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fullName", "email"],
+        "properties": {
+          "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "email": { "type": "string", "format": "email", "maxLength": 320 }
+        }
+      },
+      "EmailRegistrationVerify": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["token", "password"],
+        "properties": {
+          "token": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$", "writeOnly": true },
+          "password": { "type": "string", "description": "12 to 72 characters and no more than 72 UTF-8 bytes because passwords are stored with bcrypt.", "minLength": 12, "maxLength": 72, "writeOnly": true }
+        }
+      },
+      "EmailRegistrationAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "const": "accepted" } }
       },
       "PasswordResetRequest": {
         "type": "object",

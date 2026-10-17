@@ -12,6 +12,10 @@ import { PASSWORD_RESET_OUTBOX } from '../application/authentication/password-re
 import { MongoPasswordResetOutboxStore } from './mongodb/password-reset-outbox.store';
 import { UnavailablePasswordResetOutboxStore } from './mongodb/unavailable-password-reset-outbox.store';
 import { PasswordResetPayloadCipher } from './email/password-reset-payload.cipher';
+import { EMAIL_REGISTRATION_OUTBOX } from '../application/authentication/email-registration.store';
+import { MongoEmailRegistrationOutboxStore } from './mongodb/email-registration-outbox.store';
+import { UnavailableEmailRegistrationOutboxStore } from './mongodb/unavailable-email-registration-outbox.store';
+import { EmailRegistrationPayloadCipher } from './email/email-registration-payload.cipher';
 import { IdempotencyService } from './redis/idempotency.service';
 import { RedisService } from './redis/redis.service';
 import { R2Storage } from './storage/r2.storage';
@@ -36,16 +40,26 @@ export class IamInfrastructureModule {
             AuditService,
             OutboxService,
             PasswordResetPayloadCipher,
+            EmailRegistrationPayloadCipher,
             MongoPasswordResetOutboxStore,
+            MongoEmailRegistrationOutboxStore,
             {
               provide: PASSWORD_RESET_OUTBOX,
               useExisting: MongoPasswordResetOutboxStore,
+            },
+            {
+              provide: EMAIL_REGISTRATION_OUTBOX,
+              useExisting: MongoEmailRegistrationOutboxStore,
             },
           ]
         : [
             {
               provide: PASSWORD_RESET_OUTBOX,
               useClass: UnavailablePasswordResetOutboxStore,
+            },
+            {
+              provide: EMAIL_REGISTRATION_OUTBOX,
+              useClass: UnavailableEmailRegistrationOutboxStore,
             },
           ]),
     ];

@@ -13,6 +13,7 @@ export interface CollectionIndex {
     expireAfterSeconds?: number;
     name?: string;
     partialFilterExpression?: Record<string, unknown>;
+    collation?: { locale: 'simple' };
   };
 }
 

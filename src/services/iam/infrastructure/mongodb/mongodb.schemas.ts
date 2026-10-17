@@ -476,6 +476,35 @@ const iamSchemas: Record<string, Schema> = {
     },
     { collection: 'password_reset_outbox', timestamps: true, strict: true },
   ),
+  email_registration_outbox: new Schema(
+    {
+      normalizedEmail: {
+        type: String,
+        required: true,
+        lowercase: true,
+        trim: true,
+        maxlength: 320,
+      },
+      fullName: { type: String, required: true, trim: true, maxlength: 160 },
+      tokenHash: { type: String, required: true },
+      expiresAt: { type: Date, required: true },
+      deliveryStatus: {
+        type: String,
+        enum: ['PENDING', 'SENDING', 'SENT', 'FAILED', 'IGNORED'],
+        required: true,
+      },
+      encryptedPayload: String,
+      attemptCount: { type: Number, required: true, default: 0 },
+      nextAttemptAt: { type: Date, required: true },
+      leaseId: String,
+      leaseUntil: Date,
+      tokenClaimId: String,
+      tokenClaimUntil: Date,
+      lastErrorCode: String,
+      sentAt: Date,
+    },
+    { collection: 'email_registration_outbox', timestamps: true, strict: true },
+  ),
   sme_assignments: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },

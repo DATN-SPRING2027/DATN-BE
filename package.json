@@ -54,6 +54,7 @@
     "migrate:platform-incidents": "node scripts/migrations/20261017-platform-incidents-storage.mjs",
     "migrate:platform-request-trace-index": "node scripts/migrations/20261017-platform-request-trace-index.mjs",
     "migrate:password-reset-outbox": "node scripts/migrations/20261014-password-reset-outbox.mjs",
+    "migrate:email-registration-outbox": "node scripts/migrations/20261018-email-registration-outbox.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",

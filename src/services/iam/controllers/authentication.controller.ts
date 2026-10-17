@@ -22,7 +22,6 @@ import { ConfigService } from '@nestjs/config';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { Request, Response } from 'express';
-import { verifyGatewaySource } from '../../../common/http/gateway-source';
 import {
   classifyGoogleOAuthError,
   createGoogleOAuthRequestId,
@@ -53,6 +52,7 @@ import {
   PasswordResetConfirmDto,
   PasswordResetRequestDto,
 } from '../application/authentication/password-reset.request.dto';
+import { ensureTrustedLoginSource } from './auth-source-ip';
 
 export const GOOGLE_OAUTH_STATE_COOKIE = '__Host-continuum-google-oauth-state';
 
@@ -189,31 +189,6 @@ function clearGoogleOAuthStateCookie(): string {
     'Secure',
   ];
   return parts.join('; ');
-}
-
-function loginSourceIp(request: Request, config: ConfigService): string {
-  if (!request.originalUrl.startsWith('/internal/'))
-    return request.ip ?? request.socket.remoteAddress ?? 'unknown';
-  return (
-    verifyGatewaySource(
-      request.headers,
-      config.get<string>('IAM_GATEWAY_SECRET') ?? '',
-    ) ?? ''
-  );
-}
-
-function ensureTrustedLoginSource(
-  request: Request,
-  config: ConfigService,
-): string {
-  const sourceIp = loginSourceIp(request, config);
-  if (!sourceIp) {
-    throw new UnauthorizedException({
-      code: 'INVALID_GATEWAY_SOURCE',
-      message: 'Gateway source proof is invalid.',
-    });
-  }
-  return sourceIp;
 }
 
 @Controller('auth')
