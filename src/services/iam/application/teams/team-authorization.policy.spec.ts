@@ -16,6 +16,13 @@ type MutableAuthorizationInput = Omit<
 };
 
 function baseline(permission: TeamActionPermission): MutableAuthorizationInput {
+  const permissionsByAction: Record<TeamActionPermission, string[]> = {
+    'team.create': ['team.create', 'team.children.manage'],
+    'team.update': ['team.update', 'team.children.manage'],
+    'team.archive': ['team.archive', 'team.children.manage'],
+    'team.restore': ['team.restore', 'team.children.manage'],
+    'team.read': ['team.read', 'team.children.manage'],
+  };
   return {
     permission,
     subject: { userId, organizationId: orgId, status: 'ACTIVE' },
@@ -36,7 +43,7 @@ function baseline(permission: TeamActionPermission): MutableAuthorizationInput {
         projectId,
         roleCode: 'TEAM_LEADER',
         resolvedRoleCode: 'TEAM_LEADER',
-        permissions: ['team.read', 'team:children.manage'],
+        permissions: permissionsByAction[permission],
       },
     ],
     explicitDeny: 'CLEAR' as const,
@@ -45,19 +52,19 @@ function baseline(permission: TeamActionPermission): MutableAuthorizationInput {
 
 describe('TeamAuthorizationPolicy', () => {
   const policy = new TeamAuthorizationPolicy();
+  const operationPermissions: Array<[TeamActionPermission, string[]]> = [
+    ['team.create', ['team.create', 'team.children.manage']],
+    ['team.update', ['team.update', 'team.children.manage']],
+    ['team.archive', ['team.archive', 'team.children.manage']],
+    ['team.restore', ['team.restore', 'team.children.manage']],
+    ['team.read', ['team.read', 'team.children.manage']],
+  ];
 
-  it.each([
-    ['team.create', 'TEAM_LEADER'],
-    ['team.update', 'TEAM_LEADER'],
-    ['team.archive', 'TEAM_LEADER'],
-    ['team.restore', 'TEAM_LEADER'],
-  ])(
-    'allows %s for a current Project TEAM_LEADER with the approved permission',
-    (permission, role) => {
-      const input = baseline(permission as TeamActionPermission);
-      input.assignments[0].roleCode = role;
-      input.assignments[0].resolvedRoleCode = role;
-      input.assignments[0].permissions = ['team:children.manage'];
+  it.each(operationPermissions.slice(0, 4))(
+    'allows %s only with its operation capability and child-management capability',
+    (permission, permissions) => {
+      const input = baseline(permission);
+      input.assignments[0].permissions = [...permissions];
       expect(policy.evaluate(input)).toEqual({
         allowed: true,
         access: 'MANAGER',
@@ -65,7 +72,25 @@ describe('TeamAuthorizationPolicy', () => {
     },
   );
 
-  it('allows manager reads only with both team.read and delegation permission', () => {
+  it.each(operationPermissions)(
+    'denies %s when team.children.manage is absent',
+    (permission, [actionPermission]) => {
+      const input = baseline(permission);
+      input.assignments[0].permissions = [actionPermission];
+      expect(policy.evaluate(input).allowed).toBe(false);
+    },
+  );
+
+  it.each(operationPermissions)(
+    'denies %s when its operation capability is absent',
+    (permission) => {
+      const input = baseline(permission);
+      input.assignments[0].permissions = ['team.children.manage'];
+      expect(policy.evaluate(input).allowed).toBe(false);
+    },
+  );
+
+  it('allows candidate manager reads only with team.read and team.children.manage', () => {
     const input = baseline('team.read');
     expect(policy.evaluate(input)).toEqual({
       allowed: true,
@@ -73,7 +98,40 @@ describe('TeamAuthorizationPolicy', () => {
     });
     input.assignments[0].permissions = ['team.read'];
     expect(policy.evaluate(input).allowed).toBe(false);
-    input.assignments[0].permissions = ['team:children.manage'];
+    input.assignments[0].permissions = ['team.children.manage'];
+    expect(policy.evaluate(input).allowed).toBe(false);
+  });
+
+  it.each([
+    [
+      'another actor',
+      (input: MutableAuthorizationInput) => {
+        input.assignments[0].userId = 'eeeeeeeeeeeeeeeeeeeeeeee';
+      },
+    ],
+    [
+      'another Organization',
+      (input: MutableAuthorizationInput) => {
+        input.assignments[0].organizationId = 'ffffffffffffffffffffffff';
+      },
+    ],
+    [
+      'another Project',
+      (input: MutableAuthorizationInput) => {
+        input.assignments[0].projectId = 'dddddddddddddddddddddddd';
+      },
+    ],
+  ])('denies a candidate read assignment scoped to %s', (_scope, mutate) => {
+    const input = baseline('team.read');
+    mutate(input);
+    expect(policy.evaluate(input).allowed).toBe(false);
+  });
+
+  it('does not infer candidate read access from an Organization ADMIN role', () => {
+    const input = baseline('team.read');
+    input.assignments[0].projectId = null;
+    input.assignments[0].roleCode = 'ADMIN';
+    input.assignments[0].resolvedRoleCode = 'ADMIN';
     expect(policy.evaluate(input).allowed).toBe(false);
   });
 
@@ -121,6 +179,12 @@ describe('TeamAuthorizationPolicy', () => {
       },
     ],
     [
+      'explicit deny despite a positive grant',
+      (input: MutableAuthorizationInput) => {
+        input.explicitDeny = 'DENY';
+      },
+    ],
+    [
       'cross-Project assignment',
       (input: MutableAuthorizationInput) => {
         input.assignments[0].projectId = 'dddddddddddddddddddddddd';
@@ -143,6 +207,18 @@ describe('TeamAuthorizationPolicy', () => {
   ])('denies %s', (_case, mutate) => {
     const input = baseline('team.create');
     mutate(input);
+    expect(policy.evaluate(input).allowed).toBe(false);
+  });
+
+  it('denies when the current Role no longer carries a revoked capability', () => {
+    const input = baseline('team.update');
+    input.assignments[0].permissions = ['team.children.manage'];
+    expect(policy.evaluate(input).allowed).toBe(false);
+  });
+
+  it('denies a revoked Project RoleAssignment when it is no longer present', () => {
+    const input = baseline('team.update');
+    input.assignments = [];
     expect(policy.evaluate(input).allowed).toBe(false);
   });
 });

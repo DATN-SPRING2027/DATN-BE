@@ -11,6 +11,16 @@ import type {
 export type TeamActionPermission =
   'team.create' | 'team.update' | 'team.archive' | 'team.restore' | 'team.read';
 
+export const TEAM_OPERATION_PERMISSIONS: Readonly<
+  Record<TeamActionPermission, readonly string[]>
+> = {
+  'team.create': ['team.create', 'team.children.manage'],
+  'team.update': ['team.update', 'team.children.manage'],
+  'team.archive': ['team.archive', 'team.children.manage'],
+  'team.restore': ['team.restore', 'team.children.manage'],
+  'team.read': ['team.read', 'team.children.manage'],
+};
+
 export interface TeamAuthorizationEvaluationInput {
   permission: TeamActionPermission;
   subject: AuthorizationSubject | null;
@@ -99,16 +109,12 @@ export class TeamAuthorizationPolicy {
         sameObjectId(assignment.organizationId, requestedOrganizationId) &&
         sameObjectId(assignment.projectId ?? '', requestedProjectId),
     );
+    const requiredPermissions = TEAM_OPERATION_PERMISSIONS[input.permission];
     const manager = scopedAssignments.some(
       (assignment) =>
         assignment.roleCode === 'TEAM_LEADER' &&
         assignment.resolvedRoleCode === 'TEAM_LEADER' &&
-        (input.permission === 'team.read'
-          ? hasPermissions(assignment.permissions, [
-              'team.read',
-              'team:children.manage',
-            ])
-          : hasPermissions(assignment.permissions, ['team:children.manage'])),
+        hasPermissions(assignment.permissions, requiredPermissions),
     );
     if (manager) return { allowed: true, access: 'MANAGER' };
 
