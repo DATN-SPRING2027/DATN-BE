@@ -9,6 +9,7 @@ export async function bootstrapTaskRuntime(
   const config = createTaskRuntimeConfig(environment);
   const app = await NestFactory.create(TaskRuntimeModule.register(config), {
     logger: false,
+    rawBody: true,
   });
 
   await withStartupCleanup(app, async () => {

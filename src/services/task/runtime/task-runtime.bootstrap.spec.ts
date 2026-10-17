@@ -68,9 +68,9 @@ describe('bootstrapTaskRuntime', () => {
     });
 
     const [runtimeModule, appOptions] = createNestApplication.mock
-      .calls[0] as unknown as [DynamicModule, { logger: false }];
+      .calls[0] as unknown as [DynamicModule, { logger: false; rawBody: true }];
     expect(runtimeModule.module).toBe(TaskRuntimeModule);
-    expect(appOptions).toEqual({ logger: false });
+    expect(appOptions).toEqual({ logger: false, rawBody: true });
     expect(app.setGlobalPrefix).toHaveBeenCalledWith('internal');
     expect(app.enableShutdownHooks).toHaveBeenCalled();
     expect(app.listen).toHaveBeenCalledWith(3909, '127.0.0.1');
