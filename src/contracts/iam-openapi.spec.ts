@@ -378,6 +378,26 @@ describe('IAM OpenAPI contract', () => {
             }
             continue;
           }
+          if (
+            status === '422' &&
+            (operation.operationId === 'requestEmailRegistration' ||
+              operation.operationId === 'verifyEmailRegistration')
+          ) {
+            expect(typeof response.description).toBe('string');
+            expect(response.headers).toMatchObject({
+              'Cache-Control': {
+                schema: { type: 'string', const: 'no-store' },
+              },
+              'Referrer-Policy': {
+                schema: { type: 'string', const: 'no-referrer' },
+              },
+            });
+            expect(response).toHaveProperty(
+              'content.application/json.schema.$ref',
+              '#/components/schemas/ErrorResponse',
+            );
+            continue;
+          }
           expect(response).toEqual({
             $ref:
               operation.operationId === 'login' && status === '409'

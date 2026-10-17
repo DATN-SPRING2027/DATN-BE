@@ -7,6 +7,7 @@ import type {
   EmailRegistrationEmailJob,
   EmailRegistrationEmailPayload,
   EmailRegistrationEmailPayloadBinding,
+  EmailRegistrationCompletionResult,
   EmailRegistrationOutboxStore,
   EmailRegistrationTokenClaim,
 } from '../../application/authentication/email-registration.store';
@@ -18,29 +19,35 @@ const REQUIRED_INDEXES: Array<{
   name: string;
   unique?: boolean;
   expireAfterSeconds?: number;
+  collation: { locale: 'simple' };
 }> = [
   {
     key: { normalizedEmail: 1 },
     name: 'email_registration_current_email',
     unique: true,
+    collation: { locale: 'simple' },
   },
   {
     key: { tokenHash: 1 },
     name: 'email_registration_token_hash',
     unique: true,
+    collation: { locale: 'simple' },
   },
   {
     key: { expiresAt: 1 },
     name: 'email_registration_expiry',
     expireAfterSeconds: 0,
+    collation: { locale: 'simple' },
   },
   {
     key: { deliveryStatus: 1, nextAttemptAt: 1, expiresAt: 1, createdAt: 1 },
     name: 'email_registration_pending_jobs',
+    collation: { locale: 'simple' },
   },
   {
     key: { deliveryStatus: 1, leaseUntil: 1, expiresAt: 1, createdAt: 1 },
     name: 'email_registration_expired_leases',
+    collation: { locale: 'simple' },
   },
 ];
 
@@ -192,7 +199,7 @@ export class MongoEmailRegistrationOutboxStore implements EmailRegistrationOutbo
     claim: EmailRegistrationTokenClaim,
     passwordHash: string,
     now: Date,
-  ): Promise<boolean> {
+  ): Promise<EmailRegistrationCompletionResult> {
     let session: ClientSession;
     try {
       session = await this.connection.startSession();
@@ -201,9 +208,10 @@ export class MongoEmailRegistrationOutboxStore implements EmailRegistrationOutbo
     }
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        let completed = false;
+        let outcome: EmailRegistrationCompletionResult = 'INVALID';
         try {
           await session.withTransaction(async () => {
+            outcome = 'INVALID';
             const transactionNow = new Date(
               Math.max(Date.now(), now.getTime()),
             );
@@ -211,13 +219,19 @@ export class MongoEmailRegistrationOutboxStore implements EmailRegistrationOutbo
               {
                 tokenHash: claim.tokenHash,
                 normalizedEmail: claim.normalizedEmail,
-                tokenClaimId: claim.claimId,
-                tokenClaimUntil: { $gt: transactionNow },
                 expiresAt: { $gt: transactionNow },
               },
               { session },
             );
             if (!pending) return;
+            if (
+              pending.tokenClaimId !== claim.claimId ||
+              !(pending.tokenClaimUntil instanceof Date) ||
+              pending.tokenClaimUntil <= transactionNow
+            ) {
+              outcome = 'RETRYABLE';
+              return;
+            }
 
             const users = this.users;
             const existing = await users.findOne(
@@ -275,14 +289,14 @@ export class MongoEmailRegistrationOutboxStore implements EmailRegistrationOutbo
             if (consumed.deletedCount !== 1) {
               throw new Error('EMAIL_REGISTRATION_TOKEN_CONSUME_FAILED');
             }
-            completed = accountChanged;
+            outcome = accountChanged ? 'COMPLETED' : 'INVALID';
           });
-          return completed;
+          return outcome;
         } catch (error) {
           if (!isDuplicateKeyError(error) || attempt > 0) throw error;
         }
       }
-      return false;
+      return 'RETRYABLE';
     } finally {
       await session.endSession();
     }
@@ -476,6 +490,7 @@ function isExactIndex(
     expireAfterSeconds?: unknown;
     sparse?: unknown;
     partialFilterExpression?: unknown;
+    collation?: unknown;
   };
   const key = actual.key;
   if (
@@ -493,6 +508,19 @@ function isExactIndex(
     (actual.expireAfterSeconds as number | undefined) ===
       expected.expireAfterSeconds &&
     actual.sparse !== true &&
-    actual.partialFilterExpression === undefined
+    actual.partialFilterExpression === undefined &&
+    sameCollation(actual.collation, expected.collation)
+  );
+}
+
+function sameCollation(
+  actual: unknown,
+  expected: { locale: 'simple' },
+): boolean {
+  if (actual === undefined) return expected.locale === 'simple';
+  if (typeof actual !== 'object' || actual === null) return false;
+  const collation = actual as Record<string, unknown>;
+  return (
+    collation.locale === expected.locale && Object.keys(collation).length === 1
   );
 }

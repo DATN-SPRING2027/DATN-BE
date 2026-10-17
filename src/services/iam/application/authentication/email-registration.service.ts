@@ -226,7 +226,10 @@ export class EmailRegistrationService {
         passwordHash,
         new Date(),
       );
-      if (!completed) throw new EmailRegistrationInvalidTokenError();
+      if (completed === 'INVALID')
+        throw new EmailRegistrationInvalidTokenError();
+      if (completed === 'RETRYABLE')
+        throw new EmailRegistrationVerificationUnavailableError();
     } catch (error) {
       if (error instanceof EmailRegistrationInvalidTokenError) throw error;
       try {

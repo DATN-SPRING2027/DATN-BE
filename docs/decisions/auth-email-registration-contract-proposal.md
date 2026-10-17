@@ -2,7 +2,7 @@
 
 **Status:** Approved by Thang on 2026-10-17; implementation in progress.
 **Scope selected by Thang:** email verification link, with FE, BE and DB delivered on separate branches/PRs.
-**Authority:** the approved account-onboarding decision allows a future email/password self-registration flow and requires an account-only identity. It does not specify the verification protocol. This proposal completes that missing contract; it does not amend unrelated Organization or Platform authorization rules.
+**Authority:** the account-only registration decision is recorded in the [canonical Workspace decision register](https://github.com/DATN-SPRING2027/Document/blob/feat/Thang-auth-email-registration-docs/research-docs/Workspace/00-organization-and-access-contract-readiness.md#6-cross-document-decision-register) and its [dedicated decision record](https://github.com/DATN-SPRING2027/Document/blob/feat/Thang-auth-email-registration-docs/research-docs/Workspace/12-email-password-registration-decision.md) on the separate Document branch. This proposal completes the verification protocol; it does not amend unrelated Organization or Platform authorization rules. The Document update is pending its own PR review.
 
 ## User flow
 

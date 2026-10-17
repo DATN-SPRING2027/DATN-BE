@@ -25,6 +25,9 @@ export interface EmailRegistrationTokenClaim {
   claimId: string;
 }
 
+export type EmailRegistrationCompletionResult =
+  'COMPLETED' | 'INVALID' | 'RETRYABLE';
+
 export interface EmailRegistrationOutboxStore {
   assertReady(this: void): Promise<void>;
   saveEmailRegistrationRequest(
@@ -49,7 +52,7 @@ export interface EmailRegistrationOutboxStore {
     claim: EmailRegistrationTokenClaim,
     passwordHash: string,
     now: Date,
-  ): Promise<boolean>;
+  ): Promise<EmailRegistrationCompletionResult>;
   releaseEmailRegistrationTokenClaim(
     this: void,
     normalizedEmail: string,

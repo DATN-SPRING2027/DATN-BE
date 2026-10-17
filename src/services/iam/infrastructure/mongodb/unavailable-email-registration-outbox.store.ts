@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type {
   EmailRegistrationEmailPayload,
   EmailRegistrationEmailPayloadBinding,
+  EmailRegistrationCompletionResult,
   EmailRegistrationOutboxStore,
   EmailRegistrationTokenClaim,
 } from '../../application/authentication/email-registration.store';
@@ -24,7 +25,7 @@ export class UnavailableEmailRegistrationOutboxStore implements EmailRegistratio
     return Promise.reject(new Error('EMAIL_REGISTRATION_OUTBOX_UNAVAILABLE'));
   }
 
-  completeClaimedEmailRegistration(): Promise<boolean> {
+  completeClaimedEmailRegistration(): Promise<EmailRegistrationCompletionResult> {
     return Promise.reject(new Error('EMAIL_REGISTRATION_OUTBOX_UNAVAILABLE'));
   }
 
