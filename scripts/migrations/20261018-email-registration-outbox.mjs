@@ -85,6 +85,7 @@ async function inspect(connection, uri) {
   return planEmailRegistrationOutboxIndexes({
     targetFingerprint: fingerprintTarget(uri),
     collectionExists,
+    collectionCollation: object?.options?.collation,
     objectType: object?.type ?? null,
     documentCount,
     malformedDocumentCount,
@@ -169,15 +170,15 @@ export async function runEmailRegistrationOutboxMigration({
     }
 
     if (!report.collectionExists) {
-      await db.createCollection(EMAIL_REGISTRATION_OUTBOX_COLLECTION);
+      await db.createCollection(EMAIL_REGISTRATION_OUTBOX_COLLECTION, {
+        collation: { locale: 'simple' },
+      });
     }
     await collection.createIndexes(
       EMAIL_REGISTRATION_OUTBOX_INDEXES.map(
-        ({ key, name, unique, expireAfterSeconds }) => ({
+        ({ key, ...options }) => ({
           key,
-          name,
-          ...(unique ? { unique } : {}),
-          ...(expireAfterSeconds !== undefined ? { expireAfterSeconds } : {}),
+          ...options,
         }),
       ),
     );

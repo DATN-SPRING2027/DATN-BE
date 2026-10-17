@@ -27,3 +27,9 @@ part of routine rollback.
 The TTL index uses `expiresAt` with zero delay; MongoDB cleanup is asynchronous,
 so token verification must check `expiresAt` in application logic. The
 30-minute expiration is independent of TTL cleanup timing.
+
+Every required index uses explicit `simple` collation so normalized emails and
+opaque token hashes keep exact-match semantics. Preflight records the
+collection's default collation and blocks apply or rollback when it is not
+`simple`; a new collection is created with `simple` as its default. Rollback
+compares the index collation and the existing index options before dropping it.

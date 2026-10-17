@@ -10,6 +10,7 @@ const index = (
     expireAfterSeconds?: number;
     name?: string;
     partialFilterExpression?: Record<string, unknown>;
+    collation?: { locale: 'simple' };
   },
 ) => ({ fields, options });
 
@@ -222,23 +223,41 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       indexes: [
         index(
           { normalizedEmail: 1 },
-          { unique: true, name: 'email_registration_current_email' },
+          {
+            unique: true,
+            name: 'email_registration_current_email',
+            collation: { locale: 'simple' },
+          },
         ),
         index(
           { tokenHash: 1 },
-          { unique: true, name: 'email_registration_token_hash' },
+          {
+            unique: true,
+            name: 'email_registration_token_hash',
+            collation: { locale: 'simple' },
+          },
         ),
         index(
           { expiresAt: 1 },
-          { expireAfterSeconds: 0, name: 'email_registration_expiry' },
+          {
+            expireAfterSeconds: 0,
+            name: 'email_registration_expiry',
+            collation: { locale: 'simple' },
+          },
         ),
         index(
           { deliveryStatus: 1, nextAttemptAt: 1, expiresAt: 1, createdAt: 1 },
-          { name: 'email_registration_pending_jobs' },
+          {
+            name: 'email_registration_pending_jobs',
+            collation: { locale: 'simple' },
+          },
         ),
         index(
           { deliveryStatus: 1, leaseUntil: 1, expiresAt: 1, createdAt: 1 },
-          { name: 'email_registration_expired_leases' },
+          {
+            name: 'email_registration_expired_leases',
+            collation: { locale: 'simple' },
+          },
         ),
       ],
     },
