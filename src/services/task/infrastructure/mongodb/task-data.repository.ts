@@ -11,6 +11,7 @@ import {
   type TaskCreationContext,
   type TaskCreationEventDocument,
   type TaskDocument,
+  type TaskEventDocument,
 } from './task-contract';
 
 const DISPOSABLE_DATABASE_PATTERN = /^datn95task_[a-f\d]{32}$/;
@@ -140,16 +141,24 @@ export class TaskDataRepository {
     projectId: string,
     taskId: string,
     limit = MAX_PAGE_SIZE,
-  ): Promise<TaskCreationEventDocument[]> {
+  ): Promise<TaskEventDocument[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE)
       throw new Error('Task history limit is invalid');
     const task = await this.getById(projectId, taskId);
     if (!task) return [];
     return this.database
-      .collection<TaskCreationEventDocument>(TASK_EVENT_COLLECTION)
-      .find({ taskId: task._id, projectId: task.projectId })
-      .sort({ taskVersion: 1 })
-      .limit(limit)
+      .collection<TaskEventDocument>(TASK_EVENT_COLLECTION)
+      .aggregate<TaskEventDocument>([
+        { $match: { taskId: task._id, projectId: task.projectId } },
+        {
+          $set: {
+            historyVersion: { $ifNull: ['$taskVersion', '$version'] },
+          },
+        },
+        { $sort: { historyVersion: 1, _id: 1 } },
+        { $limit: limit },
+        { $unset: 'historyVersion' },
+      ])
       .toArray();
   }
 
@@ -273,6 +282,15 @@ function sameTask(actual: TaskDocument, expected: TaskDocument): boolean {
     actual.createdBy.equals(expected.createdBy) &&
     actual.createdAt.getTime() === expected.createdAt.getTime() &&
     actual.updatedAt.getTime() === expected.updatedAt.getTime() &&
+    actual.status === expected.status &&
+    ((actual.assigneeId === null && expected.assigneeId === null) ||
+      (actual.assigneeId instanceof Types.ObjectId &&
+        expected.assigneeId instanceof Types.ObjectId &&
+        actual.assigneeId.equals(expected.assigneeId))) &&
+    ((actual.completedAt === null && expected.completedAt === null) ||
+      (actual.completedAt instanceof Date &&
+        expected.completedAt instanceof Date &&
+        actual.completedAt.getTime() === expected.completedAt.getTime())) &&
     actual.version === expected.version
   );
 }

@@ -1,4 +1,56 @@
-# Organization Membership legacy backfill
+# Task lifecycle contract
+
+DATN-100 adds the approved D-08 lifecycle fields and status-history contract to
+the dormant Task data foundation. The [D-13-R6 approval record (Document PR #48)](https://github.com/DATN-SPRING2027/Document/pull/48/files)
+scopes the five statuses, transition matrix, guards, version behavior, event,
+and idempotency choices. This migration does not register or activate the Task
+runtime.
+
+The new Task creation primitive writes `status: TODO`, `assigneeId: null`, and
+`completedAt: null`. Existing seven-field Task documents receive those values
+only where the lifecycle fields are missing. Any Task, event, or operation
+document that fails the target validator, duplicate version events, duplicate
+operation keys, or an incompatible index blocks apply. Task documents,
+creation history, and other collections are never deleted. D-03 `TASK_CREATED`
+events retain their exact
+P3 schema; status transitions use a separate strict event shape. The new
+`task_operations` collection stores only bounded status-command idempotency
+records and expires them after their configured 24-hour window.
+
+The migration requires an explicit `TASK_MONGODB_URI`, targets only
+`continuum_task`, and never loads `.env`. It refuses to create the existing
+`tasks` or `task_events` collections; it may create the new `task_operations`
+collection. Dry-run is read-only and prints a credential-free target
+fingerprint, preflight counts, planned index changes, and `reportSha256`:
+
+```powershell
+$env:TASK_MONGODB_URI = '<approved Task database URI>'
+npm run migrate:task-lifecycle-contract > task-lifecycle-dry-run.json
+$report = Get-Content -LiteralPath 'task-lifecycle-dry-run.json' -Raw | ConvertFrom-Json
+```
+
+Review the database target, backfill counts, and clean status first. Apply only
+the exact report that was reviewed:
+
+```powershell
+npm run migrate:task-lifecycle-contract -- --apply "--expected-report-sha256=$($report.reportSha256)"
+```
+
+Apply is additive and idempotent. It installs validators that accept either
+the legacy seven-field shape or the complete lifecycle shape, so the previous
+D-03 create implementation remains compatible during application rollback.
+Backfilled Task state and append-only history are retained on rollback; do not
+remove lifecycle fields, status events, the operation collection, or its TTL
+index. Roll back the application while keeping the database expansion, then
+disable Task lifecycle writes until a compatible release is restored. No shared
+or production database was modified by the DATN-100 change.
+
+Validation commands include `npm run test:migrations:plan` for report and
+idempotency planning. The marked MongoDB 7 replica-set integration suite is
+opt-in through `MONGODB_INTEGRATION=true` and a loopback `MONGODB_URI`; it must
+never be pointed at a shared database.
+
+## Organization Membership legacy backfill
 
 DATN-87 adds a separate [lifecycle tracking/operation-cache DB work package](../../docs/work-packages/organization-membership-lifecycle-db-v1.md)
 and new `20261012-organization-membership-lifecycle.mjs`. Its metadata/permission
