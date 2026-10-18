@@ -1,6 +1,8 @@
 import {
   AuthorizationPolicy,
   PLATFORM_PERMISSIONS,
+  PLATFORM_V1_PERMISSIONS,
+  PLATFORM_V2_PERMISSIONS,
 } from './authorization.policy';
 
 const userId = 'aaaaaaaaaaaaaaaaaaaaaaaa';
@@ -21,12 +23,41 @@ const assignment = (permission: string, overrides = {}) => ({
 describe('AuthorizationPolicy platform permissions', () => {
   const policy = new AuthorizationPolicy();
 
-  it('keeps exactly the three active A-04 permissions', () => {
-    expect(PLATFORM_PERMISSIONS).toEqual([
+  it('preserves the exact seven PLATFORM_OPERATOR V1 permissions', () => {
+    expect(PLATFORM_V1_PERMISSIONS).toEqual([
       'organization.create',
       'platform.health.read',
       'platform.audit.read',
+      'platform.organizations.organization.read',
+      'platform.users.account.read',
+      'platform.memberships.membership.read',
+      'platform.memberships.lifecycle.manage',
     ]);
+  });
+
+  it('adds a separately versioned, explicit Platform Operations permission set', () => {
+    expect(PLATFORM_V2_PERMISSIONS).toEqual([
+      ...PLATFORM_V1_PERMISSIONS,
+      'platform.users.account.manage',
+      'platform.sessions.session.read',
+      'platform.sessions.session.manage',
+      'platform.organizations.organization.manage',
+      'platform.memberships.invitation.manage',
+      'platform.memberships.role.manage',
+      'platform.projects.project.read',
+      'platform.projects.project.manage',
+      'platform.dashboard.summary.read',
+      'platform.services.service.read',
+      'platform.jobs.job.read',
+      'platform.jobs.job.manage',
+      'platform.ai.operations.read',
+      'platform.integrations.integration.read',
+      'platform.integrations.integration.manage',
+      'platform.incidents.incident.read',
+      'platform.incidents.incident.manage',
+      'platform.diagnostics.trace.read',
+    ]);
+    expect(PLATFORM_PERMISSIONS).toEqual(PLATFORM_V2_PERMISSIONS);
   });
 
   it.each(PLATFORM_PERMISSIONS)(

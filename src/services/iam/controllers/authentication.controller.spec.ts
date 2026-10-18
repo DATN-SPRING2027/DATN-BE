@@ -39,6 +39,7 @@ describe('AuthenticationController', () => {
     loginPlatform: jest.Mock;
     getCurrentIdentity: jest.Mock;
     getCurrentSessionIdentity: jest.Mock;
+    getCurrentPlatformSessionIdentity: jest.Mock;
     listOrganizationOptions: jest.Mock;
     selectOrganization: jest.Mock;
     logout: jest.Mock;
@@ -126,6 +127,13 @@ describe('AuthenticationController', () => {
             context: 'ACCOUNT',
           });
         }),
+      getCurrentPlatformSessionIdentity: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d1e',
+        email: 'person@example.com',
+        name: 'Test Person',
+        context: 'PLATFORM',
+        permissions: ['platform.health.read'],
+      }),
       listOrganizationOptions: jest.fn().mockResolvedValue([]),
       selectOrganization: jest.fn().mockResolvedValue({
         accessToken: 'selected-access',
@@ -600,6 +608,26 @@ describe('AuthenticationController', () => {
       .filter((line) => line.includes('google_oauth.callback'));
     expect(callbackEvents).toHaveLength(0);
     warning.mockRestore();
+  });
+
+  it('GET /api/v1/auth/platform/me returns the current Platform permission projection', async () => {
+    const response = await request(app.getHttpServer() as App)
+      .get('/api/v1/auth/platform/me')
+      .set('Cookie', '__Host-csrf=csrf-value; continuum_access=platform-cookie')
+      .expect(200);
+
+    expect(response.body).toEqual({
+      id: '651a2b3c4d5e6f7a8b9c0d1e',
+      email: 'person@example.com',
+      name: 'Test Person',
+      context: 'PLATFORM',
+      permissions: ['platform.health.read'],
+    });
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(service.getCurrentPlatformSessionIdentity).toHaveBeenCalledWith(
+      undefined,
+      '__Host-csrf=csrf-value; continuum_access=platform-cookie',
+    );
   });
 
   it('POST /api/v1/auth/logout passes refresh cookie and clears access and refresh cookie paths', async () => {

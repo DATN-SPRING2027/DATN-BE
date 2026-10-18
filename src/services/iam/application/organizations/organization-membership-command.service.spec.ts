@@ -40,6 +40,24 @@ describe('OrganizationMembershipCommandService', () => {
           },
         },
       }),
+      executePlatformSuspend: jest.fn().mockResolvedValue({
+        httpStatus: 200,
+        replayed: false,
+        body: {
+          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+          membership: {
+            id: '951a2b3c4d5e6f7a8b9c0d1f',
+            organizationId,
+            userId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+            status: 'SUSPENDED',
+            version: 2,
+          },
+        },
+      }),
+      executePlatformInvitationCommand: jest.fn().mockRejectedValue({
+        response: { code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE' },
+        status: 503,
+      }),
     };
     service = new OrganizationMembershipCommandService(repository);
   });

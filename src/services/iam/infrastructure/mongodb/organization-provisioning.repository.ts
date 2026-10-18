@@ -5,6 +5,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
+import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
 import {
@@ -161,10 +162,13 @@ export class MongoOrganizationProvisioningRepository implements OrganizationProv
           .collection(IAM_AUDIT_COLLECTION_NAME)
           .insertOne(
             {
+              eventId: randomUUID(),
               actorUserId,
               action: 'organization.create',
               targetResource: 'ORGANIZATION',
               targetResourceId: String(organizationId),
+              scope: 'PLATFORM',
+              result: 'SUCCESS',
               metadata: {
                 bootstrap: {
                   firstAdminUserId: input.firstAdminUserId,
