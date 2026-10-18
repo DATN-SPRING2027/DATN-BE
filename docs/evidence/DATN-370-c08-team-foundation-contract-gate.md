@@ -145,7 +145,7 @@ Classification is per the task: **Supported by an approved source**, **Proposed 
 
 **File added:** `docs/evidence/DATN-370-c08-team-foundation-contract-gate.md` in this worktree.
 
-No Team API route, schema, database model/migration, UI, authorization policy, or contract status was changed. One role-level authority request was posted to DATN-370 as comment 10221; no Jira status or other Jira field was changed. No commit, push, merge, or PR was created. No tests or implementation suites were run.
+At report preparation on 2026-10-17, no Team API route, schema, database model/migration, UI, authorization policy, or contract status had been changed. One role-level authority request was posted to DATN-370 as comment 10221; no Jira status or other Jira field had been changed at that time. No commit, push, merge, or PR had been created then. No tests or implementation suites were run for this evidence report.
 
 Document check: direct PowerShell trailing-whitespace scan of the report. Final Git status, base SHA, original checkout, Product Docs checkout, and all pre-existing DATN-BE worktree snapshots were compared after writing.
 

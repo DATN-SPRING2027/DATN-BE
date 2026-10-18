@@ -9,7 +9,7 @@
 
 ## Worktree and preservation
 
-Repository: DATN-BE. Worktree: E:\DATN\review-worktrees\datn-370-c08-team-foundation-contract-gate. Branch: docs/Danh-datn-370-c08-team-foundation-contract-gate. Base and HEAD: 08e0412323562f6abead0eaab3e426c29f67a9a5. The existing C-08 evidence report was read as the baseline and left unchanged. No source, contract, Jira status, or worktree history was changed for this record.
+At initial record preparation on 2026-10-17: repository DATN-BE; worktree E:\DATN\review-worktrees\datn-370-c08-team-foundation-contract-gate; branch docs/Danh-datn-370-c08-team-foundation-contract-gate; base and HEAD 08e0412323562f6abead0eaab3e426c29f67a9a5. The existing C-08 evidence report was read as the baseline and left unchanged. No source, contract, Jira status, or worktree history was changed at that time. Later evidence and transition results are documented in the dated addenda and acceptance crosswalk.
 ## 1. Decision in brief
 
 The task leader’s selected direction is to preserve R4 unchanged and use it as the immutable historical proposal. Prepare R5 only if the final authority decisions require contract changes. No R4 or R5 approval is recorded.
