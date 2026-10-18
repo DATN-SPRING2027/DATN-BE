@@ -2,15 +2,21 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { AppModule } from '../src/app.module';
 import { configureApplication } from '../src/bootstrap';
 
 describe('Health (e2e)', () => {
   let app: INestApplication;
   const previousSecret = process.env.JWT_SECRET;
+  const previousInfraEnabled = process.env.INFRA_ENABLED;
 
   beforeAll(async () => {
     process.env.JWT_SECRET = 'unit-test-secret-at-least-32-characters';
+    // This suite checks HTTP health behavior, so keep external infrastructure off.
+    process.env.INFRA_ENABLED = 'false';
+    const { AppModule } =
+      jest.requireActual<typeof import('../src/app.module')>(
+        '../src/app.module',
+      );
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -24,6 +30,8 @@ describe('Health (e2e)', () => {
     await app.close();
     if (previousSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = previousSecret;
+    if (previousInfraEnabled === undefined) delete process.env.INFRA_ENABLED;
+    else process.env.INFRA_ENABLED = previousInfraEnabled;
   });
 
   it('GET /api/v1/health', async () => {

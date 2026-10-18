@@ -22,6 +22,8 @@ const actions: readonly PlatformAuditAction[] = [
   'platform.authority.granted',
   'platform.authority.revoked',
   'platform.user.status.changed',
+  'platform.user.profile.updated',
+  'platform.user.archived',
   'platform.session.revoked',
   'platform.sessions.revoked_all',
   'ORGANIZATION_MEMBERSHIP_SUSPENDED',

@@ -2,42 +2,55 @@
 
 ## Scope
 
-Add optional archive metadata to IAM `users` documents:
+The IAM `users` schema already supports optional `avatarUrl`, `archivedAt`, and
+`archivedBy` fields. Missing `archivedAt` means the account is not archived.
+This work adds Platform user profile editing and archival behavior against that
+existing schema; it does not add a restore endpoint.
 
-- `archivedAt`: when the account was archived.
-- `archivedBy`: ObjectId of the operator who archived it.
+Profile edits are limited to `fullName` and `avatarUrl`. Email, password
+credentials, authentication factors, and memberships are outside the profile
+mutation contract.
 
-An absent `archivedAt` means the account is not archived. Restore removes both
-fields. Archive does not physically delete the user, memberships, audit events,
-or related records. The backend lifecycle contract will suspend the account and
-revoke its refresh sessions in the same transaction as archiving; restore clears
-the archive marker but leaves the account suspended until a separately
-authorized reactivation.
+Archiving is a lifecycle transition, not deletion. The API sets `archivedAt`
+and `archivedBy`, changes an eligible ACTIVE account to SUSPENDED, revokes its
+refresh sessions, and records a Platform audit event in one MongoDB
+transaction. User documents, memberships, and prior audit events remain. The
+archive marker distinguishes an archived account from an ordinary suspended
+account in list filtering and detail projections. Archived accounts cannot be
+edited, reactivated, or archived again through these API paths.
 
-Profile edits and account status remain in their existing fields. Email,
-password credentials, and authentication factors are outside this DB change.
+Both profile edits and account lifecycle changes require the current
+`platform.users.account.manage` Platform assignment and an `updatedAt` compare-
+and-set value. Audit writes are part of the same transaction. Self-archive and
+archive/suspension of the last eligible Organization ADMIN are denied.
 
 ## Data and migration impact
 
-This is an additive Mongoose schema change. Both fields are optional, so existing
-documents remain valid and no backfill is required. It creates no collections,
-indexes, or database validators, and does not write to any environment. The
-backend must not write these fields until this schema change is merged.
+The fields used by this work are already defined in the Mongoose schema on
+`main`. This task adds no schema, collection, index, validator, or backfill
+change and requires no migration. The work does not connect to or write to a
+production or staging database. Mongo integration coverage uses an isolated,
+disposable replica set with a randomized database name.
 
-No migration command is required. If a later deployment adds a database-level
-validator or query index for archive filtering, that must be a separately
-reviewed additive migration with its own report-first apply and rollback plan.
+No database data change is required for deployment. If a later deployment
+adds a database-level validator or query index for archive filtering, that
+must be a separately reviewed additive migration with its own report-first
+apply and rollback plan.
 
 ## Rollback
 
-Rollback is safe before the backend writes archive metadata. If the backend has
-already archived accounts, first disable or roll back those API paths and
-restore each archived account through the application so status, sessions, and
-audit history remain consistent. Then confirm no `archivedAt` or `archivedBy`
-values remain before reverting this schema change. Do not bulk-delete account
-or lifecycle data as a schema rollback.
+Rolling back the API code does not delete or clear archived user data. Since
+this work does not deploy or mutate production/staging data, there is no data
+rollback to run for this change. If archival has been used after deployment,
+first disable the mutation endpoint, preserve audit history, and use a
+reviewed account-recovery procedure to clear archive metadata and restore
+eligibility. Do not remove `archivedAt` or `archivedBy` with a bulk update or
+revert the schema while archived records remain.
 
 ## Verification
 
-The schema change is covered by repository lint, type-check, and build checks.
-No migration is applied as part of this work package.
+The Mongo integration tests cover profile field allowlisting, safe audit
+projection, CAS conflicts including concurrent updates, current Platform
+authority checks, archival retention, session revocation, last-admin/self
+guards, and rollback when the required audit write fails. No migration is
+applied as part of this work package.

@@ -1413,6 +1413,62 @@ describe('IAM OpenAPI contract', () => {
     }
   });
 
+  it('documents Platform profile edit and archive with CAS, permission, and retained lifecycle semantics', () => {
+    const userPath = contract.paths['/api/v1/iam/platform/users/{userId}'];
+    const profileEdit = userPath.patch;
+    const archive =
+      contract.paths['/api/v1/iam/platform/users/{userId}/archive'].post;
+    const profileRequest =
+      contract.components.schemas.PlatformUserProfileChangeRequest;
+    const archiveRequest =
+      contract.components.schemas.PlatformUserArchiveRequest;
+    const userSummary = contract.components.schemas.PlatformUserSummary;
+    const auditEvent = contract.components.schemas.PlatformAuditAction;
+    const usersStatusFilter = contract.paths[
+      '/api/v1/iam/platform/users'
+    ].get?.parameters?.find((parameter) => parameter.name === 'status');
+
+    expect(profileEdit).toMatchObject({
+      operationId: 'updatePlatformUserProfile',
+      'x-platform-permission': 'platform.users.account.manage',
+    });
+    expect(profileEdit?.description).toMatch(/PLATFORM scope/i);
+    expect(profileEdit?.responses['200']).toBeDefined();
+    expect(profileEdit?.responses['409']).toBeDefined();
+    expect(profileRequest).toMatchObject({
+      additionalProperties: false,
+      required: ['expectedUpdatedAt'],
+    });
+    expect(Object.keys(profileRequest.properties as JsonObject).sort()).toEqual(
+      ['avatarUrl', 'expectedUpdatedAt', 'fullName'].sort(),
+    );
+    expect(archive).toMatchObject({
+      operationId: 'archivePlatformUser',
+      'x-platform-permission': 'platform.users.account.manage',
+    });
+    expect(archive?.description).toContain('does not delete');
+    expect(archive?.description).toContain('retains Organization memberships');
+    expect(archiveRequest).toMatchObject({
+      additionalProperties: false,
+      required: ['expectedUpdatedAt', 'reasonCode'],
+    });
+    expect(userSummary.required).toEqual(
+      expect.arrayContaining(['avatarUrl', 'archivedAt']),
+    );
+    expect(usersStatusFilter?.schema).toMatchObject({
+      $ref: '#/components/schemas/PlatformUserListStatus',
+    });
+    expect(contract.components.schemas.PlatformUserListStatus.enum).toContain(
+      'ARCHIVED',
+    );
+    expect(auditEvent.enum).toEqual(
+      expect.arrayContaining([
+        'platform.user.profile.updated',
+        'platform.user.archived',
+      ]),
+    );
+  });
+
   it('documents every runtime PlatformController route and method', () => {
     const prefix = String(
       Reflect.getMetadata(PATH_METADATA, PlatformController),

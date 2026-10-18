@@ -2160,7 +2160,7 @@
           {
             "name": "status",
             "in": "query",
-            "schema": { "$ref": "#/components/schemas/UserStatus" }
+            "schema": { "$ref": "#/components/schemas/PlatformUserListStatus" }
           },
           {
             "name": "organizationId",
@@ -3640,6 +3640,59 @@
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
+      },
+      "patch": {
+        "tags": ["Platform", "Users"],
+        "summary": "Edit a Platform user profile",
+        "description": "Requires platform.users.account.manage at PLATFORM scope. The current Platform authority and actor are rechecked transactionally. Only fullName and avatarUrl can change; email, account status, memberships, roles, credentials, and permissions are not editable here. expectedUpdatedAt is a compare-and-set precondition. The user update and safe audit event commit atomically.",
+        "operationId": "updatePlatformUserProfile",
+        "x-platform-permission": "platform.users.account.manage",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlatformUserProfileChangeRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated safe user detail projection.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PlatformUserDetail" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
       }
     },
     "/api/v1/iam/platform/users/{userId}/status": {
@@ -3683,6 +3736,61 @@
         "responses": {
           "200": {
             "description": "Status changed or already at the requested state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PlatformUserDetail" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/users/{userId}/archive": {
+      "post": {
+        "tags": ["Platform", "Users"],
+        "summary": "Archive a Platform user",
+        "description": "Requires platform.users.account.manage at PLATFORM scope. This does not delete the user. It marks the account archived, sets status to SUSPENDED, revokes active sessions, and retains Organization memberships and audit history. The current Platform authority and actor are rechecked transactionally; self-archive and archiving the last eligible Organization ADMIN are forbidden. User, session revocation, and audit changes commit atomically. expectedUpdatedAt is a compare-and-set precondition.",
+        "operationId": "archivePlatformUser",
+        "x-platform-permission": "platform.users.account.manage",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlatformUserArchiveRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Archived safe user detail projection.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/PlatformUserDetail" }
@@ -5319,6 +5427,11 @@
         "type": "string",
         "enum": ["ACTIVE", "SUSPENDED", "PENDING_INVITE"]
       },
+      "PlatformUserListStatus": {
+        "type": "string",
+        "description": "ARCHIVED is a directory filter derived from archivedAt; it is not a persisted UserStatus.",
+        "enum": ["ACTIVE", "SUSPENDED", "PENDING_INVITE", "ARCHIVED"]
+      },
       "ProjectStatus": {
         "type": "string",
         "enum": ["ACTIVE", "ARCHIVED"]
@@ -6379,6 +6492,39 @@
           }
         }
       },
+      "PlatformUserProfileChangeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedUpdatedAt"],
+        "minProperties": 2,
+        "properties": {
+          "fullName": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "avatarUrl": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uri",
+                "maxLength": 2000,
+                "pattern": "^https?://"
+              },
+              { "type": "null" }
+            ]
+          },
+          "expectedUpdatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+        }
+      },
+      "PlatformUserArchiveRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedUpdatedAt", "reasonCode"],
+        "properties": {
+          "expectedUpdatedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "reasonCode": {
+            "type": "string",
+            "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW"]
+          }
+        }
+      },
       "PlatformUserMembershipSummary": {
         "type": "object",
         "additionalProperties": false,
@@ -6410,9 +6556,11 @@
           "id",
           "email",
           "fullName",
+          "avatarUrl",
           "status",
           "createdAt",
           "updatedAt",
+          "archivedAt",
           "memberships",
           "membershipsTruncated"
         ],
@@ -6420,9 +6568,21 @@
           "id": { "$ref": "#/components/schemas/ResourceId" },
           "email": { "type": "string", "format": "email" },
           "fullName": { "type": "string" },
+          "avatarUrl": {
+            "oneOf": [
+              { "type": "string", "format": "uri", "maxLength": 2000, "pattern": "^https?://" },
+              { "type": "null" }
+            ]
+          },
           "status": { "$ref": "#/components/schemas/UserStatus" },
           "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "archivedAt": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/UtcTimestamp" },
+              { "type": "null" }
+            ]
+          },
           "memberships": {
             "type": "array",
             "maxItems": 50,
@@ -6509,9 +6669,11 @@
           "id",
           "email",
           "fullName",
+          "avatarUrl",
           "status",
           "createdAt",
           "updatedAt",
+          "archivedAt",
           "memberships",
           "membershipsTruncated",
           "lastLoginAt",
@@ -6521,9 +6683,21 @@
           "id": { "$ref": "#/components/schemas/ResourceId" },
           "email": { "type": "string", "format": "email" },
           "fullName": { "type": "string" },
+          "avatarUrl": {
+            "oneOf": [
+              { "type": "string", "format": "uri", "maxLength": 2000, "pattern": "^https?://" },
+              { "type": "null" }
+            ]
+          },
           "status": { "$ref": "#/components/schemas/UserStatus" },
           "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "archivedAt": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/UtcTimestamp" },
+              { "type": "null" }
+            ]
+          },
           "memberships": {
             "type": "array",
             "maxItems": 50,
@@ -6753,6 +6927,8 @@
               "platform.authority.granted",
               "platform.authority.revoked",
               "platform.user.status.changed",
+              "platform.user.profile.updated",
+              "platform.user.archived",
               "platform.session.revoked",
               "platform.sessions.revoked_all",
               "platform.organization.metadata.changed",
@@ -6793,6 +6969,8 @@
           "platform.authority.granted",
           "platform.authority.revoked",
           "platform.user.status.changed",
+          "platform.user.profile.updated",
+          "platform.user.archived",
           "platform.session.revoked",
           "platform.sessions.revoked_all",
           "ORGANIZATION_MEMBERSHIP_SUSPENDED",
@@ -6857,6 +7035,12 @@
           "organizationId": { "$ref": "#/components/schemas/ResourceId" },
           "reasonCode": { "type": "string", "maxLength": 64 },
           "requestId": { "type": "string", "maxLength": 128 },
+          "changedFields": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 2,
+            "items": { "type": "string", "enum": ["fullName", "avatarUrl"] }
+          },
           "changes": {
             "type": "object",
             "additionalProperties": {

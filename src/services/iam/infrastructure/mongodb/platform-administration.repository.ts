@@ -32,6 +32,8 @@ import type {
   PlatformUserOrganizationsInput,
   PlatformUserOrganizationsPage,
   PlatformUserStatusChangeInput,
+  PlatformUserProfileChangeInput,
+  PlatformUserArchiveInput,
   PlatformUserLookupResult,
   PlatformUserSummary,
   PlatformProjectListInput,
@@ -83,7 +85,10 @@ interface PlatformUserDocument {
   _id: Types.ObjectId;
   email: string;
   fullName: string;
+  avatarUrl?: string | null;
   status: UserStatus;
+  archivedAt?: Date | null;
+  archivedBy?: Types.ObjectId | null;
   lastLoginAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -400,7 +405,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       unavailable();
 
     const match: Record<string, unknown> = {};
-    if (input.status) match.status = input.status;
+    if (input.status === 'ARCHIVED') {
+      match.archivedAt = { $type: 'date' };
+    } else if (input.status) {
+      match.status = input.status;
+      match.archivedAt = null;
+    }
     if (input.search) {
       const search = new RegExp(escapeRegex(input.search), 'i');
       match.$or = [{ email: search }, { fullName: search }];
@@ -425,7 +435,9 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
                 _id: 1,
                 email: 1,
                 fullName: 1,
+                avatarUrl: 1,
                 status: 1,
+                archivedAt: 1,
                 createdAt: 1,
                 updatedAt: 1,
                 memberships: 1,
@@ -1093,7 +1105,9 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
             _id: 1,
             email: 1,
             fullName: 1,
+            avatarUrl: 1,
             status: 1,
+            archivedAt: 1,
             lastLoginAt: 1,
             createdAt: 1,
             updatedAt: 1,
@@ -1283,63 +1297,18 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
         if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
         if (!(user.updatedAt instanceof Date))
           throw new ConflictException({ code: 'USER_VERSION_STALE' });
-        if (
-          user.updatedAt.getTime() !== input.expectedUpdatedAt.getTime() &&
-          user.status !== input.status
-        )
+        if (user.updatedAt.getTime() !== input.expectedUpdatedAt.getTime())
           throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (user.archivedAt != null)
+          throw new ConflictException({ code: 'USER_ARCHIVED' });
         if (!['ACTIVE', 'SUSPENDED'].includes(user.status))
           throw new ConflictException({
             code: 'USER_STATUS_TRANSITION_INVALID',
           });
         if (user.status === input.status) return;
 
-        if (user.status === 'ACTIVE' && input.status === 'SUSPENDED') {
-          const memberships = await this.memberships()
-            .find({ userId, status: 'ACTIVE' }, { organizationId: 1 })
-            .session(session)
-            .lean()
-            .exec();
-          const organizationIds = [
-            ...new Map(
-              memberships.map((membership) => [
-                membership.organizationId.toHexString(),
-                membership.organizationId,
-              ]),
-            ).values(),
-          ].sort((left, right) =>
-            left.toHexString().localeCompare(right.toHexString()),
-          );
-          for (const organizationId of organizationIds) {
-            const fence = await this.organizations()
-              .updateOne(
-                { _id: organizationId },
-                {
-                  $inc: { membershipAdminRevision: 1 },
-                  $currentDate: { updatedAt: true },
-                },
-                { session },
-              )
-              .exec();
-            if (fence.matchedCount !== 1)
-              throw new ConflictException({
-                code: 'USER_MEMBERSHIP_STATE_STALE',
-              });
-            const admins = await this.eligibleOrganizationAdminIds(
-              organizationId,
-              session,
-            );
-            if (
-              admins.some((adminId) => adminId.equals(userId)) &&
-              admins.length <= 1
-            )
-              throw new ConflictException({
-                code: 'LAST_ELIGIBLE_ADMIN',
-                message:
-                  'The last eligible Organization ADMIN cannot be suspended.',
-              });
-          }
-        }
+        if (user.status === 'ACTIVE' && input.status === 'SUSPENDED')
+          await this.protectLastOrganizationAdmin(userId, session);
 
         const update = await this.platformUsers()
           .updateOne(
@@ -1379,6 +1348,191 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       throw new InternalServerErrorException({
         code: 'PLATFORM_USER_MUTATION_FAILED',
         message: 'The Platform user status change could not be committed.',
+      });
+    } finally {
+      await session.endSession();
+    }
+    return this.findUser(input.userId);
+  }
+
+  async updateUserProfile(
+    input: PlatformUserProfileChangeInput,
+  ): Promise<PlatformUserDetail | null> {
+    if (
+      !validId(input.actorUserId) ||
+      !validId(input.userId) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      unavailable();
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    const userId = new Types.ObjectId(input.userId);
+    const connection = this.connection;
+    if (!connection) unavailable();
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.requirePlatformMutationAuthority(
+          actorUserId,
+          'platform.users.account.manage',
+          input.now,
+          session,
+        );
+        const user = await this.platformUsers()
+          .findById(userId)
+          .session(session)
+          .lean()
+          .exec();
+        if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
+        if (!(user.updatedAt instanceof Date))
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (user.updatedAt.getTime() !== input.expectedUpdatedAt.getTime())
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (user.archivedAt != null)
+          throw new ConflictException({ code: 'USER_ARCHIVED' });
+
+        const changes: Record<string, string | null> = {};
+        const changedFields: Array<'fullName' | 'avatarUrl'> = [];
+        if (
+          input.fullName !== undefined &&
+          input.fullName.trim() !== user.fullName
+        ) {
+          changes.fullName = input.fullName.trim();
+          changedFields.push('fullName');
+        }
+        if (
+          input.avatarUrl !== undefined &&
+          (user.avatarUrl ?? null) !== input.avatarUrl
+        ) {
+          changes.avatarUrl = input.avatarUrl;
+          changedFields.push('avatarUrl');
+        }
+        if (changedFields.length === 0) return;
+        changedFields.sort();
+
+        const update = await this.platformUsers()
+          .updateOne(
+            {
+              _id: userId,
+              updatedAt: input.expectedUpdatedAt,
+              archivedAt: null,
+            },
+            {
+              $set: {
+                ...changes,
+                updatedAt: new Date(
+                  Math.max(input.now.getTime(), user.updatedAt.getTime() + 1),
+                ),
+              },
+              $inc: { mutationFence: 1 },
+            },
+            { session, timestamps: false },
+          )
+          .exec();
+        if (update.matchedCount !== 1)
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        await this.writePlatformUserProfileAudit(input, changedFields, session);
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException({
+        code: 'PLATFORM_USER_MUTATION_FAILED',
+        message: 'The Platform user profile change could not be committed.',
+      });
+    } finally {
+      await session.endSession();
+    }
+    return this.findUser(input.userId);
+  }
+
+  async archiveUser(
+    input: PlatformUserArchiveInput,
+  ): Promise<PlatformUserDetail | null> {
+    if (
+      !validId(input.actorUserId) ||
+      !validId(input.userId) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      unavailable();
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    const userId = new Types.ObjectId(input.userId);
+    if (actorUserId.equals(userId)) {
+      throw new ForbiddenException({
+        code: 'SELF_ARCHIVE_FORBIDDEN',
+        message: 'A Platform Operator cannot archive their own account.',
+      });
+    }
+    const connection = this.connection;
+    if (!connection) unavailable();
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.requirePlatformMutationAuthority(
+          actorUserId,
+          'platform.users.account.manage',
+          input.now,
+          session,
+        );
+        const user = await this.platformUsers()
+          .findById(userId)
+          .session(session)
+          .lean()
+          .exec();
+        if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
+        if (!(user.updatedAt instanceof Date))
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (user.updatedAt.getTime() !== input.expectedUpdatedAt.getTime())
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (user.archivedAt != null)
+          throw new ConflictException({ code: 'USER_ALREADY_ARCHIVED' });
+        if (!['ACTIVE', 'SUSPENDED'].includes(user.status))
+          throw new ConflictException({ code: 'USER_ARCHIVE_STATE_INVALID' });
+        if (user.status === 'ACTIVE')
+          await this.protectLastOrganizationAdmin(userId, session);
+
+        const update = await this.platformUsers()
+          .updateOne(
+            {
+              _id: userId,
+              status: user.status,
+              updatedAt: input.expectedUpdatedAt,
+              archivedAt: null,
+            },
+            {
+              $set: {
+                status: 'SUSPENDED',
+                archivedAt: input.now,
+                archivedBy: actorUserId,
+                updatedAt: new Date(
+                  Math.max(input.now.getTime(), user.updatedAt.getTime() + 1),
+                ),
+              },
+              $inc: { mutationFence: 1 },
+            },
+            { session, timestamps: false },
+          )
+          .exec();
+        if (update.matchedCount !== 1)
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        await this.refreshSessions()
+          .updateMany(
+            { userId, isRevoked: { $ne: true } },
+            { $set: { isRevoked: true, updatedAt: input.now } },
+            { session },
+          )
+          .exec();
+        await this.writePlatformUserArchiveAudit(input, user.status, session);
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException({
+        code: 'PLATFORM_USER_MUTATION_FAILED',
+        message: 'The Platform user archive could not be committed.',
       });
     } finally {
       await session.endSession();
@@ -1664,6 +1818,115 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       .exec();
   }
 
+  private async protectLastOrganizationAdmin(
+    userId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<void> {
+    const memberships = await this.memberships()
+      .find({ userId, status: 'ACTIVE' }, { organizationId: 1 })
+      .session(session)
+      .lean()
+      .exec();
+    const organizationIds = [
+      ...new Map(
+        memberships.map((membership) => [
+          membership.organizationId.toHexString(),
+          membership.organizationId,
+        ]),
+      ).values(),
+    ].sort((left, right) =>
+      left.toHexString().localeCompare(right.toHexString()),
+    );
+    for (const organizationId of organizationIds) {
+      const adminsBeforeFence = await this.eligibleOrganizationAdminIds(
+        organizationId,
+        session,
+      );
+      if (!adminsBeforeFence.some((adminId) => adminId.equals(userId)))
+        continue;
+      const fence = await this.organizations()
+        .updateOne(
+          { _id: organizationId },
+          {
+            $inc: { membershipAdminRevision: 1 },
+            $currentDate: { updatedAt: true },
+          },
+          { session },
+        )
+        .exec();
+      if (fence.matchedCount !== 1)
+        throw new ConflictException({ code: 'USER_MEMBERSHIP_STATE_STALE' });
+      const admins = await this.eligibleOrganizationAdminIds(
+        organizationId,
+        session,
+      );
+      if (
+        admins.some((adminId) => adminId.equals(userId)) &&
+        admins.length <= 1
+      )
+        throw new ConflictException({
+          code: 'LAST_ELIGIBLE_ADMIN',
+          message: 'The last eligible Organization ADMIN cannot be suspended.',
+        });
+    }
+  }
+
+  private async writePlatformUserProfileAudit(
+    input: PlatformUserProfileChangeInput,
+    changedFields: Array<'fullName' | 'avatarUrl'>,
+    session: ClientSession,
+  ): Promise<void> {
+    const connection = this.connection;
+    if (!connection) unavailable();
+    await connection
+      .useDb(this.auditDatabaseName, { useCache: true })
+      .collection(IAM_AUDIT_COLLECTION_NAME)
+      .insertOne(
+        {
+          eventId: randomUUID(),
+          action: 'platform.user.profile.updated',
+          targetResource: 'USER',
+          targetResourceId: input.userId,
+          actorUserId: input.actorUserId,
+          scope: 'PLATFORM',
+          result: 'SUCCESS',
+          changedFields,
+          ...(input.correlationId ? { requestId: input.correlationId } : {}),
+          occurredAt: input.now,
+        },
+        { session },
+      );
+  }
+
+  private async writePlatformUserArchiveAudit(
+    input: PlatformUserArchiveInput,
+    previousStatus: string,
+    session: ClientSession,
+  ): Promise<void> {
+    const connection = this.connection;
+    if (!connection) unavailable();
+    await connection
+      .useDb(this.auditDatabaseName, { useCache: true })
+      .collection(IAM_AUDIT_COLLECTION_NAME)
+      .insertOne(
+        {
+          eventId: randomUUID(),
+          action: 'platform.user.archived',
+          targetResource: 'USER',
+          targetResourceId: input.userId,
+          actorUserId: input.actorUserId,
+          scope: 'PLATFORM',
+          result: 'SUCCESS',
+          reasonCode: input.reasonCode,
+          previousStatus,
+          newStatus: 'SUSPENDED',
+          ...(input.correlationId ? { requestId: input.correlationId } : {}),
+          occurredAt: input.now,
+        },
+        { session },
+      );
+  }
+
   private async writePlatformUserStatusAudit(
     input: PlatformUserStatusChangeInput,
     previousStatus: string,
@@ -1791,7 +2054,11 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       !(row._id instanceof Types.ObjectId) ||
       typeof row.email !== 'string' ||
       typeof row.fullName !== 'string' ||
+      (row.avatarUrl != null && typeof row.avatarUrl !== 'string') ||
       !['ACTIVE', 'SUSPENDED', 'PENDING_INVITE'].includes(row.status) ||
+      (row.archivedAt != null &&
+        (!(row.archivedAt instanceof Date) ||
+          !Number.isFinite(row.archivedAt.getTime()))) ||
       !(row.createdAt instanceof Date) ||
       !Number.isFinite(row.createdAt.getTime()) ||
       !(row.updatedAt instanceof Date) ||
@@ -1806,7 +2073,9 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       id: row._id.toHexString(),
       email: row.email,
       fullName: row.fullName,
+      avatarUrl: row.avatarUrl ?? null,
       status: row.status,
+      archivedAt: this.optionalDate(row.archivedAt),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       memberships,

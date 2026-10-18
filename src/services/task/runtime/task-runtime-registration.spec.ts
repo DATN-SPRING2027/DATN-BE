@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import { AppModule } from '../../../app.module';
 import { configureApplication } from '../../../bootstrap';
 import { GatewayModule } from '../../../gateway/gateway.module';
 import { readFileSync } from 'node:fs';
@@ -72,10 +71,17 @@ describe('D-04 dormant runtime registration boundary', () => {
 
   it('keeps Task list, detail and create unreachable on the default AppModule', async () => {
     const previousSecret = process.env.JWT_SECRET;
+    const previousInfraEnabled = process.env.INFRA_ENABLED;
     let app: INestApplication | undefined;
     process.env.JWT_SECRET = 'unit-test-secret-at-least-32-characters';
+    // This test verifies route registration only. Do not connect to local Redis,
+    // MongoDB, or other infrastructure while bootstrapping the default module.
+    process.env.INFRA_ENABLED = 'false';
 
     try {
+      const { AppModule } = jest.requireActual<
+        typeof import('../../../app.module')
+      >('../../../app.module');
       const moduleRef = await Test.createTestingModule({
         imports: [AppModule],
       }).compile();
@@ -97,6 +103,8 @@ describe('D-04 dormant runtime registration boundary', () => {
       await app?.close();
       if (previousSecret === undefined) delete process.env.JWT_SECRET;
       else process.env.JWT_SECRET = previousSecret;
+      if (previousInfraEnabled === undefined) delete process.env.INFRA_ENABLED;
+      else process.env.INFRA_ENABLED = previousInfraEnabled;
     }
   });
 });

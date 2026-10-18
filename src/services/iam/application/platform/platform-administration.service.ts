@@ -22,6 +22,8 @@ import {
   type PlatformUserListInput,
   type PlatformUserOrganizationsInput,
   type PlatformUserStatusChangeInput,
+  type PlatformUserProfileChangeInput,
+  type PlatformUserArchiveInput,
   type PlatformProjectListInput,
   type PlatformProjectMembershipListInput,
   type PlatformProjectMetadataChangeInput,
@@ -41,6 +43,7 @@ const userStatuses: readonly UserStatus[] = [
   'SUSPENDED',
   'PENDING_INVITE',
 ];
+const userListStatuses = [...userStatuses, 'ARCHIVED'] as const;
 const roleCodes: readonly RoleCode[] = ['ADMIN', 'TEAM_LEADER', 'MEMBER'];
 const projectVisibilities = ['PRIVATE', 'PUBLIC'] as const;
 const projectStatuses = ['ACTIVE', 'ARCHIVED'] as const;
@@ -85,7 +88,8 @@ export class PlatformAdministrationService {
         (typeof input.search !== 'string' ||
           input.search.trim().length < 1 ||
           input.search.trim().length > 100)) ||
-      (input.status !== undefined && !userStatuses.includes(input.status)) ||
+      (input.status !== undefined &&
+        !userListStatuses.includes(input.status)) ||
       (input.organizationId !== undefined &&
         !resourceIdPattern.test(input.organizationId)) ||
       (input.roleCode !== undefined && !roleCodes.includes(input.roleCode))
@@ -130,6 +134,45 @@ export class PlatformAdministrationService {
     )
       validationFailed();
     const user = await this.repository.changeUserStatus(input);
+    if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
+    return user;
+  }
+
+  async updateUserProfile(input: PlatformUserProfileChangeInput) {
+    if (
+      !resourceIdPattern.test(input.actorUserId) ||
+      !resourceIdPattern.test(input.userId) ||
+      (input.fullName === undefined && input.avatarUrl === undefined) ||
+      (input.fullName !== undefined &&
+        (typeof input.fullName !== 'string' ||
+          input.fullName.trim().length < 1 ||
+          input.fullName.trim().length > 200)) ||
+      (input.avatarUrl !== undefined &&
+        input.avatarUrl !== null &&
+        !isSafeProfileAvatarUrl(input.avatarUrl)) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      validationFailed();
+    const user = await this.repository.updateUserProfile(input);
+    if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
+    return user;
+  }
+
+  async archiveUser(input: PlatformUserArchiveInput) {
+    if (
+      !resourceIdPattern.test(input.actorUserId) ||
+      !resourceIdPattern.test(input.userId) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(input.reasonCode) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      validationFailed();
+    const user = await this.repository.archiveUser(input);
     if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
     return user;
   }
@@ -484,5 +527,15 @@ export class PlatformAdministrationService {
       now: new Date(),
       ...(input.correlationId ? { correlationId: input.correlationId } : {}),
     });
+  }
+}
+
+function isSafeProfileAvatarUrl(value: string): boolean {
+  if (value.length > 2000) return false;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol);
+  } catch {
+    return false;
   }
 }

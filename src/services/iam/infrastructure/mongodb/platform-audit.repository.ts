@@ -35,6 +35,7 @@ interface AuditDocument {
   correlationId?: string;
   previousStatus?: string;
   newStatus?: string;
+  changedFields?: string[];
   previous?: Record<string, unknown>;
   next?: Record<string, unknown>;
   before?: Record<string, unknown>;
@@ -46,6 +47,8 @@ const PLATFORM_OPERATIONAL_ACTIONS = [
   'platform.authority.granted',
   'platform.authority.revoked',
   'platform.user.status.changed',
+  'platform.user.profile.updated',
+  'platform.user.archived',
   'platform.session.revoked',
   'platform.sessions.revoked_all',
   'ORGANIZATION_MEMBERSHIP_SUSPENDED',
@@ -74,6 +77,7 @@ const PROJECTED_AUDIT_FIELDS = {
   correlationId: 1,
   previousStatus: 1,
   newStatus: 1,
+  changedFields: 1,
   previous: 1,
   next: 1,
   before: 1,
@@ -325,6 +329,18 @@ export class MongoPlatformAuditRepository implements PlatformAuditRepository {
           }
         : {}),
       ...(Object.keys(changes).length > 0 ? { changes } : {}),
+      ...(Array.isArray(row.changedFields)
+        ? {
+            changedFields: [
+              ...new Set(
+                row.changedFields.filter(
+                  (field): field is 'fullName' | 'avatarUrl' =>
+                    field === 'fullName' || field === 'avatarUrl',
+                ),
+              ),
+            ],
+          }
+        : {}),
     };
   }
 
@@ -339,7 +355,12 @@ export class MongoPlatformAuditRepository implements PlatformAuditRepository {
       action === 'platform.authority.revoked'
     )
       return 'PLATFORM_AUTHORITY';
-    if (action === 'platform.user.status.changed') return 'USER';
+    if (
+      action === 'platform.user.status.changed' ||
+      action === 'platform.user.profile.updated' ||
+      action === 'platform.user.archived'
+    )
+      return 'USER';
     if (action === 'platform.session.revoked') return 'SESSION';
     if (action === 'platform.sessions.revoked_all') return 'USER';
     if (action === 'ORGANIZATION_MEMBERSHIP_SUSPENDED')
