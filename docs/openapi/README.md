@@ -52,9 +52,12 @@ authorization boundary; the trust profile (DR-3) and scope evidence (DR-8) are
 deferred. The `x-pending-decisions` list in the file names every choice the
 drafter made that still needs explicit approval. Unlike the IAM lists, this slice
 uses cursor pagination (`limit` 1-100, `afterId`, `_id` ascending) per DR-6.
-Errors keep the existing `{code, message, details, requestId}` shape; non-member,
-cross-scope and malformed path ids return 404, and only a malformed `limit` or
-`afterId` returns 422. The current `TaskAuthorizationHttpGuard` returns a boolean
+Errors keep the existing `{code, message, details, requestId}` shape; non-member
+and cross-scope access return 404 (DR-5), a denied permission and a malformed path
+id also return 404 as the drafter's proposal, and only a malformed `limit` or
+`afterId` returns 422. Whole-Project read access is DR-4, approved only
+conditionally until the Product/Security delegation is confirmed, so it is
+marked `DR4-1` in `x-pending-decisions`. The current `TaskAuthorizationHttpGuard` returns a boolean
 and drops the denial reason, so the handler pull request must add a
 reason-aware mapping to 401, 404 and 503 before this contract can be met.
 `src/contracts/task-slice-openapi.spec.ts` guards the scope of the draft.

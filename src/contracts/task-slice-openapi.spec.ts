@@ -3,10 +3,12 @@ import { resolve } from 'node:path';
 
 interface ResponseContract {
   $ref?: string;
+  description?: string;
   headers?: { 'Cache-Control'?: { schema: { const: string } } };
   content?: { 'application/json': { schema: { $ref: string } } };
 }
 interface Operation {
+  description?: string;
   parameters?: { $ref?: string; name?: string }[];
   requestBody?: unknown;
   responses: Record<string, ResponseContract>;
@@ -21,6 +23,7 @@ interface SchemaContract extends PropertyContract {
   additionalProperties?: boolean;
 }
 interface OpenApiDocument {
+  'x-pending-decisions': string[];
   security?: Record<string, string[]>[];
   paths: Record<string, Record<string, Operation>>;
   components: {
@@ -63,6 +66,29 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
     expect(new Set(names)).toEqual(
       new Set(['ProjectId', 'TaskId', 'Limit', 'AfterId']),
     );
+  });
+
+  it('marks whole-Project read access as conditional on DR-4 and keeps DR-5 limited to non-member and cross-scope', () => {
+    const ids = document['x-pending-decisions'].map(
+      (entry) => entry.split(':')[0],
+    );
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        'DR4-1',
+        'PATH-1',
+        'LIMIT-1',
+        'CURSOR-1',
+        'ERR-1',
+        'CACHE-1',
+        'AUTH-1',
+      ]),
+    );
+    for (const operations of Object.values(document.paths)) {
+      expect(operations.get.description).toMatch(/DR-4/);
+    }
+    const notFound = document.components.responses.NotFound.description ?? '';
+    expect(notFound).toMatch(/non-member and cross-scope/i);
+    expect(notFound).toMatch(/drafter's proposal ERR-1/);
   });
 
   it('requires the opaque delegated bearer credential on every operation', () => {
