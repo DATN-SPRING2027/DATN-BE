@@ -163,7 +163,7 @@ integration(
       ).toThrow('Task persistence database name is not permitted');
     });
 
-    it('O2 commits one Task and its safe creation event, then reads the Task', async () => {
+    it('DATN-373 O0/O2 persists one Task and a creation event with required identity links', async () => {
       const result = await create('  Task name  ');
       expect(result.state).toBe('COMMITTED');
       if (result.state !== 'COMMITTED') return;
@@ -178,6 +178,9 @@ integration(
         String(result.task._id),
       );
       expect(events).toHaveLength(1);
+      expect(events[0]._id).toBeInstanceOf(Types.ObjectId);
+      expect(events[0].taskId).toEqual(result.task._id);
+      expect(events[0].projectId).toEqual(result.task.projectId);
       expect(events[0]).toMatchObject({
         taskId: result.task._id,
         projectId,

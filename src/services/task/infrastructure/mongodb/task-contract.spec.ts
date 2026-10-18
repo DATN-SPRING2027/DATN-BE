@@ -65,7 +65,7 @@ describe('D-03 Task persistence contract', () => {
     expect(isUuidV4(resolveCorrelationId('x'.repeat(129)))).toBe(true);
   });
 
-  it('builds the exact seven-field Task and names-only creation event', () => {
+  it('DATN-373 O0 builds required event identity links and the exact creation event', () => {
     const taskId = new Types.ObjectId('000000000000000000000001');
     const eventId = new Types.ObjectId('000000000000000000000002');
     const projectId = new Types.ObjectId('000000000000000000000003');
@@ -123,6 +123,9 @@ describe('D-03 Task persistence contract', () => {
       operationId: 'fcb44b8d-3a0e-49b7-b9bd-cd00caf6e58a',
       correlationId: 'request-01',
     });
+    expect(result.event._id).toBeInstanceOf(Types.ObjectId);
+    expect(result.event.taskId).toEqual(result.task._id);
+    expect(result.event.projectId).toEqual(result.task.projectId);
     expect(JSON.stringify(result.event)).not.toContain('unchanged');
     expect(Object.keys(result.event).sort()).toEqual(
       [
