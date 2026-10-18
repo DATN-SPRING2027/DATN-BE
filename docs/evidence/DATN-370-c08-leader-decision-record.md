@@ -1,0 +1,127 @@
+# DATN-370 — C-08 Leader Decision Record
+
+**Prepared:** 2026-10-17
+**Record type:** Task-leader technical direction and authority decision plan
+**Authority status:** Proposed direction only. This record does not approve Product, Architecture, or Security/IAM policy.
+**R4 under review:** [C-05 Team Foundation OpenAPI R4](https://github.com/DATN-SPRING2027/Document/blob/main/research-docs/Workspace/contracts/c-05-team-foundation-r4.openapi.json), blob SHA `28ad1139ca72f27d7a9a5efe727c14fcf2e72e2c`
+**C-04 evidence:** [Team Foundation decision-gap report](https://github.com/DATN-SPRING2027/Document/blob/main/research-docs/Workspace/09-team-management-foundation-decision-gap-report.md), blob SHA `4fc3c8ad45cad60fd995d9c9a6b90b88116af70f`
+**Baseline evidence report:** [DATN-370 C-08 evidence report](DATN-370-c08-team-foundation-contract-gate.md)
+
+## Worktree and preservation
+
+Repository: DATN-BE. Worktree: E:\DATN\review-worktrees\datn-370-c08-team-foundation-contract-gate. Branch: docs/Danh-datn-370-c08-team-foundation-contract-gate. Base and HEAD: 08e0412323562f6abead0eaab3e426c29f67a9a5. The existing C-08 evidence report was read as the baseline and left unchanged. No source, contract, Jira status, or worktree history was changed for this record.
+## 1. Decision in brief
+
+The task leader’s selected direction is to preserve R4 unchanged and use it as the immutable historical proposal. Prepare R5 only if the final authority decisions require contract changes. No R4 or R5 approval is recorded.
+
+Keep Team runtime and C-06 gated. Do not assume any read operation is eligible merely because mutations are deferred. Review each operation against its own approved policy, contract, and technical evidence.
+
+## 2. Evidence and approval boundaries
+
+| Evidence | Verified status | What it establishes |
+|---|---|---|
+| Accepted MVP scope, Document blob 32c47731c7ac5785202fa5eccf593377b24655ba | Accepted baseline | One software project may contain multiple teams. It does not approve the R4 API or detailed Team lifecycle policy. |
+| Accepted actor/role/permission baseline, Document blob 99ed50a29e04eadb83dd1949c76c9666ddff047b | Accepted baseline | Explicit assigned scope, deny precedence, and no automatic Team rights from TEAM_LEADER, ADMIN, or PLATFORM_OPERATOR. |
+| C-04 gap report, Document blob 4fc3c8ad45cad60fd995d9c9a6b90b88116af70f | Decision-gap report, not a complete approved contract | Jira comment 10162 records partial TQ dispositions. Its author’s Product/Architecture/Security/IAM authority is not established, and it does not approve the exact R4 SHA. |
+| C-05 OpenAPI R4, Document blob 28ad1139ca72f27d7a9a5efe727c14fcf2e72e2c | PROPOSED_NOT_APPROVED; NOT_READY; policy options not selected | Exact immutable proposal under review only. |
+| DATN-BE main, commit 08e0412323562f6abead0eaab3e426c29f67a9a5; PR #36 | Runtime is intentionally unwired | Candidate code is not approval or proof of readiness. Current Gateway has no Team routes and the IAM module does not register the Team controller. |
+| Jira DATN-370 comment 10221 | One role-level disposition request is posted; no authority reply was present in the checked comment list | This is a request, not an approval. No individual authority is inferred. |
+| Jira snapshot, checked 2026-10-17 | DATN-90 Done; DATN-91 In Progress and blocked by DATN-370; DATN-370 To Do | Status context only, not contract approval. |
+
+The previous evidence report remains unchanged. It contains a historical sentence saying no Jira comment had been modified; comment 10221 was added afterward. This record is the current reference for that later request. Confluence decision records were not verifiable in the earlier review because access returned 403.
+
+## 3. B1–B9 action matrix
+
+Every item below remains **unresolved at authority level** unless evidence is recorded against the exact contract revision. The “leader direction” column records the direction supplied for this task; it is not an authority disposition.
+
+| Blocker | Task-leader direction | Follow-up, authority, and required evidence | Dependent issues and gate |
+|---|---|---|---|
+| B1 — Exact revision | Preserve R4 unchanged. Create R5 only if agreed decisions require wire-contract changes. | Product, Architecture, and Security/IAM each record Approve, Amend, or Defer against the same exact SHA; state rationale, accepted scope, exclusions, readiness, and residual blockers. Evidence: role-attributed decision record and immutable artifact SHA. | DATN-370, DATN-372, DATN-91. No Team runtime or C-06 contract integration until applicable approvals exist. |
+| B2 — Grants/provisioning | Explicit least-privilege grants by actor, resource scope, and operation; deny by default; no implicit grants from role names. | Security/IAM defines create/list/detail/update/archive/restore grants, grant source and provisioning/change/revocation, Project/Team interaction, and stale/absent/conflicting grant behavior. Product confirms intended actors/actions; Architecture inventories every writer and enforcement point. Evidence: approved permission matrix plus negative authorization and all-writer tests. | DATN-371, DATN-372, DATN-90, DATN-91. All Team operations stay gated until operation-specific access rules are approved and enforced. |
+| B3 — Parent/lifecycle | No implicit cascade. Fail closed when parent/admission validation fails. Keep archive/restore gated until ownership and race evidence are sufficient. | Product decides behavior for unavailable/archived Projects, archive/restore eligibility, and repeated requests. Architecture identifies lifecycle owners, all writers, and race controls. Security/IAM approves admission checks. Evidence: owner/writer inventory and automated missing-parent, archived-parent, repeated-command, and concurrency tests. | DATN-371, DATN-372, DATN-90, DATN-91. Create/list also require approved parent checks; archive/restore remain gated until their specific lifecycle tests pass. |
+| B4 — Route/DTO/transport | Document Gateway/BFF/IAM ownership, principal propagation, DTO ownership, headers, preconditions, and security boundaries before exposing routes. | Architecture assigns each public route, DTO source, pagination/filtering, and error-normalization owner. Security/IAM reviews principal propagation, forwarding, CSRF, and enforcement boundaries. Evidence: route/transport responsibility matrix and integration evidence for every approved operation. | DATN-371, DATN-372, DATN-90, DATN-91. No Team route registration until the approved model is implemented and verified. |
+| B5 — Shared errors | Reuse shared ErrorResponse if sufficient; add Team mapping only for an evidenced and approved gap. | Architecture and Security/IAM approve status/code mapping and precedence; Product confirms user-visible validation/domain semantics. Evidence: operation-by-operation error table reconciled with the shared contract and PR #32, with validation/denial/non-disclosure tests. | DATN-371, DATN-372, DATN-90, DATN-91. Every operation remains gated until its error behavior is approved and tested. |
+| B6 — Idempotency/recovery | Prefer durable idempotency and explicit ambiguous-commit recovery, or an Architecture-approved equivalent with comparable evidence. Do not enable mutations before verification. | Architecture selects the design; Security/IAM reviews scope and abuse cases; owners identify every writer. Evidence: key scope/retention, same-key same/different-payload behavior, concurrency, version-check interaction, lost-response recovery, and automated retry/duplicate/concurrent/ambiguous-commit tests. | DATN-372, DATN-90, DATN-91. Create/update/archive/restore stay disabled until readiness evidence passes. Read operations require their own independent approval. |
+| B7 — Audit/atomicity | Reuse the canonical audit source if it meets approved guarantees. Evaluate outbox or same-transaction writes only when explicit requirements justify them. | Architecture selects the canonical source and evaluates persistence fit. Security/IAM approves sensitive fields, redaction, failure behavior, and durability; Product confirms user-visible commitments. Evidence: event/field specification, atomicity/durability decision, duplicate/recovery tests, and proof of delivery behavior. | DATN-372, DATN-90, DATN-91. Mutations requiring audit remain gated until guarantees are selected and evidenced. |
+| B8 — archivedReason | Internal-only by default; do not expose publicly without a confirmed Product requirement and Security/IAM review. | Product confirms purpose and user-visible need. Security/IAM assesses sensitivity/exposure. Architecture aligns persistence, serializer, OpenAPI, retention, and restore behavior. Evidence: explicit internal-only decision or approved public-field requirement plus serializer/schema tests. | DATN-371, DATN-372, DATN-90, DATN-91. Archive/restore stay gated until persistence and wire behavior agree. |
+| B9 — DATN-90 completion | Preserve Done if scoped acceptance was genuinely met; ask the DATN-90 owner to document delivered scope and evidence; do not change status merely to remove a mismatch. | The owner evidence should map DATN-90's original acceptance criteria to the delivered scope and artifacts. The request is distinct from R4 approval; no contract approval is inferred from issue status, merged code, or tests. | DATN-90's own scope/evidence reconciliation; no status change or R4 approval is made by C-08. |
+
+## 4. Downstream authority decisions still outstanding (not C-08 blockers)
+
+- **Product:** Supported Team operations and actor intent; lifecycle behavior; whether archivedReason has a user-visible requirement; Product disposition for the exact final candidate SHA.
+- **Architecture:** Service and route ownership; DTO/principal/transport model; parent lifecycle ownership and writer inventory; shared error mapping; idempotency/recovery design; canonical audit source and atomicity; Architecture disposition for the exact final candidate SHA.
+- **Security/IAM:** Per-operation least-privilege grant model; Project/Team boundary and deny behavior; principal propagation and information disclosure; CSRF/header controls where applicable; archivedReason exposure; audit redaction; Security/IAM disposition for the exact final candidate SHA.
+- **DATN-90 evidence discrepancy:** The current description requires an approved contract; R4 remains unapproved and runtime is unwired. The available evidence does not demonstrate that prerequisite. Preserve Done; a response from the owner is not needed to meet C-08's blocker-record criterion.
+- **Cross-role:** Any disagreement must be recorded by role. Silence, account names, Jira Done, merged PRs, or test results are not authority approval.
+
+## 5. Conditional minimum R5 delta
+
+Do not edit R4 and do not create R5 until decisions are recorded. If all authorities accept R4 exactly as written, a new contract revision is not needed. If decisions alter public behavior, create an R5 candidate containing only those approved changes:
+
+- **B2:** Add/change operation security descriptions or schemes only if the approved grant policy is not expressible in the current contract. Detailed internal provisioning policy may belong in a linked security decision record rather than new wire fields.
+- **B3:** Clarify parent/admission and lifecycle semantics and corresponding responses where the decision changes observable API behavior. If archive/restore stay deferred, R5 must clearly mark them out of implementation scope or not ready; do not silently enable them.
+- **B4:** Change paths, DTOs, query parameters, headers, preconditions, or transport-facing schemas only where the approved ownership model changes the wire contract. A responsibility document alone does not require an OpenAPI change.
+- **B5:** Change error responses only if the approved mapping differs from R4; reuse shared ErrorResponse whenever it is sufficient.
+- **B6:** Specify idempotency request/result behavior in OpenAPI if the selected design is client-visible. If mutations are deferred, do not invent a partial command contract.
+- **B7:** Change OpenAPI only for client-visible audit behavior; internal audit ownership/atomicity can be documented separately if it has no wire effect.
+- **B8:** Keep archivedReason out of public response schemas unless Product confirms a requirement and Security/IAM approves exposure. If public, add it explicitly and align archive/restore schemas.
+- **B9:** No contract change solely to reconcile Jira status. Only actual scope or acceptance findings may drive a contract revision.
+
+Any R5 candidate remains proposed/not approved until each applicable authority has reviewed the same R5 blob SHA.
+
+## 6. Exact evidence to remove each gate
+
+**Read operations are not pre-approved by deferring mutations.** Before considering project-scoped Team list/detail, require for those operations: explicit Product/Architecture/Security-IAM disposition on the exact revision; approved per-operation grants and fail-closed parent checks; route/DTO/principal ownership; pagination/filter semantics; shared-error mapping; and tests for allowed scope, absent/stale grants, cross-Project/Team access denial, missing/invalid parent, validation, and error precedence. Keep the route closed until the approved behavior is wired and verified.
+
+Before considering each mutation, additionally require its operation-specific lifecycle rules and successful automated evidence for validation, authorization, concurrency, duplicate/retry behavior, ambiguous-commit recovery (B6), and audit delivery/atomicity (B7). Archive/restore also require B3 lifecycle ownership and B8 archivedReason alignment. A gate may be removed per operation only when its evidence is complete and the approved contract includes that behavior.
+
+C-06 may integrate only against an approved contract revision and verified API behavior; it must not invent semantics or bypass backend authorization.
+
+## 7. Conditional downstream order (not additional C-08 work)
+
+1. For any later runtime resumption, resolve grants, parent/lifecycle rules, and route/transport ownership (B2–B4) for each read/write operation independently.
+2. Resolve shared errors and archivedReason semantics (B5, B8).
+3. Resolve idempotency/recovery and audit/atomicity for mutations (B6, B7); reads remain independently gated.
+4. Only if a decision changes the wire contract or its selected-state markers, create and validate a narrowly scoped R5 candidate; do not mark it approved.
+5. Bind applicable Product/Architecture/Security-IAM dispositions to the exact immutable candidate SHA and record disagreements/conditions.
+6. Re-read DATN-90/91 when later decision evidence exists. Keep runtime/C-06 gated until the applicable contract and operation evidence are complete.
+
+These are downstream project conditions, not actions the task leader must perform to complete DATN-370/C-08. The C-08 blocker-record acceptance branch is satisfied by this package.
+
+## 8. Revision-state clarification — 2026-10-18
+
+This addendum preserves the record above and clarifies its R4/R5 condition after review of R4's own metadata. R4 remains unchanged at blob SHA `28ad1139ca72f27d7a9a5efe727c14fcf2e72e2c`; it declares `PROPOSED_NOT_APPROVED`, `NOT_READY`, and policy options unselected. Do not treat DATN-90 Done, merged PRs, or tests as changing those markers.
+
+The earlier statement that an unchanged R4 might not need a new revision means that no wire-semantic change is automatically required. It does **not** authorize ignoring the current proposal/selection markers. If authorities later select the candidate options and an approved contract artifact must itself express that selection or a changed contract-state claim, preserve R4 and prepare a new R5 candidate after those decisions. Bind any approval to the exact resulting SHA. Keep runtime readiness independent and `NOT_READY` until its evidence passes. The source markers and C-04 context are documented in the baseline evidence report linked above.
+
+## 9. Leader-directed final resolution — 2026-10-18
+
+This addendum records the task leader's explicit instruction to research the evidence and select a decisive task-scope outcome, rather than hand the leader a list of people to contact. It supersedes the earlier matrix wording that made an owner/authority response a prerequisite to completing C-08. C-08's acceptance criterion has an alternative: a complete, precise blocker record. That alternative is addressed by this decision record and its acceptance crosswalk. No further task-leader decision is required to state the selected direction and residual blockers.
+
+This does not claim that task leadership grants Product, Architecture, or Security/IAM authority. Those approvals remain downstream prerequisites only for treating Team contract/runtime behavior as approved or ready. R4 remains unchanged (`PROPOSED_NOT_APPROVED`, `NOT_READY`); no R5 or Team runtime is created. DATN-91/C-06 stays gated.
+
+The read-only Jira recheck at 2026-10-18 00:26 ICT confirms DATN-90 is still Done and DATN-91 is In Progress/blocked by DATN-370. DATN-90's description requires an approved contract before implementation, while the exact R4 remains unapproved and PR #36 leaves Team runtime unwired. Therefore the current record does not demonstrate that DATN-90's own contract prerequisite was met. Preserve its Done status unchanged, record the status/evidence mismatch, and do not treat it as authority evidence. This mismatch is not a missing C-08 deliverable.
+
+The [acceptance and closure evidence](DATN-370-acceptance-and-closure-evidence.md) is the crosswalk from this decision record to C-08's acceptance criteria. Earlier sections are retained as historical research and should be read with this resolution addendum.
+
+## 10 Leader decision package received 2026-10-18
+
+The task leader supplied a concrete B1–B9 decision package. It is recorded below as the selected **task-leader technical direction**. It resolves what DATN-370 should record; it is not a Product, Architecture, or Security/IAM approval and does not change authoritative Product Docs, R4, R5, Jira evidence, or runtime state.
+
+| Block | Recorded leader decision | Precise remaining downstream question/evidence and affected scope |
+|---|---|---|
+| **B1 — Revision** | Defer R4. Preserve SHA `28ad1139ca72f27d7a9a5efe727c14fcf2e72e2c`; do not create R5 now. Keep approval and readiness separate. | Applicable Product, Architecture, and Security/IAM authorities must disposition one exact candidate SHA and record scope, exclusions, conditions, and authority basis before calling it approved. An R5 candidate is conditional on a decision requiring changed wire behavior or selected/provenance markers. All six R4 operations and C-06 remain contract-gated. |
+| **B2 — Authorization** | Require explicit least-privilege grants per actor × resource scope × operation; deny by default, with no implicit grants based only on role names. This direction does not select exact capability identifiers, eligible actors, grant source, or assignment lifecycle. | Security/IAM must identify the authoritative grant source, provisioning/change/revocation, and positive grant matrix; Product confirms actor/action intent; Architecture inventories enforcement points and every writer. Evidence: configured per-operation grants and server-side allowed/denied, stale/missing grant, and cross-organization/Project/Team tests across every writer. All operations stay closed absent that evidence. |
+| **B3 — Parent/lifecycle** | No implicit cascade. Fail closed when parent/admission validation fails. Keep archive/restore gated until lifecycle ownership and race/concurrency evidence is sufficient. This direction does not select all parent-state rules, list/detail visibility, or repeated-command responses. | Product must decide externally visible lifecycle and repeat-command outcomes; Architecture must name state owners, enumerate all writers, and prove race controls; Security/IAM must approve admission checks. Evidence: parent/transition matrix plus missing/stale-parent, no-side-effect denial, and concurrent-transition tests. Each operation remains gated until its own parent rules are approved. |
+| **B4 — Route/principal/transport** | Before route exposure, document Gateway/BFF/IAM ownership, trusted-principal propagation, DTO ownership, transport headers, preconditions, and security boundaries. The leader direction does not select a specific runtime topology or route owner. | Architecture must verify the actual deployed hop, route/DTO/pagination/filter/error owners, and header/precondition handling. Security/IAM must verify principal trust, spoofed-header rejection, and applicable CSRF controls. Evidence: responsibility map and integration tests for actor/org/Project spoofing, forwarded conditional/idempotency headers, and cache behavior. Routes remain closed pending the relevant evidence. |
+| **B5 — Errors** | Reuse shared `ErrorResponse` if sufficient. Add a Team-specific mapping only for an evidenced and authority-approved gap. No status-code mapping, precedence, disclosure rule, or mutation order is selected here. | Product must confirm user-facing domain/validation behavior; Architecture and Security/IAM must reconcile each operation's status/code/precedence and non-disclosure against the shared contract. Evidence: operation × condition response table and exact body/status/precedence tests. R4's candidate validation response remains unapproved; do not replace it with a different status without an approved decision. |
+| **B6 — Idempotency/recovery** | Prefer durable idempotency and explicit ambiguous-commit recovery for mutations, or an Architecture-approved equivalent supported by comparable evidence. Exact key scope, retention, fingerprint, replay, authorization-on-replay, and precondition ordering are not selected here. | Architecture must select and prove durable state/recovery and enumerate writers; Security/IAM reviews scope and abuse cases. Evidence must cover the supported retry horizon, duplicate/concurrent requests, lost responses, ambiguous commits, permission changes, `If-Match`, and all writers. Mutations stay disabled until the selected design is verified. |
+| **B7 — Audit** | Reuse the canonical audit source if it meets the required guarantees. Evaluate an outbox or same-transaction audit only when explicit durability/atomicity requirements justify it. The direction does not select Team event fields or failure semantics. | Architecture must verify canonical Team mapping and transaction/delivery guarantees; Security/IAM approves field allowlist, redaction, failure/durability policy; Product confirms user-visible commitments if any. Evidence: event schema, atomicity/durability decision, and failure/duplicate/recovery tests. Mutations requiring audit remain gated until these are resolved. |
+| **B8 — `archivedReason`** | Internal-only by default; omit from public DTO/OpenAPI and prevent leakage through serializers/errors. Persist or audit internally only when operationally justified. | Product must evidence a public requirement before considering exposure; Security/IAM must review it; Architecture aligns storage, serialization, OpenAPI, retention, and restore. Evidence: internal-only serializer/error tests, or a later approved public-field decision with schema/privacy tests. Archive/restore remain gated. |
+| **B9 — DATN-90** | Keep Done if its scoped acceptance was genuinely met. Ask the owner to document the delivered scope and evidence. Do not change status merely to remove the mismatch or infer contract approval from status, PRs, or tests. | Preserve the current status while the issue's scope/evidence is reconciled through its own workflow. Available evidence does not make Jira Done, merged PRs, or tests contract approval. This follow-up does not change R4 or authorize Team runtime. |
+
+### Exact C-08 blocker-record boundary
+
+The C-08 acceptance criterion permits the blocker-record branch. The decision package identifies each unresolved matter, authority role, required evidence, affected operations, and dependent scope. The open items are (1) role-authorized disposition of an exact revision; (2) positive grant source/matrix and enforcement; (3) archived visibility, lifecycle owners/writers, and repeat/race semantics; (4) actual principal/route/DTO/transport ownership; (5) the shared error map and any evidenced Team-specific gap; (6) retry horizon, durable idempotency and ambiguous-commit recovery; (7) canonical audit durability/atomicity and redaction; and (8) whether any Product requirement justifies public `archivedReason`. No exact grant identifiers, error mapping, transport topology, or lifecycle details are approved by this task-leader direction. The relevant Product, Architecture, or Security/IAM role is listed in the B1–B8 rows above; no specific human authority is named or inferred.
+
+These items are downstream approval/readiness gates, not missing C-08 deliverables. Keep R4 immutable, create no R5 now, and expose no Team routes or C-06 behavior. After checking the blocker record against the Jira AC and verifying the available workflow transition, DATN-371, DATN-372, and DATN-370 were moved to Done. This task completion does not mark R4 approved or runtime ready; DATN-90/91 remain unchanged.
