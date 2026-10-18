@@ -234,3 +234,63 @@ callback. These focused tests use no database or Redis connections.
   migrated, copied, or read.
 - Test/CI may use a disposable local MongoDB replica set; this does not change
   the team's Atlas development topology.
+
+## TEST_ONLY Platform Operator V1-to-V2 adoption
+
+The `dev:platform-authority:test-adoption` command is a standalone development
+tool. It is not registered in a Nest module and has no HTTP route. It accepts
+only the owner-approved Atlas development host
+`kimthang.mh3rrz2.mongodb.net`, the fixed `continuum_iam` and
+`continuum_audit` databases, and the fixed target
+`operator@continuum.test`. It does not load `.env` files or print the URI,
+credentials, user IDs, assignment contents, or snapshot hash. The Atlas URI
+must have database-user credentials, TLS, no database path, and only the
+connection options accepted by the test-only policy.
+
+The command requires `NODE_ENV` and `DATN_DB_ENV` to both equal `development`
+or both equal `test`, plus
+`DATN_TEST_PLATFORM_AUTHORITY_ADOPTION=TEST_ONLY_ATLAS_DEV`. It also requires
+an explicit `--target-email operator@continuum.test`. The read-only preflight
+is the default mode. `--apply-test-only` is a separate mutation gate and must
+not be used until the owner explicitly authorizes the write step.
+
+```powershell
+npm run build
+$env:NODE_ENV = 'development'
+$env:DATN_DB_ENV = 'development'
+$env:DATN_TEST_PLATFORM_AUTHORITY_ADOPTION = 'TEST_ONLY_ATLAS_DEV'
+$env:MONGODB_URI = '<owner-approved Atlas development URI>'
+npm run dev:platform-authority:test-adoption -- --target-email operator@continuum.test
+```
+
+The adoption use case accepts no caller-supplied target, scope, bundle, or
+permission list. It resolves only the active test actor
+`admin@datn-dev.example.test`, the active test issuer
+`member@datn-dev.example.test`, and the exact active target above. It requires
+the actor, issuer, and target to be distinct; one complete, unexpired ACTIVE
+PLATFORM V1 assignment set with no provenance; no prior authority operation
+for the target; and the lifecycle lock. The permissions come from the
+canonical authorization policy's V2 bundle.
+
+The separate domain repository uses the normal authority operation ledger,
+lifecycle lock, snapshot CAS, MongoDB transaction, and IAM audit collection.
+Under `continuum_iam`, a successful adoption would set
+`provenanceOperationId` to its real operation ID on the seven existing V1
+assignment documents and insert the 18 V2-only assignment documents. It would
+insert one `LEGACY_ADOPT_V2` committed operation containing all 25
+permissions, and one `platform.authority.legacy-adopted` document in
+`continuum_audit.audit_logs_iam`. The audit metadata distinguishes the seven
+adopted rows from the 18 new rows; it does not claim the adoption operation
+was the original V1 grant. These writes, including the lock version change,
+commit or roll back together. No schema migration or new collection is
+required.
+
+The only operational entry point supplied is the standalone command. The
+application service and repository also enforce the TEST_ONLY marker and
+development/test labels if called directly. The command checks the connected
+IAM database name, Atlas replica-set primary/session capability, and performs
+an aborted read-only transaction spanning the fixed IAM and audit databases
+before preflight. The generic authority service remains behind its existing
+default-deny issuer/MFA policy; no public endpoint, production MFA change, or
+self-service grant path is added. This command has not been run as part of this
+implementation task.
