@@ -65,7 +65,7 @@ interface PlatformAuthorityOperationDocument {
   payloadHash: string;
   actorUserId: Types.ObjectId;
   issuerUserId: Types.ObjectId;
-  operationType: PlatformAuthorityOperationType;
+  operationType: StoredPlatformAuthorityOperationType;
   bundleVersion?: PlatformAuthorityBundleVersion;
   sourceOperationId?: string;
   targetUserId: Types.ObjectId;
@@ -77,6 +77,9 @@ interface PlatformAuthorityOperationDocument {
   resultBody: PlatformAuthorityChangeResultBody;
   committedAt: Date;
 }
+
+type StoredPlatformAuthorityOperationType =
+  PlatformAuthorityOperationType | 'LEGACY_ADOPT_V2';
 
 interface PlatformAuthorityChangeLockDocument {
   _id: Types.ObjectId;
@@ -314,7 +317,7 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           operationId: string,
           expectedVersion: PlatformAuthorityBundleVersion,
           sourcePermissions: readonly PlatformPermission[],
-          allowedTypes: readonly PlatformAuthorityOperationType[],
+          allowedTypes: readonly StoredPlatformAuthorityOperationType[],
         ): Promise<PlatformAuthorityOperationDocument> => {
           const source = await this.operations()
             .findOne({ operationId, targetUserId })
@@ -388,11 +391,44 @@ export class MongoPlatformAuthorityChangeRepository implements PlatformAuthority
           );
           if (provenanceIds.size === 1) {
             const provenanceOperationId = [...provenanceIds][0];
+            if (bundleVersion === 'V1') {
+              const candidate = await this.operations()
+                .findOne({ operationId: provenanceOperationId, targetUserId })
+                .session(transactionSession)
+                .lean()
+                .exec();
+              if (
+                candidate?.operationType === 'LEGACY_ADOPT_V2' &&
+                candidate.bundleVersion === 'V2'
+              ) {
+                const adoption = await assertSourceOperation(
+                  provenanceOperationId,
+                  'V2',
+                  PLATFORM_AUTHORITY_BUNDLES.V2,
+                  ['LEGACY_ADOPT_V2'],
+                );
+                if (
+                  bundleRows.some(
+                    (row) =>
+                      !adoption.resultBody.assignments.some(
+                        (assignment) =>
+                          assignment.assignmentId.toLowerCase() ===
+                            row._id.toHexString() &&
+                          assignment.permission === row.permission,
+                      ),
+                  )
+                )
+                  throwLegacyConflict();
+                return;
+              }
+            }
             const source = await assertSourceOperation(
               provenanceOperationId,
               bundleVersion,
               bundlePermissions,
-              ['BOOTSTRAP', 'REGRANT'],
+              bundleVersion === 'V2'
+                ? ['BOOTSTRAP', 'REGRANT', 'LEGACY_ADOPT_V2']
+                : ['BOOTSTRAP', 'REGRANT'],
             );
             const sourceAssignments = new Set(
               source.resultBody.assignments.map(
