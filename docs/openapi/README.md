@@ -38,3 +38,23 @@ describes implemented routes.
 
 The document deliberately has no `servers` entry or credential examples. The
 deployment URI and all credentials remain environment configuration.
+
+## Task D-05 slice (proposed draft)
+
+`task-v1-d05-slice.openapi.json` is the review-first contract for the DATN-97
+seven-field Task slice: internal list-by-Project and detail only, under
+`/internal/tasks`. It is **proposed, not approved**: it follows the Document
+D05-DR1 decision record (doc 25) and may not be implemented as handlers until
+an authority records approval of this OpenAPI. Create is omitted until DR-7(c)(d)
+is decided; there is no mutation, status, assignment, filter, sort, history or
+`Idempotency-Key`. Routes stay disabled by default and behind the deny-by-default
+authorization boundary; the trust profile (DR-3) and scope evidence (DR-8) are
+deferred. The `x-pending-decisions` list in the file names every choice the
+drafter made that still needs explicit approval. Unlike the IAM lists, this slice
+uses cursor pagination (`limit` 1-100, `afterId`, `_id` ascending) per DR-6.
+Errors keep the existing `{code, message, details, requestId}` shape; non-member,
+cross-scope and malformed path ids return 404, and only a malformed `limit` or
+`afterId` returns 422. The current `TaskAuthorizationHttpGuard` returns a boolean
+and drops the denial reason, so the handler pull request must add a
+reason-aware mapping to 401, 404 and 503 before this contract can be met.
+`src/contracts/task-slice-openapi.spec.ts` guards the scope of the draft.
