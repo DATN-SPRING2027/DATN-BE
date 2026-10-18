@@ -77,7 +77,9 @@ export interface PlatformUserSummary {
   id: string;
   email: string;
   fullName: string;
+  avatarUrl: string | null;
   status: UserStatus;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
   memberships: PlatformUserMembershipSummary[];
@@ -103,7 +105,7 @@ export interface PlatformUserListInput {
   page: number;
   pageSize: number;
   search?: string;
-  status?: UserStatus;
+  status?: UserStatus | 'ARCHIVED';
   organizationId?: string;
   roleCode?: RoleCode;
 }
@@ -119,6 +121,25 @@ export interface PlatformUserStatusChangeInput {
   actorUserId: string;
   userId: string;
   status: 'ACTIVE' | 'SUSPENDED';
+  expectedUpdatedAt: Date;
+  reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+  correlationId?: string;
+  now: Date;
+}
+
+export interface PlatformUserProfileChangeInput {
+  actorUserId: string;
+  userId: string;
+  fullName?: string;
+  avatarUrl?: string | null;
+  expectedUpdatedAt: Date;
+  correlationId?: string;
+  now: Date;
+}
+
+export interface PlatformUserArchiveInput {
+  actorUserId: string;
+  userId: string;
   expectedUpdatedAt: Date;
   reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
   correlationId?: string;
@@ -289,6 +310,12 @@ export interface PlatformAdministrationRepository {
   ): Promise<PlatformUserOrganizationsPage | null>;
   changeUserStatus(
     input: PlatformUserStatusChangeInput,
+  ): Promise<PlatformUserDetail | null>;
+  updateUserProfile(
+    input: PlatformUserProfileChangeInput,
+  ): Promise<PlatformUserDetail | null>;
+  archiveUser(
+    input: PlatformUserArchiveInput,
   ): Promise<PlatformUserDetail | null>;
   listProjects(input: PlatformProjectListInput): Promise<PlatformProjectPage>;
   findProject(id: string): Promise<PlatformProjectSummary | null>;

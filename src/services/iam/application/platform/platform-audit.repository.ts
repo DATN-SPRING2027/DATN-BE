@@ -6,6 +6,8 @@ export interface PlatformOperationalAuditRecord {
     | 'platform.authority.granted'
     | 'platform.authority.revoked'
     | 'platform.user.status.changed'
+    | 'platform.user.profile.updated'
+    | 'platform.user.archived'
     | 'platform.session.revoked'
     | 'platform.sessions.revoked_all'
     | 'platform.incident.created'
@@ -64,6 +66,7 @@ export interface PlatformAuditEvent {
       to: string | number | boolean | null;
     }
   >;
+  changedFields?: Array<'fullName' | 'avatarUrl'>;
 }
 
 export interface PlatformAuditQuery {

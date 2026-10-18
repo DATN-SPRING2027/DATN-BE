@@ -298,6 +298,16 @@ describe('PlatformController Platform Operations route contract', () => {
         permission: 'platform.users.account.read',
       },
       {
+        method: RequestMethod.PATCH,
+        path: 'users/:userId',
+        permission: 'platform.users.account.manage',
+      },
+      {
+        method: RequestMethod.POST,
+        path: 'users/:userId/archive',
+        permission: 'platform.users.account.manage',
+      },
+      {
         method: RequestMethod.GET,
         path: 'users/:userId/organizations',
         permission: 'platform.users.account.read',

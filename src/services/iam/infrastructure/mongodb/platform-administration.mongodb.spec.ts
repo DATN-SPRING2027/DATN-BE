@@ -813,6 +813,445 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     ).rejects.toMatchObject({ response: { code: 'LAST_ELIGIBLE_ADMIN' } });
   });
 
+  it('rejects a stale status version even when the requested status already matches', async () => {
+    await expect(
+      administration.changeUserStatus({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        status: 'ACTIVE',
+        expectedUpdatedAt: new Date('2026-10-02T00:00:00.000Z'),
+        reasonCode: 'ACCESS_REVIEW',
+        now: new Date('2026-10-16T12:00:00.000Z'),
+      }),
+    ).rejects.toMatchObject({ response: { code: 'USER_VERSION_STALE' } });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('reactivates only suspended users without restoring revoked sessions', async () => {
+    const suspendedAt = new Date('2026-10-15T12:00:00.000Z');
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    await connection
+      .collection('users')
+      .updateOne(
+        { _id: memberId },
+        { $set: { status: 'SUSPENDED', updatedAt: suspendedAt } },
+      );
+    await connection.collection('refresh_sessions').insertOne({
+      userId: memberId,
+      context: 'ORGANIZATION',
+      organizationId,
+      tokenHash: 'reactivation-revoked-session-secret',
+      isRevoked: true,
+      expiresAt: new Date('2026-10-20T00:00:00.000Z'),
+      createdAt: suspendedAt,
+      updatedAt: suspendedAt,
+    });
+
+    const result = await administration.changeUserStatus({
+      actorUserId: actorId.toHexString(),
+      userId: memberId.toHexString(),
+      status: 'ACTIVE',
+      expectedUpdatedAt: suspendedAt,
+      reasonCode: 'ACCESS_REVIEW',
+      correlationId: 'user-reactivation-1',
+      now,
+    });
+
+    expect(result).toMatchObject({
+      id: memberId.toHexString(),
+      status: 'ACTIVE',
+      updatedAt: now.toISOString(),
+    });
+    expect(
+      await connection
+        .collection('refresh_sessions')
+        .findOne({ userId: memberId }),
+    ).toMatchObject({ isRevoked: true });
+    expect(
+      await audit().findOne({ action: 'platform.user.status.changed' }),
+    ).toMatchObject({
+      previousStatus: 'SUSPENDED',
+      newStatus: 'ACTIVE',
+      requestId: 'user-reactivation-1',
+      scope: 'PLATFORM',
+    });
+  });
+
+  it('rejects self status changes and pending-invite reactivation without writes', async () => {
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    await expect(
+      administration.changeUserStatus({
+        actorUserId: actorId.toHexString(),
+        userId: actorId.toHexString(),
+        status: 'SUSPENDED',
+        expectedUpdatedAt: new Date('2026-10-01T00:00:00.000Z'),
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'SELF_STATUS_CHANGE_FORBIDDEN' },
+    });
+
+    const pendingInviteId = new Types.ObjectId();
+    const pendingInviteUpdatedAt = new Date('2026-10-04T00:00:00.000Z');
+    await connection.collection('users').insertOne({
+      _id: pendingInviteId,
+      email: 'pending-invite@example.test',
+      fullName: 'Pending Invite',
+      status: 'PENDING_INVITE',
+      createdAt: pendingInviteUpdatedAt,
+      updatedAt: pendingInviteUpdatedAt,
+    });
+    await expect(
+      administration.changeUserStatus({
+        actorUserId: actorId.toHexString(),
+        userId: pendingInviteId.toHexString(),
+        status: 'ACTIVE',
+        expectedUpdatedAt: pendingInviteUpdatedAt,
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'USER_STATUS_TRANSITION_INVALID' },
+    });
+
+    expect(
+      await connection.collection('users').findOne({ _id: actorId }),
+    ).toMatchObject({ status: 'ACTIVE' });
+    expect(
+      await connection.collection('users').findOne({ _id: pendingInviteId }),
+    ).toMatchObject({ status: 'PENDING_INVITE' });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('edits only allowed Platform user profile fields with CAS and atomic safe audit', async () => {
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    const result = await administration.updateUserProfile({
+      actorUserId: actorId.toHexString(),
+      userId: memberId.toHexString(),
+      fullName: 'Updated Member',
+      avatarUrl: 'https://cdn.example.test/member.png',
+      expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      correlationId: 'profile-edit-1',
+      now,
+    });
+
+    expect(result).toMatchObject({
+      id: memberId.toHexString(),
+      fullName: 'Updated Member',
+      avatarUrl: 'https://cdn.example.test/member.png',
+      status: 'ACTIVE',
+      updatedAt: now.toISOString(),
+    });
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({
+      email: 'member@example.test',
+      fullName: 'Updated Member',
+      avatarUrl: 'https://cdn.example.test/member.png',
+      passwordHash: 'member-password-secret',
+    });
+    const logs = await audit().find({}).toArray();
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        action: 'platform.user.profile.updated',
+        targetResource: 'USER',
+        targetResourceId: memberId.toHexString(),
+        actorUserId: actorId.toHexString(),
+        scope: 'PLATFORM',
+        requestId: 'profile-edit-1',
+        changedFields: ['avatarUrl', 'fullName'],
+      }),
+    );
+    expect(JSON.stringify(logs)).not.toContain('member-password-secret');
+
+    const safeEvents = await new MongoPlatformAuditRepository(
+      connection,
+    ).listEvents({
+      page: 1,
+      pageSize: 10,
+      action: 'platform.user.profile.updated',
+      resourceType: 'USER',
+      resourceId: memberId.toHexString(),
+    });
+    expect(safeEvents.data).toEqual([
+      expect.objectContaining({
+        action: 'platform.user.profile.updated',
+        resourceType: 'USER',
+        resourceId: memberId.toHexString(),
+        changedFields: ['avatarUrl', 'fullName'],
+      }),
+    ]);
+    expect(JSON.stringify(safeEvents)).not.toContain('password');
+
+    await expect(
+      administration.updateUserProfile({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        fullName: 'Stale overwrite',
+        expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+        now,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'USER_VERSION_STALE' } });
+  });
+
+  it('archives a user without deleting the user or memberships and revokes sessions atomically', async () => {
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    await connection.collection('refresh_sessions').insertOne({
+      userId: memberId,
+      context: 'ORGANIZATION',
+      organizationId,
+      tokenHash: 'archive-refresh-hash-secret',
+      isRevoked: false,
+      expiresAt: new Date('2026-10-20T00:00:00.000Z'),
+      createdAt: now,
+      updatedAt: now,
+    });
+    const userCount = await connection.collection('users').countDocuments();
+    const membershipCount = await connection
+      .collection('organization_memberships')
+      .countDocuments({ userId: memberId });
+
+    const result = await administration.archiveUser({
+      actorUserId: actorId.toHexString(),
+      userId: memberId.toHexString(),
+      expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      reasonCode: 'ACCESS_REVIEW',
+      correlationId: 'archive-user-1',
+      now,
+    });
+
+    expect(result).toMatchObject({
+      id: memberId.toHexString(),
+      status: 'SUSPENDED',
+      archivedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+    expect(await connection.collection('users').countDocuments()).toBe(
+      userCount,
+    );
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({
+      status: 'SUSPENDED',
+      archivedAt: now,
+      archivedBy: actorId,
+    });
+    expect(
+      await connection
+        .collection('organization_memberships')
+        .countDocuments({ userId: memberId }),
+    ).toBe(membershipCount);
+    expect(
+      await connection
+        .collection('refresh_sessions')
+        .findOne({ userId: memberId }),
+    ).toMatchObject({ isRevoked: true });
+    expect(await audit().find({}).toArray()).toContainEqual(
+      expect.objectContaining({
+        action: 'platform.user.archived',
+        targetResource: 'USER',
+        targetResourceId: memberId.toHexString(),
+        actorUserId: actorId.toHexString(),
+        scope: 'PLATFORM',
+        requestId: 'archive-user-1',
+        reasonCode: 'ACCESS_REVIEW',
+      }),
+    );
+    expect(JSON.stringify(await audit().find({}).toArray())).not.toContain(
+      'archive-refresh-hash-secret',
+    );
+
+    const archived = await administration.listUsers({
+      page: 1,
+      pageSize: 10,
+      status: 'ARCHIVED',
+    });
+    expect(archived.data.map(({ id }) => id)).toContain(memberId.toHexString());
+    const suspended = await administration.listUsers({
+      page: 1,
+      pageSize: 10,
+      status: 'SUSPENDED',
+    });
+    expect(suspended.data.map(({ id }) => id)).not.toContain(
+      memberId.toHexString(),
+    );
+    await expect(
+      administration.archiveUser({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        expectedUpdatedAt: now,
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'USER_ALREADY_ARCHIVED' } });
+  });
+
+  it('protects self and the last Organization ADMIN from archival', async () => {
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    await expect(
+      administration.archiveUser({
+        actorUserId: actorId.toHexString(),
+        userId: actorId.toHexString(),
+        expectedUpdatedAt: new Date('2026-10-01T00:00:00.000Z'),
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'SELF_ARCHIVE_FORBIDDEN' } });
+    await expect(
+      administration.archiveUser({
+        actorUserId: actorId.toHexString(),
+        userId: adminId.toHexString(),
+        expectedUpdatedAt: new Date('2026-10-02T00:00:00.000Z'),
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'LAST_ELIGIBLE_ADMIN' } });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('serializes concurrent profile writes with one successful CAS and one conflict', async () => {
+    const expectedUpdatedAt = new Date('2026-10-03T00:00:00.000Z');
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    const outcomes = await Promise.allSettled([
+      administration.updateUserProfile({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        fullName: 'Concurrent edit A',
+        expectedUpdatedAt,
+        correlationId: 'profile-race-a',
+        now,
+      }),
+      administration.updateUserProfile({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        fullName: 'Concurrent edit B',
+        expectedUpdatedAt,
+        correlationId: 'profile-race-b',
+        now,
+      }),
+    ]);
+
+    expect(
+      outcomes.filter(({ status }) => status === 'fulfilled'),
+    ).toHaveLength(1);
+    const rejected = outcomes.find(({ status }) => status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: { response: { code: 'USER_VERSION_STALE' } },
+    });
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({
+      fullName: expect.stringMatching(/^Concurrent edit [AB]$/),
+    });
+    expect(
+      await audit().countDocuments({ action: 'platform.user.profile.updated' }),
+    ).toBe(1);
+  });
+
+  it('denies profile edits and archival without a current Platform assignment', async () => {
+    const unauthorizedActor = new Types.ObjectId();
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    await expect(
+      administration.updateUserProfile({
+        actorUserId: unauthorizedActor.toHexString(),
+        userId: memberId.toHexString(),
+        fullName: 'Unauthorized edit',
+        expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+        now,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      administration.archiveUser({
+        actorUserId: unauthorizedActor.toHexString(),
+        userId: memberId.toHexString(),
+        expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({
+      fullName: 'Organization Member',
+      status: 'ACTIVE',
+    });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('rolls back user profile edits when their required audit write fails', async () => {
+    const writer = jest
+      .spyOn(
+        administration as unknown as {
+          writePlatformUserProfileAudit: (...args: unknown[]) => Promise<void>;
+        },
+        'writePlatformUserProfileAudit',
+      )
+      .mockRejectedValueOnce(new Error('audit unavailable'));
+    await expect(
+      administration.updateUserProfile({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        fullName: 'Should roll back',
+        expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+        now: new Date('2026-10-16T12:00:00.000Z'),
+      }),
+    ).rejects.toMatchObject({ status: 500 });
+    writer.mockRestore();
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({ fullName: 'Organization Member' });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('rolls back archival and session revocation when its required audit write fails', async () => {
+    const now = new Date('2026-10-16T12:00:00.000Z');
+    await connection.collection('refresh_sessions').insertOne({
+      userId: memberId,
+      context: 'ORGANIZATION',
+      organizationId,
+      tokenHash: 'archive-failure-refresh-hash',
+      isRevoked: false,
+      expiresAt: new Date('2026-10-20T00:00:00.000Z'),
+      createdAt: now,
+      updatedAt: now,
+    });
+    const writer = jest
+      .spyOn(
+        administration as unknown as {
+          writePlatformUserArchiveAudit: (...args: unknown[]) => Promise<void>;
+        },
+        'writePlatformUserArchiveAudit',
+      )
+      .mockRejectedValueOnce(new Error('audit unavailable'));
+    await expect(
+      administration.archiveUser({
+        actorUserId: actorId.toHexString(),
+        userId: memberId.toHexString(),
+        expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+        reasonCode: 'ACCESS_REVIEW',
+        now,
+      }),
+    ).rejects.toMatchObject({ status: 500 });
+    writer.mockRestore();
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({ status: 'ACTIVE' });
+    expect(
+      await connection
+        .collection('users')
+        .findOne({ _id: memberId, archivedAt: { $exists: true } }),
+    ).toBeNull();
+    expect(
+      await connection
+        .collection('refresh_sessions')
+        .findOne({ userId: memberId }),
+    ).toMatchObject({ isRevoked: false });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
   it('lists safe refresh-session families and revokes one family with CAS and atomic audit', async () => {
     const firstSessionId = randomUUID();
     const otherSessionId = randomUUID();

@@ -65,12 +65,11 @@ import type {
   PlatformMembershipListInput,
   PlatformProjectListInput,
   PlatformUserListInput,
+  PlatformUserProfileChangeInput,
+  PlatformUserArchiveInput,
   PlatformSessionListInput,
 } from '../application/platform/platform-administration.repository';
-import type {
-  RoleCode,
-  UserStatus,
-} from '../application/users/user-directory.repository';
+import type { RoleCode } from '../application/users/user-directory.repository';
 import {
   ORGANIZATION_MEMBERSHIP_STATUSES,
   type OrganizationMembershipStatus,
@@ -340,7 +339,9 @@ function parsePlatformUsersQuery(
   if (
     query.status !== undefined &&
     (typeof query.status !== 'string' ||
-      !['ACTIVE', 'SUSPENDED', 'PENDING_INVITE'].includes(query.status))
+      !['ACTIVE', 'SUSPENDED', 'PENDING_INVITE', 'ARCHIVED'].includes(
+        query.status,
+      ))
   )
     invalid();
   if (
@@ -362,7 +363,7 @@ function parsePlatformUsersQuery(
       ? { search: query.search.trim() }
       : {}),
     ...(typeof query.status === 'string'
-      ? { status: query.status as UserStatus }
+      ? { status: query.status as PlatformUserListInput['status'] }
       : {}),
     ...(typeof query.organizationId === 'string'
       ? { organizationId: query.organizationId }
@@ -639,6 +640,87 @@ function parsePlatformUserStatusChange(body: unknown): {
     return invalid();
   return {
     status: body.status as 'ACTIVE' | 'SUSPENDED',
+    expectedUpdatedAt,
+    reasonCode: body.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+  };
+}
+
+function parsePlatformUserProfileChange(
+  body: unknown,
+): Pick<
+  PlatformUserProfileChangeInput,
+  'fullName' | 'avatarUrl' | 'expectedUpdatedAt'
+> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    invalid();
+  const record = body as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length < 2 ||
+    keys.some(
+      (key) => !['fullName', 'avatarUrl', 'expectedUpdatedAt'].includes(key),
+    ) ||
+    !('expectedUpdatedAt' in record) ||
+    (!('fullName' in record) && !('avatarUrl' in record)) ||
+    ('fullName' in record &&
+      (typeof record.fullName !== 'string' ||
+        record.fullName.trim().length < 1 ||
+        record.fullName.trim().length > 200))
+  )
+    invalid();
+  if (typeof record.expectedUpdatedAt !== 'string') invalid();
+  const expectedUpdatedAt = new Date(record.expectedUpdatedAt);
+  if (
+    !Number.isFinite(expectedUpdatedAt.getTime()) ||
+    expectedUpdatedAt.toISOString() !== record.expectedUpdatedAt
+  )
+    invalid();
+
+  let avatarUrl: string | null | undefined;
+  if ('avatarUrl' in record) {
+    if (record.avatarUrl === null) avatarUrl = null;
+    else if (typeof record.avatarUrl === 'string') {
+      if (record.avatarUrl.length > 2000) invalid();
+      try {
+        const url = new URL(record.avatarUrl);
+        if (!['http:', 'https:'].includes(url.protocol)) invalid();
+      } catch {
+        invalid();
+      }
+      avatarUrl = record.avatarUrl;
+    } else invalid();
+  }
+
+  return {
+    ...(typeof record.fullName === 'string'
+      ? { fullName: record.fullName.trim() }
+      : {}),
+    ...(avatarUrl === undefined ? {} : { avatarUrl }),
+    expectedUpdatedAt,
+  };
+}
+
+function parsePlatformUserArchive(
+  body: unknown,
+): Pick<PlatformUserArchiveInput, 'expectedUpdatedAt' | 'reasonCode'> {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 2 ||
+    !('expectedUpdatedAt' in body) ||
+    !('reasonCode' in body) ||
+    typeof body.expectedUpdatedAt !== 'string' ||
+    !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(String(body.reasonCode))
+  )
+    invalid();
+  const expectedUpdatedAt = new Date(body.expectedUpdatedAt);
+  if (
+    !Number.isFinite(expectedUpdatedAt.getTime()) ||
+    expectedUpdatedAt.toISOString() !== body.expectedUpdatedAt
+  )
+    invalid();
+  return {
     expectedUpdatedAt,
     reasonCode: body.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
   };
@@ -1652,6 +1734,76 @@ export class PlatformController {
   ) {
     response.setHeader('Cache-Control', 'no-store');
     return this.administration.findUser(userId);
+  }
+
+  @Patch('users/:userId')
+  @RequirePlatformPermission('platform.users.account.manage')
+  async updateUserProfile(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    if (
+      correlationId !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)
+    )
+      invalid();
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    return this.administration.updateUserProfile({
+      actorUserId: actor.id,
+      userId,
+      ...parsePlatformUserProfileChange(body),
+      ...(correlationId ? { correlationId } : {}),
+      now: new Date(),
+    });
+  }
+
+  @Post('users/:userId/archive')
+  @RequirePlatformPermission('platform.users.account.manage')
+  async archiveUser(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    if (
+      correlationId !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)
+    )
+      invalid();
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    return this.administration.archiveUser({
+      actorUserId: actor.id,
+      userId,
+      ...parsePlatformUserArchive(body),
+      ...(correlationId ? { correlationId } : {}),
+      now: new Date(),
+    });
   }
 
   @Patch('users/:userId/status')

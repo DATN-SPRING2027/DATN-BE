@@ -2,15 +2,21 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import { AppModule } from '../src/app.module';
 import { configureApplication } from '../src/bootstrap';
 
 describe('default AppModule HTTP entrypoint', () => {
   let app: INestApplication;
   const previousSecret = process.env.JWT_SECRET;
+  const previousInfraEnabled = process.env.INFRA_ENABLED;
 
   beforeAll(async () => {
     process.env.JWT_SECRET = 'unit-test-secret-at-least-32-characters';
+    // This suite checks HTTP route wiring, so keep external infrastructure off.
+    process.env.INFRA_ENABLED = 'false';
+    const { AppModule } =
+      jest.requireActual<typeof import('../src/app.module')>(
+        '../src/app.module',
+      );
     const module = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -23,6 +29,8 @@ describe('default AppModule HTTP entrypoint', () => {
     await app?.close();
     if (previousSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = previousSecret;
+    if (previousInfraEnabled === undefined) delete process.env.INFRA_ENABLED;
+    else process.env.INFRA_ENABLED = previousInfraEnabled;
   });
 
   it('mounts Auth and User routes with shared HTTP middleware', async () => {
