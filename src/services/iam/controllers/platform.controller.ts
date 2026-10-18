@@ -67,6 +67,7 @@ import type {
   PlatformUserListInput,
   PlatformUserProfileChangeInput,
   PlatformUserArchiveInput,
+  PlatformUserRestoreInput,
   PlatformSessionListInput,
 } from '../application/platform/platform-administration.repository';
 import type { RoleCode } from '../application/users/user-directory.repository';
@@ -724,6 +725,29 @@ function parsePlatformUserArchive(
     expectedUpdatedAt,
     reasonCode: body.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
   };
+}
+
+function parsePlatformUserRestore(
+  body: unknown,
+): Pick<PlatformUserRestoreInput, 'expectedUpdatedAt' | 'reasonCode'> {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 2 ||
+    !('expectedUpdatedAt' in body) ||
+    !('reasonCode' in body) ||
+    typeof body.expectedUpdatedAt !== 'string' ||
+    body.reasonCode !== 'ACCESS_REVIEW'
+  )
+    invalid();
+  const expectedUpdatedAt = new Date(body.expectedUpdatedAt);
+  if (
+    !Number.isFinite(expectedUpdatedAt.getTime()) ||
+    expectedUpdatedAt.toISOString() !== body.expectedUpdatedAt
+  )
+    invalid();
+  return { expectedUpdatedAt, reasonCode: 'ACCESS_REVIEW' };
 }
 
 function parsePlatformSuspend(body: unknown): {
@@ -1801,6 +1825,42 @@ export class PlatformController {
       actorUserId: actor.id,
       userId,
       ...parsePlatformUserArchive(body),
+      ...(correlationId ? { correlationId } : {}),
+      now: new Date(),
+    });
+  }
+
+  @Post('users/:userId/restore')
+  @HttpCode(200)
+  @RequirePlatformPermission('platform.users.account.manage')
+  async restoreUser(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    if (
+      correlationId !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)
+    )
+      invalid();
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    return this.administration.restoreUser({
+      actorUserId: actor.id,
+      userId,
+      ...parsePlatformUserRestore(body),
       ...(correlationId ? { correlationId } : {}),
       now: new Date(),
     });

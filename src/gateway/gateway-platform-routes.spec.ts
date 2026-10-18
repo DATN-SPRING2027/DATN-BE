@@ -88,6 +88,7 @@ describe('Gateway Platform route forwarding', () => {
       [RequestMethod.PATCH, 'iam/platform/users/:userId'],
       [RequestMethod.PATCH, 'iam/platform/users/:userId/status'],
       [RequestMethod.POST, 'iam/platform/users/:userId/archive'],
+      [RequestMethod.POST, 'iam/platform/users/:userId/restore'],
       [RequestMethod.POST, 'iam/platform/users/lookup'],
       [RequestMethod.GET, 'iam/platform/diagnostics/traces/:requestId'],
       [RequestMethod.GET, 'iam/platform/incidents'],

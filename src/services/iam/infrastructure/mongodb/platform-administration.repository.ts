@@ -34,6 +34,7 @@ import type {
   PlatformUserStatusChangeInput,
   PlatformUserProfileChangeInput,
   PlatformUserArchiveInput,
+  PlatformUserRestoreInput,
   PlatformUserLookupResult,
   PlatformUserSummary,
   PlatformProjectListInput,
@@ -1540,6 +1541,89 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     return this.findUser(input.userId);
   }
 
+  async restoreUser(
+    input: PlatformUserRestoreInput,
+  ): Promise<PlatformUserDetail | null> {
+    if (
+      !validId(input.actorUserId) ||
+      !validId(input.userId) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      input.reasonCode !== 'ACCESS_REVIEW' ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      unavailable();
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    const userId = new Types.ObjectId(input.userId);
+    if (actorUserId.equals(userId)) {
+      throw new ForbiddenException({
+        code: 'SELF_RESTORE_FORBIDDEN',
+        message: 'A Platform Operator cannot restore their own account.',
+      });
+    }
+    const connection = this.connection;
+    if (!connection) unavailable();
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.requirePlatformMutationAuthority(
+          actorUserId,
+          'platform.users.account.manage',
+          input.now,
+          session,
+        );
+        const user = await this.platformUsers()
+          .findById(userId)
+          .session(session)
+          .lean()
+          .exec();
+        if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
+        if (!(user.updatedAt instanceof Date))
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (user.updatedAt.getTime() !== input.expectedUpdatedAt.getTime())
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        if (!(user.archivedAt instanceof Date))
+          throw new ConflictException({ code: 'USER_NOT_ARCHIVED' });
+        if (user.status !== 'SUSPENDED')
+          throw new ConflictException({ code: 'USER_RESTORE_STATE_INVALID' });
+
+        const update = await this.platformUsers()
+          .updateOne(
+            {
+              _id: userId,
+              status: 'SUSPENDED',
+              updatedAt: input.expectedUpdatedAt,
+              archivedAt: user.archivedAt,
+            },
+            {
+              $unset: { archivedAt: 1, archivedBy: 1 },
+              $set: {
+                updatedAt: new Date(
+                  Math.max(input.now.getTime(), user.updatedAt.getTime() + 1),
+                ),
+              },
+              $inc: { mutationFence: 1 },
+            },
+            { session, timestamps: false },
+          )
+          .exec();
+        if (update.matchedCount !== 1)
+          throw new ConflictException({ code: 'USER_VERSION_STALE' });
+        await this.writePlatformUserRestoreAudit(input, session);
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException({
+        code: 'PLATFORM_USER_MUTATION_FAILED',
+        message: 'The Platform user restore could not be committed.',
+      });
+    } finally {
+      await session.endSession();
+    }
+    return this.findUser(input.userId);
+  }
+
   private async findUserMutationFence(
     userId: Types.ObjectId,
     session?: ClientSession,
@@ -1919,6 +2003,34 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           result: 'SUCCESS',
           reasonCode: input.reasonCode,
           previousStatus,
+          newStatus: 'SUSPENDED',
+          ...(input.correlationId ? { requestId: input.correlationId } : {}),
+          occurredAt: input.now,
+        },
+        { session },
+      );
+  }
+
+  private async writePlatformUserRestoreAudit(
+    input: PlatformUserRestoreInput,
+    session: ClientSession,
+  ): Promise<void> {
+    const connection = this.connection;
+    if (!connection) unavailable();
+    await connection
+      .useDb(this.auditDatabaseName, { useCache: true })
+      .collection(IAM_AUDIT_COLLECTION_NAME)
+      .insertOne(
+        {
+          eventId: randomUUID(),
+          action: 'platform.user.restored',
+          targetResource: 'USER',
+          targetResourceId: input.userId,
+          actorUserId: input.actorUserId,
+          scope: 'PLATFORM',
+          result: 'SUCCESS',
+          reasonCode: input.reasonCode,
+          previousStatus: 'SUSPENDED',
           newStatus: 'SUSPENDED',
           ...(input.correlationId ? { requestId: input.correlationId } : {}),
           occurredAt: input.now,

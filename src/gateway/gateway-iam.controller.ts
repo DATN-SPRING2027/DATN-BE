@@ -460,6 +460,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('iam/platform/users/:userId/restore')
+  restorePlatformUser(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Patch('iam/platform/users/:userId/status')
   updatePlatformUserStatus(
     @Req() request: Request,

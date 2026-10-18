@@ -3807,6 +3807,63 @@
         }
       }
     },
+    "/api/v1/iam/platform/users/{userId}/restore": {
+      "post": {
+        "tags": ["Platform", "Users"],
+        "summary": "Restore a safely archived Platform user",
+        "description": "Requires platform.users.account.manage at PLATFORM scope. Clears archivedAt and archivedBy so the user returns to the directory as SUSPENDED; Organization memberships and already revoked sessions remain unchanged. Reactivation is a separate status change. Current Platform authority and actor are rechecked transactionally. expectedUpdatedAt is a compare-and-set precondition.",
+        "operationId": "restorePlatformUser",
+        "x-platform-permission": "platform.users.account.manage",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformUserRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restored user detail with status still SUSPENDED and archivedAt null.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PlatformUserDetail" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
     "/api/v1/iam/platform/users/{userId}/organizations": {
       "get": {
         "tags": ["Platform", "Users"],
@@ -6525,6 +6582,15 @@
           }
         }
       },
+      "PlatformUserRestoreRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedUpdatedAt", "reasonCode"],
+        "properties": {
+          "expectedUpdatedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "reasonCode": { "type": "string", "enum": ["ACCESS_REVIEW"] }
+        }
+      },
       "PlatformUserMembershipSummary": {
         "type": "object",
         "additionalProperties": false,
@@ -6929,6 +6995,7 @@
               "platform.user.status.changed",
               "platform.user.profile.updated",
               "platform.user.archived",
+              "platform.user.restored",
               "platform.session.revoked",
               "platform.sessions.revoked_all",
               "platform.organization.metadata.changed",
@@ -6971,6 +7038,7 @@
           "platform.user.status.changed",
           "platform.user.profile.updated",
           "platform.user.archived",
+          "platform.user.restored",
           "platform.session.revoked",
           "platform.sessions.revoked_all",
           "ORGANIZATION_MEMBERSHIP_SUSPENDED",

@@ -49,6 +49,7 @@ const PLATFORM_OPERATIONAL_ACTIONS = [
   'platform.user.status.changed',
   'platform.user.profile.updated',
   'platform.user.archived',
+  'platform.user.restored',
   'platform.session.revoked',
   'platform.sessions.revoked_all',
   'ORGANIZATION_MEMBERSHIP_SUSPENDED',
@@ -358,7 +359,8 @@ export class MongoPlatformAuditRepository implements PlatformAuditRepository {
     if (
       action === 'platform.user.status.changed' ||
       action === 'platform.user.profile.updated' ||
-      action === 'platform.user.archived'
+      action === 'platform.user.archived' ||
+      action === 'platform.user.restored'
     )
       return 'USER';
     if (action === 'platform.session.revoked') return 'SESSION';
