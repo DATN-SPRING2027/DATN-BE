@@ -146,6 +146,15 @@ export interface PlatformUserArchiveInput {
   now: Date;
 }
 
+export interface PlatformUserRestoreInput {
+  actorUserId: string;
+  userId: string;
+  expectedUpdatedAt: Date;
+  reasonCode: 'ACCESS_REVIEW';
+  correlationId?: string;
+  now: Date;
+}
+
 export interface PlatformUserPage {
   data: PlatformUserSummary[];
   pagination: PlatformOrganizationPage['pagination'];
@@ -316,6 +325,9 @@ export interface PlatformAdministrationRepository {
   ): Promise<PlatformUserDetail | null>;
   archiveUser(
     input: PlatformUserArchiveInput,
+  ): Promise<PlatformUserDetail | null>;
+  restoreUser(
+    input: PlatformUserRestoreInput,
   ): Promise<PlatformUserDetail | null>;
   listProjects(input: PlatformProjectListInput): Promise<PlatformProjectPage>;
   findProject(id: string): Promise<PlatformProjectSummary | null>;

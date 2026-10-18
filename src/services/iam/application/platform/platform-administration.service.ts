@@ -24,6 +24,7 @@ import {
   type PlatformUserStatusChangeInput,
   type PlatformUserProfileChangeInput,
   type PlatformUserArchiveInput,
+  type PlatformUserRestoreInput,
   type PlatformProjectListInput,
   type PlatformProjectMembershipListInput,
   type PlatformProjectMetadataChangeInput,
@@ -173,6 +174,22 @@ export class PlatformAdministrationService {
     )
       validationFailed();
     const user = await this.repository.archiveUser(input);
+    if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
+    return user;
+  }
+
+  async restoreUser(input: PlatformUserRestoreInput) {
+    if (
+      !resourceIdPattern.test(input.actorUserId) ||
+      !resourceIdPattern.test(input.userId) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      input.reasonCode !== 'ACCESS_REVIEW' ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      validationFailed();
+    const user = await this.repository.restoreUser(input);
     if (!user) throw new NotFoundException({ code: 'USER_NOT_FOUND' });
     return user;
   }

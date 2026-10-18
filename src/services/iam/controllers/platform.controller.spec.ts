@@ -308,6 +308,11 @@ describe('PlatformController Platform Operations route contract', () => {
         permission: 'platform.users.account.manage',
       },
       {
+        method: RequestMethod.POST,
+        path: 'users/:userId/restore',
+        permission: 'platform.users.account.manage',
+      },
+      {
         method: RequestMethod.GET,
         path: 'users/:userId/organizations',
         permission: 'platform.users.account.read',
