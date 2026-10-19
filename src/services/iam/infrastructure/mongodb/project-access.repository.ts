@@ -12,6 +12,7 @@ import type { ClientSession, Connection, Model } from 'mongoose';
 import type {
   ProjectAccessRepository,
   ProjectMembershipRecord,
+  ProjectMemberCandidateRecord,
   ProjectMembershipListQuery,
 } from '../../application/projects/project-access.repository';
 import type {
@@ -70,6 +71,9 @@ interface RoleDocument {
 
 interface UserDocument {
   _id: Types.ObjectId;
+  email?: string;
+  fullName?: string;
+  avatarUrl?: string | null;
   status: string;
 }
 
@@ -186,7 +190,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     organizationId: string,
     projectId: string,
     query: ProjectMembershipListQuery,
-  ) {
+  ): Promise<{ data: ProjectMembershipRecord[]; totalItems: number }> {
     this.assertIds(organizationId, projectId);
     await this.requireActiveProject(organizationId, projectId);
     const filter = {
@@ -205,10 +209,112 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
         .exec(),
       memberships.countDocuments(filter).exec(),
     ]);
+
+    const userIds = [...new Set(rows.map((row) => row.userId))];
+    const userMap = new Map<
+      string,
+      {
+        id: string;
+        fullName?: string;
+        email: string;
+        avatarUrl?: string | null;
+      }
+    >();
+    if (userIds.length > 0) {
+      const users = await this.model<UserDocument>('users')
+        .find({ _id: { $in: userIds } })
+        .select({ _id: 1, email: 1, fullName: 1, avatarUrl: 1 })
+        .lean()
+        .exec();
+      for (const u of users) {
+        userMap.set(String(u._id), {
+          id: String(u._id),
+          email: u.email ?? '',
+          ...(u.fullName ? { fullName: u.fullName } : {}),
+          avatarUrl: u.avatarUrl ?? null,
+        });
+      }
+    }
+
     return {
-      data: rows.map((row) => this.membershipRecord(row)),
+      data: rows.map((row) =>
+        this.membershipRecord(row, userMap.get(String(row.userId))),
+      ),
       totalItems,
     };
+  }
+
+  async listMemberCandidates(
+    organizationId: string,
+    projectId: string,
+    search?: string,
+  ): Promise<ProjectMemberCandidateRecord[]> {
+    this.assertIds(organizationId, projectId);
+    await this.requireActiveProject(organizationId, projectId);
+
+    const orgMemberships = await this.model<OrganizationMembershipDocument>(
+      'organization_memberships',
+    )
+      .find({
+        organizationId: new Types.ObjectId(organizationId),
+        status: 'ACTIVE',
+      })
+      .select({ userId: 1 })
+      .lean()
+      .exec();
+
+    const candidateUserIds = orgMemberships.map((m) => m.userId);
+    if (candidateUserIds.length === 0) return [];
+
+    const userQuery: Record<string, unknown> = {
+      _id: { $in: candidateUserIds },
+      status: 'ACTIVE',
+    };
+
+    if (search && search.trim().length > 0) {
+      const sanitized = search.trim();
+      const regex = new RegExp(
+        sanitized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        'i',
+      );
+      userQuery.$or = [{ email: regex }, { fullName: regex }];
+    }
+
+    const users = await this.model<UserDocument>('users')
+      .find(userQuery)
+      .select({ _id: 1, email: 1, fullName: 1, avatarUrl: 1 })
+      .limit(50)
+      .lean()
+      .exec();
+
+    if (users.length === 0) return [];
+
+    const userIds = users.map((u) => u._id);
+    const existingProjectMemberships = await this.model<MembershipDocument>(
+      'project_memberships',
+    )
+      .find({
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        userId: { $in: userIds },
+        status: 'ACTIVE',
+      })
+      .select({ userId: 1 })
+      .lean()
+      .exec();
+
+    const projectMemberSet = new Set(
+      existingProjectMemberships.map((m) => String(m.userId)),
+    );
+
+    return users.map((u) => ({
+      userId: String(u._id),
+      email: u.email ?? '',
+      fullName: u.fullName ?? '',
+      avatarUrl: u.avatarUrl ?? null,
+      organizationMembershipStatus: 'ACTIVE',
+      isProjectMember: projectMemberSet.has(String(u._id)),
+    }));
   }
 
   async addMember(
@@ -1319,7 +1425,15 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     };
   }
 
-  private membershipRecord(row: MembershipDocument): ProjectMembershipRecord {
+  private membershipRecord(
+    row: MembershipDocument,
+    user?: {
+      id: string;
+      fullName?: string;
+      email: string;
+      avatarUrl?: string | null;
+    } | null,
+  ): ProjectMembershipRecord {
     return {
       id: String(row._id),
       organizationId: String(row.organizationId),
@@ -1327,6 +1441,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       userId: String(row.userId),
       status: row.status,
       joinedAt: row.joinedAt.toISOString(),
+      ...(user !== undefined ? { user } : {}),
     };
   }
 

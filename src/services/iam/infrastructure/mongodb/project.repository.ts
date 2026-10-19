@@ -85,19 +85,27 @@ export class MongoProjectRepository implements ProjectRepository {
     try {
       let created: ProjectRecord | undefined;
       await session.withTransaction(async () => {
-        const memberRole = await this.model<RoleDocument>('roles')
-          .findOne({ code: 'MEMBER' })
+        const leaderRole = await this.model<RoleDocument>('roles')
+          .findOne({ code: 'TEAM_LEADER' })
           .session(session)
           .lean()
           .exec();
+        const requiredLeaderPermissions = [
+          'project.read',
+          'project.members.list',
+          'project.members.add',
+          'project.members.remove',
+        ];
         if (
-          !memberRole ||
-          memberRole.code !== 'MEMBER' ||
-          !Array.isArray(memberRole.permissions) ||
-          !memberRole.permissions.includes('project.read')
+          !leaderRole ||
+          leaderRole.code !== 'TEAM_LEADER' ||
+          !Array.isArray(leaderRole.permissions) ||
+          !requiredLeaderPermissions.every((permission) =>
+            leaderRole.permissions.includes(permission),
+          )
         )
           throw new Error(
-            'Project bootstrap requires a MEMBER Role with project.read',
+            'Project bootstrap requires a TEAM_LEADER Role with project permissions',
           );
 
         const [project] = await this.model<ProjectDocument>('projects')
@@ -153,8 +161,8 @@ export class MongoProjectRepository implements ProjectRepository {
               organizationId: new Types.ObjectId(organizationId),
               projectId: new Types.ObjectId(created.id),
               userId: new Types.ObjectId(creatorId),
-              roleId: memberRole._id,
-              roleCode: 'MEMBER',
+              roleId: leaderRole._id,
+              roleCode: 'TEAM_LEADER',
               assignedBy: new Types.ObjectId(creatorId),
             },
           ],
@@ -174,7 +182,7 @@ export class MongoProjectRepository implements ProjectRepository {
                 bootstrap: {
                   projectMembershipId: String(projectMembership._id),
                   roleAssignmentId: String(roleAssignment._id),
-                  roleCode: 'MEMBER',
+                  roleCode: 'TEAM_LEADER',
                 },
               },
               occurredAt: new Date(),

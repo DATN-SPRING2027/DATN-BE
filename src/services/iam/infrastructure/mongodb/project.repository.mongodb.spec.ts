@@ -113,9 +113,14 @@ integration('MongoProjectRepository transaction and unique index', () => {
       const user = new Types.ObjectId().toString();
       await db.collection('roles').insertOne({
         _id: new Types.ObjectId(),
-        code: 'MEMBER',
-        name: 'Member',
-        permissions: ['project.read'],
+        code: 'TEAM_LEADER',
+        name: 'Team Leader',
+        permissions: [
+          'project.read',
+          'project.members.list',
+          'project.members.add',
+          'project.members.remove',
+        ],
         isSystem: true,
       });
       await db.collection('organization_memberships').insertOne({
@@ -195,7 +200,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
       });
       expect(auditEvent?.metadata).toMatchObject({
         bootstrap: {
-          roleCode: 'MEMBER',
+          roleCode: 'TEAM_LEADER',
         },
       });
       expect(
@@ -211,22 +216,22 @@ integration('MongoProjectRepository transaction and unique index', () => {
           organizationId: new Types.ObjectId(orgA),
           projectId: new Types.ObjectId(first.id),
           userId: new Types.ObjectId(user),
-          roleCode: 'MEMBER',
-        }),
-      ).toBe(1);
-      expect(
-        await db.collection('role_assignments').countDocuments({
-          organizationId: new Types.ObjectId(orgA),
-          projectId: new Types.ObjectId(first.id),
-          userId: new Types.ObjectId(user),
-        }),
-      ).toBe(1);
-      expect(
-        await db.collection('role_assignments').countDocuments({
-          organizationId: new Types.ObjectId(orgA),
-          projectId: new Types.ObjectId(first.id),
-          userId: new Types.ObjectId(user),
           roleCode: 'TEAM_LEADER',
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+          roleCode: 'MEMBER',
         }),
       ).toBe(0);
       expect(

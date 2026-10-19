@@ -47,6 +47,19 @@ export class ProjectAccessService {
     };
   }
 
+  async listMemberCandidates(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+    search?: string,
+  ) {
+    const candidates = await this.repository.listMemberCandidates(
+      actor.organizationId,
+      projectId,
+      search,
+    );
+    return { data: candidates };
+  }
+
   addMember(actor: AuthenticatedIdentity, projectId: string, userId: string) {
     return this.repository.addMember(
       actor.organizationId,
