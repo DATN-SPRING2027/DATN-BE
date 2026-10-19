@@ -4,8 +4,10 @@
 
 The IAM `users` schema already supports optional `avatarUrl`, `archivedAt`, and
 `archivedBy` fields. Missing `archivedAt` means the account is not archived.
-This work adds Platform user profile editing and archival behavior against that
-existing schema; it does not add a restore endpoint.
+This work adds Platform user profile editing, archival, and safe restoration
+against that existing schema. Restoration clears the archive markers and makes
+the user visible in the directory as SUSPENDED; reactivation remains a separate
+status operation.
 
 Profile edits are limited to `fullName` and `avatarUrl`. Email, password
 credentials, authentication factors, and memberships are outside the profile
@@ -17,7 +19,9 @@ refresh sessions, and records a Platform audit event in one MongoDB
 transaction. User documents, memberships, and prior audit events remain. The
 archive marker distinguishes an archived account from an ordinary suspended
 account in list filtering and detail projections. Archived accounts cannot be
-edited, reactivated, or archived again through these API paths.
+edited, reactivated, or archived again while archived. An authorized Platform
+Operator may restore one to SUSPENDED, then use the separate Reactivate action
+to return it to ACTIVE.
 
 Both profile edits and account lifecycle changes require the current
 `platform.users.account.manage` Platform assignment and an `updatedAt` compare-
@@ -41,11 +45,10 @@ apply and rollback plan.
 
 Rolling back the API code does not delete or clear archived user data. Since
 this work does not deploy or mutate production/staging data, there is no data
-rollback to run for this change. If archival has been used after deployment,
-first disable the mutation endpoint, preserve audit history, and use a
-reviewed account-recovery procedure to clear archive metadata and restore
-eligibility. Do not remove `archivedAt` or `archivedBy` with a bulk update or
-revert the schema while archived records remain.
+rollback to run for this change. If restoration has been used after deployment,
+rolling back the endpoint leaves those users unarchived and SUSPENDED; the
+existing status operation can still be used by an authorized operator. Preserve
+audit history and do not clear archive metadata with a bulk update.
 
 ## Verification
 

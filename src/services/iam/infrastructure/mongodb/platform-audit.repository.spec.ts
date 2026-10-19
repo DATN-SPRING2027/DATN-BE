@@ -118,6 +118,7 @@ describe('MongoPlatformAuditRepository', () => {
                 'platform.user.status.changed',
                 'platform.user.profile.updated',
                 'platform.user.archived',
+                'platform.user.restored',
                 'platform.session.revoked',
                 'platform.sessions.revoked_all',
                 'ORGANIZATION_MEMBERSHIP_SUSPENDED',

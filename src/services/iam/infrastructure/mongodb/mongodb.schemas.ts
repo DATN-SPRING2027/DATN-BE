@@ -378,7 +378,14 @@ const iamSchemas: Record<string, Schema> = {
       issuerUserId: { type: Schema.Types.ObjectId, required: true },
       operationType: {
         type: String,
-        enum: ['BOOTSTRAP', 'V1_EXPAND', 'V2_EXPAND', 'REGRANT', 'REVOKE'],
+        enum: [
+          'BOOTSTRAP',
+          'V1_EXPAND',
+          'V2_EXPAND',
+          'REGRANT',
+          'REVOKE',
+          'LEGACY_ADOPT_V2',
+        ],
         required: true,
       },
       bundleVersion: {

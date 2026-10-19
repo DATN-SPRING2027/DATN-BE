@@ -1,4 +1,61 @@
-# Organization Membership legacy backfill
+# Task lifecycle contract
+
+DATN-100 adds the approved D-08 lifecycle fields and status-history contract to
+the dormant Task data foundation. The [D-13-R6 approval record (Document PR #48)](https://github.com/DATN-SPRING2027/Document/pull/48/files)
+scopes the five statuses, transition matrix, guards, version behavior, event,
+and idempotency choices. This migration does not register or activate the Task
+runtime.
+
+The new Task creation primitive writes `status: TODO`, `assigneeId: null`, and
+`completedAt: null`. Existing seven-field Task documents receive those values
+only where the lifecycle fields are missing. Any Task, event, or operation
+document that fails the target validator, duplicate version events, duplicate
+operation keys, or an incompatible index blocks apply. Task documents,
+creation history, and other collections are never deleted. D-03 `TASK_CREATED`
+events retain their exact P3 schema; status transitions use a separate strict
+event shape scoped by `projectId`. The event does not persist `organizationId`,
+which is outside the approved DATN-100 scope. The new `task_operations`
+collection stores only bounded status-command idempotency records and expires
+them after their configured 24-hour window.
+
+The migration requires an explicit `TASK_MONGODB_URI`, targets only
+`continuum_task`, and never loads `.env`. It refuses to create the existing
+`tasks` or `task_events` collections; it may create the new `task_operations`
+collection. Dry-run is read-only and prints a credential-free target
+fingerprint, preflight counts, planned index changes, and `reportSha256`:
+
+```powershell
+$env:TASK_MONGODB_URI = '<approved Task database URI>'
+npm run migrate:task-lifecycle-contract > task-lifecycle-dry-run.json
+$report = Get-Content -LiteralPath 'task-lifecycle-dry-run.json' -Raw | ConvertFrom-Json
+```
+
+Review the database target, backfill counts, and clean status first. Task writes
+must remain paused while apply temporarily installs a compatibility validator,
+backfills existing documents, and installs the final strict validator. Apply
+requires an explicit `--task-writes-paused` assertion and the exact reviewed
+report:
+
+```powershell
+npm run migrate:task-lifecycle-contract -- --apply --task-writes-paused "--expected-report-sha256=$($report.reportSha256)"
+```
+
+Apply is additive and idempotent. The migration-time compatibility validator
+accepts the legacy seven-field shape only long enough to backfill it. The final
+validator requires `status`, `assigneeId`, and `completedAt` on every Task and
+enforces their lifecycle invariants. After apply, an older D-03 writer that
+omits these fields is incompatible; keep Task dormant until a lifecycle-aware
+release is ready. For rollback, disable Task writes and keep the database
+expansion and backfilled data. Do not remove lifecycle fields, status events,
+the operation collection, or its TTL index. No shared or production database
+was modified by the DATN-100 change.
+
+Validation commands include `npm run test:migrations:plan` for report and
+idempotency planning. The marked MongoDB 7 replica-set integration suite is
+opt-in through `MONGODB_INTEGRATION=true` and a loopback `MONGODB_URI`; it must
+never be pointed at a shared database.
+
+## Organization Membership legacy backfill
 
 DATN-87 adds a separate [lifecycle tracking/operation-cache DB work package](../../docs/work-packages/organization-membership-lifecycle-db-v1.md)
 and new `20261012-organization-membership-lifecycle.mjs`. Its metadata/permission
@@ -112,6 +169,46 @@ Rollback drops only the three named indexes. It preserves the collection and
 all invitation records so an application rollback cannot erase audit history.
 Resolve or allow pending invitations to expire before rollback; retain the
 report and coordinate API rollback with the backend release.
+
+## Organization Membership Admin permissions
+
+`20261019-organization-membership-admin-permissions.mjs` adds only
+`organization.memberships.read` and `organization.memberships.manage` to the
+existing system `ADMIN` Role in the IAM database. It does not change schema,
+RoleAssignments, memberships, or any non-ADMIN Role. The dry-run and apply use
+the same database selection as IAM: shared MongoDB mode uses
+`MONGODB_DATABASE`; service-owned mode uses `continuum_iam` when
+`INFRA_ENABLED=true`; disabled persistence is refused. The package script loads
+`.env`; verify that its `MONGODB_URI` and mode flags match the target runtime.
+
+Run and retain the read-only report first:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs > organization-membership-admin-permissions-before.json
+$before = Get-Content -LiteralPath 'organization-membership-admin-permissions-before.json' -Raw | ConvertFrom-Json
+```
+
+Confirm `databaseName`, `targetFingerprint`, the single system `ADMIN` Role ID,
+the exact missing permissions, and an empty `issues` list before applying that
+report:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs --apply "--expected-report-sha256=$($before.reportSha256)"
+```
+
+Apply is idempotent and preserves existing permission values. This is a data
+change: every Organization-level assignment resolving to this system `ADMIN`
+Role gains the membership read and management capabilities. Rollback requires
+a fresh reviewed dry-run for the current state and the saved clean pre-apply
+report; it removes only the approved permissions that report identified as
+missing. Before rollback, confirm no later Role change independently relies on
+those permissions, and coordinate it with rolling back the UI/API change.
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs > organization-membership-admin-permissions-current.json
+$current = Get-Content -LiteralPath 'organization-membership-admin-permissions-current.json' -Raw | ConvertFrom-Json
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs --rollback "--expected-report-sha256=$($current.reportSha256)" --rollback-from-report=organization-membership-admin-permissions-before.json
+```
 
 ## Project Access permission provisioning
 
