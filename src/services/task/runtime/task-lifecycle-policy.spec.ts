@@ -134,6 +134,21 @@ describe('Task lifecycle transition policy', () => {
     ).toMatchObject({ kind: 'ALLOW' });
   });
 
+  it.each(['TEAM_LEADER', 'ADMIN'] as const)(
+    'rejects START without an assignee even for %s',
+    (role) => {
+      expect(
+        transition('TODO', 'IN_PROGRESS', {
+          role,
+          taskOverrides: { assigneeId: null },
+        }),
+      ).toMatchObject({
+        kind: 'REJECTED',
+        code: 'TASK_TRANSITION_FORBIDDEN',
+      });
+    },
+  );
+
   it('requires creator, Project TEAM_LEADER, or Project ADMIN for cancellation and reopen', () => {
     expect(
       transition('TODO', 'CANCELLED', {

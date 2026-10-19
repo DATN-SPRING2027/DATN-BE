@@ -254,6 +254,34 @@ integration('D-08 lifecycle command on a marked MongoDB 7 replica set', () => {
     expect(await counts()).toEqual({ tasks: 1, events: 0, operations: 2 });
   });
 
+  it.each(['TEAM_LEADER', 'ADMIN'] as const)(
+    'rejects START without an assignee for %s without changing Task or history',
+    async (projectRole) => {
+      const task = rawTask({ assigneeId: null });
+      await connection!.db!.collection(TASK_COLLECTION).insertOne(task);
+      const request = command(task._id);
+
+      await expect(
+        lifecycleService().execute(context({ projectRole }), request),
+      ).resolves.toMatchObject({
+        kind: 'REJECTED',
+        code: 'TASK_TRANSITION_FORBIDDEN',
+      });
+      expect(
+        await repository.getById(
+          projectId.toHexString(),
+          task._id.toHexString(),
+        ),
+      ).toMatchObject({
+        status: 'TODO',
+        assigneeId: null,
+        version: 1,
+        completedAt: null,
+      });
+      expect(await counts()).toEqual({ tasks: 1, events: 0, operations: 1 });
+    },
+  );
+
   it('rejects a changed payload when an operation ID has already been used', async () => {
     const task = rawTask();
     await connection!.db!.collection(TASK_COLLECTION).insertOne(task);
@@ -421,6 +449,48 @@ integration('D-08 lifecycle command on a marked MongoDB 7 replica set', () => {
       kind: 'COMMITTED',
       replayed: true,
       reconciled: true,
+    });
+    expect(await counts()).toEqual({ tasks: 1, events: 1, operations: 1 });
+  });
+
+  it('keeps an unresolved commit result uncertain when reconciliation finds no terminal operation', async () => {
+    const task = rawTask();
+    await connection!.db!.collection(TASK_COLLECTION).insertOne(task);
+    class UnresolvedCommitRepository extends TaskDataRepository {
+      protected override executeTransaction(): Promise<void> {
+        const error = new mongoose.mongo.MongoError(
+          'simulated unknown lifecycle commit result',
+        );
+        error.addErrorLabel('UnknownTransactionCommitResult');
+        return Promise.reject(error);
+      }
+    }
+    const request = command(task._id);
+
+    await expect(
+      lifecycleService(new UnresolvedCommitRepository(connection!.db!)).execute(
+        context(),
+        request,
+      ),
+    ).resolves.toMatchObject({
+      kind: 'UNCERTAIN',
+      operationId: request.operationId,
+    });
+    expect(
+      await repository.getById(projectId.toHexString(), task._id.toHexString()),
+    ).toMatchObject({ status: 'TODO', version: 1, completedAt: null });
+    expect(await counts()).toEqual({ tasks: 1, events: 0, operations: 1 });
+
+    const retryService = new TaskLifecycleCommandService(
+      repository,
+      () => new Date(fixedNow.getTime() + 60_001),
+    );
+    await expect(
+      retryService.execute(context(), request),
+    ).resolves.toMatchObject({
+      kind: 'COMMITTED',
+      version: 2,
+      replayed: false,
     });
     expect(await counts()).toEqual({ tasks: 1, events: 1, operations: 1 });
   });

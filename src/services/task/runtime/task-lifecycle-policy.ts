@@ -171,6 +171,13 @@ function hasTransitionActor(
   fromStatus: TaskStatus,
   toStatus: TaskStatus,
 ): boolean {
+  if (
+    fromStatus === 'TODO' &&
+    toStatus === 'IN_PROGRESS' &&
+    task.assigneeId === null
+  )
+    return false;
+
   if (context.projectRole === 'ADMIN' || context.projectRole === 'TEAM_LEADER')
     return true;
 

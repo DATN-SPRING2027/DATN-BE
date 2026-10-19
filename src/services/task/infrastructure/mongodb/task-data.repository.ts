@@ -224,9 +224,11 @@ export class TaskDataRepository {
     const session = this.database.client.startSession();
     const eventId = new Types.ObjectId();
     let outcome: TaskLifecycleCommandResult | undefined;
+    let transactionBodyCompleted = false;
     try {
       await this.executeTransaction(session, async (transactionSession) => {
         outcome = undefined;
+        transactionBodyCompleted = false;
         const task = await this.database
           .collection<TaskDocument>(TASK_COLLECTION)
           .findOne(
@@ -265,6 +267,7 @@ export class TaskDataRepository {
               : {}),
             replayed: false,
           };
+          transactionBodyCompleted = true;
           return;
         }
 
@@ -311,6 +314,7 @@ export class TaskDataRepository {
             currentVersion: rejection.currentVersion,
             replayed: false,
           };
+          transactionBodyCompleted = true;
           return;
         }
 
@@ -360,6 +364,7 @@ export class TaskDataRepository {
           replayed: false,
           reconciled: false,
         };
+        transactionBodyCompleted = true;
       });
 
       if (outcome) return outcome;
@@ -379,6 +384,12 @@ export class TaskDataRepository {
       )
         return lifecycleOperationResult(operation, true, true);
 
+      if (hasErrorLabel(error, 'UnknownTransactionCommitResult'))
+        return {
+          kind: 'UNCERTAIN',
+          operationId: request.command.operationId,
+        };
+
       if (hasErrorLabel(error, 'TransientTransactionError')) {
         await this.makeLifecycleOperationRetryable(
           request,
@@ -389,6 +400,12 @@ export class TaskDataRepository {
           operationId: request.command.operationId,
         };
       }
+
+      if (transactionBodyCompleted)
+        return {
+          kind: 'UNCERTAIN',
+          operationId: request.command.operationId,
+        };
 
       if (!session.inTransaction()) {
         await this.makeLifecycleOperationRetryable(
