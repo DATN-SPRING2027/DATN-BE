@@ -135,6 +135,7 @@ jobs:
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-87-membership-lifecycle-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-87-membership-reads-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn90-team-foundation-mongo7-disposable"})'
+          docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-95-task-data-foundation-mongo7-disposable"})'
       - name: Run Project Access permission provisioning migration integration
         run: npm run test:project-access-permissions:integration
       - name: Run DATN-87 membership lifecycle migration integration
@@ -156,6 +157,12 @@ jobs:
         env:
           TEAM_FOUNDATION_TEST_MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
         run: npm run test:team-foundation-transactions
+      - name: Run D09 Task history MongoDB integration
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/services/task/infrastructure/mongodb/task-data.repository.mongodb.spec.ts
+          src/services/task/infrastructure/mongodb/task-lifecycle.repository.mongodb.spec.ts
+          --testNamePattern="O6 scopes every read|orders mixed creation and lifecycle history|paginates deterministically and reflects events appended between requests|O7 enforces one version-1 event and stores provenance without content snapshots|O9 aborts Task failure, event failure, and explicit abort after both writes|aborts Task changes when the transition history write fails"
 
   team-foundation-mongodb-test:
     name: BE / Team foundation preflight MongoDB
