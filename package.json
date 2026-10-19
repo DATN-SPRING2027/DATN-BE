@@ -58,6 +58,7 @@
     "migrate:password-reset-outbox": "node scripts/migrations/20261014-password-reset-outbox.mjs",
     "migrate:email-registration-outbox": "node scripts/migrations/20261018-email-registration-outbox.mjs",
     "migrate:organization-invitations": "node scripts/migrations/20261011-organization-invitations.mjs",
+    "migrate:organization-membership-admin-permissions": "node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",
     "check": "npm run lint && npm run typecheck && npm run test:dev-db-smoke-safety && npm test -- --runInBand && npm run test:e2e -- --runInBand && npm run build"
