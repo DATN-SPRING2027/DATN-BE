@@ -45,6 +45,7 @@ interface HandlerSink {
   create: jest.Mock;
   list: jest.Mock;
   detail: jest.Mock;
+  history: jest.Mock;
 }
 
 @Controller('test/projects/:projectId/tasks')
@@ -81,6 +82,18 @@ class TestOnlyTaskController {
     this.sink.detail(getTaskAuthorizedRequestContext(requestValue));
     return { ok: true };
   }
+
+  @Get(':taskId/events')
+  @UseGuards(TaskAuthorizationHttpGuard)
+  @RequireTaskAuthorization({
+    operation: 'history',
+    projectIdParam: 'projectId',
+    resourceIdParam: 'taskId',
+  })
+  history(@Req() requestValue: unknown): { ok: true } {
+    this.sink.history(getTaskAuthorizedRequestContext(requestValue));
+    return { ok: true };
+  }
 }
 
 function isBinding(value: unknown): value is TaskHttpRequestBinding {
@@ -115,6 +128,7 @@ async function createTestApplication(options?: {
     create: recordHandler('create'),
     list: recordHandler('list'),
     detail: recordHandler('detail'),
+    history: recordHandler('history'),
   };
   const runtimeModule = TaskRuntimeModule.register({
     mongoUri: 'mongodb://127.0.0.1:27017/continuum_task',
@@ -605,6 +619,51 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
       expect(policy.decide).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(unavailable.body)).not.toContain(
         'private resource lookup detail',
+      );
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('authorizes history as a resource-scoped request before invoking its test handler', async () => {
+    const policyFacts: TaskOperationPermissionFacts[] = [];
+    const verifier = acceptingVerifier();
+    const policy: TaskOperationPermissionPolicy = {
+      decide: jest.fn((facts: TaskOperationPermissionFacts) => {
+        policyFacts.push(facts);
+        return 'ALLOW';
+      }),
+    };
+    const resolver: TaskResourceProjectResolver = {
+      resolveProjectId: jest.fn().mockResolvedValue(projectId),
+    };
+    const test = await createTestApplication({
+      verifier,
+      policy,
+      resourceResolver: resolver,
+    });
+    try {
+      const response = await request(test.httpServer)
+        .get(`/test/projects/${projectId}/tasks/${taskId}/events`)
+        .set('Authorization', `Bearer ${acceptedProof}`);
+
+      expect(response.status).toBe(200);
+      expect(resolver.resolveProjectId).toHaveBeenCalledWith({
+        resourceId: taskId,
+        requestedProjectId: projectId,
+      });
+      expect(policyFacts).toHaveLength(1);
+      expect(policyFacts[0]).toMatchObject({
+        operation: 'history',
+        resolvedResourceProjectId: projectId,
+      });
+      expect(test.sink.history).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'authorized',
+          operation: 'history',
+          actorUserId,
+          projectId,
+        }),
       );
     } finally {
       await test.close();
