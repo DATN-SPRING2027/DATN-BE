@@ -12,9 +12,11 @@ import {
 } from './project-creator-leader.plan.mjs';
 
 export function resolveDatabaseName(env = process.env) {
-  if (env.MONGODB_IAM_DATABASE) return env.MONGODB_IAM_DATABASE;
-  if (env.INFRA_ENABLED === 'true') return 'continuum_iam';
-  return 'continuum_iam';
+  return resolveIamDatabaseName({
+    mongodbEnabled: env.MONGODB_ENABLED,
+    infraEnabled: env.INFRA_ENABLED,
+    configuredName: env.MONGODB_DATABASE,
+  });
 }
 
 async function inspectDatabase(db, uri, targetProjectId) {
@@ -92,15 +94,17 @@ async function inspectDatabase(db, uri, targetProjectId) {
   });
 }
 
-async function applyPromotions(db, plan) {
+async function applyPromotions(db, plan, session) {
   const collection = db.collection('role_assignments');
   let appliedCount = 0;
 
   for (const promotion of plan.plannedPromotions) {
     const filter = {
       _id: new mongoose.Types.ObjectId(promotion.assignmentId),
+      organizationId: new mongoose.Types.ObjectId(promotion.organizationId),
       projectId: new mongoose.Types.ObjectId(promotion.projectId),
       userId: new mongoose.Types.ObjectId(promotion.creatorId),
+      roleId: new mongoose.Types.ObjectId(promotion.fromRoleId),
       roleCode: 'MEMBER',
     };
     const update = {
@@ -110,7 +114,7 @@ async function applyPromotions(db, plan) {
       },
     };
 
-    const result = await collection.updateOne(filter, update);
+    const result = await collection.updateOne(filter, update, { session });
     if (result.matchedCount !== 1) {
       throw new Error(
         `Apply failed for assignment ${promotion.assignmentId}: record changed during migration`,
@@ -120,6 +124,20 @@ async function applyPromotions(db, plan) {
   }
 
   return appliedCount;
+}
+
+export async function applyPromotionsAtomically(connection, db, plan) {
+  if (plan.plannedPromotions.length === 0) return 0;
+  const session = await connection.startSession();
+  try {
+    let appliedCount = 0;
+    await session.withTransaction(async () => {
+      appliedCount = await applyPromotions(db, plan, session);
+    });
+    return appliedCount;
+  } finally {
+    await session.endSession();
+  }
 }
 
 export async function runProjectCreatorLeader({
@@ -132,6 +150,9 @@ export async function runProjectCreatorLeader({
   if (!uri) throw new Error('MONGODB_URI is required');
   if (!['dry-run', 'apply'].includes(mode)) {
     throw new Error(`Unsupported migration mode: ${mode}`);
+  }
+  if (mode === 'apply' && !expectedReportSha256) {
+    throw new Error('Apply requires the reviewed dry-run report SHA-256');
   }
 
   const parsedUri = new URL(uri);
@@ -150,7 +171,9 @@ export async function runProjectCreatorLeader({
   try {
     const db = connection.db;
     if (!db || db.databaseName !== databaseName) {
-      throw new Error('Connected database does not match the configured IAM target');
+      throw new Error(
+        'Connected database does not match the configured IAM target',
+      );
     }
 
     const plan = await inspectDatabase(db, uri, targetProjectId);
@@ -160,21 +183,29 @@ export async function runProjectCreatorLeader({
       return { ...plan, reportSha256 };
     }
 
-    if (expectedReportSha256 && expectedReportSha256 !== reportSha256) {
-      throw new Error('Operation refused: report differs from the reviewed dry-run');
-    }
-
-    if (!plan.isSafe) {
+    if (expectedReportSha256 !== reportSha256) {
       throw new Error(
-        `Operation blocked by global findings: ${plan.globalIssues.join(', ')}`,
+        'Operation refused: report differs from the reviewed dry-run',
       );
     }
 
-    const appliedCount = await applyPromotions(db, plan);
+    if (!plan.isSafe) {
+      const skippedReasons = [
+        ...new Set(plan.skippedProjects.map(({ reason }) => reason)),
+      ];
+      const findings = [...plan.globalIssues, ...skippedReasons];
+      throw new Error(
+        `Operation blocked by preflight findings: ${findings.join(', ')}`,
+      );
+    }
+
+    const appliedCount = await applyPromotionsAtomically(connection, db, plan);
     const after = await inspectDatabase(db, uri, targetProjectId);
 
     if (!after.isSafe || after.plannedPromotions.length > 0) {
-      throw new Error('Post-apply verification failed; re-run dry-run to inspect');
+      throw new Error(
+        'Post-apply verification failed; re-run dry-run to inspect',
+      );
     }
 
     return {
@@ -183,7 +214,8 @@ export async function runProjectCreatorLeader({
       result: {
         action: plan.plannedPromotions.length === 0 ? 'NOOP' : 'APPLIED',
         appliedCount,
-        verified: true,
+        verified: after.isSafe,
+        remainingSkippedProjects: after.skippedProjects,
       },
     };
   } finally {
@@ -208,7 +240,9 @@ async function runCli() {
   });
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (!report.isSafe) process.exitCode = 2;
+  if (!report.isSafe || report.result?.verified === false) {
+    process.exitCode = 2;
+  }
 }
 
 if (

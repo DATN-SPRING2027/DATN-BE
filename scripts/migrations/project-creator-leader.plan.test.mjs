@@ -105,10 +105,129 @@ test('safely skips and records projects with missing creator membership without 
     roles: mockRoles,
   });
 
-  assert.equal(plan.isSafe, true);
+  assert.equal(plan.isSafe, false);
   assert.equal(plan.plannedPromotions.length, 0);
   assert.equal(plan.skippedProjects.length, 1);
   assert.equal(plan.skippedProjects[0].reason, 'CREATOR_MEMBERSHIP_MISSING');
+});
+
+test('rejects a malformed explicit project filter without widening to all projects', () => {
+  const plan = planProjectCreatorLeader({
+    databaseName: 'continuum_iam',
+    targetFingerprint: 'test-fingerprint',
+    targetProjectId: 'not-an-object-id',
+    projects: [mockProject],
+    memberships: [mockMembership],
+    roleAssignments: [
+      {
+        _id: '6ad5ce7f4e98d4b07f5fc401',
+        organizationId: mockProject.organizationId,
+        projectId: mockProject._id,
+        userId: mockProject.createdBy,
+        roleId: mockRoles[1]._id,
+        roleCode: 'MEMBER',
+      },
+    ],
+    roles: mockRoles,
+  });
+
+  assert.equal(plan.isSafe, false);
+  assert.equal(plan.targetProjectId, null);
+  assert.equal(plan.summary.totalProjectsInspected, 0);
+  assert.equal(plan.plannedPromotions.length, 0);
+  assert.ok(plan.globalIssues.includes('TARGET_PROJECT_ID_INVALID'));
+});
+
+test('skips creator memberships whose organization differs from the Project', () => {
+  const plan = planProjectCreatorLeader({
+    databaseName: 'continuum_iam',
+    targetFingerprint: 'test-fingerprint',
+    projects: [mockProject],
+    memberships: [
+      { ...mockMembership, organizationId: '12f962598527ec6f886ddac0' },
+    ],
+    roleAssignments: [],
+    roles: mockRoles,
+  });
+
+  assert.equal(plan.plannedPromotions.length, 0);
+  assert.equal(
+    plan.skippedProjects[0].reason,
+    'CREATOR_MEMBERSHIP_ORGANIZATION_MISMATCH',
+  );
+});
+
+test('skips project assignments whose organization differs from the Project', () => {
+  const plan = planProjectCreatorLeader({
+    databaseName: 'continuum_iam',
+    targetFingerprint: 'test-fingerprint',
+    projects: [mockProject],
+    memberships: [mockMembership],
+    roleAssignments: [
+      {
+        _id: '6ad5ce7f4e98d4b07f5fc401',
+        organizationId: '12f962598527ec6f886ddac0',
+        projectId: mockProject._id,
+        userId: mockProject.createdBy,
+        roleId: mockRoles[1]._id,
+        roleCode: 'MEMBER',
+      },
+    ],
+    roles: mockRoles,
+  });
+
+  assert.equal(plan.plannedPromotions.length, 0);
+  assert.equal(
+    plan.skippedProjects[0].reason,
+    'PROJECT_ASSIGNMENT_ORGANIZATION_MISMATCH',
+  );
+});
+
+test('does not trust a TEAM_LEADER roleCode when roleId resolves to a different Role', () => {
+  const plan = planProjectCreatorLeader({
+    databaseName: 'continuum_iam',
+    targetFingerprint: 'test-fingerprint',
+    projects: [mockProject],
+    memberships: [mockMembership],
+    roleAssignments: [
+      {
+        _id: '6ad5ce7f4e98d4b07f5fc401',
+        organizationId: mockProject.organizationId,
+        projectId: mockProject._id,
+        userId: mockProject.createdBy,
+        roleId: mockRoles[1]._id,
+        roleCode: 'TEAM_LEADER',
+      },
+    ],
+    roles: mockRoles,
+  });
+
+  assert.equal(plan.alreadyCompliant.length, 0);
+  assert.equal(plan.plannedPromotions.length, 0);
+  assert.equal(plan.skippedProjects[0].reason, 'ROLE_CODE_ID_MISMATCH');
+});
+
+test('does not promote a MEMBER-coded assignment when roleId resolves to another Role', () => {
+  const plan = planProjectCreatorLeader({
+    databaseName: 'continuum_iam',
+    targetFingerprint: 'test-fingerprint',
+    projects: [mockProject],
+    memberships: [mockMembership],
+    roleAssignments: [
+      {
+        _id: '6ad5ce7f4e98d4b07f5fc401',
+        organizationId: mockProject.organizationId,
+        projectId: mockProject._id,
+        userId: mockProject.createdBy,
+        roleId: mockRoles[0]._id,
+        roleCode: 'MEMBER',
+      },
+    ],
+    roles: mockRoles,
+  });
+
+  assert.equal(plan.plannedPromotions.length, 0);
+  assert.equal(plan.skippedProjects[0].reason, 'ROLE_CODE_ID_MISMATCH');
 });
 
 test('fails safely if TEAM_LEADER role is missing or lacks required permissions', () => {
@@ -139,7 +258,9 @@ test('fails safely if TEAM_LEADER role is missing or lacks required permissions'
   });
 
   assert.equal(plan.isSafe, false);
-  assert.ok(plan.globalIssues.includes('ROLE_PERMISSIONS_INSUFFICIENT:TEAM_LEADER'));
+  assert.ok(
+    plan.globalIssues.includes('ROLE_PERMISSIONS_INSUFFICIENT:TEAM_LEADER'),
+  );
 });
 
 test('supports targetProjectId filter', () => {

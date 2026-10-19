@@ -38,15 +38,21 @@ export function planProjectCreatorLeader({
   const globalIssues = [];
 
   const teamLeaderRole = roles.find((r) => r.code === 'TEAM_LEADER');
+  const roleCodesById = new Map(
+    roles
+      .map((role) => [serializedId(role._id), role.code])
+      .filter(([id]) => id),
+  );
   if (!teamLeaderRole) {
     globalIssues.push('ROLE_MISSING:TEAM_LEADER');
   } else {
     const permissions = Array.isArray(teamLeaderRole.permissions)
       ? teamLeaderRole.permissions
       : [];
-    const missingPerms = PROJECT_CREATOR_LEADER_MIGRATION.requiredPermissions.filter(
-      (p) => !permissions.includes(p),
-    );
+    const missingPerms =
+      PROJECT_CREATOR_LEADER_MIGRATION.requiredPermissions.filter(
+        (p) => !permissions.includes(p),
+      );
     if (missingPerms.length > 0) {
       globalIssues.push('ROLE_PERMISSIONS_INSUFFICIENT:TEAM_LEADER');
     }
@@ -56,9 +62,15 @@ export function planProjectCreatorLeader({
   const alreadyCompliant = [];
   const skippedProjects = [];
 
-  const targetId = targetProjectId ? serializedId(targetProjectId) : null;
-  const filteredProjects = targetId
-    ? projects.filter((p) => serializedId(p._id) === targetId)
+  const hasTargetProjectId = targetProjectId !== undefined;
+  const targetId = hasTargetProjectId ? serializedId(targetProjectId) : null;
+  if (hasTargetProjectId && !targetId) {
+    globalIssues.push('TARGET_PROJECT_ID_INVALID');
+  }
+  const filteredProjects = hasTargetProjectId
+    ? targetId
+      ? projects.filter((p) => serializedId(p._id) === targetId)
+      : []
     : projects;
 
   if (targetId && filteredProjects.length === 0) {
@@ -80,11 +92,14 @@ export function planProjectCreatorLeader({
     }
 
     // Check creator's active membership in project
-    const creatorMembership = memberships.find(
+    const creatorMemberships = memberships.filter(
       (m) =>
         serializedId(m.projectId) === projectId &&
         serializedId(m.userId) === creatorId &&
         m.status === 'ACTIVE',
+    );
+    const creatorMembership = creatorMemberships.find(
+      (m) => serializedId(m.organizationId) === orgId,
     );
 
     if (!creatorMembership) {
@@ -92,14 +107,32 @@ export function planProjectCreatorLeader({
         projectId,
         projectName: project.name,
         creatorId,
-        reason: 'CREATOR_MEMBERSHIP_MISSING',
+        reason: creatorMemberships.length
+          ? 'CREATOR_MEMBERSHIP_ORGANIZATION_MISMATCH'
+          : 'CREATOR_MEMBERSHIP_MISSING',
       });
       continue;
     }
 
     // Role assignments on this project
-    const projectAssignments = roleAssignments.filter(
+    const assignmentsForProject = roleAssignments.filter(
       (ra) => serializedId(ra.projectId) === projectId,
+    );
+    if (
+      assignmentsForProject.some(
+        (ra) => serializedId(ra.organizationId) !== orgId,
+      )
+    ) {
+      skippedProjects.push({
+        projectId,
+        projectName: project.name,
+        creatorId,
+        reason: 'PROJECT_ASSIGNMENT_ORGANIZATION_MISMATCH',
+      });
+      continue;
+    }
+    const projectAssignments = assignmentsForProject.filter(
+      (ra) => serializedId(ra.organizationId) === orgId,
     );
 
     const creatorAssignments = projectAssignments.filter(
@@ -128,6 +161,23 @@ export function planProjectCreatorLeader({
 
     const creatorAssignment = creatorAssignments[0];
     const assignmentId = serializedId(creatorAssignment._id);
+    const creatorRoleId = serializedId(creatorAssignment.roleId);
+    const resolvedRoleCode = roleCodesById.get(creatorRoleId);
+
+    if (
+      !assignmentId ||
+      !creatorRoleId ||
+      !resolvedRoleCode ||
+      resolvedRoleCode !== creatorAssignment.roleCode
+    ) {
+      skippedProjects.push({
+        projectId,
+        projectName: project.name,
+        creatorId,
+        reason: 'ROLE_CODE_ID_MISMATCH',
+      });
+      continue;
+    }
 
     if (creatorAssignment.roleCode === 'TEAM_LEADER') {
       alreadyCompliant.push({
@@ -157,9 +207,11 @@ export function planProjectCreatorLeader({
       if (teamLeaderRole && globalIssues.length === 0) {
         plannedPromotions.push({
           projectId,
+          organizationId: orgId,
           projectName: project.name,
           creatorId,
           assignmentId,
+          fromRoleId: creatorRoleId,
           fromRoleCode: 'MEMBER',
           toRoleCode: 'TEAM_LEADER',
           toRoleId: serializedId(teamLeaderRole._id),
@@ -176,7 +228,7 @@ export function planProjectCreatorLeader({
     });
   }
 
-  const isSafe = globalIssues.length === 0;
+  const isSafe = globalIssues.length === 0 && skippedProjects.length === 0;
 
   return {
     databaseName,

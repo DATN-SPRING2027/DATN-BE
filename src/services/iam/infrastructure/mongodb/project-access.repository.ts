@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
-import type { ClientSession, Connection, Model } from 'mongoose';
+import type { ClientSession, Connection, Model, PipelineStage } from 'mongoose';
 import type {
   ProjectAccessRepository,
   ProjectMembershipRecord,
@@ -75,6 +75,13 @@ interface UserDocument {
   fullName?: string;
   avatarUrl?: string | null;
   status: string;
+}
+
+interface ProjectMemberCandidateAggregate {
+  userId: Types.ObjectId;
+  email?: string;
+  fullName?: string;
+  avatarUrl?: string | null;
 }
 
 interface OrganizationMembershipDocument {
@@ -252,44 +259,53 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     this.assertIds(organizationId, projectId);
     await this.requireActiveProject(organizationId, projectId);
 
-    const orgMemberships = await this.model<OrganizationMembershipDocument>(
-      'organization_memberships',
-    )
-      .find({
-        organizationId: new Types.ObjectId(organizationId),
-        status: 'ACTIVE',
-      })
-      .select({ userId: 1 })
-      .lean()
-      .exec();
-
-    const candidateUserIds = orgMemberships.map((m) => m.userId);
-    if (candidateUserIds.length === 0) return [];
-
-    const userQuery: Record<string, unknown> = {
-      _id: { $in: candidateUserIds },
-      status: 'ACTIVE',
-    };
-
+    const userMatch: Record<string, unknown> = { 'user.status': 'ACTIVE' };
     if (search && search.trim().length > 0) {
       const sanitized = search.trim();
-      const regex = new RegExp(
+      userMatch['user.email'] = new RegExp(
         sanitized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
         'i',
       );
-      userQuery.$or = [{ email: regex }, { fullName: regex }];
     }
 
-    const users = await this.model<UserDocument>('users')
-      .find(userQuery)
-      .select({ _id: 1, email: 1, fullName: 1, avatarUrl: 1 })
-      .limit(50)
-      .lean()
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          organizationId: new Types.ObjectId(organizationId),
+          status: 'ACTIVE',
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      { $unwind: '$user' },
+      { $match: userMatch },
+      { $limit: 50 },
+      {
+        $project: {
+          _id: 0,
+          userId: '$user._id',
+          email: '$user.email',
+          fullName: '$user.fullName',
+          avatarUrl: '$user.avatarUrl',
+        },
+      },
+    ];
+
+    const users = await this.model<OrganizationMembershipDocument>(
+      'organization_memberships',
+    )
+      .aggregate<ProjectMemberCandidateAggregate>(pipeline)
       .exec();
 
     if (users.length === 0) return [];
 
-    const userIds = users.map((u) => u._id);
+    const userIds = users.map((u) => u.userId);
     const existingProjectMemberships = await this.model<MembershipDocument>(
       'project_memberships',
     )
@@ -308,12 +324,12 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     );
 
     return users.map((u) => ({
-      userId: String(u._id),
+      userId: String(u.userId),
       email: u.email ?? '',
       fullName: u.fullName ?? '',
       avatarUrl: u.avatarUrl ?? null,
       organizationMembershipStatus: 'ACTIVE',
-      isProjectMember: projectMemberSet.has(String(u._id)),
+      isProjectMember: projectMemberSet.has(String(u.userId)),
     }));
   }
 

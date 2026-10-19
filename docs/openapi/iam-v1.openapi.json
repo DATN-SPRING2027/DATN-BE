@@ -4434,7 +4434,7 @@
       "post": {
         "tags": ["Projects"],
         "summary": "Create a project",
-        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped MEMBER RoleAssignment, but does not make the creator a Project Leader, owner, or Team. A provisioned current MEMBER Role with project.read is required for the bootstrap; the Project, membership, assignment, and project.create audit event are committed atomically.",
+    "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped TEAM_LEADER RoleAssignment. The current TEAM_LEADER Role must include project.read, project.members.list, project.members.add, and project.members.remove. The Project, membership, assignment, and project.create audit event are committed atomically. The bootstrap creates no separate Project owner or Team record.",
         "operationId": "createProject",
         "requestBody": {
           "required": true,
@@ -4575,11 +4575,73 @@
         }
       }
     },
+    "/api/v1/iam/projects/{projectId}/member-candidates": {
+      "get": {
+        "tags": [
+          "Project Memberships"
+        ],
+        "summary": "Search project member candidates",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them. Responses are not cacheable.",
+        "operationId": "listProjectMemberCandidates",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "email",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Case-insensitive literal substring used to match an active Organization member's email."
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Compatibility alias for email."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching active Organization members, up to 50 candidates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMemberCandidates"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
     "/api/v1/iam/projects/{projectId}/memberships": {
       "get": {
         "tags": ["Project Memberships"],
         "summary": "List project memberships",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.list in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize member listing. Returns membership identifiers, status, and join time; it does not return user profile fields or conflate membership with role assignment.",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.list in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize member listing. Returns membership identifiers, status, and join time, with an optional user profile projection when the linked User exists. It does not conflate membership with role assignment.",
         "operationId": "listProjectMemberships",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
@@ -7575,6 +7637,71 @@
           "pagination": { "$ref": "#/components/schemas/Pagination" }
         }
       },
+      "ProjectMemberCandidate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "userId",
+          "email",
+          "fullName",
+          "avatarUrl",
+          "organizationMembershipStatus",
+          "isProjectMember"
+        ],
+        "properties": {
+          "userId": {
+            "$ref": "#/components/schemas/ResourceId"
+          },
+          "email": {
+            "type": "string"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "avatarUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "organizationMembershipStatus": {
+            "type": "string",
+            "enum": [
+              "ACTIVE"
+            ]
+          },
+          "isProjectMember": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ProjectMemberCandidates": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/ProjectMemberCandidate"
+            }
+          }
+        }
+      },
+      "ProjectMemberUser": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "avatarUrl"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "email": { "type": "string" },
+          "fullName": { "type": "string" },
+          "avatarUrl": { "type": ["string", "null"] }
+        }
+      },
       "ProjectMembership": {
         "type": "object",
         "additionalProperties": false,
@@ -7592,7 +7719,8 @@
           "projectId": { "$ref": "#/components/schemas/ResourceId" },
           "userId": { "$ref": "#/components/schemas/ResourceId" },
           "status": { "$ref": "#/components/schemas/MembershipStatus" },
-          "joinedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
+          "joinedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "user": { "$ref": "#/components/schemas/ProjectMemberUser" }
         }
       },
       "CreateProjectMembershipRequest": {
