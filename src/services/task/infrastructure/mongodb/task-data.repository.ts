@@ -27,6 +27,7 @@ import type {
 
 const DISPOSABLE_DATABASE_PATTERN = /^datn95task_[a-f\d]{32}$/;
 const MAX_PAGE_SIZE = 100;
+const DEFAULT_HISTORY_PAGE_SIZE = 20;
 const TASK_OPERATION_LEASE_MS = 60_000;
 const TASK_OPERATION_CLAIM_ATTEMPTS = 8;
 
@@ -159,26 +160,59 @@ export class TaskDataRepository {
   async listHistory(
     projectId: string,
     taskId: string,
-    limit = MAX_PAGE_SIZE,
-  ): Promise<TaskEventDocument[]> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE)
-      throw new Error('Task history limit is invalid');
+    query: { page: number; limit: number } = {
+      page: 1,
+      limit: DEFAULT_HISTORY_PAGE_SIZE,
+    },
+  ): Promise<{ events: TaskEventDocument[]; total: number }> {
+    if (!isObjectIdString(projectId) || !isObjectIdString(taskId))
+      return { events: [], total: 0 };
+    if (
+      !Number.isSafeInteger(query.page) ||
+      query.page < 1 ||
+      !Number.isInteger(query.limit) ||
+      query.limit < 1 ||
+      query.limit > MAX_PAGE_SIZE
+    )
+      throw new Error('Task history page is invalid');
     const task = await this.getById(projectId, taskId);
-    if (!task) return [];
-    return this.database
-      .collection<TaskEventDocument>(TASK_EVENT_COLLECTION)
+    if (!task) return { events: [], total: 0 };
+    const filter = {
+      $or: [
+        {
+          taskId: task._id,
+          projectId: task.projectId,
+          eventName: 'TASK_CREATED',
+        },
+        {
+          taskId: task._id,
+          projectId: task.projectId,
+          eventType: 'TASK_STATUS_TRANSITIONED',
+        },
+      ],
+    };
+    const collection = this.database.collection<TaskEventDocument>(
+      TASK_EVENT_COLLECTION,
+    );
+    const total = await collection.countDocuments(filter);
+    const skip = (query.page - 1) * query.limit;
+    if (!Number.isSafeInteger(skip) || skip >= total)
+      return { events: [], total };
+    const events = await collection
       .aggregate<TaskEventDocument>([
-        { $match: { taskId: task._id, projectId: task.projectId } },
+        { $match: filter },
         {
           $set: {
             historyVersion: { $ifNull: ['$taskVersion', '$version'] },
           },
         },
         { $sort: { historyVersion: 1, _id: 1 } },
-        { $limit: limit },
+        { $skip: skip },
+        { $limit: query.limit },
         { $unset: 'historyVersion' },
       ])
       .toArray();
+    return { events, total };
   }
 
   async transitionStatus(

@@ -11,6 +11,12 @@ import { TaskRuntimeConfig } from './task-runtime.config';
 import { TaskHealthController } from './task-health.controller';
 import { TaskLifecycleCommandService } from './task-lifecycle-command';
 import {
+  TASK_HISTORY_ACCESS_EVIDENCE_PROVIDER,
+  TaskHistoryAccessAuthorizationBoundary,
+  TaskHistoryQueryService,
+  UnconfiguredTaskHistoryAccessEvidenceProvider,
+} from './task-history-query';
+import {
   TASK_INBOUND_CONTEXT_VERIFIER,
   TaskInboundContextTrustBoundary,
   UnconfiguredTaskInboundContextVerifier,
@@ -63,9 +69,32 @@ export class TaskRuntimeModule {
             new TaskLifecycleCommandService(repository),
           inject: [TaskDataRepository],
         },
+        {
+          provide: TaskHistoryQueryService,
+          useFactory: (
+            authorizationBoundary: TaskAuthorizationBoundary,
+            historyAccessBoundary: TaskHistoryAccessAuthorizationBoundary,
+            repository: TaskDataRepository,
+          ) =>
+            new TaskHistoryQueryService(
+              authorizationBoundary,
+              historyAccessBoundary,
+              repository,
+            ),
+          inject: [
+            TaskAuthorizationBoundary,
+            TaskHistoryAccessAuthorizationBoundary,
+            TaskDataRepository,
+          ],
+        },
         TaskInboundContextTrustBoundary,
         TaskAuthorizationBoundary,
         TaskAuthorizationHttpGuard,
+        TaskHistoryAccessAuthorizationBoundary,
+        {
+          provide: TASK_HISTORY_ACCESS_EVIDENCE_PROVIDER,
+          useClass: UnconfiguredTaskHistoryAccessEvidenceProvider,
+        },
         {
           provide: TASK_INBOUND_CONTEXT_VERIFIER,
           useClass: UnconfiguredTaskInboundContextVerifier,
@@ -85,6 +114,8 @@ export class TaskRuntimeModule {
       ],
       exports: [
         TaskLifecycleCommandService,
+        TaskHistoryQueryService,
+        TaskHistoryAccessAuthorizationBoundary,
         TaskInboundContextTrustBoundary,
         TaskAuthorizationBoundary,
         TaskAuthorizationHttpGuard,

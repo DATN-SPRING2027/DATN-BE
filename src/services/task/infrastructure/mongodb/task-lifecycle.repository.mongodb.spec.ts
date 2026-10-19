@@ -168,9 +168,10 @@ integration('D-08 lifecycle command on a marked MongoDB 7 replica set', () => {
     const history = await repository.listHistory(
       projectId.toHexString(),
       task._id.toHexString(),
+      { page: 1, limit: 20 },
     );
-    expect(history).toHaveLength(1);
-    expect(history[0]).toMatchObject({
+    expect(history.events).toHaveLength(1);
+    expect(history.events[0]).toMatchObject({
       eventType: 'TASK_STATUS_TRANSITIONED',
       actorId,
       source: 'INTERNAL_SERVICE',
@@ -185,7 +186,7 @@ integration('D-08 lifecycle command on a marked MongoDB 7 replica set', () => {
         toStatus: 'IN_PROGRESS',
       },
     });
-    expect(Object.keys(history[0]).sort()).toEqual(
+    expect(Object.keys(history.events[0]).sort()).toEqual(
       [
         '_id',
         'taskId',
@@ -356,8 +357,9 @@ integration('D-08 lifecycle command on a marked MongoDB 7 replica set', () => {
       await repository.listHistory(
         projectId.toHexString(),
         task._id.toHexString(),
+        { page: 1, limit: 20 },
       ),
-    ).toMatchObject([{ version: 5 }, { version: 6 }]);
+    ).toMatchObject({ events: [{ version: 5 }, { version: 6 }], total: 2 });
   });
 
   it('allows only one concurrent transition at the same expectedVersion', async () => {
