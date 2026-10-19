@@ -407,3 +407,39 @@ and `userFence`, plus V1/V2 authority-operation validation, are documented in
 [`../../docs/work-packages/platform-session-fence-and-v2-authority-schema-db-v1.md`](../../docs/work-packages/platform-session-fence-and-v2-authority-schema-db-v1.md).
 They require no data migration or index command. Merge the DB schema branch
 before enabling backend writes of V2 expansion records or session-fence fields.
+
+## Project creator Team Leader bootstrap
+
+The current creator bootstrap policy is documented in
+[`../docs/decisions/project-creator-team-leader-bootstrap-v1.md`](../docs/decisions/project-creator-team-leader-bootstrap-v1.md).
+Project creation assigns the creator the current project-scoped `TEAM_LEADER`
+Role. The data migration promotes eligible existing creator assignments from
+`MEMBER` to `TEAM_LEADER`; it changes no schema, indexes, collections, or
+Project Membership records. The migration requires the current `TEAM_LEADER`
+Role to provide `project.read`, `project.members.list`, `project.members.add`,
+and `project.members.remove`.
+
+First run a dry run against one explicitly selected Project in the intended
+environment and save the complete JSON report:
+
+```sh
+node --env-file=.env scripts/migrations/20261019-project-creator-leader.mjs --project-id=<projectId> > project-creator-leader-dry-run.json
+```
+
+Review `databaseName`, `targetFingerprint`, `isSafe`, `plannedPromotions`,
+`alreadyCompliant`, and `skippedProjects`. Apply only when the report is safe,
+the target and planned RoleAssignment IDs are expected, and the current Role
+has the required permissions. Pass the exact report hash and same Project ID:
+
+```sh
+npm run migrate:project-creator-leader -- --apply --project-id=<projectId> --expected-report-sha256=<reportSha256>
+```
+
+The apply mode refuses a missing or changed report hash, an unsafe plan, a
+changed RoleAssignment, or a skipped Project. All planned RoleAssignment
+updates run in one MongoDB transaction; a failed update aborts the transaction.
+Use a MongoDB deployment that supports transactions. The script has no
+automatic rollback mode. A successful promotion can be reverted only through
+a separately reviewed, targeted operation using the exact prior Role IDs and
+RoleAssignment IDs; do not infer rollback data from the role code alone. This
+review did not execute the data migration.

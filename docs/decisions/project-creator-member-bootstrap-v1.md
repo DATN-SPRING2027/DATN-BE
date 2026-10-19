@@ -1,6 +1,6 @@
 # Project creator Member bootstrap — Project Foundation
 
-- **Status:** Current requester-approved Project Create bootstrap policy; reaffirmed on 2026-10-04 during PR #17 review
+- **Status:** Superseded on 2026-10-19 by [`project-creator-team-leader-bootstrap-v1.md`](project-creator-team-leader-bootstrap-v1.md)
 - **Decision date:** 2026-09-30; reaffirmed 2026-10-04
 - **Scope:** Creator bootstrap performed by `POST /api/v1/iam/projects`
 

@@ -159,6 +159,27 @@ export class ProjectAccessController {
     );
   }
 
+  @Get('member-candidates')
+  @RequireProjectAccessPermission('project.members.add')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  async listMemberCandidates(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Query('email') emailQuery: string | undefined,
+    @Query('search') searchQuery: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    const search = emailQuery || searchQuery;
+    return this.access.listMemberCandidates(
+      actor,
+      projectId,
+      typeof search === 'string' ? search.trim() : undefined,
+    );
+  }
+
   @Post('memberships')
   @RequireProjectAccessPermission('project.members.add')
   @UseGuards(ProjectAccessAuthorizationGuard)

@@ -722,6 +722,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/projects/:projectId/member-candidates')
+  listProjectMemberCandidates(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Post('iam/projects/:projectId/memberships')
   addProjectMember(
     @Req() request: Request,

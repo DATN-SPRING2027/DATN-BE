@@ -9,6 +9,21 @@ export interface ProjectMembershipRecord {
   userId: string;
   status: 'ACTIVE' | 'INACTIVE';
   joinedAt: string;
+  user?: {
+    id: string;
+    fullName?: string;
+    email: string;
+    avatarUrl?: string | null;
+  } | null;
+}
+
+export interface ProjectMemberCandidateRecord {
+  userId: string;
+  email: string;
+  fullName: string;
+  avatarUrl: string | null;
+  organizationMembershipStatus: 'ACTIVE';
+  isProjectMember: boolean;
 }
 
 export interface ProjectMembershipListQuery {
@@ -29,6 +44,11 @@ export interface ProjectAccessRepository {
     projectId: string,
     query: ProjectMembershipListQuery,
   ): Promise<{ data: ProjectMembershipRecord[]; totalItems: number }>;
+  listMemberCandidates(
+    organizationId: string,
+    projectId: string,
+    search?: string,
+  ): Promise<ProjectMemberCandidateRecord[]>;
   addMember(
     organizationId: string,
     actorId: string,
