@@ -4,6 +4,17 @@ import mongoose, { Types } from 'mongoose';
 export const TASK_DATABASE_NAME = 'continuum_task';
 export const TASK_COLLECTION = 'tasks';
 export const TASK_EVENT_COLLECTION = 'task_events';
+export const TASK_OPERATION_COLLECTION = 'task_operations';
+
+export const TASK_STATUSES = [
+  'TODO',
+  'IN_PROGRESS',
+  'BLOCKED',
+  'DONE',
+  'CANCELLED',
+] as const;
+
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 export const TASK_TITLE_PATTERN = String.raw`[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]`;
 
@@ -32,7 +43,10 @@ export interface TaskDocument extends mongoose.mongo.Document {
   createdBy: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
-  version: 1;
+  status: TaskStatus;
+  assigneeId: Types.ObjectId | null;
+  completedAt: Date | null;
+  version: number;
 }
 
 export interface TaskCreationEventDocument extends mongoose.mongo.Document {
@@ -48,6 +62,63 @@ export interface TaskCreationEventDocument extends mongoose.mongo.Document {
   occurredAt: Date;
   operationId: string;
   correlationId: string;
+}
+
+export interface TaskStatusTransitionEventDocument
+  extends mongoose.mongo.Document {
+  _id: Types.ObjectId;
+  taskId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  actorId: Types.ObjectId;
+  actorType: 'USER' | 'SYSTEM';
+  source: 'WEB' | 'API' | 'INTERNAL_SERVICE';
+  eventType: 'TASK_STATUS_TRANSITIONED';
+  operationId: string;
+  correlationId?: string;
+  timestamp: Date;
+  version: number;
+  changedFields: ['status'];
+  delta: {
+    type: 'STATUS_TRANSITION';
+    fromStatus: TaskStatus;
+    toStatus: TaskStatus;
+    reason?: string;
+  };
+}
+
+export type TaskEventDocument =
+  TaskCreationEventDocument | TaskStatusTransitionEventDocument;
+
+export type TaskLifecycleOperationState =
+  'IN_PROGRESS' | 'COMMITTED' | 'REJECTED';
+
+export interface TaskLifecycleOperationDocument
+  extends mongoose.mongo.Document {
+  _id: Types.ObjectId;
+  actorId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  operationId: string;
+  fingerprint: string;
+  state: TaskLifecycleOperationState;
+  taskId: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  leaseUntil: Date;
+  expiresAt: Date;
+  result?:
+    | {
+        outcome: 'COMMITTED';
+        status: TaskStatus;
+        version: number;
+        completedAt: Date | null;
+        updatedAt: Date;
+      }
+    | {
+        outcome: 'REJECTED';
+        code: string;
+        currentStatus?: TaskStatus;
+        currentVersion?: number;
+      };
 }
 
 export interface TaskCreationContext {
@@ -117,6 +188,9 @@ export function buildTaskCreationDocuments(input: {
     createdBy: input.actorId,
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
+    status: 'TODO',
+    assigneeId: null,
+    completedAt: null,
     version: 1,
   };
   const event: TaskCreationEventDocument = {
