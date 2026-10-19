@@ -49,15 +49,18 @@ an authority records approval of this OpenAPI. Create is omitted until DR-7(c)(d
 is decided; there is no mutation, status, assignment, filter, sort, history or
 `Idempotency-Key`. Routes stay disabled by default and behind the deny-by-default
 authorization boundary; the trust profile (DR-3) and scope evidence (DR-8) are
-deferred. The `x-pending-decisions` list in the file names every choice the
-drafter made that still needs explicit approval. Unlike the IAM lists, this slice
+deferred. The task owner recorded the remaining design choices on 19/10/2026 at
+the Leader's request (`x-owner-decisions` in the file: path shape, default `limit`
+20, cursor behavior, error mapping and `no-store`); items still waiting for
+others are in `x-pending-decisions`. Unlike the IAM lists, this slice
 uses cursor pagination (`limit` 1-100, `afterId`, `_id` ascending) per DR-6.
 Errors keep the existing `{code, message, details, requestId}` shape; non-member
 and cross-scope access return 404 (DR-5), a denied permission and a malformed path
-id also return 404 as the drafter's proposal, and only a malformed `limit` or
-`afterId` returns 422. Whole-Project read access is DR-4, approved only
-conditionally until the Product/Security delegation is confirmed, so it is
-marked `DR4-1` in `x-pending-decisions`. The current `TaskAuthorizationHttpGuard` returns a boolean
-and drops the denial reason, so the handler pull request must add a
-reason-aware mapping to 401, 404 and 503 before this contract can be met.
+id also return 404 (owner decision ERR-1), and only a malformed `limit` or
+`afterId` returns 422. Whole-Project read access is DR-4, approved by the Leader
+on 19/10/2026 (authority confirmed on Document PR #46). This OpenAPI itself is
+still not approved: see `APPROVAL-1` in `x-pending-decisions`. The current
+`TaskAuthorizationHttpGuard` returns a boolean and drops the denial reason, so
+the handler pull request must add a reason-aware mapping to 401, 404 and 503
+before this contract can be met.
 `src/contracts/task-slice-openapi.spec.ts` guards the scope of the draft.

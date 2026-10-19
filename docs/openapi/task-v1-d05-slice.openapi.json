@@ -3,22 +3,26 @@
   "info": {
     "title": "Continuum AI Task internal API — DATN-97 seven-field slice",
     "version": "0.1.0-draft",
-    "description": "PROPOSED, NOT APPROVED contract for the DATN-97 (D-05) seven-field Task slice: list by Project and detail only. Scope follows the Leader's partial approval of the Document D05-DR1 decision request (https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568), recorded in Document doc 25 (https://github.com/DATN-SPRING2027/Document/pull/46): DR-1/2/5/6/7(a)(b) approved and DR-4 (whole-Project read) approved only conditionally, all under a delegation that is still an open note. Create is deliberately omitted until DR-7(c)(d) is recorded; no mutation, status, assignment, filter, sort, history or Idempotency-Key exists in this slice. These are internal Task-service routes, disabled by default, behind the deny-by-default authorization boundary; DR-3 (trust profile) and DR-8 (scope evidence) are DEFER, so no route may be activated from this contract. A task exposes exactly id, projectId, title, createdBy, createdAt, updatedAt and version. version is informational and is not a CAS/ETag. See x-pending-decisions for choices the drafter made that need explicit approval."
+    "description": "PROPOSED, NOT APPROVED contract for the DATN-97 (D-05) seven-field Task slice: list by Project and detail only. Scope follows the Leader's partial approval of the Document D05-DR1 decision request (https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568), recorded in Document doc 25 (https://github.com/DATN-SPRING2027/Document/pull/46): DR-1/2/4/5/6/7(a)(b) approved by the Leader, who confirmed on 19/10/2026 that he exercises the Product, Architecture and Security authority for this slice (https://github.com/DATN-SPRING2027/Document/pull/46#issuecomment-6258355860). This OpenAPI itself is not approved yet. Create is deliberately omitted until DR-7(c)(d) is recorded; no mutation, status, assignment, filter, sort, history or Idempotency-Key exists in this slice. These are internal Task-service routes, disabled by default, behind the deny-by-default authorization boundary; DR-3 (trust profile) and DR-8 (scope evidence) are DEFER, so no route may be activated from this contract. A task exposes exactly id, projectId, title, createdBy, createdAt, updatedAt and version. version is informational and is not a CAS/ETag. Choices recorded by the task owner are listed in x-owner-decisions; items still waiting for others are listed in x-pending-decisions."
   },
   "x-approval-status": "PROPOSED — not approved; handlers must not be written before an authority records approval of this OpenAPI",
   "x-decision-refs": [
     "Leader decisions on D05-DR1: https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568",
     "Document doc 25 (D05-DR1 decision record): https://github.com/DATN-SPRING2027/Document/pull/46",
     "Document doc 24 (D05-DR1 decision request): https://github.com/DATN-SPRING2027/Document/pull/44",
-    "DR-1 A, DR-2 A, DR-5, DR-6 A, DR-7(a)(b) approved; DR-4 approved conditionally pending confirmation of the Product/Security delegation; DR-3, DR-7(c)(d), DR-8 DEFER"
+    "DR-1 A, DR-2 A, DR-4 (whole-Project read for ACTIVE members, no Events), DR-5, DR-6 A, DR-7(a)(b) approved; authority confirmed by the Leader on 19/10/2026: https://github.com/DATN-SPRING2027/Document/pull/46#issuecomment-6258355860",
+    "DR-3, DR-7(c)(d), DR-8 DEFER"
+  ],
+  "x-owner-decisions": [
+    "SOURCE: recorded by the task owner at the Leader's request in the review of DATN-BE PR #55 (19/10/2026 02:28Z). The Leader said he will review to approve the OpenAPI after the contract is updated.",
+    "PATH-1 (task owner Nguyen Hong Phuc, 19/10/2026): keep /internal/tasks/projects/{projectId}/tasks[/{taskId}]. It keeps the approved /internal/tasks prefix and gives the existing TaskAuthorizationHttpGuard a project path parameter and a detail resource parameter.",
+    "LIMIT-1 (task owner Nguyen Hong Phuc, 19/10/2026): the default limit is 20; DR-6 fixes the 1-100 range.",
+    "CURSOR-1 (task owner Nguyen Hong Phuc, 19/10/2026): nextAfterId is the id of the last item when the page is full (items.length equals limit) and null otherwise, so a client may receive one empty final page; no repository change.",
+    "ERR-1 (task owner Nguyen Hong Phuc, 19/10/2026): authorization denial reasons map to 401 (unverified credential), 404 (non-member, cross-scope, Project or resource mismatch, denied permission, malformed path id) and 503 (scope evidence or permission policy unavailable); a malformed limit or afterId returns 422; authorization runs before input validation; the error codes are TASK_UNAUTHENTICATED, TASK_NOT_FOUND, TASK_VALIDATION_FAILED and TASK_AUTHORIZATION_UNAVAILABLE. DR-5 approved by the Leader covers only 404 for non-member and cross-scope access. Implementation precondition: the existing TaskAuthorizationHttpGuard returns a boolean and drops the denial reason (Nest would answer a generic 403), so the handler pull request must add a reason-aware mapping to 401, 404 and 503.",
+    "CACHE-1 (task owner Nguyen Hong Phuc, 19/10/2026): Cache-Control no-store on 200 responses."
   ],
   "x-pending-decisions": [
-    "DR4-1: the permission for every ACTIVE Organization Member with an ACTIVE ProjectMembership to list and read every Task of the Project is DR-4, approved only conditionally in Document doc 25 until the Product/Security delegation is confirmed. The read scope of both routes is not final until then and must not be used as a policy ALLOW rule or handler behavior before that confirmation.",
-    "PATH-1: path shape /internal/tasks/projects/{projectId}/tasks[/{taskId}] is the drafter's choice (keeps the approved /internal/tasks prefix and gives the existing TaskAuthorizationHttpGuard a project path parameter and a detail resource parameter); needs Architecture confirmation.",
-    "LIMIT-1: default limit 20 is the drafter's choice; DR-6 only fixes the 1-100 range.",
-    "CURSOR-1: nextAfterId is the id of the last item when the page is full (items.length equals limit) and null otherwise, so a client may receive one empty final page; this avoids a repository change. Needs confirmation.",
-    "ERR-1: mapping of authorization denial reasons to HTTP (401, 404, 503), 422 for a malformed limit or afterId, and the error codes are the drafter's proposal built on DR-5, which covers only 404 for non-member or cross-scope access; PERMISSION_DENIED mapped to 404 and a malformed path id mapped to 404 are this proposal only. A malformed projectId or taskId path value reaches authorization first and is reported as 404, so the detail route has no 422. PERMISSION_DENIED mapped to 404 and the precedence of authorization over input validation need Security/Architecture confirmation. Implementation precondition: the existing TaskAuthorizationHttpGuard returns a boolean and drops the denial reason (Nest would answer a generic 403), so the handler pull request must add a reason-aware mapping to 401, 404 and 503.",
-    "CACHE-1: Cache-Control no-store on 200 responses follows the existing membership read contract; needs confirmation.",
+    "APPROVAL-1: this OpenAPI is not approved yet and has no named approving authority. On 19/10/2026 the Leader approved DATN-BE PR #54 in text, agreed the scope, seven fields and pagination of this OpenAPI in a review of PR #55, asked the task owner to record the decisions for PATH-1, LIMIT-1, CURSOR-1, ERR-1 and CACHE-1 (now in x-owner-decisions) and said he will review to approve the OpenAPI after the contract is updated. No handler may be written and no policy ALLOW rule may be enabled from this contract until that approval is recorded.",
     "AUTH-1: the bearer credential is an opaque verifier input; issuer, audience, token format and service identity (mTLS) are DR-3 and are not specified here. The scope-evidence source and revocation handling are DR-8 and are not specified here."
   ],
   "tags": [
@@ -34,7 +38,7 @@
         "tags": ["Task slice"],
         "summary": "List Tasks of one Project (cursor pagination)",
         "operationId": "listProjectTasksInternalV1",
-        "description": "Conditional on DR-4 (approved only conditionally, see x-pending-decisions DR4-1): an ACTIVE Organization Membership and an ACTIVE ProjectMembership may list every Task of the Project (the approver stated reading the whole Project is intentional); both are validated server-side. DR-6: cursor pagination, limit 1-100, ordered by _id ascending; there is no page, total, filter or sort parameter. Authorization runs before input validation, and only limit and afterId are validated afterwards (422). Non-member and cross-scope callers receive 404 (DR-5); a malformed projectId also receives 404 as the drafter's proposal ERR-1.",
+        "description": "Per DR-4 (approved by the Leader): an ACTIVE Organization Membership and an ACTIVE ProjectMembership may list every Task of the Project they belong to (reading the whole Project is intentional for this slice; no Events, no access to other Projects); both are validated server-side. DR-6: cursor pagination, limit 1-100, ordered by _id ascending; there is no page, total, filter or sort parameter. Authorization runs before input validation, and only limit and afterId are validated afterwards (422). Non-member and cross-scope callers receive 404 (DR-5); a malformed projectId and a denied permission also receive 404 (task-owner decision ERR-1).",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
           { "$ref": "#/components/parameters/Limit" },
@@ -65,7 +69,7 @@
         "tags": ["Task slice"],
         "summary": "Get one Task of a Project",
         "operationId": "getProjectTaskInternalV1",
-        "description": "Conditional on DR-4 and covered by DR-5 for non-member and cross-scope access, as for the list route. The lookup is always bound to both projectId and taskId, so a Task of another Project is indistinguishable from a missing Task and returns 404. A malformed projectId or taskId is also reported as 404 because authorization runs first and there are no other inputs to validate, so this route has no 422.",
+        "description": "Per DR-4 and covered by DR-5 for non-member and cross-scope access, as for the list route. The lookup is always bound to both projectId and taskId, so a Task of another Project is indistinguishable from a missing Task and returns 404. A malformed projectId or taskId is also reported as 404 because authorization runs first and there are no other inputs to validate, so this route has no 422.",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
           { "$ref": "#/components/parameters/TaskId" }
@@ -117,7 +121,7 @@
         "name": "limit",
         "in": "query",
         "required": false,
-        "description": "Page size, 1-100 (DR-6). The default is a drafter's choice, see x-pending-decisions LIMIT-1.",
+        "description": "Page size, 1-100 (DR-6). The default of 20 is a task-owner decision (x-owner-decisions LIMIT-1).",
         "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
       },
       "AfterId": {
@@ -144,7 +148,7 @@
         }
       },
       "NotFound": {
-        "description": "The Task or Project does not exist or is not visible to the caller. Non-member and cross-scope access (including a Project or resource mismatch) return this response without revealing existence (DR-5). A denied permission and a malformed path id also return it, but that is the drafter's proposal ERR-1, not an approved decision.",
+        "description": "The Task or Project does not exist or is not visible to the caller. Non-member and cross-scope access (including a Project or resource mismatch) return this response without revealing existence (DR-5). A denied permission and a malformed path id also return it (task-owner decision ERR-1, recorded on 19/10/2026); DR-5 itself covers only non-member and cross-scope access.",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/ErrorResponse" },
@@ -242,7 +246,7 @@
           },
           "nextAfterId": {
             "oneOf": [{ "$ref": "#/components/schemas/ObjectIdString" }, { "type": "null" }],
-            "description": "Id of the last item when the page is full, otherwise null. See x-pending-decisions CURSOR-1."
+            "description": "Id of the last item when the page is full, otherwise null. See x-owner-decisions CURSOR-1."
           }
         }
       },

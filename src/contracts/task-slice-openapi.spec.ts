@@ -23,6 +23,9 @@ interface SchemaContract extends PropertyContract {
   additionalProperties?: boolean;
 }
 interface OpenApiDocument {
+  'x-approval-status': string;
+  'x-decision-refs': string[];
+  'x-owner-decisions': string[];
   'x-pending-decisions': string[];
   security?: Record<string, string[]>[];
   paths: Record<string, Record<string, Operation>>;
@@ -30,7 +33,14 @@ interface OpenApiDocument {
     securitySchemes: Record<string, { type: string; scheme?: string }>;
     parameters: Record<
       string,
-      { schema: { $ref?: string; minimum?: number; maximum?: number } }
+      {
+        schema: {
+          $ref?: string;
+          minimum?: number;
+          maximum?: number;
+          default?: number;
+        };
+      }
     >;
     responses: Record<string, ResponseContract>;
     schemas: Record<string, SchemaContract>;
@@ -68,27 +78,38 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
     );
   });
 
-  it('marks whole-Project read access as conditional on DR-4 and keeps DR-5 limited to non-member and cross-scope', () => {
-    const ids = document['x-pending-decisions'].map(
+  it('records DR-4 as approved, keeps the OpenAPI itself pending approval and AUTH-1 deferred', () => {
+    const pendingIds = document['x-pending-decisions'].map(
       (entry) => entry.split(':')[0],
     );
-    expect(ids).toEqual(
-      expect.arrayContaining([
-        'DR4-1',
-        'PATH-1',
-        'LIMIT-1',
-        'CURSOR-1',
-        'ERR-1',
-        'CACHE-1',
-        'AUTH-1',
-      ]),
+    expect(pendingIds.sort()).toEqual(['APPROVAL-1', 'AUTH-1']);
+    expect(document['x-decision-refs'].join('\n')).toMatch(
+      /DR-4[^\n]*approved[^\n]*issuecomment-6258355860/,
     );
+    expect(document['x-approval-status']).toMatch(/not approved/i);
     for (const operations of Object.values(document.paths)) {
       expect(operations.get.description).toMatch(/DR-4/);
     }
+  });
+
+  it('records the five task-owner decisions and keeps DR-5 limited to non-member and cross-scope', () => {
+    const ownerIds = document['x-owner-decisions']
+      .map((entry) => entry.split(' ')[0])
+      .filter((id) => id !== 'SOURCE:');
+    expect(ownerIds).toEqual([
+      'PATH-1',
+      'LIMIT-1',
+      'CURSOR-1',
+      'ERR-1',
+      'CACHE-1',
+    ]);
+    const errorDecision = document['x-owner-decisions'].find((entry) =>
+      entry.startsWith('ERR-1'),
+    );
+    expect(errorDecision).toMatch(/guard returns a boolean/i);
     const notFound = document.components.responses.NotFound.description ?? '';
     expect(notFound).toMatch(/non-member and cross-scope/i);
-    expect(notFound).toMatch(/drafter's proposal ERR-1/);
+    expect(notFound).toMatch(/task-owner decision ERR-1/);
   });
 
   it('requires the opaque delegated bearer credential on every operation', () => {
@@ -129,6 +150,7 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
     const limit = document.components.parameters.Limit.schema;
     expect(limit.minimum).toBe(1);
     expect(limit.maximum).toBe(100);
+    expect(limit.default).toBe(20);
     const page = document.components.schemas.TaskPage;
     expect(page.additionalProperties).toBe(false);
     expect([...(page.required ?? [])].sort()).toEqual(['items', 'nextAfterId']);
