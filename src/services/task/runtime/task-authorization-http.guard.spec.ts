@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { Test } from '@nestjs/testing';
+import { getConnectionToken } from '@nestjs/mongoose';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import {
@@ -32,6 +33,7 @@ import {
   type TaskHttpRequestBinding,
 } from './task-authorization-http.guard';
 import { TaskRuntimeModule } from './task-runtime.module';
+import { TASK_DATABASE_NAME } from '../infrastructure/mongodb/task-contract';
 
 const testSink = Symbol('TEST_TASK_HANDLER_SINK');
 const actorUserId = '0123456789abcdef01234567';
@@ -132,6 +134,10 @@ async function createTestApplication(options?: {
   const builder = Test.createTestingModule({
     controllers: [TestOnlyTaskController],
     providers: [
+      {
+        provide: getConnectionToken(),
+        useValue: { db: { databaseName: TASK_DATABASE_NAME } },
+      },
       ...(runtimeModule.providers ?? []),
       { provide: testSink, useValue: sink },
     ],

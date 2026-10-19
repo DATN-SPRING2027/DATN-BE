@@ -5,6 +5,7 @@ export const TASK_DATABASE_NAME = 'continuum_task';
 export const TASK_COLLECTION = 'tasks';
 export const TASK_EVENT_COLLECTION = 'task_events';
 export const TASK_OPERATION_COLLECTION = 'task_operations';
+export const TASK_OPERATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export const TASK_STATUSES = [
   'TODO',
@@ -74,7 +75,7 @@ export interface TaskStatusTransitionEventDocument
   source: 'WEB' | 'API' | 'INTERNAL_SERVICE';
   eventType: 'TASK_STATUS_TRANSITIONED';
   operationId: string;
-  correlationId?: string;
+  correlationId: string;
   timestamp: Date;
   version: number;
   changedFields: ['status'];
@@ -92,6 +93,21 @@ export type TaskEventDocument =
 export type TaskLifecycleOperationState =
   'IN_PROGRESS' | 'COMMITTED' | 'REJECTED';
 
+export type TaskLifecycleOperationResult =
+  | {
+      outcome: 'COMMITTED';
+      status: TaskStatus;
+      version: number;
+      completedAt: Date | null;
+      updatedAt: Date;
+    }
+  | {
+      outcome: 'REJECTED';
+      code: string;
+      currentStatus?: TaskStatus;
+      currentVersion?: number;
+    };
+
 export interface TaskLifecycleOperationDocument
   extends mongoose.mongo.Document {
   _id: Types.ObjectId;
@@ -105,20 +121,7 @@ export interface TaskLifecycleOperationDocument
   updatedAt: Date;
   leaseUntil: Date;
   expiresAt: Date;
-  result?:
-    | {
-        outcome: 'COMMITTED';
-        status: TaskStatus;
-        version: number;
-        completedAt: Date | null;
-        updatedAt: Date;
-      }
-    | {
-        outcome: 'REJECTED';
-        code: string;
-        currentStatus?: TaskStatus;
-        currentVersion?: number;
-      };
+  result?: TaskLifecycleOperationResult;
 }
 
 export interface TaskCreationContext {

@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { getConnectionToken } from '@nestjs/mongoose';
 import { TASK_DATABASE_NAME } from '../infrastructure/mongodb/task-contract';
 import {
   TaskRuntimeModule,
@@ -14,6 +15,8 @@ import {
   UnconfiguredTaskResourceProjectResolver,
 } from './task-authorization-boundary';
 import { TaskAuthorizationHttpGuard } from './task-authorization-http.guard';
+import { TaskHealthController } from './task-health.controller';
+import { TaskLifecycleCommandService } from './task-lifecycle-command';
 
 describe('TaskRuntimeModule MongoDB options', () => {
   it('selects only continuum_task and disables automatic schema creation', () => {
@@ -33,8 +36,13 @@ describe('TaskRuntimeModule MongoDB options', () => {
       port: 3100,
     });
 
+    expect(Reflect.getMetadata('controllers', TaskRuntimeModule)).toEqual([
+      TaskHealthController,
+    ]);
+
     expect(runtimeModule.providers).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ provide: TaskLifecycleCommandService }),
         TaskInboundContextTrustBoundary,
         TaskAuthorizationHttpGuard,
         {
@@ -57,7 +65,13 @@ describe('TaskRuntimeModule MongoDB options', () => {
       port: 3100,
     });
     const moduleRef = await Test.createTestingModule({
-      providers: dynamicModule.providers ?? [],
+      providers: [
+        {
+          provide: getConnectionToken(),
+          useValue: { db: { databaseName: TASK_DATABASE_NAME } },
+        },
+        ...(dynamicModule.providers ?? []),
+      ],
     }).compile();
     const boundary = moduleRef.get(TaskInboundContextTrustBoundary);
 
