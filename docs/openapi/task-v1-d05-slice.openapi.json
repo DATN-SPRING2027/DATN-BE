@@ -7,7 +7,7 @@
   },
   "x-approval-status": "APPROVED for the list and detail operations of the seven-field slice by the Leader on 19/10/2026 (https://github.com/DATN-SPRING2027/DATN-BE/pull/55#issuecomment-6263376181), within the conditions in x-approval-conditions. Create, DR-3, DR-7(c)(d), DR-8 and AUTH-1 are not approved.",
   "x-approval-conditions": [
-    "Reviewed revision: commit dc743a8 of the branch feat/Phuc-datn-97-task-slice-openapi-be-api (DATN-BE PR #55).",
+    "Reviewed revision: the list and detail contract of DATN-BE PR #55 as it stood when the Leader approved it on 19/10/2026 (https://github.com/DATN-SPRING2027/DATN-BE/pull/55#issuecomment-6263376181). Commit ids of the PR branch are not cited because a squash merge removes them.",
     "The approval applies only to the list and detail APIs and the seven-field Task structure in the reviewed revision.",
     "DR-4 stays as approved: Organization Membership and ProjectMembership must both be ACTIVE; members read the Tasks of their own Project; no Events.",
     "DR-3, DR-7(c)(d) and DR-8 stay DEFER.",
@@ -236,11 +236,11 @@
           },
           "createdBy": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
           "createdAt": { "type": "string", "format": "date-time", "description": "ISO-8601 UTC." },
-          "updatedAt": { "type": "string", "format": "date-time", "description": "ISO-8601 UTC. Equal to createdAt in this slice." },
+          "updatedAt": { "type": "string", "format": "date-time", "description": "ISO-8601 UTC. The time of the last change to the Task and never earlier than createdAt. It equals createdAt for a Task that has not changed since creation." },
           "version": {
             "type": "integer",
             "minimum": 1,
-            "description": "Informational creation ordinal. It is not a CAS/ETag and there is no expectedVersion in this slice (DR-1)."
+            "description": "Informational document version, an integer of at least 1. It is 1 at creation and the stored value may be greater than 1 after later changes allowed by the lifecycle database contract (DATN-BE PR #58). It is not a CAS/ETag and there is no expectedVersion in this slice (DR-1)."
           }
         }
       },

@@ -16,6 +16,7 @@ interface Operation {
 interface PropertyContract {
   pattern?: string;
   maxItems?: number;
+  description?: string;
 }
 interface SchemaContract extends PropertyContract {
   required?: string[];
@@ -48,7 +49,32 @@ interface OpenApiDocument {
   };
 }
 
-describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
+function collectReferences(value: unknown, found = new Set<string>()) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectReferences(item, found);
+  } else if (typeof value === 'object' && value !== null) {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === '$ref' && typeof item === 'string') found.add(item);
+      else collectReferences(item, found);
+    }
+  }
+  return found;
+}
+
+function resolveReference(document: unknown, reference: string): unknown {
+  return reference
+    .slice(2)
+    .split('/')
+    .reduce<unknown>(
+      (current, segment) =>
+        typeof current === 'object' && current !== null
+          ? (current as Record<string, unknown>)[segment]
+          : undefined,
+      document,
+    );
+}
+
+describe('DATN-97 Task slice OpenAPI (approved D05-DR1 list/detail contract)', () => {
   const document = JSON.parse(
     readFileSync(
       resolve(process.cwd(), 'docs/openapi/task-v1-d05-slice.openapi.json'),
@@ -101,7 +127,7 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
   it('keeps the approval conditions that limit what may be built', () => {
     const conditions = document['x-approval-conditions'].join('\n');
     for (const required of [
-      /commit dc743a8/,
+      /Reviewed revision:[^\n]*issuecomment-6263376181/,
       /only to the list and detail APIs/,
       /DR-4 stays as approved[^\n]*ACTIVE[^\n]*no Events/,
       /DR-3, DR-7\(c\)\(d\) and DR-8 stay DEFER/,
@@ -202,9 +228,10 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
       );
       for (const [status, response] of Object.entries(responses)) {
         if (status === '200') continue;
-        const resolved =
-          document.components.responses[response.$ref!.split('/').at(-1)!];
-        expect(resolved.content?.['application/json'].schema.$ref).toBe(
+        expect(response.$ref).toMatch(/^#\/components\/responses\/\w+$/);
+        const resolved = resolveReference(document, response.$ref ?? '') as
+          ResponseContract | undefined;
+        expect(resolved?.content?.['application/json'].schema.$ref).toBe(
           '#/components/schemas/ErrorResponse',
         );
       }
@@ -217,5 +244,31 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
       'message',
       'requestId',
     ]);
+  });
+
+  it('describes updatedAt and version as the stored values, not creation-only (lifecycle DB contract, PR #58)', () => {
+    const { updatedAt, version } = document.components.schemas.Task.properties!;
+    expect(updatedAt.description).toMatch(/never earlier than createdAt/);
+    expect(updatedAt.description).not.toMatch(
+      /equal to createdAt in this slice/i,
+    );
+    expect(version.description).toMatch(/may be greater than 1/);
+    expect(version.description).not.toMatch(/creation ordinal/i);
+  });
+
+  it('resolves every local $ref and leaves no unreferenced component', () => {
+    const references = collectReferences(document);
+    for (const reference of references) {
+      expect(reference).toMatch(
+        /^#\/components\/(parameters|responses|schemas)\/\w+$/,
+      );
+      expect(resolveReference(document, reference)).toBeDefined();
+    }
+    for (const [section, entries] of Object.entries(document.components)) {
+      if (section === 'securitySchemes') continue;
+      for (const name of Object.keys(entries)) {
+        expect(references).toContain(`#/components/${section}/${name}`);
+      }
+    }
   });
 });

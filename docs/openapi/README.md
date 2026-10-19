@@ -22,7 +22,11 @@ describes implemented routes.
 | Team Membership    | List, create and idempotent removal         |
 | Organization Membership | Membership list/detail, invitation list/detail, guarded invite lifecycle commands and ACTIVE membership suspension. Invite/resend/cancel and recipient acceptance remain runtime-gated by the approved readiness decision. |
 
-## Review checklist
+## IAM review checklist
+
+These rules apply to `iam-v1.openapi.json`. The Task D-05 slice below is an
+internal contract with its own conventions (`/internal/tasks` paths, cursor
+pagination, no `403`).
 
 - All paths remain under `/api/v1` and all JSON fields remain camelCase.
 - IDs stay opaque strings and timestamps stay ISO-8601 UTC values.
@@ -36,7 +40,7 @@ describes implemented routes.
 - No controller, DTO or seed implementation may diverge from this document
   without a separate contract review.
 
-The document deliberately has no `servers` entry or credential examples. The
+The IAM document deliberately has no `servers` entry or credential examples. The
 deployment URI and all credentials remain environment configuration.
 
 ## Task D-05 slice (approved for list and detail)
@@ -65,5 +69,7 @@ on 19/10/2026 (authority confirmed on Document PR #46). The current
 the handler pull request must add a reason-aware mapping to 401, 404 and 503
 before this contract can be met. Since DATN-BE PR #58 the stored Task document
 carries more fields than the seven in the response; the handler must return
-only the seven approved fields.
+only the seven approved fields. `updatedAt` and `version` are returned as
+stored, so after a later lifecycle change they can differ from `createdAt` and
+from `1`.
 `src/contracts/task-slice-openapi.spec.ts` guards the scope of the contract.
