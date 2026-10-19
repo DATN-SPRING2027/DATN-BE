@@ -443,3 +443,47 @@ automatic rollback mode. A successful promotion can be reverted only through
 a separately reviewed, targeted operation using the exact prior Role IDs and
 RoleAssignment IDs; do not infer rollback data from the role code alone. This
 review did not execute the data migration.
+
+## Project Settings Leader permissions
+
+`20261019-project-settings-leader-permissions.mjs` provisions the missing
+project settings permissions (`project.update`, `project.visibility.manage`) to
+the system `TEAM_LEADER` Role in the IAM database.
+
+The migration preserves existing permissions (`project.read`,
+`project.members.list`, `project.members.add`, `project.members.remove`). It
+makes no changes to users, projects, role assignments, role identity
+(`code`, `name`, `isSystem`), collections, schemas, or indexes.
+
+Database resolution strictly uses the canonical IAM resolver
+(`resolveIamDatabaseName`). Explicit `--database` overrides are restricted to
+the canonical database (or `continuum_iam` in dedicated mode) and cannot be
+used to target arbitrary databases.
+
+Dry-run is read-only and prints a credential-free target fingerprint, preflight
+counts, planned permission additions, and `reportSha256`:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs > 20261019-project-settings-leader-permissions-before.json
+$before = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-before.json' -Raw | ConvertFrom-Json
+```
+
+Confirm `databaseName`, `targetFingerprint`, the single system `TEAM_LEADER`
+Role ID, the exact missing permissions, and an empty `issues` list before
+applying that report:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --apply "--expected-report-sha256=$($before.reportSha256)"
+```
+
+Apply is additive and idempotent.
+
+For rollback, run a fresh dry-run for the current state and provide the saved
+pre-apply report. Rollback removes only the permissions introduced by this
+migration:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs > 20261019-project-settings-leader-permissions-current.json
+$current = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-current.json' -Raw | ConvertFrom-Json
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --rollback "--expected-report-sha256=$($current.reportSha256)" --rollback-from-report=20261019-project-settings-leader-permissions-before.json
+```
