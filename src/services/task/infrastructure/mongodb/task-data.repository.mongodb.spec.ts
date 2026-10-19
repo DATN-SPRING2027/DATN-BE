@@ -8,6 +8,7 @@ import {
   TASK_OPERATION_COLLECTION,
   type TaskCreationEventDocument,
   type TaskDocument,
+  type TaskEventDocument,
 } from './task-contract';
 import { TASK_COLLECTION_VALIDATORS } from './task-database-schema';
 import {
@@ -19,6 +20,16 @@ import { TaskDataRepository } from './task-data.repository';
 const integration =
   process.env.MONGODB_INTEGRATION === 'true' ? describe : describe.skip;
 const MAX_PAGE_SIZE = 100;
+
+function resultingTaskVersion(event: TaskEventDocument): number {
+  const fields = event as unknown as {
+    taskVersion?: unknown;
+    version?: unknown;
+  };
+  if (typeof fields.taskVersion === 'number') return fields.taskVersion;
+  if (typeof fields.version === 'number') return fields.version;
+  throw new Error('Task event is missing its resulting version');
+}
 
 integration(
   'D-03 Task data foundation on a marked MongoDB 7 replica set',
@@ -228,12 +239,14 @@ integration(
       const events = await repository.listHistory(
         String(projectId),
         String(result.task._id),
+        { page: 1, limit: MAX_PAGE_SIZE },
       );
-      expect(events).toHaveLength(1);
-      expect(events[0]._id).toBeInstanceOf(Types.ObjectId);
-      expect(events[0].taskId).toEqual(result.task._id);
-      expect(events[0].projectId).toEqual(result.task.projectId);
-      const creationEvent = events[0];
+      expect(events.events).toHaveLength(1);
+      expect(events.total).toBe(1);
+      expect(events.events[0]._id).toBeInstanceOf(Types.ObjectId);
+      expect(events.events[0].taskId).toEqual(result.task._id);
+      expect(events.events[0].projectId).toEqual(result.task.projectId);
+      const creationEvent = events.events[0];
       expect('eventName' in creationEvent).toBe(true);
       if (!('eventName' in creationEvent)) return;
       expect(creationEvent).toMatchObject({
@@ -362,8 +375,9 @@ integration(
         await repository.listHistory(
           String(otherProjectId),
           String(result.task._id),
+          { page: 1, limit: 20 },
         ),
-      ).toEqual([]);
+      ).toEqual({ events: [], total: 0 });
       expect(
         await repository.getById(
           [String(projectId)] as unknown as string,
@@ -399,18 +413,89 @@ integration(
       const history = await repository.listHistory(
         String(projectId),
         String(result.task._id),
+        { page: 1, limit: MAX_PAGE_SIZE },
       );
 
-      expect(history).toHaveLength(2);
-      expect(history[0]).toMatchObject({
+      expect(history.events).toHaveLength(2);
+      expect(history.total).toBe(2);
+      expect(history.events[0]).toMatchObject({
         eventName: 'TASK_CREATED',
         taskVersion: 1,
       });
-      expect(history[1]).toMatchObject({
+      expect(history.events[1]).toMatchObject({
         eventType: 'TASK_STATUS_TRANSITIONED',
         version: 2,
       });
-      expect(history.every((event) => !('historyVersion' in event))).toBe(true);
+      expect(
+        history.events.every((event) => !('historyVersion' in event)),
+      ).toBe(true);
+    });
+
+    it('paginates deterministically and reflects events appended between requests', async () => {
+      const result = await create('paginated history');
+      expect(result.state).toBe('COMMITTED');
+      if (result.state !== 'COMMITTED') return;
+
+      const insertTransition = async (version: number) =>
+        connection!.db!.collection(TASK_EVENT_COLLECTION).insertOne({
+          _id: new Types.ObjectId(version.toString(16).padStart(24, '0')),
+          taskId: result.task._id,
+          projectId,
+          actorId,
+          actorType: 'USER',
+          source: 'API',
+          eventType: 'TASK_STATUS_TRANSITIONED',
+          operationId: randomUUID(),
+          correlationId: `d09-page-${version}`,
+          timestamp: new Date(`2026-10-19T00:00:0${version}.000Z`),
+          version,
+          changedFields: ['status'],
+          delta: {
+            type: 'STATUS_TRANSITION',
+            fromStatus: version === 2 ? 'TODO' : 'IN_PROGRESS',
+            toStatus: version === 2 ? 'IN_PROGRESS' : 'DONE',
+          },
+        });
+
+      await insertTransition(2);
+      await insertTransition(3);
+      const firstPage = await repository.listHistory(
+        String(projectId),
+        String(result.task._id),
+        { page: 1, limit: 2 },
+      );
+      expect(firstPage.events.map(resultingTaskVersion)).toEqual([1, 2]);
+      expect(firstPage.total).toBe(3);
+
+      // A concurrent append can be observed in this page read or the next
+      // one. Page-number pagination makes no cross-request snapshot promise.
+      const [racingPage] = await Promise.all([
+        repository.listHistory(String(projectId), String(result.task._id), {
+          page: 2,
+          limit: 2,
+        }),
+        insertTransition(4),
+      ]);
+      const racingVersions = racingPage.events.map(resultingTaskVersion);
+      expect(racingVersions).toEqual(
+        racingVersions.length === 1 ? [3] : [3, 4],
+      );
+      expect([3, 4]).toContain(racingPage.total);
+
+      const secondPage = await repository.listHistory(
+        String(projectId),
+        String(result.task._id),
+        { page: 2, limit: 2 },
+      );
+      expect(secondPage.events.map(resultingTaskVersion)).toEqual([3, 4]);
+      expect(secondPage.total).toBe(4);
+
+      await expect(
+        repository.listHistory(String(projectId), String(result.task._id), {
+          page: 3,
+          limit: 2,
+        }),
+      ).resolves.toEqual({ events: [], total: 4 });
     });
 
     it('O7 enforces one version-1 event and stores provenance without content snapshots', async () => {

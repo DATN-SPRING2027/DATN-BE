@@ -17,6 +17,12 @@ import {
 import { TaskAuthorizationHttpGuard } from './task-authorization-http.guard';
 import { TaskHealthController } from './task-health.controller';
 import { TaskLifecycleCommandService } from './task-lifecycle-command';
+import {
+  TASK_HISTORY_ACCESS_EVIDENCE_PROVIDER,
+  TaskHistoryAccessAuthorizationBoundary,
+  TaskHistoryQueryService,
+  UnconfiguredTaskHistoryAccessEvidenceProvider,
+} from './task-history-query';
 
 describe('TaskRuntimeModule MongoDB options', () => {
   it('selects only continuum_task and disables automatic schema creation', () => {
@@ -43,14 +49,21 @@ describe('TaskRuntimeModule MongoDB options', () => {
     expect(runtimeModule.providers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ provide: TaskLifecycleCommandService }),
+        expect.objectContaining({ provide: TaskHistoryQueryService }),
         TaskInboundContextTrustBoundary,
         TaskAuthorizationHttpGuard,
+        TaskHistoryAccessAuthorizationBoundary,
         {
           provide: TASK_INBOUND_CONTEXT_VERIFIER,
           useClass: UnconfiguredTaskInboundContextVerifier,
         },
+        {
+          provide: TASK_HISTORY_ACCESS_EVIDENCE_PROVIDER,
+          useClass: UnconfiguredTaskHistoryAccessEvidenceProvider,
+        },
       ]),
     );
+    expect(runtimeModule.exports).toContain(TaskHistoryQueryService);
     expect(runtimeModule.exports).toContain(TaskInboundContextTrustBoundary);
     expect(runtimeModule.exports).toContain(TaskAuthorizationHttpGuard);
     expect(runtimeModule.providers).toContainEqual({
