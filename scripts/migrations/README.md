@@ -170,6 +170,46 @@ all invitation records so an application rollback cannot erase audit history.
 Resolve or allow pending invitations to expire before rollback; retain the
 report and coordinate API rollback with the backend release.
 
+## Organization Membership Admin permissions
+
+`20261019-organization-membership-admin-permissions.mjs` adds only
+`organization.memberships.read` and `organization.memberships.manage` to the
+existing system `ADMIN` Role in the IAM database. It does not change schema,
+RoleAssignments, memberships, or any non-ADMIN Role. The dry-run and apply use
+the same database selection as IAM: shared MongoDB mode uses
+`MONGODB_DATABASE`; service-owned mode uses `continuum_iam` when
+`INFRA_ENABLED=true`; disabled persistence is refused. The package script loads
+`.env`; verify that its `MONGODB_URI` and mode flags match the target runtime.
+
+Run and retain the read-only report first:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs > organization-membership-admin-permissions-before.json
+$before = Get-Content -LiteralPath 'organization-membership-admin-permissions-before.json' -Raw | ConvertFrom-Json
+```
+
+Confirm `databaseName`, `targetFingerprint`, the single system `ADMIN` Role ID,
+the exact missing permissions, and an empty `issues` list before applying that
+report:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs --apply "--expected-report-sha256=$($before.reportSha256)"
+```
+
+Apply is idempotent and preserves existing permission values. This is a data
+change: every Organization-level assignment resolving to this system `ADMIN`
+Role gains the membership read and management capabilities. Rollback requires
+a fresh reviewed dry-run for the current state and the saved clean pre-apply
+report; it removes only the approved permissions that report identified as
+missing. Before rollback, confirm no later Role change independently relies on
+those permissions, and coordinate it with rolling back the UI/API change.
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs > organization-membership-admin-permissions-current.json
+$current = Get-Content -LiteralPath 'organization-membership-admin-permissions-current.json' -Raw | ConvertFrom-Json
+node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs --rollback "--expected-report-sha256=$($current.reportSha256)" --rollback-from-report=organization-membership-admin-permissions-before.json
+```
+
 ## Project Access permission provisioning
 
 `20261012-project-access-permission-provisioning.mjs` is the additive DB
