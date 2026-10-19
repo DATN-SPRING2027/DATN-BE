@@ -1,5 +1,9 @@
 import mongoose from 'mongoose';
-import { TASK_COLLECTION, TASK_EVENT_COLLECTION } from './task-contract';
+import {
+  TASK_COLLECTION,
+  TASK_EVENT_COLLECTION,
+  TASK_OPERATION_COLLECTION,
+} from './task-contract';
 import {
   TASK_COLLECTION_VALIDATORS,
   TASK_PERSISTENCE_INDEXES,
@@ -9,7 +13,11 @@ import {
 export const TASK_DISPOSABLE_FIXTURE_MARKER =
   'datn-95-task-data-foundation-mongo7-disposable';
 const DISPOSABLE_DATABASE_PATTERN = /^datn95task_[a-f\d]{32}$/;
-const ALLOWED_COLLECTIONS = new Set([TASK_COLLECTION, TASK_EVENT_COLLECTION]);
+const ALLOWED_COLLECTIONS = new Set([
+  TASK_COLLECTION,
+  TASK_EVENT_COLLECTION,
+  TASK_OPERATION_COLLECTION,
+]);
 
 export async function initializeTaskDisposableDatabase(
   database: mongoose.mongo.Db,
@@ -36,6 +44,7 @@ export async function initializeTaskDisposableDatabase(
 
   await ensureCollection(database, TASK_COLLECTION);
   await ensureCollection(database, TASK_EVENT_COLLECTION);
+  await ensureCollection(database, TASK_OPERATION_COLLECTION);
   await database.collection(TASK_COLLECTION).createIndexes(
     TASK_PERSISTENCE_INDEXES.tasks.map(({ key, name, ...options }) => ({
       key: { ...key },
@@ -50,11 +59,23 @@ export async function initializeTaskDisposableDatabase(
       ...options,
     })),
   );
+  await database.collection(TASK_OPERATION_COLLECTION).createIndexes(
+    TASK_PERSISTENCE_INDEXES.task_operations.map(
+      ({ key, name, ...options }) => ({
+        key: { ...key },
+        name,
+        ...options,
+      }),
+    ),
+  );
 }
 
 async function ensureCollection(
   database: mongoose.mongo.Db,
-  name: typeof TASK_COLLECTION | typeof TASK_EVENT_COLLECTION,
+  name:
+    | typeof TASK_COLLECTION
+    | typeof TASK_EVENT_COLLECTION
+    | typeof TASK_OPERATION_COLLECTION,
 ): Promise<void> {
   const exists = await database
     .listCollections({ name }, { nameOnly: true })

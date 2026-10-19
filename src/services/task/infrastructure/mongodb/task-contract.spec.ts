@@ -8,6 +8,7 @@ import {
 } from './task-contract';
 import {
   TASK_EVENT_JSON_SCHEMA,
+  TASK_OPERATION_JSON_SCHEMA,
   TASK_JSON_SCHEMA,
   TASK_PERSISTENCE_INDEXES,
 } from './task-database-schema';
@@ -90,6 +91,9 @@ describe('D-03 Task persistence contract', () => {
         'createdBy',
         'createdAt',
         'updatedAt',
+        'status',
+        'assigneeId',
+        'completedAt',
         'version',
       ].sort(),
     );
@@ -100,6 +104,9 @@ describe('D-03 Task persistence contract', () => {
       createdBy: actorId,
       createdAt,
       updatedAt: createdAt,
+      status: 'TODO',
+      assigneeId: null,
+      completedAt: null,
       version: 1,
     });
     expect(result.event).toEqual({
@@ -153,6 +160,9 @@ describe('D-03 Task persistence contract', () => {
       'createdBy',
       'createdAt',
       'updatedAt',
+      'status',
+      'assigneeId',
+      'completedAt',
       'version',
     ]);
     expect(Object.keys(TASK_JSON_SCHEMA.properties).sort()).toEqual(
@@ -163,6 +173,9 @@ describe('D-03 Task persistence contract', () => {
         'createdBy',
         'createdAt',
         'updatedAt',
+        'status',
+        'assigneeId',
+        'completedAt',
         'version',
       ].sort(),
     );
@@ -170,7 +183,19 @@ describe('D-03 Task persistence contract', () => {
     expect(TASK_JSON_SCHEMA.properties.title.pattern).not.toContain(
       '\\x{200B}',
     );
-    expect(TASK_EVENT_JSON_SCHEMA.additionalProperties).toBe(false);
+    expect(TASK_EVENT_JSON_SCHEMA.oneOf).toHaveLength(2);
+    expect(TASK_EVENT_JSON_SCHEMA.oneOf[1].required).not.toContain(
+      'organizationId',
+    );
+    expect(TASK_EVENT_JSON_SCHEMA.oneOf[1].properties).not.toHaveProperty(
+      'organizationId',
+    );
+    expect(
+      TASK_EVENT_JSON_SCHEMA.oneOf.every(
+        (eventSchema) => eventSchema.additionalProperties === false,
+      ),
+    ).toBe(true);
+    expect(TASK_OPERATION_JSON_SCHEMA.additionalProperties).toBe(false);
     expect(TASK_PERSISTENCE_INDEXES).toEqual({
       tasks: [
         {
@@ -181,8 +206,29 @@ describe('D-03 Task persistence contract', () => {
       task_events: [
         {
           key: { taskId: 1, taskVersion: 1 },
-          name: 'task_event_task_version_unique',
+          name: 'task_event_task_creation_version_unique',
           unique: true,
+          partialFilterExpression: { eventName: 'TASK_CREATED' },
+        },
+        {
+          key: { taskId: 1, version: 1 },
+          name: 'task_event_task_mutation_version_unique',
+          unique: true,
+          partialFilterExpression: {
+            eventType: 'TASK_STATUS_TRANSITIONED',
+          },
+        },
+      ],
+      task_operations: [
+        {
+          key: { actorId: 1, projectId: 1, operationId: 1 },
+          name: 'task_operation_actor_project_key_unique',
+          unique: true,
+        },
+        {
+          key: { expiresAt: 1 },
+          name: 'task_operation_expiry_ttl',
+          expireAfterSeconds: 0,
         },
       ],
     });

@@ -5,9 +5,11 @@ import {
   TASK_COLLECTION,
   TASK_DATABASE_NAME,
   TASK_EVENT_COLLECTION,
+  TASK_OPERATION_COLLECTION,
   type TaskCreationEventDocument,
   type TaskDocument,
 } from './task-contract';
+import { TASK_COLLECTION_VALIDATORS } from './task-database-schema';
 import {
   TASK_DISPOSABLE_FIXTURE_MARKER,
   initializeTaskDisposableDatabase,
@@ -39,6 +41,9 @@ integration(
         createdBy: actorId,
         createdAt: now,
         updatedAt: now,
+        status: 'TODO',
+        assigneeId: null,
+        completedAt: null,
         version: 1,
         ...overrides,
       };
@@ -97,6 +102,9 @@ integration(
       if (connection?.readyState === mongoose.ConnectionStates.connected) {
         await connection.db!.collection(TASK_COLLECTION).deleteMany({});
         await connection.db!.collection(TASK_EVENT_COLLECTION).deleteMany({});
+        await connection
+          .db!.collection(TASK_OPERATION_COLLECTION)
+          .deleteMany({});
       }
     });
 
@@ -130,7 +138,11 @@ integration(
         .db!.listCollections({}, { nameOnly: true })
         .toArray();
       expect(collections.map(({ name }) => name).sort()).toEqual(
-        [TASK_COLLECTION, TASK_EVENT_COLLECTION].sort(),
+        [
+          TASK_COLLECTION,
+          TASK_EVENT_COLLECTION,
+          TASK_OPERATION_COLLECTION,
+        ].sort(),
       );
       const taskIndexes = await connection!
         .db!.collection(TASK_COLLECTION)
@@ -153,9 +165,44 @@ integration(
       ).toEqual([
         { name: '_id_', key: { _id: 1 }, unique: undefined },
         {
-          name: 'task_event_task_version_unique',
+          name: 'task_event_task_creation_version_unique',
           key: { taskId: 1, taskVersion: 1 },
           unique: true,
+        },
+        {
+          name: 'task_event_task_mutation_version_unique',
+          key: { taskId: 1, version: 1 },
+          unique: true,
+        },
+      ]);
+      const operationIndexes = await connection!
+        .db!.collection(TASK_OPERATION_COLLECTION)
+        .indexes();
+      expect(
+        operationIndexes.map(({ name, key, unique, expireAfterSeconds }) => ({
+          name,
+          key,
+          unique,
+          expireAfterSeconds,
+        })),
+      ).toEqual([
+        {
+          name: '_id_',
+          key: { _id: 1 },
+          unique: undefined,
+          expireAfterSeconds: undefined,
+        },
+        {
+          name: 'task_operation_actor_project_key_unique',
+          key: { actorId: 1, projectId: 1, operationId: 1 },
+          unique: true,
+          expireAfterSeconds: undefined,
+        },
+        {
+          name: 'task_operation_expiry_ttl',
+          key: { expiresAt: 1 },
+          unique: undefined,
+          expireAfterSeconds: 0,
         },
       ]);
       expect(
@@ -170,6 +217,11 @@ integration(
       expect(result.task.title).toBe('  Task name  ');
       expect(result.task.version).toBe(1);
       expect(result.task.updatedAt).toEqual(result.task.createdAt);
+      expect(result.task).toMatchObject({
+        status: 'TODO',
+        assigneeId: null,
+        completedAt: null,
+      });
       expect(
         await repository.getById(String(projectId), String(result.task._id)),
       ).toEqual(result.task);
@@ -181,7 +233,10 @@ integration(
       expect(events[0]._id).toBeInstanceOf(Types.ObjectId);
       expect(events[0].taskId).toEqual(result.task._id);
       expect(events[0].projectId).toEqual(result.task.projectId);
-      expect(events[0]).toMatchObject({
+      const creationEvent = events[0];
+      expect('eventName' in creationEvent).toBe(true);
+      if (!('eventName' in creationEvent)) return;
+      expect(creationEvent).toMatchObject({
         taskId: result.task._id,
         projectId,
         actorType: 'USER',
@@ -190,10 +245,10 @@ integration(
         taskVersion: 1,
         occurredAt: result.task.createdAt,
       });
-      expect(events[0].operationId).toMatch(
+      expect(creationEvent.operationId).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       );
-      expect(events[0].correlationId).toBe('d03-test-01');
+      expect(creationEvent.correlationId).toBe('d03-test-01');
     });
 
     it('O3 rejects missing, null, wrong-type, extra-field and spoofed caller data', async () => {
@@ -315,6 +370,47 @@ integration(
           String(result.task._id),
         ),
       ).toBeNull();
+    });
+
+    it('orders mixed creation and lifecycle history by resulting Task version', async () => {
+      const result = await create('task history');
+      expect(result.state).toBe('COMMITTED');
+      if (result.state !== 'COMMITTED') return;
+
+      await connection!.db!.collection(TASK_EVENT_COLLECTION).insertOne({
+        _id: new Types.ObjectId(),
+        taskId: result.task._id,
+        projectId,
+        actorId,
+        actorType: 'USER',
+        source: 'API',
+        eventType: 'TASK_STATUS_TRANSITIONED',
+        operationId: randomUUID(),
+        timestamp: new Date(),
+        version: 2,
+        changedFields: ['status'],
+        delta: {
+          type: 'STATUS_TRANSITION',
+          fromStatus: 'TODO',
+          toStatus: 'IN_PROGRESS',
+        },
+      });
+
+      const history = await repository.listHistory(
+        String(projectId),
+        String(result.task._id),
+      );
+
+      expect(history).toHaveLength(2);
+      expect(history[0]).toMatchObject({
+        eventName: 'TASK_CREATED',
+        taskVersion: 1,
+      });
+      expect(history[1]).toMatchObject({
+        eventType: 'TASK_STATUS_TRANSITIONED',
+        version: 2,
+      });
+      expect(history.every((event) => !('historyVersion' in event))).toBe(true);
     });
 
     it('O7 enforces one version-1 event and stores provenance without content snapshots', async () => {
@@ -625,26 +721,187 @@ integration(
       expect(JSON.stringify(explain)).toContain('task_project_cursor');
     });
 
-    it('O13 keeps status, assignment, outbox and runtime activation outside the data slice', async () => {
+    it('O13 adds only the approved lifecycle fields without activating Task runtime', async () => {
       const taskCollections = await connection!
         .db!.listCollections({}, { nameOnly: true })
         .toArray();
       expect(taskCollections.map(({ name }) => name).sort()).toEqual(
-        [TASK_COLLECTION, TASK_EVENT_COLLECTION].sort(),
+        [
+          TASK_COLLECTION,
+          TASK_EVENT_COLLECTION,
+          TASK_OPERATION_COLLECTION,
+        ].sort(),
       );
       const taskSchema = await connection!.db!.command({
         listCollections: 1,
         filter: { name: TASK_COLLECTION },
         nameOnly: false,
       });
-      expect(JSON.stringify(taskSchema)).not.toMatch(
-        /status|priority|assignee|teamId|organizationId|outbox|lifecycle/i,
+      expect(JSON.stringify(taskSchema)).toMatch(
+        /status|assigneeId|completedAt/,
       );
+      expect(JSON.stringify(taskSchema)).not.toMatch(
+        /description|priority|teamId|organizationId|outbox|tags|dueDate/i,
+      );
+      const legacyTask = rawTask();
+      delete (legacyTask as Record<string, unknown>).status;
+      delete (legacyTask as Record<string, unknown>).assigneeId;
+      delete (legacyTask as Record<string, unknown>).completedAt;
+      await expect(
+        connection!.db!.collection(TASK_COLLECTION).insertOne(legacyTask),
+      ).rejects.toMatchObject({ code: 121 });
       expect(TASK_DATABASE_NAME).toBe('continuum_task');
       expect(Object.keys(SERVICE_DATABASES)).not.toContain('task');
       expect(Object.values(SERVICE_DATABASES)).not.toContain(
         TASK_DATABASE_NAME,
       );
+    });
+
+    it('O14 validates lifecycle enum and completedAt invariants', async () => {
+      await expect(
+        connection!
+          .db!.collection(TASK_COLLECTION)
+          .insertOne(rawTask({ status: 'UNKNOWN' })),
+      ).rejects.toMatchObject({ code: 121 });
+      await expect(
+        connection!
+          .db!.collection(TASK_COLLECTION)
+          .insertOne(rawTask({ status: 'DONE', completedAt: null })),
+      ).rejects.toMatchObject({ code: 121 });
+      await expect(
+        connection!
+          .db!.collection(TASK_COLLECTION)
+          .insertOne(rawTask({ status: 'TODO', completedAt: new Date() })),
+      ).rejects.toMatchObject({ code: 121 });
+      await expect(
+        connection!
+          .db!.collection(TASK_COLLECTION)
+          .insertOne(rawTask({ status: 'DONE', completedAt: new Date() })),
+      ).resolves.toMatchObject({ acknowledged: true });
+    });
+
+    it('O15 validates idempotency state/result and the 24-hour expiry contract', async () => {
+      const now = new Date('2026-10-19T00:00:00.000Z');
+      const retentionMs = 24 * 60 * 60 * 1000;
+      const operation = (overrides: Record<string, unknown> = {}) => ({
+        _id: new Types.ObjectId(),
+        actorId,
+        projectId,
+        operationId: randomUUID(),
+        fingerprint: 'a'.repeat(64),
+        state: 'COMMITTED',
+        taskId: new Types.ObjectId(),
+        createdAt: now,
+        updatedAt: now,
+        leaseUntil: now,
+        expiresAt: new Date(now.getTime() + retentionMs),
+        result: {
+          outcome: 'COMMITTED',
+          status: 'TODO',
+          version: 2,
+          completedAt: null,
+          updatedAt: now,
+        },
+        ...overrides,
+      });
+
+      await expect(
+        connection!.db!.collection(TASK_OPERATION_COLLECTION).insertOne(
+          operation({
+            result: {
+              outcome: 'REJECTED',
+              code: 'STALE_VERSION',
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 121 });
+      await expect(
+        connection!.db!.collection(TASK_OPERATION_COLLECTION).insertOne(
+          operation({
+            expiresAt: new Date(now.getTime() + retentionMs + 1),
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 121 });
+      await expect(
+        connection!.db!.collection(TASK_OPERATION_COLLECTION).insertOne(
+          operation({
+            result: {
+              outcome: 'COMMITTED',
+              status: 'DONE',
+              version: 2,
+              completedAt: null,
+              updatedAt: now,
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 121 });
+      await expect(
+        connection!
+          .db!.collection(TASK_OPERATION_COLLECTION)
+          .insertOne(operation()),
+      ).resolves.toMatchObject({ acknowledged: true });
+    });
+
+    it('O16 reports malformed stored documents as invalid without expression errors', async () => {
+      await connection!
+        .db!.collection(TASK_COLLECTION)
+        .insertOne(rawTask({ version: 'not-a-number' }), {
+          bypassDocumentValidation: true,
+        });
+      await connection!.db!.collection(TASK_EVENT_COLLECTION).insertOne(
+        {
+          _id: new Types.ObjectId(),
+          taskId: new Types.ObjectId(),
+          projectId,
+          actorId,
+          actorType: 'USER',
+          source: 'API',
+          eventType: 'TASK_STATUS_TRANSITIONED',
+          operationId: randomUUID(),
+          timestamp: new Date(),
+          version: 2,
+          changedFields: ['status'],
+          delta: {
+            type: 'STATUS_TRANSITION',
+            fromStatus: 'TODO',
+            toStatus: 'BLOCKED',
+            reason: { unexpected: 'object' },
+          },
+        },
+        { bypassDocumentValidation: true },
+      );
+      await connection!.db!.collection(TASK_OPERATION_COLLECTION).insertOne(
+        {
+          _id: new Types.ObjectId(),
+          actorId,
+          projectId,
+          operationId: randomUUID(),
+          fingerprint: 'a'.repeat(64),
+          state: 'IN_PROGRESS',
+          taskId: new Types.ObjectId(),
+          createdAt: 'not-a-date',
+          updatedAt: new Date(),
+          leaseUntil: new Date(),
+          expiresAt: new Date(),
+        },
+        { bypassDocumentValidation: true },
+      );
+
+      await expect(
+        connection!.db!.collection(TASK_COLLECTION).countDocuments({
+          $nor: [TASK_COLLECTION_VALIDATORS.tasks] as never,
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        connection!.db!.collection(TASK_EVENT_COLLECTION).countDocuments({
+          $nor: [TASK_COLLECTION_VALIDATORS.task_events] as never,
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        connection!.db!.collection(TASK_OPERATION_COLLECTION).countDocuments({
+          $nor: [TASK_COLLECTION_VALIDATORS.task_operations] as never,
+        }),
+      ).resolves.toBe(1);
     });
   },
 );
