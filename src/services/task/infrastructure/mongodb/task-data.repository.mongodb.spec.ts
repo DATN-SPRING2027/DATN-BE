@@ -426,6 +426,28 @@ integration(
         eventType: 'TASK_STATUS_TRANSITIONED',
         version: 2,
       });
+      const eventIndexes = await connection!
+        .db!.collection(TASK_EVENT_COLLECTION)
+        .listIndexes()
+        .toArray();
+      expect(eventIndexes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'task_event_task_creation_version_unique',
+            key: { taskId: 1, taskVersion: 1 },
+            unique: true,
+            partialFilterExpression: { eventName: 'TASK_CREATED' },
+          }),
+          expect.objectContaining({
+            name: 'task_event_task_mutation_version_unique',
+            key: { taskId: 1, version: 1 },
+            unique: true,
+            partialFilterExpression: {
+              eventType: 'TASK_STATUS_TRANSITIONED',
+            },
+          }),
+        ]),
+      );
       expect(
         history.events.every((event) => !('historyVersion' in event)),
       ).toBe(true);

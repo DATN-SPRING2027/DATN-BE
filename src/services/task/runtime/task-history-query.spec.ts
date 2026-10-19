@@ -238,6 +238,51 @@ describe('TaskHistoryAccessAuthorizationBoundary', () => {
       unavailable.authorize({ actorUserId, organizationId, projectId, taskId }),
     ).resolves.toMatchObject({ kind: 'denied' });
   });
+
+  it.each([
+    ['actor', { actorUserId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+    ['Organization', { organizationId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+    ['Project', { projectId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+    ['Task', { taskId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+  ])('denies evidence scoped to a different %s', async (_label, evidence) => {
+    const boundary = new TaskHistoryAccessAuthorizationBoundary(
+      accessProvider({
+        resolve: jest.fn().mockResolvedValue({
+          kind: 'resolved',
+          evidence: accessEvidence(evidence),
+        }),
+      }),
+    );
+
+    await expect(
+      boundary.authorize({ actorUserId, organizationId, projectId, taskId }),
+    ).resolves.toMatchObject({ kind: 'denied' });
+  });
+
+  it.each([
+    ['revoked Project membership', { projectMembershipStatus: 'INACTIVE' }],
+    ['missing explicit Task permission', { taskReadPermission: false }],
+  ] as const)(
+    'does not let a valid Handover bypass %s for a successor',
+    async (_label, evidence) => {
+      const boundary = new TaskHistoryAccessAuthorizationBoundary(
+        accessProvider({
+          resolve: jest.fn().mockResolvedValue({
+            kind: 'resolved',
+            evidence: accessEvidence({
+              principalKind: 'SUCCESSOR',
+              validHandoverAssignment: true,
+              ...evidence,
+            }),
+          }),
+        }),
+      );
+
+      await expect(
+        boundary.authorize({ actorUserId, organizationId, projectId, taskId }),
+      ).resolves.toMatchObject({ kind: 'denied' });
+    },
+  );
 });
 
 describe('TaskHistoryQueryService', () => {
@@ -386,6 +431,26 @@ describe('TaskHistoryQueryService', () => {
     expect(evidenceProvider.resolve).toHaveBeenCalledTimes(2);
     expect(repository.listHistory).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ['Project', { projectId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+    ['Task', { taskId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+  ])(
+    'returns not found without reading history when evidence is outside the requested %s scope',
+    async (_label, evidence) => {
+      const { service, evidenceProvider, repository } = createService();
+      evidenceProvider.resolve = jest.fn().mockResolvedValue({
+        kind: 'resolved',
+        evidence: accessEvidence(evidence),
+      });
+
+      await expect(service.execute(request())).resolves.toEqual({
+        kind: 'NOT_FOUND',
+      });
+      expect(repository.getById).not.toHaveBeenCalled();
+      expect(repository.listHistory).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['zero page', { page: 0 }],
