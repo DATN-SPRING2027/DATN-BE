@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mongoose from 'mongoose';
 import {
+  resolveIamDatabaseName,
   targetFingerprint,
 } from './organization-membership-backfill.plan.mjs';
 import {
@@ -12,8 +13,12 @@ import {
   ORGANIZATION_MEMBERSHIP_ADMIN_PERMISSIONS_PROVISIONING,
 } from './organization-membership-admin-permissions.plan.mjs';
 
-function resolveDatabaseName() {
-  return 'continuum_iam';
+export function resolveDatabaseName(env = process.env) {
+  return resolveIamDatabaseName({
+    mongodbEnabled: env.MONGODB_ENABLED,
+    infraEnabled: env.INFRA_ENABLED,
+    configuredName: env.MONGODB_DATABASE,
+  });
 }
 
 async function inspectDatabase(db, uri) {
