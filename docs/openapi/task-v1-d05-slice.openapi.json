@@ -3,18 +3,29 @@
   "info": {
     "title": "Continuum AI Task internal API — DATN-97 seven-field slice",
     "version": "0.1.0-draft",
-    "description": "PROPOSED, NOT APPROVED contract for the DATN-97 (D-05) seven-field Task slice: list by Project and detail only. Scope follows the Leader's partial approval of the Document D05-DR1 decision request (https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568), recorded in Document doc 25 (https://github.com/DATN-SPRING2027/Document/pull/46): DR-1/2/4/5/6/7(a)(b) approved by the Leader, who confirmed on 19/10/2026 that he exercises the Product, Architecture and Security authority for this slice (https://github.com/DATN-SPRING2027/Document/pull/46#issuecomment-6258355860). This OpenAPI itself is not approved yet. Create is deliberately omitted until DR-7(c)(d) is recorded; no mutation, status, assignment, filter, sort, history or Idempotency-Key exists in this slice. These are internal Task-service routes, disabled by default, behind the deny-by-default authorization boundary; DR-3 (trust profile) and DR-8 (scope evidence) are DEFER, so no route may be activated from this contract. A task exposes exactly id, projectId, title, createdBy, createdAt, updatedAt and version. version is informational and is not a CAS/ETag. Choices recorded by the task owner are listed in x-owner-decisions; items still waiting for others are listed in x-pending-decisions."
+    "description": "Contract for the DATN-97 (D-05) seven-field Task slice: list by Project and detail only, APPROVED for those two operations by the Leader on 19/10/2026 (https://github.com/DATN-SPRING2027/DATN-BE/pull/55#issuecomment-6263376181). Scope follows the Leader's partial approval of the Document D05-DR1 decision request (https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568), recorded in Document doc 25 (https://github.com/DATN-SPRING2027/Document/pull/46): DR-1/2/4/5/6/7(a)(b) approved by the Leader, who confirmed on 19/10/2026 that he exercises the Product, Architecture and Security authority for this slice (https://github.com/DATN-SPRING2027/Document/pull/46#issuecomment-6258355860). Create is deliberately omitted until DR-7(c)(d) is recorded; no mutation, status, assignment, filter, sort, history or Idempotency-Key exists in this slice. These are internal Task-service routes, disabled by default, behind the deny-by-default authorization boundary; DR-3 (trust profile) and DR-8 (scope evidence) are DEFER, so no route may be activated from this contract. A task exposes exactly id, projectId, title, createdBy, createdAt, updatedAt and version. version is informational and is not a CAS/ETag. Choices recorded by the task owner are listed in x-owner-decisions; items still waiting for others are listed in x-pending-decisions."
   },
-  "x-approval-status": "PROPOSED — not approved; handlers must not be written before an authority records approval of this OpenAPI",
+  "x-approval-status": "APPROVED for the list and detail operations of the seven-field slice by the Leader on 19/10/2026 (https://github.com/DATN-SPRING2027/DATN-BE/pull/55#issuecomment-6263376181), within the conditions in x-approval-conditions. Create, DR-3, DR-7(c)(d), DR-8 and AUTH-1 are not approved.",
+  "x-approval-conditions": [
+    "Reviewed revision: commit dc743a8 of the branch feat/Phuc-datn-97-task-slice-openapi-be-api (DATN-BE PR #55).",
+    "The approval applies only to the list and detail APIs and the seven-field Task structure in the reviewed revision.",
+    "DR-4 stays as approved: Organization Membership and ProjectMembership must both be ACTIVE; members read the Tasks of their own Project; no Events.",
+    "DR-3, DR-7(c)(d) and DR-8 stay DEFER.",
+    "AUTH-1 is not approved for the trust profile, the service identity or the real scope evidence.",
+    "No route activation, production use or policy ALLOW until the related security conditions are completed.",
+    "The create API is not part of this approved OpenAPI.",
+    "The handler must map the authorization denial reason to 401, 404 or 503 and must not answer a generic 403 (ERR-1)."
+  ],
   "x-decision-refs": [
     "Leader decisions on D05-DR1: https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568",
     "Document doc 25 (D05-DR1 decision record): https://github.com/DATN-SPRING2027/Document/pull/46",
     "Document doc 24 (D05-DR1 decision request): https://github.com/DATN-SPRING2027/Document/pull/44",
     "DR-1 A, DR-2 A, DR-4 (whole-Project read for ACTIVE members, no Events), DR-5, DR-6 A, DR-7(a)(b) approved; authority confirmed by the Leader on 19/10/2026: https://github.com/DATN-SPRING2027/Document/pull/46#issuecomment-6258355860",
+    "OpenAPI approval for list and detail (PATH-1, LIMIT-1, CURSOR-1, ERR-1, CACHE-1 approved; create out of scope): https://github.com/DATN-SPRING2027/DATN-BE/pull/55#issuecomment-6263376181",
     "DR-3, DR-7(c)(d), DR-8 DEFER"
   ],
   "x-owner-decisions": [
-    "SOURCE: recorded by the task owner at the Leader's request in the review of DATN-BE PR #55 (19/10/2026 02:28Z). The Leader said he will review to approve the OpenAPI after the contract is updated.",
+    "SOURCE: recorded by the task owner at the Leader's request in the review of DATN-BE PR #55 (19/10/2026 02:28Z). The Leader approved these decisions on 19/10/2026 (https://github.com/DATN-SPRING2027/DATN-BE/pull/55#issuecomment-6263376181).",
     "PATH-1 (task owner Nguyen Hong Phuc, 19/10/2026): keep /internal/tasks/projects/{projectId}/tasks[/{taskId}]. It keeps the approved /internal/tasks prefix and gives the existing TaskAuthorizationHttpGuard a project path parameter and a detail resource parameter.",
     "LIMIT-1 (task owner Nguyen Hong Phuc, 19/10/2026): the default limit is 20; DR-6 fixes the 1-100 range.",
     "CURSOR-1 (task owner Nguyen Hong Phuc, 19/10/2026): nextAfterId is the id of the last item when the page is full (items.length equals limit) and null otherwise, so a client may receive one empty final page; no repository change.",
@@ -22,7 +33,6 @@
     "CACHE-1 (task owner Nguyen Hong Phuc, 19/10/2026): Cache-Control no-store on 200 responses."
   ],
   "x-pending-decisions": [
-    "APPROVAL-1: this OpenAPI is not approved yet and has no named approving authority. On 19/10/2026 the Leader approved DATN-BE PR #54 in text, agreed the scope, seven fields and pagination of this OpenAPI in a review of PR #55, asked the task owner to record the decisions for PATH-1, LIMIT-1, CURSOR-1, ERR-1 and CACHE-1 (now in x-owner-decisions) and said he will review to approve the OpenAPI after the contract is updated. No handler may be written and no policy ALLOW rule may be enabled from this contract until that approval is recorded.",
     "AUTH-1: the bearer credential is an opaque verifier input; issuer, audience, token format and service identity (mTLS) are DR-3 and are not specified here. The scope-evidence source and revocation handling are DR-8 and are not specified here."
   ],
   "tags": [

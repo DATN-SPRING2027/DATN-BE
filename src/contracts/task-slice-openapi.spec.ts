@@ -24,6 +24,7 @@ interface SchemaContract extends PropertyContract {
 }
 interface OpenApiDocument {
   'x-approval-status': string;
+  'x-approval-conditions': string[];
   'x-decision-refs': string[];
   'x-owner-decisions': string[];
   'x-pending-decisions': string[];
@@ -78,18 +79,40 @@ describe('DATN-97 Task slice OpenAPI (proposed D05-DR1 contract)', () => {
     );
   });
 
-  it('records DR-4 as approved, keeps the OpenAPI itself pending approval and AUTH-1 deferred', () => {
+  it('records the Leader approval for list and detail only and keeps AUTH-1 deferred', () => {
     const pendingIds = document['x-pending-decisions'].map(
       (entry) => entry.split(':')[0],
     );
-    expect(pendingIds.sort()).toEqual(['APPROVAL-1', 'AUTH-1']);
-    expect(document['x-decision-refs'].join('\n')).toMatch(
-      /DR-4[^\n]*approved[^\n]*issuecomment-6258355860/,
+    expect(pendingIds).toEqual(['AUTH-1']);
+    const refs = document['x-decision-refs'].join('\n');
+    expect(refs).toMatch(/DR-4[^\n]*approved[^\n]*issuecomment-6258355860/);
+    expect(refs).toMatch(/OpenAPI approval[^\n]*issuecomment-6263376181/);
+    expect(document['x-approval-status']).toMatch(
+      /^APPROVED for the list and detail operations/,
     );
-    expect(document['x-approval-status']).toMatch(/not approved/i);
+    expect(document['x-approval-status']).toMatch(
+      /Create, DR-3, DR-7\(c\)\(d\), DR-8 and AUTH-1 are not approved/,
+    );
     for (const operations of Object.values(document.paths)) {
       expect(operations.get.description).toMatch(/DR-4/);
     }
+  });
+
+  it('keeps the approval conditions that limit what may be built', () => {
+    const conditions = document['x-approval-conditions'].join('\n');
+    for (const required of [
+      /commit dc743a8/,
+      /only to the list and detail APIs/,
+      /DR-4 stays as approved[^\n]*ACTIVE[^\n]*no Events/,
+      /DR-3, DR-7\(c\)\(d\) and DR-8 stay DEFER/,
+      /AUTH-1 is not approved/,
+      /No route activation, production use or policy ALLOW/,
+      /create API is not part of this approved OpenAPI/,
+      /must not answer a generic 403/,
+    ]) {
+      expect(conditions).toMatch(required);
+    }
+    expect(document['x-approval-conditions']).toHaveLength(8);
   });
 
   it('records the five task-owner decisions and keeps DR-5 limited to non-member and cross-scope', () => {
