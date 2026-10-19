@@ -158,7 +158,7 @@ describe('TaskHistoryAccessAuthorizationBoundary', () => {
       'Organization Admin without explicit Task access',
       {
         principalKind: 'ORGANIZATION_ADMIN',
-        projectMembershipStatus: 'INACTIVE',
+        projectMembershipStatus: 'ACTIVE',
         taskReadPermission: false,
       },
     ],
@@ -166,7 +166,7 @@ describe('TaskHistoryAccessAuthorizationBoundary', () => {
       'Platform Operator without explicit Task access',
       {
         principalKind: 'PLATFORM_OPERATOR',
-        projectMembershipStatus: 'INACTIVE',
+        projectMembershipStatus: 'ACTIVE',
         taskReadPermission: false,
       },
     ],

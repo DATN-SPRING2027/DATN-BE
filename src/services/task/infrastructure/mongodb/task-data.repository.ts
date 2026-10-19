@@ -177,7 +177,20 @@ export class TaskDataRepository {
       throw new Error('Task history page is invalid');
     const task = await this.getById(projectId, taskId);
     if (!task) return { events: [], total: 0 };
-    const filter = { taskId: task._id, projectId: task.projectId };
+    const filter = {
+      $or: [
+        {
+          taskId: task._id,
+          projectId: task.projectId,
+          eventName: 'TASK_CREATED',
+        },
+        {
+          taskId: task._id,
+          projectId: task.projectId,
+          eventType: 'TASK_STATUS_TRANSITIONED',
+        },
+      ],
+    };
     const collection = this.database.collection<TaskEventDocument>(
       TASK_EVENT_COLLECTION,
     );
