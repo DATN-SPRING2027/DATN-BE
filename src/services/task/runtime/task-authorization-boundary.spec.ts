@@ -1,5 +1,7 @@
 import { Test } from '@nestjs/testing';
+import { getConnectionToken } from '@nestjs/mongoose';
 import { TaskRuntimeModule } from './task-runtime.module';
+import { TASK_DATABASE_NAME } from '../infrastructure/mongodb/task-contract';
 import {
   TaskAuthorizationBoundary,
   TASK_OPERATION_PERMISSION_POLICY,
@@ -66,7 +68,13 @@ async function createRuntimeBoundary(options?: {
     port: 3100,
   });
   const builder = Test.createTestingModule({
-    providers: dynamicModule.providers ?? [],
+    providers: [
+      {
+        provide: getConnectionToken(),
+        useValue: { db: { databaseName: TASK_DATABASE_NAME } },
+      },
+      ...(dynamicModule.providers ?? []),
+    ],
   });
 
   if (options?.verifier) {

@@ -4,18 +4,31 @@ import {
   TASK_COLLECTION,
   TASK_DATABASE_NAME,
   TASK_EVENT_COLLECTION,
+  TASK_OPERATION_COLLECTION,
+  TASK_OPERATION_RETENTION_MS,
   buildTaskCreationDocuments,
   isObjectIdString,
+  isUuidV4,
   parseTaskCreateInput,
   resolveCorrelationId,
   type TaskCreationContext,
   type TaskCreationEventDocument,
   type TaskDocument,
   type TaskEventDocument,
+  type TaskLifecycleOperationDocument,
+  type TaskLifecycleOperationResult,
+  type TaskStatusTransitionEventDocument,
 } from './task-contract';
+import type {
+  TaskLifecycleCommandResult,
+  TaskLifecycleDecisionFunction,
+  TaskLifecyclePersistenceRequest,
+} from '../../runtime/task-lifecycle-policy';
 
 const DISPOSABLE_DATABASE_PATTERN = /^datn95task_[a-f\d]{32}$/;
 const MAX_PAGE_SIZE = 100;
+const TASK_OPERATION_LEASE_MS = 60_000;
+const TASK_OPERATION_CLAIM_ATTEMPTS = 8;
 
 export type TaskCreateResult =
   | { state: 'REJECTED'; reason: 'INVALID_INPUT' | 'INVALID_TRUSTED_CONTEXT' }
@@ -36,6 +49,12 @@ export interface TaskPageQuery {
   limit: number;
   afterId?: string;
 }
+
+type TaskLifecycleOperationClaim =
+  | { kind: 'CLAIMED'; claimUpdatedAt: Date }
+  | { kind: 'REPLAY'; operation: TaskLifecycleOperationDocument }
+  | { kind: 'PAYLOAD_MISMATCH' }
+  | { kind: 'IN_PROGRESS' };
 
 export class TaskDataRepository {
   constructor(private readonly database: mongoose.mongo.Db) {
@@ -162,6 +181,235 @@ export class TaskDataRepository {
       .toArray();
   }
 
+  async transitionStatus(
+    request: TaskLifecyclePersistenceRequest,
+    decide: TaskLifecycleDecisionFunction,
+  ): Promise<TaskLifecycleCommandResult> {
+    if (
+      !isUuidV4(request.command.operationId) ||
+      !/^[a-f\d]{64}$/.test(request.fingerprint) ||
+      !Number.isSafeInteger(request.command.expectedVersion) ||
+      request.command.expectedVersion < 1 ||
+      !(request.now instanceof Date) ||
+      !Number.isFinite(request.now.getTime()) ||
+      !(request.context.actorId instanceof Types.ObjectId) ||
+      !(request.context.projectId instanceof Types.ObjectId) ||
+      !(request.command.taskId instanceof Types.ObjectId)
+    )
+      return { kind: 'REJECTED', code: 'INVALID_COMMAND', replayed: false };
+
+    let claim: TaskLifecycleOperationClaim;
+    try {
+      claim = await this.claimLifecycleOperation(request);
+    } catch {
+      return {
+        kind: 'UNCERTAIN',
+        operationId: request.command.operationId,
+      };
+    }
+    if (claim.kind === 'IN_PROGRESS')
+      return {
+        kind: 'IN_PROGRESS',
+        operationId: request.command.operationId,
+      };
+    if (claim.kind === 'PAYLOAD_MISMATCH')
+      return {
+        kind: 'REJECTED',
+        code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+        replayed: false,
+      };
+    if (claim.kind === 'REPLAY')
+      return lifecycleOperationResult(claim.operation, true, false);
+
+    const session = this.database.client.startSession();
+    const eventId = new Types.ObjectId();
+    let outcome: TaskLifecycleCommandResult | undefined;
+    try {
+      await this.executeTransaction(session, async (transactionSession) => {
+        outcome = undefined;
+        const task = await this.database
+          .collection<TaskDocument>(TASK_COLLECTION)
+          .findOne(
+            {
+              _id: request.command.taskId,
+              projectId: request.context.projectId,
+            },
+            { session: transactionSession },
+          );
+        const decision = decide(task, request.context, request.command);
+
+        if (decision.kind === 'REJECTED') {
+          await this.finishLifecycleOperation(
+            transactionSession,
+            request,
+            claim.claimUpdatedAt,
+            {
+              outcome: 'REJECTED',
+              code: decision.code,
+              ...(decision.currentStatus
+                ? { currentStatus: decision.currentStatus }
+                : {}),
+              ...(decision.currentVersion !== undefined
+                ? { currentVersion: decision.currentVersion }
+                : {}),
+            },
+          );
+          outcome = {
+            kind: 'REJECTED',
+            code: decision.code,
+            ...(decision.currentStatus
+              ? { currentStatus: decision.currentStatus }
+              : {}),
+            ...(decision.currentVersion !== undefined
+              ? { currentVersion: decision.currentVersion }
+              : {}),
+            replayed: false,
+          };
+          return;
+        }
+
+        const updatedAt = request.now;
+        const completedAt = decision.toStatus === 'DONE' ? updatedAt : null;
+        const nextVersion = decision.expectedVersion + 1;
+        const update = await this.database
+          .collection<TaskDocument>(TASK_COLLECTION)
+          .updateOne(
+            {
+              _id: request.command.taskId,
+              projectId: request.context.projectId,
+              status: decision.fromStatus,
+              version: decision.expectedVersion,
+            },
+            {
+              $set: {
+                status: decision.toStatus,
+                completedAt,
+                updatedAt,
+              },
+              $inc: { version: 1 },
+            },
+            { session: transactionSession },
+          );
+
+        if (update.matchedCount !== 1) {
+          const rejection: TaskLifecycleOperationResult = {
+            outcome: 'REJECTED',
+            code: 'TASK_VERSION_CONFLICT',
+            currentStatus: decision.fromStatus,
+            currentVersion: decision.expectedVersion,
+          };
+          await this.finishLifecycleOperation(
+            transactionSession,
+            request,
+            claim.claimUpdatedAt,
+            rejection,
+          );
+          outcome = {
+            kind: 'REJECTED',
+            code: rejection.code,
+            currentStatus: rejection.currentStatus,
+            currentVersion: rejection.currentVersion,
+            replayed: false,
+          };
+          return;
+        }
+
+        const event: TaskStatusTransitionEventDocument = {
+          _id: eventId,
+          taskId: request.command.taskId,
+          projectId: request.context.projectId,
+          actorId: request.context.actorId,
+          actorType: 'USER',
+          source: request.context.source,
+          eventType: 'TASK_STATUS_TRANSITIONED',
+          operationId: request.command.operationId,
+          correlationId: request.context.correlationId,
+          timestamp: updatedAt,
+          version: nextVersion,
+          changedFields: ['status'],
+          delta: {
+            type: 'STATUS_TRANSITION',
+            fromStatus: decision.fromStatus,
+            toStatus: decision.toStatus,
+            ...(decision.reason === undefined
+              ? {}
+              : { reason: decision.reason }),
+          },
+        };
+        await this.insertStatusTransitionEvent(transactionSession, event);
+
+        const committedResult: TaskLifecycleOperationResult = {
+          outcome: 'COMMITTED',
+          status: decision.toStatus,
+          version: nextVersion,
+          completedAt,
+          updatedAt,
+        };
+        await this.finishLifecycleOperation(
+          transactionSession,
+          request,
+          claim.claimUpdatedAt,
+          committedResult,
+        );
+        outcome = {
+          kind: 'COMMITTED',
+          status: decision.toStatus,
+          version: nextVersion,
+          completedAt,
+          updatedAt,
+          replayed: false,
+          reconciled: false,
+        };
+      });
+
+      if (outcome) return outcome;
+      await this.makeLifecycleOperationRetryable(request, claim.claimUpdatedAt);
+      return {
+        kind: 'ABORTED',
+        operationId: request.command.operationId,
+      };
+    } catch (error) {
+      const operation = await this.findLifecycleOperation(request).catch(
+        () => null,
+      );
+      if (
+        operation &&
+        operation.fingerprint === request.fingerprint &&
+        (operation.state === 'COMMITTED' || operation.state === 'REJECTED')
+      )
+        return lifecycleOperationResult(operation, true, true);
+
+      if (hasErrorLabel(error, 'TransientTransactionError')) {
+        await this.makeLifecycleOperationRetryable(
+          request,
+          claim.claimUpdatedAt,
+        ).catch(() => undefined);
+        return {
+          kind: 'ABORTED',
+          operationId: request.command.operationId,
+        };
+      }
+
+      if (!session.inTransaction()) {
+        await this.makeLifecycleOperationRetryable(
+          request,
+          claim.claimUpdatedAt,
+        ).catch(() => undefined);
+        return {
+          kind: 'ABORTED',
+          operationId: request.command.operationId,
+        };
+      }
+
+      return {
+        kind: 'UNCERTAIN',
+        operationId: request.command.operationId,
+      };
+    } finally {
+      await session.endSession().catch(() => undefined);
+    }
+  }
+
   protected allocateIds() {
     return {
       taskId: new Types.ObjectId(),
@@ -197,6 +445,184 @@ export class TaskDataRepository {
       readConcern: { level: 'snapshot' },
       writeConcern: { w: 'majority' },
     });
+  }
+
+  protected async insertStatusTransitionEvent(
+    session: mongoose.mongo.ClientSession,
+    event: TaskStatusTransitionEventDocument,
+  ): Promise<void> {
+    await this.database
+      .collection<TaskStatusTransitionEventDocument>(TASK_EVENT_COLLECTION)
+      .insertOne(event, { session });
+  }
+
+  private async claimLifecycleOperation(
+    request: TaskLifecyclePersistenceRequest,
+  ): Promise<TaskLifecycleOperationClaim> {
+    const collection = this.database.collection<TaskLifecycleOperationDocument>(
+      TASK_OPERATION_COLLECTION,
+    );
+    const { context, command, fingerprint, now } = request;
+    const key = {
+      actorId: context.actorId,
+      projectId: context.projectId,
+      operationId: command.operationId,
+    };
+
+    for (
+      let attempt = 0;
+      attempt < TASK_OPERATION_CLAIM_ATTEMPTS;
+      attempt += 1
+    ) {
+      const existing = await collection.findOne(key);
+      if (!existing) {
+        const operation: TaskLifecycleOperationDocument = {
+          _id: new Types.ObjectId(),
+          ...key,
+          fingerprint,
+          state: 'IN_PROGRESS',
+          taskId: command.taskId,
+          createdAt: now,
+          updatedAt: now,
+          leaseUntil: new Date(now.getTime() + TASK_OPERATION_LEASE_MS),
+          expiresAt: new Date(now.getTime() + TASK_OPERATION_RETENTION_MS),
+        };
+        try {
+          await collection.insertOne(operation);
+          return { kind: 'CLAIMED', claimUpdatedAt: operation.updatedAt };
+        } catch (error) {
+          if (isDuplicateKeyError(error)) continue;
+          throw error;
+        }
+      }
+
+      if (existing.expiresAt.getTime() <= now.getTime()) {
+        const updatedAt = nextOperationTimestamp(now, existing.updatedAt);
+        const replacement = await collection.updateOne(
+          {
+            _id: existing._id,
+            updatedAt: existing.updatedAt,
+            expiresAt: existing.expiresAt,
+          },
+          {
+            $set: {
+              ...key,
+              fingerprint,
+              state: 'IN_PROGRESS',
+              taskId: command.taskId,
+              createdAt: updatedAt,
+              updatedAt,
+              leaseUntil: new Date(
+                updatedAt.getTime() + TASK_OPERATION_LEASE_MS,
+              ),
+              expiresAt: new Date(
+                updatedAt.getTime() + TASK_OPERATION_RETENTION_MS,
+              ),
+            },
+            $unset: { result: '' },
+          },
+        );
+        if (replacement.matchedCount === 1)
+          return { kind: 'CLAIMED', claimUpdatedAt: updatedAt };
+        continue;
+      }
+
+      if (existing.fingerprint !== fingerprint)
+        return { kind: 'PAYLOAD_MISMATCH' };
+      if (existing.state === 'COMMITTED' || existing.state === 'REJECTED')
+        return { kind: 'REPLAY', operation: existing };
+      if (existing.leaseUntil.getTime() > now.getTime())
+        return { kind: 'IN_PROGRESS' };
+
+      const claimUpdatedAt = nextOperationTimestamp(now, existing.updatedAt);
+      const claimed = await collection.updateOne(
+        {
+          _id: existing._id,
+          state: 'IN_PROGRESS',
+          fingerprint,
+          updatedAt: existing.updatedAt,
+          leaseUntil: { $lte: now },
+          expiresAt: { $gt: now },
+        },
+        {
+          $set: {
+            updatedAt: claimUpdatedAt,
+            leaseUntil: new Date(
+              claimUpdatedAt.getTime() + TASK_OPERATION_LEASE_MS,
+            ),
+          },
+        },
+      );
+      if (claimed.matchedCount === 1)
+        return { kind: 'CLAIMED', claimUpdatedAt };
+    }
+
+    return { kind: 'IN_PROGRESS' };
+  }
+
+  private async findLifecycleOperation(
+    request: TaskLifecyclePersistenceRequest,
+  ): Promise<TaskLifecycleOperationDocument | null> {
+    return this.database
+      .collection<TaskLifecycleOperationDocument>(TASK_OPERATION_COLLECTION)
+      .findOne({
+        actorId: request.context.actorId,
+        projectId: request.context.projectId,
+        operationId: request.command.operationId,
+      });
+  }
+
+  private async finishLifecycleOperation(
+    session: mongoose.mongo.ClientSession,
+    request: TaskLifecyclePersistenceRequest,
+    claimUpdatedAt: Date,
+    result: TaskLifecycleOperationResult,
+  ): Promise<void> {
+    const updatedAt = nextOperationTimestamp(request.now, claimUpdatedAt);
+    const update = await this.database
+      .collection<TaskLifecycleOperationDocument>(TASK_OPERATION_COLLECTION)
+      .updateOne(
+        {
+          actorId: request.context.actorId,
+          projectId: request.context.projectId,
+          operationId: request.command.operationId,
+          taskId: request.command.taskId,
+          fingerprint: request.fingerprint,
+          state: 'IN_PROGRESS',
+          updatedAt: claimUpdatedAt,
+        },
+        {
+          $set: {
+            state: result.outcome,
+            result,
+            updatedAt,
+            leaseUntil: updatedAt,
+          },
+        },
+        { session },
+      );
+    if (update.matchedCount !== 1)
+      throw new Error('Task lifecycle operation claim was lost');
+  }
+
+  private async makeLifecycleOperationRetryable(
+    request: TaskLifecyclePersistenceRequest,
+    claimUpdatedAt: Date,
+  ): Promise<void> {
+    const updatedAt = nextOperationTimestamp(request.now, claimUpdatedAt);
+    await this.database
+      .collection<TaskLifecycleOperationDocument>(TASK_OPERATION_COLLECTION)
+      .updateOne(
+        {
+          actorId: request.context.actorId,
+          projectId: request.context.projectId,
+          operationId: request.command.operationId,
+          fingerprint: request.fingerprint,
+          state: 'IN_PROGRESS',
+          updatedAt: claimUpdatedAt,
+        },
+        { $set: { updatedAt, leaseUntil: updatedAt } },
+      );
   }
 
   private async reconcileUncertain(
@@ -266,6 +692,45 @@ export class TaskDataRepository {
       reason,
     };
   }
+}
+
+function lifecycleOperationResult(
+  operation: TaskLifecycleOperationDocument,
+  replayed: boolean,
+  reconciled: boolean,
+): TaskLifecycleCommandResult {
+  const result = operation.result;
+  if (!result) throw new Error('Task lifecycle operation result is missing');
+  if (result.outcome === 'COMMITTED') {
+    return {
+      kind: 'COMMITTED',
+      status: result.status,
+      version: result.version,
+      completedAt: result.completedAt,
+      updatedAt: result.updatedAt,
+      replayed,
+      reconciled,
+    };
+  }
+  return {
+    kind: 'REJECTED',
+    code: result.code,
+    ...(result.currentStatus ? { currentStatus: result.currentStatus } : {}),
+    ...(result.currentVersion !== undefined
+      ? { currentVersion: result.currentVersion }
+      : {}),
+    replayed,
+  };
+}
+
+function nextOperationTimestamp(now: Date, previous: Date): Date {
+  return new Date(Math.max(now.getTime(), previous.getTime() + 1));
+}
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return (
+    error instanceof mongoose.mongo.MongoServerError && error.code === 11000
+  );
 }
 
 function hasErrorLabel(error: unknown, label: string): boolean {

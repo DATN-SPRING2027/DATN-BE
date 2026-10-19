@@ -1,11 +1,10 @@
 import mongoose from 'mongoose';
 import {
   TASK_CREATION_CHANGED_FIELDS,
+  TASK_OPERATION_RETENTION_MS,
   TASK_STATUSES,
   TASK_TITLE_PATTERN,
 } from './task-contract';
-
-const TASK_OPERATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 const taskProperties = {
   _id: { bsonType: 'objectId' },
