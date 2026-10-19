@@ -456,9 +456,9 @@ makes no changes to users, projects, role assignments, role identity
 (`code`, `name`, `isSystem`), collections, schemas, or indexes.
 
 Database resolution strictly uses the canonical IAM resolver
-(`resolveIamDatabaseName`). Explicit `--database` overrides are restricted to
-the canonical database (or `continuum_iam` in dedicated mode) and cannot be
-used to target arbitrary databases.
+(`resolveIamDatabaseName`). An explicit `--database` override must exactly
+match that resolver's result. Shared mode resolves to `MONGODB_DATABASE`;
+dedicated mode resolves to `continuum_iam`.
 
 Dry-run is read-only and prints a credential-free target fingerprint, preflight
 counts, planned permission additions, and `reportSha256`:
@@ -473,17 +473,36 @@ Role ID, the exact missing permissions, and an empty `issues` list before
 applying that report:
 
 ```powershell
-node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --apply "--expected-report-sha256=$($before.reportSha256)"
+$receiptBytes = New-Object byte[] 32
+$receiptRng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$receiptRng.GetBytes($receiptBytes)
+$env:PROJECT_SETTINGS_RECEIPT_KEY = [Convert]::ToBase64String($receiptBytes)
+$receiptRng.Dispose()
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --apply "--expected-report-sha256=$($before.reportSha256)" > 20261019-project-settings-leader-permissions-applied.json
+$applied = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-applied.json' -Raw | ConvertFrom-Json
 ```
 
-Apply is additive and idempotent.
+Apply is additive and idempotent. A successful `APPLIED` result includes an
+`applyReceipt` containing the exact permission additions and the verified
+post-apply permission snapshot, authenticated with an HMAC. Apply and rollback
+require the same `PROJECT_SETTINGS_RECEIPT_KEY` (at least 32 bytes). Keep it in
+an approved secret store or the same protected shell session; never put it in
+the report or commit it.
 
-For rollback, run a fresh dry-run for the current state and provide the saved
-pre-apply report. Rollback removes only the permissions introduced by this
-migration:
+For rollback, run and review a fresh dry-run for the current state. Rollback
+requires the saved successful apply report and its separately reviewed receipt
+HMAC. It verifies that the Role identity (`code`, `name`, `isSystem`) and full
+permission list still match the post-apply snapshot before removing only the
+permissions recorded as added by that apply. A forged report without the
+receipt key, or any later Role identity or permission change, makes rollback
+fail before the write:
 
 ```powershell
 node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs > 20261019-project-settings-leader-permissions-current.json
 $current = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-current.json' -Raw | ConvertFrom-Json
-node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --rollback "--expected-report-sha256=$($current.reportSha256)" --rollback-from-report=20261019-project-settings-leader-permissions-before.json
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --rollback "--expected-report-sha256=$($current.reportSha256)" "--expected-apply-receipt-hmac=$($applied.result.applyReceipt.receiptHmac)" --rollback-from-report=20261019-project-settings-leader-permissions-applied.json
 ```
+
+If the apply report or receipt is unavailable, or the Role permissions changed
+after apply, the script refuses rollback; use a separately reviewed targeted
+recovery procedure.

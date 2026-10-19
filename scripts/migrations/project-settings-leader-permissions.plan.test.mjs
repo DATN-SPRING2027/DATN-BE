@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import {
   planProjectSettingsLeaderPermissions,
   hashLeaderPermissionsReport,
+  createLeaderPermissionsApplyReceipt,
   getLeaderPermissionsRollbackAdditions,
 } from './project-settings-leader-permissions.plan.mjs';
+
+const receiptKey = 'test-receipt-key-with-at-least-32-bytes';
 
 const baseContext = {
   databaseName: 'continuum_iam',
@@ -202,7 +205,27 @@ test('blocks when permissions field is malformed or contains duplicates', () => 
   assert.ok(duplicated.issues.includes('PERMISSIONS_DUPLICATED:TEAM_LEADER'));
 });
 
-test('rollback extracts only permissions added by the migration based on dry-run report', () => {
+function createApplyReport(preApplyPlan, afterApplyPlan) {
+  const reportSha256 = hashLeaderPermissionsReport(preApplyPlan);
+  const applyReceipt = createLeaderPermissionsApplyReceipt(
+    preApplyPlan,
+    afterApplyPlan,
+    preApplyPlan.role.missingPermissions,
+    receiptKey,
+  );
+  return {
+    ...preApplyPlan,
+    reportSha256,
+    result: {
+      action: 'APPLIED',
+      addedPermissions: applyReceipt.role.addedPermissions.length,
+      verified: true,
+      applyReceipt,
+    },
+  };
+}
+
+test('rollback requires the verified apply receipt and unchanged post-apply role', () => {
   const preApplyPlan = planProjectSettingsLeaderPermissions({
     ...baseContext,
     roles: [
@@ -215,10 +238,25 @@ test('rollback extracts only permissions added by the migration based on dry-run
     ],
   });
 
-  const reportSha256 = hashLeaderPermissionsReport(preApplyPlan);
-  const report = { ...preApplyPlan, reportSha256 };
+  const afterApplyPlan = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        isSystem: true,
+        permissions: preApplyPlan.role.expectedPermissions,
+      },
+    ],
+  });
+  const applyReport = createApplyReport(preApplyPlan, afterApplyPlan);
 
-  const rollback = getLeaderPermissionsRollbackAdditions(report);
+  const rollback = getLeaderPermissionsRollbackAdditions(
+    applyReport,
+    afterApplyPlan,
+    applyReport.result.applyReceipt.receiptHmac,
+    receiptKey,
+  );
   assert.equal(rollback.id, 'd0e4a4b1835649a8f2867257');
   assert.deepEqual(rollback.permissions, [
     'project.visibility.manage',
@@ -226,7 +264,7 @@ test('rollback extracts only permissions added by the migration based on dry-run
   ]);
 });
 
-test('rollback fails if report is tampered or invalid', () => {
+test('rollback rejects a saved pre-apply dry-run report without apply provenance', () => {
   const preApplyPlan = planProjectSettingsLeaderPermissions({
     ...baseContext,
     roles: [
@@ -239,11 +277,195 @@ test('rollback fails if report is tampered or invalid', () => {
     ],
   });
 
-  const reportSha256 = hashLeaderPermissionsReport(preApplyPlan);
-  const report = { ...preApplyPlan, reportSha256: 'tampered-hash' };
+  const report = {
+    ...preApplyPlan,
+    reportSha256: hashLeaderPermissionsReport(preApplyPlan),
+  };
 
   assert.throws(
-    () => getLeaderPermissionsRollbackAdditions(report),
-    /The saved pre-apply report is invalid or was modified/,
+    () => getLeaderPermissionsRollbackAdditions(report, preApplyPlan, 'hash'),
+    /verified apply report and its receipt/,
+  );
+});
+
+test('rollback rejects a changed role and a mismatched apply receipt HMAC', () => {
+  const preApplyPlan = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        isSystem: true,
+        permissions: ['project.read'],
+      },
+    ],
+  });
+  const afterApplyPlan = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        isSystem: true,
+        permissions: preApplyPlan.role.expectedPermissions,
+      },
+    ],
+  });
+  const applyReport = createApplyReport(preApplyPlan, afterApplyPlan);
+  const laterGrantPlan = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        isSystem: true,
+        permissions: [
+          ...afterApplyPlan.role.existingPermissions,
+          'organization.memberships.read',
+        ],
+      },
+    ],
+  });
+
+  assert.throws(
+    () =>
+      getLeaderPermissionsRollbackAdditions(
+        applyReport,
+        laterGrantPlan,
+        applyReport.result.applyReceipt.receiptHmac,
+        receiptKey,
+      ),
+    /Role permissions changed since the verified apply/,
+  );
+  assert.throws(
+    () =>
+      getLeaderPermissionsRollbackAdditions(
+        applyReport,
+        afterApplyPlan,
+        'incorrect-receipt-hash',
+        receiptKey,
+      ),
+    /apply receipt authentication failed/,
+  );
+});
+
+test('rollback rejects a self-consistent forged apply report without the receipt key', () => {
+  const preApplyPlan = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        name: 'Team Leader',
+        isSystem: true,
+        permissions: ['project.read', 'project.update'],
+      },
+    ],
+  });
+  const currentPlan = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        name: 'Team Leader',
+        isSystem: true,
+        permissions: [
+          'project.read',
+          'project.update',
+          'project.visibility.manage',
+        ],
+      },
+    ],
+  });
+  const reportSha256 = hashLeaderPermissionsReport(preApplyPlan);
+  const receiptPayload = {
+    migration: preApplyPlan.migration,
+    databaseName: preApplyPlan.databaseName,
+    targetFingerprint: preApplyPlan.targetFingerprint,
+    sourceReportSha256: reportSha256,
+    role: {
+      code: preApplyPlan.role.code,
+      name: preApplyPlan.role.name,
+      id: preApplyPlan.role.id,
+      isSystem: preApplyPlan.role.isSystem,
+      addedPermissions: [...preApplyPlan.role.missingPermissions],
+      permissionsAfter: [...currentPlan.role.existingPermissions],
+    },
+  };
+  const forgedReport = {
+    ...preApplyPlan,
+    reportSha256,
+    result: {
+      action: 'APPLIED',
+      addedPermissions: receiptPayload.role.addedPermissions.length,
+      verified: true,
+      applyReceipt: {
+        ...receiptPayload,
+        receiptHmac: hashLeaderPermissionsReport(receiptPayload),
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      getLeaderPermissionsRollbackAdditions(
+        forgedReport,
+        currentPlan,
+        forgedReport.result.applyReceipt.receiptHmac,
+        receiptKey,
+      ),
+    /apply receipt authentication failed/,
+  );
+});
+
+test('rollback rejects a Role rename after apply', () => {
+  const before = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        name: 'Team Leader',
+        isSystem: true,
+        permissions: ['project.read'],
+      },
+    ],
+  });
+  const after = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        name: 'Team Leader',
+        isSystem: true,
+        permissions: before.role.expectedPermissions,
+      },
+    ],
+  });
+  const renamed = planProjectSettingsLeaderPermissions({
+    ...baseContext,
+    roles: [
+      {
+        _id: 'd0e4a4b1835649a8f2867257',
+        code: 'TEAM_LEADER',
+        name: 'Renamed Leader',
+        isSystem: true,
+        permissions: after.role.existingPermissions,
+      },
+    ],
+  });
+  const applyReport = createApplyReport(before, after);
+
+  assert.throws(
+    () =>
+      getLeaderPermissionsRollbackAdditions(
+        applyReport,
+        renamed,
+        applyReport.result.applyReceipt.receiptHmac,
+        receiptKey,
+      ),
+    /Role identity changed since the verified apply/,
   );
 });

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 export const PROJECT_SETTINGS_LEADER_PERMISSIONS_PROVISIONING = Object.freeze({
   migration: 'project-settings-leader-permissions-v1',
@@ -28,6 +28,51 @@ function serializedId(value) {
 
 export function hashLeaderPermissionsReport(report) {
   return createHash('sha256').update(JSON.stringify(report)).digest('hex');
+}
+
+export function assertLeaderPermissionsReceiptKey(key) {
+  if (typeof key !== 'string' || Buffer.byteLength(key, 'utf8') < 32) {
+    throw new Error(
+      'PROJECT_SETTINGS_RECEIPT_KEY must contain at least 32 bytes for apply or rollback',
+    );
+  }
+  return key;
+}
+
+function leaderPermissionsReceiptHmac(payload, key) {
+  return createHmac('sha256', assertLeaderPermissionsReceiptKey(key))
+    .update(JSON.stringify(payload))
+    .digest('hex');
+}
+
+function matchesLeaderPermissionsReceiptHmac(actual, expected, payload, key) {
+  if (
+    typeof actual !== 'string' ||
+    !/^[\da-f]{64}$/i.test(actual) ||
+    typeof expected !== 'string' ||
+    !/^[\da-f]{64}$/i.test(expected)
+  ) {
+    return false;
+  }
+  const actualBuffer = Buffer.from(actual, 'hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  const computedBuffer = Buffer.from(
+    leaderPermissionsReceiptHmac(payload, key),
+    'hex',
+  );
+  return (
+    timingSafeEqual(actualBuffer, expectedBuffer) &&
+    timingSafeEqual(actualBuffer, computedBuffer)
+  );
+}
+
+function sameStringArray(left, right) {
+  return (
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 export function planProjectSettingsLeaderPermissions({
@@ -90,6 +135,7 @@ export function planProjectSettingsLeaderPermissions({
 
   const plannedLeaderRole = {
     code: 'TEAM_LEADER',
+    name: leaderRole?.name ?? null,
     id: leaderId,
     isSystem: leaderRole?.isSystem ?? null,
     permissionsFieldMissing,
@@ -97,18 +143,14 @@ export function planProjectSettingsLeaderPermissions({
     missingPermissions: permissionsToAdd,
     permissionsToAdd,
     permissionsUnchanged,
-    expectedPermissions: [
-      ...stringPermissions,
-      ...permissionsToAdd,
-    ],
+    expectedPermissions: [...stringPermissions, ...permissionsToAdd],
   };
 
   const clean = issues.length === 0;
   const hasChanges = permissionsToAdd.length > 0;
 
   return {
-    migration:
-      PROJECT_SETTINGS_LEADER_PERMISSIONS_PROVISIONING.migration,
+    migration: PROJECT_SETTINGS_LEADER_PERMISSIONS_PROVISIONING.migration,
     databaseName,
     targetFingerprint,
     collectionName:
@@ -126,11 +168,66 @@ export function planProjectSettingsLeaderPermissions({
   };
 }
 
-export function getLeaderPermissionsRollbackAdditions(originalReport) {
-  if (!originalReport || typeof originalReport !== 'object') {
-    throw new Error('A saved pre-apply dry-run report is required for rollback');
+export function createLeaderPermissionsApplyReceipt(
+  plan,
+  afterPlan,
+  addedPermissions,
+  receiptKey,
+) {
+  assertLeaderPermissionsReceiptKey(receiptKey);
+  if (
+    !plan ||
+    plan.clean !== true ||
+    plan.action === 'NOOP' ||
+    !afterPlan ||
+    afterPlan.clean !== true ||
+    plan.databaseName !== afterPlan.databaseName ||
+    plan.targetFingerprint !== afterPlan.targetFingerprint ||
+    plan.role?.id !== afterPlan.role?.id ||
+    plan.role?.name !== afterPlan.role?.name ||
+    plan.role?.isSystem !== afterPlan.role?.isSystem ||
+    !Array.isArray(plan.role?.missingPermissions) ||
+    !sameStringArray(addedPermissions, plan.role.missingPermissions) ||
+    !Array.isArray(afterPlan.role?.existingPermissions) ||
+    afterPlan.role.missingPermissions.length > 0 ||
+    addedPermissions.some(
+      (permission) => !afterPlan.role.existingPermissions.includes(permission),
+    )
+  ) {
+    throw new Error('Cannot create an apply receipt from an unverified result');
   }
-  const { reportSha256, result: _result, ...originalPlan } = originalReport;
+
+  const receipt = {
+    migration: plan.migration,
+    databaseName: plan.databaseName,
+    targetFingerprint: plan.targetFingerprint,
+    sourceReportSha256: hashLeaderPermissionsReport(plan),
+    role: {
+      code: plan.role.code,
+      name: plan.role.name,
+      id: plan.role.id,
+      isSystem: plan.role.isSystem,
+      addedPermissions: [...addedPermissions],
+      permissionsAfter: [...afterPlan.role.existingPermissions],
+    },
+  };
+
+  return {
+    ...receipt,
+    receiptHmac: leaderPermissionsReceiptHmac(receipt, receiptKey),
+  };
+}
+
+export function getLeaderPermissionsRollbackAdditions(
+  applyReport,
+  currentPlan,
+  expectedApplyReceiptHmac,
+  receiptKey,
+) {
+  if (!applyReport || typeof applyReport !== 'object') {
+    throw new Error('A verified apply report is required for rollback');
+  }
+  const { reportSha256, result, ...originalPlan } = applyReport;
   if (
     originalPlan.migration !==
       PROJECT_SETTINGS_LEADER_PERMISSIONS_PROVISIONING.migration ||
@@ -138,7 +235,7 @@ export function getLeaderPermissionsRollbackAdditions(originalReport) {
     typeof reportSha256 !== 'string' ||
     hashLeaderPermissionsReport(originalPlan) !== reportSha256
   ) {
-    throw new Error('The saved pre-apply report is invalid or was modified');
+    throw new Error('The saved apply report is invalid or was modified');
   }
 
   const role = originalPlan.role;
@@ -146,18 +243,97 @@ export function getLeaderPermissionsRollbackAdditions(originalReport) {
     !role ||
     role.code !== 'TEAM_LEADER' ||
     !role.id ||
-    !Array.isArray(role.missingPermissions)
+    !Array.isArray(role.missingPermissions) ||
+    role.missingPermissions.some(
+      (permission) => !approvedSet.has(permission),
+    ) ||
+    new Set(role.missingPermissions).size !== role.missingPermissions.length
   ) {
-    throw new Error('The saved pre-apply report has an invalid role entry');
+    throw new Error('The saved apply report has an invalid role entry');
   }
-  if (role.missingPermissions.some((p) => !approvedSet.has(p))) {
+  if (
+    result?.action !== 'APPLIED' ||
+    result.verified !== true ||
+    !Number.isInteger(result.addedPermissions) ||
+    result.addedPermissions <= 0 ||
+    !result.applyReceipt
+  ) {
     throw new Error(
-      'The saved pre-apply report contains an unapproved permission',
+      'A verified apply report and its receipt are required for rollback',
+    );
+  }
+
+  const receipt = result.applyReceipt;
+  const { receiptHmac, ...receiptPayload } = receipt;
+  if (
+    !matchesLeaderPermissionsReceiptHmac(
+      receiptHmac,
+      expectedApplyReceiptHmac,
+      receiptPayload,
+      receiptKey,
+    )
+  ) {
+    throw new Error('The apply receipt authentication failed');
+  }
+
+  const receiptRole = receiptPayload.role;
+  if (
+    receiptPayload.migration !== originalPlan.migration ||
+    receiptPayload.databaseName !== originalPlan.databaseName ||
+    receiptPayload.targetFingerprint !== originalPlan.targetFingerprint ||
+    receiptPayload.sourceReportSha256 !== reportSha256 ||
+    receiptRole?.code !== role.code ||
+    receiptRole?.name !== role.name ||
+    receiptRole.id !== role.id ||
+    receiptRole.isSystem !== role.isSystem ||
+    !sameStringArray(receiptRole.addedPermissions, role.missingPermissions) ||
+    result.addedPermissions !== receiptRole.addedPermissions.length ||
+    !Array.isArray(receiptRole.permissionsAfter) ||
+    receiptRole.permissionsAfter.some(
+      (permission) => typeof permission !== 'string',
+    ) ||
+    new Set(receiptRole.permissionsAfter).size !==
+      receiptRole.permissionsAfter.length ||
+    !role.missingPermissions.every((permission) =>
+      receiptRole.permissionsAfter.includes(permission),
+    )
+  ) {
+    throw new Error('The apply receipt does not match the saved apply report');
+  }
+
+  if (
+    !currentPlan ||
+    currentPlan.databaseName !== originalPlan.databaseName ||
+    currentPlan.targetFingerprint !== originalPlan.targetFingerprint
+  ) {
+    throw new Error('Rollback report targets a different MongoDB database');
+  }
+  if (currentPlan.role?.id !== role.id) {
+    throw new Error(
+      'Rollback stopped because TEAM_LEADER Role identity changed since the verified apply',
+    );
+  }
+  if (
+    currentPlan.role?.name !== role.name ||
+    currentPlan.role?.isSystem !== role.isSystem
+  ) {
+    throw new Error(
+      'Rollback stopped because TEAM_LEADER Role identity changed since the verified apply',
+    );
+  }
+  if (
+    !sameStringArray(
+      currentPlan.role.existingPermissions,
+      receiptRole.permissionsAfter,
+    )
+  ) {
+    throw new Error(
+      'Rollback stopped because Role permissions changed since the verified apply',
     );
   }
 
   return {
     id: role.id,
-    permissions: [...role.missingPermissions],
+    permissions: [...receiptRole.addedPermissions],
   };
 }
