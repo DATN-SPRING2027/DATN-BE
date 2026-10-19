@@ -43,9 +43,9 @@ export interface TaskDocument extends mongoose.mongo.Document {
   createdBy: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
-  status?: TaskStatus;
-  assigneeId?: Types.ObjectId | null;
-  completedAt?: Date | null;
+  status: TaskStatus;
+  assigneeId: Types.ObjectId | null;
+  completedAt: Date | null;
   version: number;
 }
 
@@ -69,7 +69,6 @@ export interface TaskStatusTransitionEventDocument
   _id: Types.ObjectId;
   taskId: Types.ObjectId;
   projectId: Types.ObjectId;
-  organizationId: Types.ObjectId;
   actorId: Types.ObjectId;
   actorType: 'USER' | 'SYSTEM';
   source: 'WEB' | 'API' | 'INTERNAL_SERVICE';

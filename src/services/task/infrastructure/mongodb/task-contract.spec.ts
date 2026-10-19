@@ -160,6 +160,9 @@ describe('D-03 Task persistence contract', () => {
       'createdBy',
       'createdAt',
       'updatedAt',
+      'status',
+      'assigneeId',
+      'completedAt',
       'version',
     ]);
     expect(Object.keys(TASK_JSON_SCHEMA.properties).sort()).toEqual(
@@ -181,6 +184,12 @@ describe('D-03 Task persistence contract', () => {
       '\\x{200B}',
     );
     expect(TASK_EVENT_JSON_SCHEMA.oneOf).toHaveLength(2);
+    expect(TASK_EVENT_JSON_SCHEMA.oneOf[1].required).not.toContain(
+      'organizationId',
+    );
+    expect(TASK_EVENT_JSON_SCHEMA.oneOf[1].properties).not.toHaveProperty(
+      'organizationId',
+    );
     expect(
       TASK_EVENT_JSON_SCHEMA.oneOf.every(
         (eventSchema) => eventSchema.additionalProperties === false,

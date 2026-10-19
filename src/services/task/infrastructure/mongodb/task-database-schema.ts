@@ -49,7 +49,6 @@ const taskStatusEventProperties = {
   _id: { bsonType: 'objectId' },
   taskId: { bsonType: 'objectId' },
   projectId: { bsonType: 'objectId' },
-  organizationId: { bsonType: 'objectId' },
   actorId: { bsonType: 'objectId' },
   actorType: { bsonType: 'string', enum: ['USER', 'SYSTEM'] },
   source: {
@@ -135,6 +134,9 @@ export const TASK_JSON_SCHEMA = {
     'createdBy',
     'createdAt',
     'updatedAt',
+    'status',
+    'assigneeId',
+    'completedAt',
     'version',
   ],
   additionalProperties: false,
@@ -167,7 +169,6 @@ export const TASK_EVENT_JSON_SCHEMA = {
         '_id',
         'taskId',
         'projectId',
-        'organizationId',
         'actorId',
         'actorType',
         'source',
@@ -218,32 +219,13 @@ export const TASK_COLLECTION_VALIDATORS = {
                 false,
               ],
             },
+            { $eq: [{ $type: '$status' }, 'string'] },
+            { $in: [{ $type: '$assigneeId' }, ['objectId', 'null']] },
+            { $in: [{ $type: '$completedAt' }, ['date', 'null']] },
             {
-              $or: [
-                {
-                  $and: [
-                    { $eq: [{ $type: '$status' }, 'missing'] },
-                    { $eq: [{ $type: '$assigneeId' }, 'missing'] },
-                    { $eq: [{ $type: '$completedAt' }, 'missing'] },
-                  ],
-                },
-                {
-                  $and: [
-                    { $eq: [{ $type: '$status' }, 'string'] },
-                    {
-                      $in: [{ $type: '$assigneeId' }, ['objectId', 'null']],
-                    },
-                    {
-                      $in: [{ $type: '$completedAt' }, ['date', 'null']],
-                    },
-                    {
-                      $eq: [
-                        { $eq: ['$status', 'DONE'] },
-                        { $eq: [{ $type: '$completedAt' }, 'date'] },
-                      ],
-                    },
-                  ],
-                },
+              $eq: [
+                { $eq: ['$status', 'DONE'] },
+                { $eq: [{ $type: '$completedAt' }, 'date'] },
               ],
             },
           ],

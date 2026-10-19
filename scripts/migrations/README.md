@@ -12,10 +12,11 @@ only where the lifecycle fields are missing. Any Task, event, or operation
 document that fails the target validator, duplicate version events, duplicate
 operation keys, or an incompatible index blocks apply. Task documents,
 creation history, and other collections are never deleted. D-03 `TASK_CREATED`
-events retain their exact
-P3 schema; status transitions use a separate strict event shape. The new
-`task_operations` collection stores only bounded status-command idempotency
-records and expires them after their configured 24-hour window.
+events retain their exact P3 schema; status transitions use a separate strict
+event shape scoped by `projectId`. The event does not persist `organizationId`,
+which is outside the approved DATN-100 scope. The new `task_operations`
+collection stores only bounded status-command idempotency records and expires
+them after their configured 24-hour window.
 
 The migration requires an explicit `TASK_MONGODB_URI`, targets only
 `continuum_task`, and never loads `.env`. It refuses to create the existing
@@ -29,21 +30,25 @@ npm run migrate:task-lifecycle-contract > task-lifecycle-dry-run.json
 $report = Get-Content -LiteralPath 'task-lifecycle-dry-run.json' -Raw | ConvertFrom-Json
 ```
 
-Review the database target, backfill counts, and clean status first. Apply only
-the exact report that was reviewed:
+Review the database target, backfill counts, and clean status first. Task writes
+must remain paused while apply temporarily installs a compatibility validator,
+backfills existing documents, and installs the final strict validator. Apply
+requires an explicit `--task-writes-paused` assertion and the exact reviewed
+report:
 
 ```powershell
-npm run migrate:task-lifecycle-contract -- --apply "--expected-report-sha256=$($report.reportSha256)"
+npm run migrate:task-lifecycle-contract -- --apply --task-writes-paused "--expected-report-sha256=$($report.reportSha256)"
 ```
 
-Apply is additive and idempotent. It installs validators that accept either
-the legacy seven-field shape or the complete lifecycle shape, so the previous
-D-03 create implementation remains compatible during application rollback.
-Backfilled Task state and append-only history are retained on rollback; do not
-remove lifecycle fields, status events, the operation collection, or its TTL
-index. Roll back the application while keeping the database expansion, then
-disable Task lifecycle writes until a compatible release is restored. No shared
-or production database was modified by the DATN-100 change.
+Apply is additive and idempotent. The migration-time compatibility validator
+accepts the legacy seven-field shape only long enough to backfill it. The final
+validator requires `status`, `assigneeId`, and `completedAt` on every Task and
+enforces their lifecycle invariants. After apply, an older D-03 writer that
+omits these fields is incompatible; keep Task dormant until a lifecycle-aware
+release is ready. For rollback, disable Task writes and keep the database
+expansion and backfilled data. Do not remove lifecycle fields, status events,
+the operation collection, or its TTL index. No shared or production database
+was modified by the DATN-100 change.
 
 Validation commands include `npm run test:migrations:plan` for report and
 idempotency planning. The marked MongoDB 7 replica-set integration suite is

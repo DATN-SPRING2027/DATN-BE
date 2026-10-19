@@ -11,6 +11,15 @@ const TASK_EVENT_COLLECTION = 'task_events';
 const TASK_OPERATION_COLLECTION = 'task_operations';
 const TASK_OPERATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TASK_STATUSES = ['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCELLED'];
+const TASK_BASE_REQUIRED_FIELDS = [
+  '_id',
+  'projectId',
+  'title',
+  'createdBy',
+  'createdAt',
+  'updatedAt',
+  'version',
+];
 const TASK_CREATION_CHANGED_FIELDS = [
   'projectId',
   'title',
@@ -26,8 +35,12 @@ const REQUEST_ID_PATTERN = '^[A-Za-z0-9._-]{1,128}$';
 
 // Keep these migration-time validators aligned with task-database-schema.ts.
 const TASK_COLLECTION_VALIDATORS = buildTaskCollectionValidators();
+const TASK_MIGRATION_COMPATIBILITY_VALIDATORS = buildTaskCollectionValidators({
+  allowLegacyTaskDocuments: true,
+});
 
 const apply = process.argv.includes('--apply');
+const taskWritesPaused = process.argv.includes('--task-writes-paused');
 const expectedHash = process.argv
   .find((value) => value.startsWith('--expected-report-sha256='))
   ?.split('=')[1];
@@ -35,6 +48,8 @@ const uri = process.env.TASK_MONGODB_URI;
 
 if (apply && !expectedHash)
   throw new Error('--apply requires a reviewed dry-run report SHA-256');
+if (apply && !taskWritesPaused)
+  throw new Error('--apply requires --task-writes-paused');
 if (!uri)
   throw new Error('TASK_MONGODB_URI must be provided by the invoking process');
 
@@ -60,7 +75,7 @@ try {
 
     await database.command({
       collMod: TASK_COLLECTION,
-      validator: TASK_COLLECTION_VALIDATORS.tasks,
+      validator: TASK_MIGRATION_COMPATIBILITY_VALIDATORS.tasks,
       validationLevel: 'strict',
       validationAction: 'error',
     });
@@ -105,6 +120,13 @@ try {
       ],
     );
 
+    await database.command({
+      collMod: TASK_COLLECTION,
+      validator: TASK_COLLECTION_VALIDATORS.tasks,
+      validationLevel: 'strict',
+      validationAction: 'error',
+    });
+
     const eventCollection = database.collection(TASK_EVENT_COLLECTION);
     if (plan.legacyEventIndexAction === 'DROP_EXACT_LEGACY_INDEX')
       await eventCollection.dropIndex('task_event_task_version_unique');
@@ -114,7 +136,9 @@ try {
       plan.taskOperationIndexes,
     );
 
-    const verification = await inspect(database);
+    const verification = await inspect(database, {
+      allowLegacyTaskDocuments: false,
+    });
     const indexesVerified = [
       ...verification.taskEventIndexes,
       ...verification.taskOperationIndexes,
@@ -137,7 +161,7 @@ try {
   await connection.close();
 }
 
-async function inspect(database) {
+async function inspect(database, { allowLegacyTaskDocuments = true } = {}) {
   const collections = {};
   for (const name of [
     TASK_COLLECTION,
@@ -186,7 +210,12 @@ async function inspect(database) {
       ? taskCollection.countDocuments({ completedAt: { $exists: false } })
       : 0,
     collections[TASK_COLLECTION].objectType === 'collection'
-      ? countInvalidDocuments(taskCollection, TASK_COLLECTION_VALIDATORS.tasks)
+      ? countInvalidDocuments(
+          taskCollection,
+          allowLegacyTaskDocuments
+            ? TASK_MIGRATION_COMPATIBILITY_VALIDATORS.tasks
+            : TASK_COLLECTION_VALIDATORS.tasks,
+        )
       : 0,
     collections[TASK_EVENT_COLLECTION].objectType === 'collection'
       ? eventCollection.countDocuments()
@@ -299,7 +328,9 @@ async function createPlannedIndexes(collection, indexes) {
   }
 }
 
-function buildTaskCollectionValidators() {
+function buildTaskCollectionValidators({
+  allowLegacyTaskDocuments = false,
+} = {}) {
   const taskProperties = {
     _id: { bsonType: 'objectId' },
     projectId: { bsonType: 'objectId' },
@@ -315,13 +346,10 @@ function buildTaskCollectionValidators() {
   const taskJsonSchema = {
     bsonType: 'object',
     required: [
-      '_id',
-      'projectId',
-      'title',
-      'createdBy',
-      'createdAt',
-      'updatedAt',
-      'version',
+      ...TASK_BASE_REQUIRED_FIELDS,
+      ...(allowLegacyTaskDocuments
+        ? []
+        : ['status', 'assigneeId', 'completedAt']),
     ],
     additionalProperties: false,
     properties: taskProperties,
@@ -388,7 +416,6 @@ function buildTaskCollectionValidators() {
       '_id',
       'taskId',
       'projectId',
-      'organizationId',
       'actorId',
       'actorType',
       'source',
@@ -404,7 +431,6 @@ function buildTaskCollectionValidators() {
       _id: { bsonType: 'objectId' },
       taskId: { bsonType: 'objectId' },
       projectId: { bsonType: 'objectId' },
-      organizationId: { bsonType: 'objectId' },
       actorId: { bsonType: 'objectId' },
       actorType: { bsonType: 'string', enum: ['USER', 'SYSTEM'] },
       source: {
@@ -517,7 +543,9 @@ function buildTaskCollectionValidators() {
                   false,
                 ],
               },
-              { $or: [legacyTaskShape, lifecycleTaskShape] },
+              ...(allowLegacyTaskDocuments
+                ? [{ $or: [legacyTaskShape, lifecycleTaskShape] }]
+                : [lifecycleTaskShape]),
             ],
           },
         },

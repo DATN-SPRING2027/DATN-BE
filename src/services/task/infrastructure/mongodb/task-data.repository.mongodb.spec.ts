@@ -381,7 +381,6 @@ integration(
         _id: new Types.ObjectId(),
         taskId: result.task._id,
         projectId,
-        organizationId: new Types.ObjectId(),
         actorId,
         actorType: 'USER',
         source: 'API',
@@ -750,7 +749,7 @@ integration(
       delete (legacyTask as Record<string, unknown>).completedAt;
       await expect(
         connection!.db!.collection(TASK_COLLECTION).insertOne(legacyTask),
-      ).resolves.toMatchObject({ acknowledged: true });
+      ).rejects.toMatchObject({ code: 121 });
       expect(TASK_DATABASE_NAME).toBe('continuum_task');
       expect(Object.keys(SERVICE_DATABASES)).not.toContain('task');
       expect(Object.values(SERVICE_DATABASES)).not.toContain(
@@ -758,7 +757,7 @@ integration(
       );
     });
 
-    it('O14 validates lifecycle enum and completedAt invariants while preserving legacy documents', async () => {
+    it('O14 validates lifecycle enum and completedAt invariants', async () => {
       await expect(
         connection!
           .db!.collection(TASK_COLLECTION)
@@ -854,7 +853,6 @@ integration(
           _id: new Types.ObjectId(),
           taskId: new Types.ObjectId(),
           projectId,
-          organizationId: new Types.ObjectId(),
           actorId,
           actorType: 'USER',
           source: 'API',
