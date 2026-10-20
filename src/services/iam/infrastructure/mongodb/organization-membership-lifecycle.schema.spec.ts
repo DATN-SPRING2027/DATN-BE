@@ -61,6 +61,11 @@ const v2 = {
   membershipId: new Types.ObjectId(),
   targetUserId: pair.userId,
 };
+const v3 = {
+  ...invitation,
+  contractVersion: 3,
+  tokenHash: 'c'.repeat(64),
+};
 
 describe('DATN-87 independent lifecycle persistence', () => {
   it('separates business version from the internal Membership fence', () => {
@@ -111,6 +116,31 @@ describe('DATN-87 independent lifecycle persistence', () => {
     ).toBeDefined();
   });
 
+  it('allows an email-bound V3 invitation without an account or membership', () => {
+    const row = new Invitation({ ...v3, status: 'PENDING' });
+    expect(row.validateSync()).toBeUndefined();
+    expect(row.get('membershipId')).toBeUndefined();
+    expect(row.get('targetUserId')).toBeUndefined();
+    expect(row.get('roleCode')).toBeUndefined();
+  });
+
+  it('requires an opaque token hash for V3 invitations', () => {
+    expect(
+      new Invitation({
+        ...v3,
+        tokenHash: undefined,
+        status: 'PENDING',
+      }).validateSync(),
+    ).toBeDefined();
+    expect(
+      new Invitation({
+        ...v3,
+        tokenHash: 'not-a-hash',
+        status: 'PENDING',
+      }).validateSync(),
+    ).toBeDefined();
+  });
+
   it('rejects legacy REVOKED vocabulary and role grants on new V2 records', () => {
     expect(
       new Invitation({ ...v2, status: 'REVOKED' }).validateSync(),
@@ -153,6 +183,17 @@ describe('DATN-87 independent lifecycle persistence', () => {
         .indexes()
         .some(([, options]) => 'expireAfterSeconds' in options),
     ).toBe(false);
+  });
+
+  it('indexes opaque V3 invitation token hashes uniquely without expiring lifecycle records', () => {
+    expect(invitationSchema.indexes()).toContainEqual([
+      { tokenHash: 1 },
+      expect.objectContaining({
+        name: 'invitation_token_hash_unique_v3',
+        unique: true,
+        partialFilterExpression: { tokenHash: { $type: 'string' } },
+      }),
+    ]);
   });
 });
 
@@ -215,6 +256,122 @@ describe('DATN-87 immutable operation cache', () => {
       { actorUserId: 1, organizationId: 1, keyHash: 1 },
       expect.objectContaining({ unique: true }),
     ]);
+  });
+
+  it('accepts an invitation-only acknowledgement for unregistered recipients', () => {
+    const invitationOnlyResult = {
+      operationId: String(operationId),
+      invitation: {
+        id: String(new Types.ObjectId()),
+        status: 'PENDING',
+        version: 1,
+        expiresAt: '2026-10-19T00:00:00.000Z',
+      },
+    };
+    expect(
+      new Operation({
+        ...cachedOperation,
+        command: 'INVITE',
+        contractVersion: 3,
+        membershipId: undefined,
+        targetUserId: undefined,
+        httpStatus: 201,
+        resultBody: invitationOnlyResult,
+      }).validateSync(),
+    ).toBeUndefined();
+    expect(
+      new Operation({
+        ...cachedOperation,
+        command: 'INVITE',
+        contractVersion: 3,
+        membershipId: undefined,
+        targetUserId: undefined,
+        httpStatus: 201,
+        resultBody: {
+          ...invitationOnlyResult,
+          membership: cachedResult.membership,
+        },
+      }).validateSync()?.errors.resultBody,
+    ).toBeDefined();
+  });
+
+  it.each([
+    ['RESEND', 'PENDING', false],
+    ['CANCEL', 'CANCELLED', true],
+  ])(
+    'accepts V3 %s result without a pending Membership row',
+    (command, status, retainsTargetId) => {
+      const invitationId = new Types.ObjectId();
+      const resultInvitationId = retainsTargetId
+        ? invitationId
+        : new Types.ObjectId();
+      const invitationOnlyResult = {
+        operationId: String(operationId),
+        invitation: {
+          id: String(resultInvitationId),
+          status,
+          version: 1,
+          expiresAt: '2026-10-19T00:00:00.000Z',
+        },
+      };
+      expect(
+        new Operation({
+          ...cachedOperation,
+          command,
+          contractVersion: 3,
+          invitationId,
+          membershipId: undefined,
+          targetUserId: undefined,
+          resultBody: invitationOnlyResult,
+        }).validateSync(),
+      ).toBeUndefined();
+    },
+  );
+
+  it('keeps V2 invitation operations bound to a Membership and target user', () => {
+    expect(
+      new Operation({
+        ...cachedOperation,
+        command: 'CANCEL',
+        contractVersion: 2,
+        membershipId: undefined,
+        targetUserId: undefined,
+      }).validateSync()?.errors.membershipId,
+    ).toBeDefined();
+  });
+
+  it('binds V3 accept acknowledgements to the accepted invitation', () => {
+    const invitationId = new Types.ObjectId();
+    const resultBody = {
+      operationId: String(operationId),
+      membership: { ...cachedResult.membership, status: 'ACTIVE' },
+      invitation: {
+        id: String(invitationId),
+        status: 'ACCEPTED',
+        version: 2,
+        expiresAt: '2026-10-19T00:00:00.000Z',
+      },
+    };
+    const operation = {
+      ...cachedOperation,
+      command: 'ACCEPT',
+      contractVersion: 3,
+      invitationId,
+      resultBody,
+    };
+    expect(new Operation(operation).validateSync()).toBeUndefined();
+    expect(
+      new Operation({
+        ...operation,
+        resultBody: {
+          ...resultBody,
+          invitation: {
+            ...resultBody.invitation,
+            id: String(new Types.ObjectId()),
+          },
+        },
+      }).validateSync()?.errors.resultBody,
+    ).toBeDefined();
   });
 
   it('accepts a scoped Organization role mutation acknowledgement', () => {

@@ -67,6 +67,14 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
           { membershipId: 1, createdAt: -1, _id: -1 },
           { name: 'membership_invitation_history' },
         ),
+        index(
+          { tokenHash: 1 },
+          {
+            name: 'invitation_token_hash_unique_v3',
+            unique: true,
+            partialFilterExpression: { tokenHash: { $type: 'string' } },
+          },
+        ),
       ],
     },
     {
