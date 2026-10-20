@@ -170,6 +170,37 @@ all invitation records so an application rollback cannot erase audit history.
 Resolve or allow pending invitations to expire before rollback; retain the
 report and coordinate API rollback with the backend release.
 
+### Email-bound invitation token hash index
+
+`20261020-organization-invitation-token-index.mjs` adds the unique partial
+`invitation_token_hash_unique_v3` index on `organization_invitations.tokenHash`.
+It requires the existing collection, checks for duplicate/malformed hashes and
+V3 records missing their required hash without printing token values, and makes
+no document or account changes.
+The partial index excludes legacy V1/V2 invitations that have no token hash.
+The script does not load `.env`; use the same explicitly reviewed IAM target
+environment values described above.
+
+Run the dry-run and retain its credential-free report and SHA-256:
+
+```powershell
+npm run migrate:organization-invitation-token-index
+```
+
+Apply only the exact reviewed report:
+
+```powershell
+npm run migrate:organization-invitation-token-index -- --apply --expected-report-sha256=<reportSha256>
+```
+
+Rollback preserves invitation documents and refuses while any V3 invitation
+record exists, including accepted/expired history. Stop V3 invitation writes and
+review a fresh report before dropping only the named token hash index:
+
+```powershell
+npm run migrate:organization-invitation-token-index -- --rollback --expected-report-sha256=<reportSha256>
+```
+
 ## Organization Membership Admin permissions
 
 `20261019-organization-membership-admin-permissions.mjs` adds only

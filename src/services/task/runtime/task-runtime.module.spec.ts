@@ -27,6 +27,8 @@ import {
   TaskHistoryQueryService,
   UnconfiguredTaskHistoryAccessEvidenceProvider,
 } from './task-history-query';
+import { TaskCreateController } from '../http/task-create.controller';
+import { TaskCreateService } from '../http/task-create.service';
 import { TaskReadController } from '../http/task-read.controller';
 import {
   TASK_READ_REPOSITORY,
@@ -141,6 +143,28 @@ describe('TaskRuntimeModule Task routes flag', () => {
         provide: TASK_RESOURCE_PROJECT_RESOLVER,
         useClass: UnconfiguredTaskResourceProjectResolver,
       });
+    }
+  });
+
+  it('registers the create controller only when both the routes flag and the create flag are on', () => {
+    const cases: [Record<string, boolean>, unknown[]][] = [
+      [{}, []],
+      [{ routesEnabled: true }, [TaskReadController]],
+      [{ createRouteEnabled: true }, []],
+      [
+        { routesEnabled: true, createRouteEnabled: true },
+        [TaskReadController, TaskCreateController],
+      ],
+    ];
+    for (const [flags, controllers] of cases) {
+      const runtimeModule = TaskRuntimeModule.register({
+        ...disabled,
+        ...flags,
+      });
+      expect(runtimeModule.controllers ?? []).toEqual(controllers);
+      expect((runtimeModule.providers ?? []).includes(TaskCreateService)).toBe(
+        controllers.includes(TaskCreateController),
+      );
     }
   });
 

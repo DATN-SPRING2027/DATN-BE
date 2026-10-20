@@ -182,12 +182,31 @@ describe('Task delegation assertion prototype', () => {
       projectId,
       requestId: validClaims.rid,
     });
+    // The token declares RS256 but the verifier is configured for EdDSA: the
+    // token header does not match the configured profile (a refused credential).
     expect(() =>
       verify(token, {
         signatureAlgorithm: 'EdDSA',
         publicKeys: new Map([[keyId, rsaKeys.publicKey]]),
       }),
     ).toThrow(new TaskDelegationAssertionError('UNSUPPORTED_PROFILE'));
+  });
+
+  it('reports an unusable verification key as a key configuration fault, not a refused credential', () => {
+    const rsaKeys = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    // The token matches the configured profile (EdDSA) but the key set holds an
+    // RSA key under that kid: the fault is in the verifier configuration.
+    expect(() =>
+      verify(signAssertion(), {
+        publicKeys: new Map([[keyId, rsaKeys.publicKey]]),
+      }),
+    ).toThrow(new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID'));
+    // Key material that cannot be parsed at all.
+    expect(() =>
+      verify(signAssertion(), {
+        publicKeys: new Map([[keyId, 'not-a-pem-key']]),
+      }),
+    ).toThrow(new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID'));
   });
 
   it('verifies the RFC 9068 profile with RS256, at+jwt and a bound client_id', () => {
@@ -238,7 +257,7 @@ describe('Task delegation assertion prototype', () => {
         signatureAlgorithm: 'RS256',
         publicKeys: new Map([[keyId, weakRsaKeys.publicKey]]),
       }),
-    ).toThrow(new TaskDelegationAssertionError('UNSUPPORTED_PROFILE'));
+    ).toThrow(new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID'));
   });
 
   it('requires the configured token type to match exactly', () => {
@@ -262,11 +281,11 @@ describe('Task delegation assertion prototype', () => {
   it('rejects private signing material in the verifier key set', () => {
     expect(() =>
       verify(signAssertion(), { publicKeys: new Map([[keyId, privateKey]]) }),
-    ).toThrow(new TaskDelegationAssertionError('UNSUPPORTED_PROFILE'));
+    ).toThrow(new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID'));
     const privatePem = privateKey.export({ type: 'pkcs8', format: 'pem' });
     expect(() =>
       verify(signAssertion(), { publicKeys: new Map([[keyId, privatePem]]) }),
-    ).toThrow(new TaskDelegationAssertionError('UNSUPPORTED_PROFILE'));
+    ).toThrow(new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID'));
   });
 
   it.each([
@@ -387,12 +406,17 @@ describe('Task delegation assertion prototype', () => {
   });
 
   it.each([
-    ['already consumed', () => Promise.resolve(false)],
+    [
+      'already consumed',
+      () => Promise.resolve(false),
+      'REPLAY_DETECTED' as const,
+    ],
     [
       'store unavailable',
       () => Promise.reject(new Error('private-store-detail')),
+      'VERIFICATION_FAILED' as const,
     ],
-  ])('fails closed when replay is %s', async (_name, consume) => {
+  ])('fails closed when replay is %s', async (_name, consume, failure) => {
     const prototype = new TaskDelegationAssertionPrototypeVerifier({
       issuer,
       audience,
@@ -411,7 +435,7 @@ describe('Task delegation assertion prototype', () => {
     );
 
     await expect(consuming.verify(signAssertion(), request)).rejects.toEqual(
-      new TaskInboundContextVerificationError('VERIFICATION_FAILED'),
+      new TaskInboundContextVerificationError(failure),
     );
   });
 

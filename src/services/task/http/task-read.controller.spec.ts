@@ -111,6 +111,7 @@ const resolvedScope: TaskProjectScopeEvidenceProvider = {
       projectId,
       organizationId: 'organization-from-test-fixture',
       organizationMembershipStatus: 'ACTIVE',
+      projectMembershipStatus: 'ACTIVE',
     },
   }),
 };

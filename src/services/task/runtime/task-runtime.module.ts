@@ -31,6 +31,11 @@ import {
   UnconfiguredTaskResourceProjectResolver,
 } from './task-authorization-boundary';
 import { TaskAuthorizationHttpGuard } from './task-authorization-http.guard';
+import { TaskCreateController } from '../http/task-create.controller';
+import {
+  TASK_CREATE_REPOSITORY,
+  TaskCreateService,
+} from '../http/task-create.service';
 import { TaskReadController } from '../http/task-read.controller';
 import {
   TASK_READ_REPOSITORY,
@@ -57,6 +62,9 @@ export class TaskRuntimeModule {
     // persisted owning Project; the verifier, scope evidence and policy
     // defaults below stay deny-by-default either way.
     const routesEnabled = config.routesEnabled === true;
+    // Create needs its own explicit flag on top of the routes flag.
+    const createRouteEnabled =
+      routesEnabled && config.createRouteEnabled === true;
     return {
       module: TaskRuntimeModule,
       imports: [
@@ -64,7 +72,10 @@ export class TaskRuntimeModule {
           ...TASK_RUNTIME_MONGOOSE_OPTIONS,
         }),
       ],
-      controllers: routesEnabled ? [TaskReadController] : [],
+      controllers: [
+        ...(routesEnabled ? [TaskReadController] : []),
+        ...(createRouteEnabled ? [TaskCreateController] : []),
+      ],
       providers: [
         {
           provide: TaskDataRepository,
@@ -133,6 +144,15 @@ export class TaskRuntimeModule {
                 useExisting: TaskDataRepository,
               },
               TaskReadService,
+            ]
+          : []),
+        ...(createRouteEnabled
+          ? [
+              {
+                provide: TASK_CREATE_REPOSITORY,
+                useExisting: TaskDataRepository,
+              },
+              TaskCreateService,
             ]
           : []),
       ],

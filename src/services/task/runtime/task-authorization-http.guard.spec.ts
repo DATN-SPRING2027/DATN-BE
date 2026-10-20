@@ -142,6 +142,7 @@ async function createTestApplication(options?: {
         projectId,
         organizationId: 'organization-from-test-fixture',
         organizationMembershipStatus: 'ACTIVE',
+        projectMembershipStatus: 'ACTIVE',
       },
     }),
   };
@@ -375,7 +376,8 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
         .get(`/test/projects/${projectId}/tasks`)
         .set('Authorization', `Bearer ${acceptedProof}`);
 
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBe(404);
+      expect((response.body as { code?: unknown }).code).toBe('TASK_NOT_FOUND');
       expect(test.sink.list).not.toHaveBeenCalled();
       expect(policy.decide).not.toHaveBeenCalled();
     } finally {
@@ -384,11 +386,16 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
   });
 
   it.each([
-    ['scope unavailable', { kind: 'unavailable' }],
-    ['scope denied', { kind: 'denied' }],
+    [
+      'scope unavailable',
+      { kind: 'unavailable' },
+      503,
+      'TASK_AUTHORIZATION_UNAVAILABLE',
+    ],
+    ['scope denied', { kind: 'denied' }, 404, 'TASK_NOT_FOUND'],
   ] as const)(
-    'stops before the handler when Project scope is %s',
-    async (_label, result) => {
+    'returns the configured authorization outcome for %s',
+    async (_label, result, expectedStatus, expectedCode) => {
       const verifier = acceptingVerifier();
       const scope = { resolve: jest.fn(() => result) };
       const policy = { decide: jest.fn(() => 'ALLOW' as const) };
@@ -398,7 +405,8 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
           .get(`/test/projects/${projectId}/tasks`)
           .set('Authorization', `Bearer ${acceptedProof}`);
 
-        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(response.status).toBe(expectedStatus);
+        expect((response.body as { code?: unknown }).code).toBe(expectedCode);
         expect(test.sink.list).not.toHaveBeenCalled();
         expect(policy.decide).not.toHaveBeenCalled();
       } finally {
@@ -487,7 +495,10 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
         .set('content-type', 'application/json')
         .send('{"title":"Changed"}');
 
-      expect(changedBody.status).toBeGreaterThanOrEqual(400);
+      expect(changedBody.status).toBe(401);
+      expect((changedBody.body as { code?: unknown }).code).toBe(
+        'TASK_UNAUTHENTICATED',
+      );
       expect(receivedBindings[1].bodySha256).not.toBe(
         receivedBindings[0].bodySha256,
       );
@@ -498,7 +509,10 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
         .set('Authorization', `Bearer ${acceptedProof}`)
         .set('content-type', 'application/json')
         .send(expectedBody.toString('utf8'));
-      expect(changedTarget.status).toBeGreaterThanOrEqual(400);
+      expect(changedTarget.status).toBe(401);
+      expect((changedTarget.body as { code?: unknown }).code).toBe(
+        'TASK_UNAUTHENTICATED',
+      );
       expect(receivedBindings[2].target).toBe(
         `/test/projects/${projectId}/tasks?mode=other`,
       );
@@ -507,7 +521,10 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
       const changedMethod = await request(test.httpServer)
         .get(`/test/projects/${projectId}/tasks`)
         .set('Authorization', `Bearer ${acceptedProof}`);
-      expect(changedMethod.status).toBeGreaterThanOrEqual(400);
+      expect(changedMethod.status).toBe(401);
+      expect((changedMethod.body as { code?: unknown }).code).toBe(
+        'TASK_UNAUTHENTICATED',
+      );
       expect(receivedBindings[3].method).toBe('GET');
       expect(test.sink.create).toHaveBeenCalledTimes(1);
       expect(test.sink.list).not.toHaveBeenCalled();
@@ -529,7 +546,60 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
         .set('Authorization', `Bearer ${acceptedProof}`)
         .send({ title: 'Task' });
 
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBe(503);
+      expect((response.body as { code?: unknown }).code).toBe(
+        'TASK_AUTHORIZATION_UNAVAILABLE',
+      );
+      expect(verifier.verify).not.toHaveBeenCalled();
+      expect(test.sink.create).not.toHaveBeenCalled();
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('binds an actually empty mutation body as the SHA-256 of zero bytes', async () => {
+    const bindings: TaskHttpRequestBinding[] = [];
+    const verifier = acceptingVerifier((_candidate, binding) => {
+      if (isBinding(binding)) bindings.push(binding);
+    });
+    const test = await createTestApplication({
+      verifier,
+      policy: { decide: () => 'ALLOW' },
+    });
+    try {
+      const response = await request(test.httpServer)
+        .post(`/test/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${acceptedProof}`)
+        .set('Content-Type', 'application/json');
+
+      expect(response.status).toBe(201);
+      expect(verifier.verify).toHaveBeenCalledTimes(1);
+      expect(bindings[0].bodySha256).toBe(
+        createHash('sha256').update(Buffer.alloc(0)).digest('base64url'),
+      );
+      expect(test.sink.create).toHaveBeenCalledTimes(1);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('answers unavailable when a non-empty unsupported media type has no captured raw bytes', async () => {
+    const verifier = acceptingVerifier();
+    const test = await createTestApplication({
+      verifier,
+      policy: { decide: () => 'ALLOW' },
+    });
+    try {
+      const response = await request(test.httpServer)
+        .post(`/test/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${acceptedProof}`)
+        .set('Content-Type', 'text/plain')
+        .send('body bytes that the verifier cannot bind');
+
+      expect(response.status).toBe(503);
+      expect((response.body as { code?: unknown }).code).toBe(
+        'TASK_AUTHORIZATION_UNAVAILABLE',
+      );
       expect(verifier.verify).not.toHaveBeenCalled();
       expect(test.sink.create).not.toHaveBeenCalled();
     } finally {
@@ -565,6 +635,7 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
             projectId,
             organizationId: 'organization-from-test-fixture',
             organizationMembershipStatus: 'ACTIVE',
+            projectMembershipStatus: 'ACTIVE',
           },
         };
       }),
@@ -604,7 +675,8 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
       const missing = await request(test.httpServer)
         .get(`/test/projects/${projectId}/tasks/${taskId}`)
         .set('Authorization', `Bearer ${acceptedProof}`);
-      expect(missing.status).toBeGreaterThanOrEqual(400);
+      expect(missing.status).toBe(404);
+      expect((missing.body as { code?: unknown }).code).toBe('TASK_NOT_FOUND');
       expect(test.sink.detail).toHaveBeenCalledTimes(1);
       expect(policy.decide).toHaveBeenCalledTimes(1);
 
@@ -614,7 +686,10 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
       const unavailable = await request(test.httpServer)
         .get(`/test/projects/${projectId}/tasks/${taskId}`)
         .set('Authorization', `Bearer ${acceptedProof}`);
-      expect(unavailable.status).toBeGreaterThanOrEqual(400);
+      expect(unavailable.status).toBe(503);
+      expect((unavailable.body as { code?: unknown }).code).toBe(
+        'TASK_AUTHORIZATION_UNAVAILABLE',
+      );
       expect(test.sink.detail).toHaveBeenCalledTimes(1);
       expect(policy.decide).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(unavailable.body)).not.toContain(
