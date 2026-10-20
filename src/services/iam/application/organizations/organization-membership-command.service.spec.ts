@@ -106,6 +106,63 @@ describe('OrganizationMembershipCommandService', () => {
     );
   });
 
+  it('normalizes the role-change reason and passes both expected versions to persistence', async () => {
+    const membershipId = '951a2b3c4d5e6f7a8b9c0d1f';
+    await service.execute(
+      actor,
+      organizationId,
+      'stable-idempotency-key',
+      {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId,
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: '  Access review completed  ',
+      },
+      'request-correlation-id',
+    );
+
+    expect(repository.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: actor.id,
+        organizationId,
+        idempotencyKey: 'stable-idempotency-key',
+        correlationId: 'request-correlation-id',
+        command: {
+          command: 'SET_ORGANIZATION_ROLE',
+          membershipId,
+          expectedMembershipVersion: 3,
+          expectedRoleVersion: 0,
+          roleCode: 'MEMBER',
+          reason: 'Access review completed',
+        },
+      }),
+    );
+  });
+
+  it.each([
+    { roleCode: 'TEAM_LEADER', expectedRoleVersion: 0, reason: 'review' },
+    { roleCode: 'ADMIN', expectedRoleVersion: -1, reason: 'review' },
+    { roleCode: 'MEMBER', expectedRoleVersion: 0, reason: '   ' },
+    {
+      roleCode: 'MEMBER',
+      expectedRoleVersion: 0,
+      reason: 'review',
+      extra: true,
+    },
+  ])('rejects invalid Organization role command values: %o', async (fields) => {
+    await expect(
+      service.execute(actor, organizationId, 'stable-idempotency-key', {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: '951a2b3c4d5e6f7a8b9c0d1f',
+        expectedMembershipVersion: 3,
+        ...fields,
+      } as never),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(repository.execute).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed and reused-short idempotency keys before persistence', async () => {
     await expect(
       service.execute(actor, organizationId, 'short', {

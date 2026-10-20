@@ -17,6 +17,8 @@ export interface OrganizationMembershipSummary {
   userId: string;
   status: OrganizationMembershipStatus;
   version: number;
+  roleCode: 'ADMIN' | 'MEMBER' | null;
+  roleVersion: number;
   createdAt: string;
   updatedAt: string;
   user: {

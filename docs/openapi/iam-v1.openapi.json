@@ -753,7 +753,9 @@
           },
           "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
           "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "422": {
             "$ref": "#/components/responses/C02MembershipValidationFailed"
           },
@@ -822,57 +824,6 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "422": { "$ref": "#/components/responses/ValidationFailed" }
-        }
-      }
-    },
-    "/api/v1/iam/organizations": {
-      "post": {
-        "tags": ["Organizations"],
-        "summary": "Create an Organization for the current account",
-        "description": "Requires an authenticated active Human User session and valid CSRF cookie/header. Creates a FREE Organization, ACTIVE first-admin membership, ADMIN role assignment and audit record atomically. The account can bootstrap only itself; it receives no Platform authority. Rate limited to three creation attempts per hour per account.",
-        "operationId": "createOwnOrganization",
-        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["name", "slug"],
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 200
-                  },
-                  "slug": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100,
-                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Organization created; the caller is its first ADMIN.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProvisionedOrganization"
-                }
-              }
-            }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" },
-          "429": { "$ref": "#/components/responses/TooManyRequests" }
         }
       }
     },
@@ -1314,6 +1265,128 @@
         },
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.manage",
+        "x-readiness-gates": []
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/role": {
+      "post": {
+        "tags": ["Organization Memberships"],
+        "summary": "Assign an Organization role to an active Membership",
+        "description": "Requires an authenticated ACTIVE Organization ADMIN with the current organization.memberships.manage permission, matching Organization context and CSRF. The target must be another ACTIVE Membership in the same Organization. Only catalog roles ADMIN and MEMBER are assignable here; Project role assignments remain independent and unchanged. The request compares expectedMembershipVersion and expectedRoleVersion, uses the shared Organization ADMIN fence to protect the last active ADMIN under concurrent writes, and commits the role change, idempotency result and audit record atomically. Audit records include actor, target, Organization scope, before/after role, reason, timestamp and request correlation ID. Exact retries return the stored response; reusing a key with a different request conflicts.",
+        "operationId": "setOrganizationMembershipRole",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "__Host-csrf",
+            "in": "cookie",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 },
+            "description": "Readable double-submit CSRF cookie; its value must match the X-CSRF-Token header."
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._-]+$"
+            },
+            "description": "Optional caller correlation value. If omitted or invalid, the server-generated request ID is recorded in the audit event."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/C02SetOrganizationRoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Role change committed or exactly replayed.",
+            "headers": {
+              "Idempotency-Replayed": {
+                "schema": { "type": "string", "const": "true" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/C02OrganizationRoleMutationAck"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/C02MembershipUnauthorized" },
+          "403": { "$ref": "#/components/responses/C02MembershipForbidden" },
+          "404": { "$ref": "#/components/responses/C02MembershipNotFound" },
+          "409": {
+            "description": "The request conflicts with current state: MEMBERSHIP_VERSION_CONFLICT, ROLE_VERSION_CONFLICT, ROLE_ALREADY_ASSIGNED, MEMBERSHIP_INVALID_TRANSITION, LAST_ELIGIBLE_ADMIN, or IDEMPOTENCY_KEY_REUSED.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/C02MembershipValidationFailed" },
+          "500": {
+            "description": "An unexpected persistence or audit failure occurred. The transaction is rolled back and no success is returned.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "503": {
+            "description": "Required IAM persistence or role catalog dependency is unavailable; no success is returned.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-unknown-input-fields": "REJECT",
         "x-permission": "organization.memberships.manage",
         "x-readiness-gates": []
       }
@@ -5030,7 +5103,7 @@
         "tags": ["Organization Memberships"],
         "summary": "List own Organization members across all four states",
         "operationId": "listOrganizationMembershipsV1",
-        "description": "C-02 approved membership read contract. Authenticate an ACTIVE User in the selected Organization, revalidate ACTIVE membership and an Organization-level assignment resolving actual ADMIN with organization.memberships.read from current Role.permissions. JWT roles and manage permission alone do not grant read. Strict IDs/query allowlist; no-store; createdAt DESC then _id DESC; page/count share a scoped facet with minimal User lookup after page limit. Missing User is null; missing lifecycle migration metadata fails closed. Existing invitation APIs and membership commands are outside this implementation.",
+        "description": "C-02 approved membership read contract. Authenticate an ACTIVE User in the selected Organization, revalidate ACTIVE membership and an Organization-level assignment resolving actual ADMIN with organization.memberships.read from current Role.permissions. JWT roles and manage permission alone do not grant read. Strict IDs/query allowlist; no-store; createdAt DESC then _id DESC; page/count share a scoped facet with minimal User lookup after page limit. Missing User is null; missing lifecycle migration metadata fails closed. Returns current Organization roleCode and roleVersion from the exact Organization assignment for compare-and-set role changes; when no assignment exists, roleCode is null and roleVersion is 0. Project assignments are excluded. Invitation APIs remain outside this implementation.",
         "parameters": [
           {
             "name": "organizationId",
@@ -5163,7 +5236,7 @@
         "tags": ["Organization Memberships"],
         "summary": "Read own scoped Membership details/version",
         "operationId": "getOrganizationMembershipV1",
-        "description": "C-02 approved membership read contract. Authenticate an ACTIVE User in the selected Organization, revalidate ACTIVE membership and an Organization-level assignment resolving actual ADMIN with organization.memberships.read from current Role.permissions. JWT roles and manage permission alone do not grant read. Strict IDs/query allowlist; no-store; createdAt DESC then _id DESC; page/count share a scoped facet with minimal User lookup after page limit. Missing User is null; missing lifecycle migration metadata fails closed. Existing invitation APIs and membership commands are outside this implementation.",
+        "description": "C-02 approved membership read contract. Authenticate an ACTIVE User in the selected Organization, revalidate ACTIVE membership and an Organization-level assignment resolving actual ADMIN with organization.memberships.read from current Role.permissions. JWT roles and manage permission alone do not grant read. Strict IDs/query allowlist; no-store; createdAt DESC then _id DESC; page/count share a scoped facet with minimal User lookup after page limit. Missing User is null; missing lifecycle migration metadata fails closed. Returns current Organization roleCode and roleVersion from the exact Organization assignment for compare-and-set role changes; when no assignment exists, roleCode is null and roleVersion is 0. Project assignments are excluded. Invitation APIs remain outside this implementation.",
         "parameters": [
           {
             "name": "organizationId",
@@ -5653,6 +5726,8 @@
           "userId",
           "status",
           "version",
+          "roleCode",
+          "roleVersion",
           "createdAt",
           "updatedAt",
           "user",
@@ -8005,6 +8080,33 @@
           }
         }
       },
+      "C02OrganizationRoleMutationAck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "membership", "role"],
+        "properties": {
+          "operationId": { "$ref": "#/components/schemas/ResourceId" },
+          "membership": {
+            "$ref": "#/components/schemas/C02MembershipMutationState"
+          },
+          "role": {
+            "$ref": "#/components/schemas/C02OrganizationRoleState"
+          }
+        }
+      },
+      "C02OrganizationRoleState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["roleCode", "version"],
+        "properties": {
+          "roleCode": { "type": "string", "enum": ["ADMIN", "MEMBER"] },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        }
+      },
       "C02MembershipMutationState": {
         "type": "object",
         "additionalProperties": false,
@@ -8140,6 +8242,36 @@
           }
         }
       },
+      "C02SetOrganizationRoleRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedMembershipVersion",
+          "expectedRoleVersion",
+          "roleCode",
+          "reason"
+        ],
+        "properties": {
+          "expectedMembershipVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "expectedRoleVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "roleCode": { "type": "string", "enum": ["ADMIN", "MEMBER"] },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "pattern": "\\S",
+            "description": "Must contain a non-whitespace character; surrounding whitespace is trimmed by the server."
+          }
+        }
+      },
       "C02MembershipSummary": {
         "type": "object",
         "additionalProperties": false,
@@ -8149,6 +8281,8 @@
           "userId",
           "status",
           "version",
+          "roleCode",
+          "roleVersion",
           "createdAt",
           "updatedAt",
           "user"
@@ -8179,6 +8313,17 @@
           "version": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "roleCode": {
+            "oneOf": [
+              { "type": "string", "enum": ["ADMIN", "MEMBER"] },
+              { "type": "null" }
+            ]
+          },
+          "roleVersion": {
+            "type": "integer",
+            "minimum": 0,
             "maximum": 9007199254740991
           },
           "createdAt": {

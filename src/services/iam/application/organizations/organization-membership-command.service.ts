@@ -139,6 +139,23 @@ export class OrganizationMembershipCommandService {
         validationFailed();
       return command;
     }
+    if (command.command === 'SET_ORGANIZATION_ROLE') {
+      if (
+        Object.keys(command).length !== 6 ||
+        !resourceIdPattern.test(command.membershipId) ||
+        !Number.isSafeInteger(command.expectedMembershipVersion) ||
+        command.expectedMembershipVersion < 1 ||
+        !Number.isSafeInteger(command.expectedRoleVersion) ||
+        command.expectedRoleVersion < 0 ||
+        !['ADMIN', 'MEMBER'].includes(command.roleCode) ||
+        typeof command.reason !== 'string' ||
+        command.reason.length > 500 ||
+        command.reason.trim().length < 1 ||
+        command.reason.trim().length > 500
+      )
+        validationFailed();
+      return { ...command, reason: command.reason.trim() };
+    }
     return validationFailed();
   }
 

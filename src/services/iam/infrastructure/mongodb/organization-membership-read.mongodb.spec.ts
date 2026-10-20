@@ -56,6 +56,8 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
   const actorId = new Types.ObjectId();
   const organizationId = new Types.ObjectId();
   const roleId = new Types.ObjectId();
+  const memberRoleId = new Types.ObjectId();
+  const projectId = new Types.ObjectId();
   const actorMembershipId = new Types.ObjectId();
   const memberIds = ORGANIZATION_MEMBERSHIP_STATUSES.map(
     () => new Types.ObjectId(),
@@ -220,19 +222,46 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
         updatedAt: time,
       },
     ]);
-    await connection!.collection('roles').insertOne({
-      _id: roleId,
-      code: 'ADMIN',
-      name: 'Admin',
-      isSystem: true,
-      permissions: ['organization.memberships.read'],
-    });
-    await connection!.collection('role_assignments').insertOne({
-      organizationId,
-      userId: actorId,
-      roleId,
-      roleCode: 'ADMIN',
-    });
+    await connection!.collection('roles').insertMany([
+      {
+        _id: roleId,
+        code: 'ADMIN',
+        name: 'Admin',
+        isSystem: true,
+        permissions: ['organization.memberships.read'],
+      },
+      {
+        _id: memberRoleId,
+        code: 'MEMBER',
+        name: 'Member',
+        isSystem: true,
+        permissions: [],
+      },
+    ]);
+    await connection!.collection('role_assignments').insertMany([
+      {
+        organizationId,
+        userId: actorId,
+        roleId,
+        roleCode: 'ADMIN',
+        mutationFence: 2,
+      },
+      {
+        organizationId,
+        userId: memberUserIds[1],
+        roleId: memberRoleId,
+        roleCode: 'MEMBER',
+        mutationFence: 4,
+      },
+      {
+        organizationId,
+        projectId,
+        userId: memberUserIds[1],
+        roleId,
+        roleCode: 'ADMIN',
+        mutationFence: 9,
+      },
+    ]);
   });
   it('lists all four states, counts orphan users and strips unrelated PII', async () => {
     const response = await get().expect(200);
@@ -262,6 +291,23 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
     expect(
       data.find((row) => row.id === String(memberIds[2]))?.user,
     ).toMatchObject({ accountStatus: 'SUSPENDED' });
+    expect(data.find((row) => row.id === String(memberIds[1]))).toMatchObject({
+      roleCode: 'MEMBER',
+      roleVersion: 4,
+    });
+    expect(data.find((row) => row.id === String(memberIds[0]))).toMatchObject({
+      roleCode: null,
+      roleVersion: 0,
+    });
+  });
+  it('returns only the Organization assignment for membership detail', async () => {
+    const response = await get(`${url}/${String(memberIds[1])}`).expect(200);
+    expect(response.body).toMatchObject({
+      id: String(memberIds[1]),
+      roleCode: 'MEMBER',
+      roleVersion: 4,
+    });
+    expect(response.body).not.toHaveProperty('roles');
   });
   it('uses stable createdAt/id order and exact page count before User lookup', async () => {
     const first = await get(`${url}?pageSize=2`).expect(200);
@@ -343,7 +389,7 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
       { permissions: ['organization.memberships.read', 7] },
     ],
     ['scalar permission', { permissions: 'organization.memberships.read' }],
-    ['misresolved ADMIN code', { code: 'MEMBER' }],
+    ['misresolved ADMIN code', { code: 'TEAM_LEADER' }],
   ])('denies %s from current Role evidence', async (_label, fields) => {
     await connection!
       .collection('roles')

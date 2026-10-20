@@ -96,6 +96,8 @@ interface RoleAssignmentDocument {
   userId: Types.ObjectId;
   roleId: Types.ObjectId;
   roleCode: string;
+  mutationFence?: number;
+  assignedBy?: Types.ObjectId;
   projectId?: Types.ObjectId | null;
 }
 interface RoleDocument {
@@ -130,6 +132,7 @@ type AuditRecord = {
   result?: 'SUCCESS';
   occurredAt: Date;
   reasonCode: string;
+  reason?: string;
   correlationId?: string;
   membershipId: string;
   targetResource?: 'ORGANIZATION_MEMBERSHIP';
@@ -331,6 +334,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           operationId: operationId.toHexString(),
           membership: change.membership,
           ...(change.invitation ? { invitation: change.invitation } : {}),
+          ...(change.role ? { role: change.role } : {}),
         };
         const committedAt = input.now;
         const httpStatus = input.command.command === 'INVITE' ? 201 : 200;
@@ -362,12 +366,25 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
             operationId: operationId.toHexString(),
             organizationId: input.organizationId,
             actorUserId: input.actorUserId,
-            scope: 'PLATFORM',
+            scope:
+              input.command.command === 'SET_ORGANIZATION_ROLE'
+                ? 'ORGANIZATION'
+                : 'PLATFORM',
             result: 'SUCCESS',
             occurredAt: input.now,
-            reasonCode: input.command.reasonCode,
-            ...(input.correlationId
-              ? { correlationId: input.correlationId }
+            reasonCode:
+              input.command.command === 'SET_ORGANIZATION_ROLE'
+                ? 'ORGANIZATION_ROLE_CHANGED'
+                : input.command.reasonCode,
+            ...(input.command.command === 'SET_ORGANIZATION_ROLE'
+              ? { reason: input.command.reason }
+              : {}),
+            ...(input.correlationId ||
+            input.command.command === 'SET_ORGANIZATION_ROLE'
+              ? {
+                  correlationId:
+                    input.correlationId ?? operationId.toHexString(),
+                }
               : {}),
           },
           session,
@@ -630,6 +647,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
   ): Promise<{
     membership: MembershipMutationAcknowledgement['membership'];
     invitation?: MembershipMutationAcknowledgement['invitation'];
+    role?: MembershipMutationAcknowledgement['role'];
     audit: Omit<
       AuditRecord,
       | 'eventId'
@@ -665,6 +683,13 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         actorUserId,
         command,
         now,
+        session,
+      );
+    if (command.command === 'SET_ORGANIZATION_ROLE')
+      return this.setOrganizationRole(
+        organizationIdText,
+        actorUserId,
+        command,
         session,
       );
     return this.suspend(organizationIdText, actorUserId, command, now, session);
@@ -985,6 +1010,149 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           invitationExpiresAt: updatedInvitation.expiresAt.toISOString(),
         },
       },
+    };
+  }
+
+  private async setOrganizationRole(
+    organizationIdText: string,
+    actorUserId: Types.ObjectId,
+    command: Extract<
+      OrganizationMembershipCommand,
+      { command: 'SET_ORGANIZATION_ROLE' }
+    >,
+    session: ClientSession,
+  ) {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const membership = await this.findMembership(
+      organizationId,
+      new Types.ObjectId(command.membershipId),
+      session,
+    );
+    if (membership.status !== 'ACTIVE')
+      throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
+    if (membership.version !== command.expectedMembershipVersion)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    const assignments = await this.assignments()
+      .find({
+        organizationId,
+        userId: membership.userId,
+        ...organizationLevel,
+      })
+      .session(session)
+      .lean()
+      .exec();
+    if (assignments.length > 1)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    const assignment = assignments[0];
+    const currentRole = assignment?.roleCode;
+    if (assignment && currentRole !== 'ADMIN' && currentRole !== 'MEMBER')
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    const currentRoleVersion = assignment?.mutationFence;
+    if (
+      assignment &&
+      (!Number.isSafeInteger(currentRoleVersion) ||
+        Number(currentRoleVersion) < 0)
+    )
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    const actualRoleVersion = currentRoleVersion ?? 0;
+    if (actualRoleVersion !== command.expectedRoleVersion)
+      throw new ConflictException({ code: 'ROLE_VERSION_CONFLICT' });
+    if (currentRole === command.roleCode)
+      throw new ConflictException({ code: 'ROLE_ALREADY_ASSIGNED' });
+    if (membership.userId.equals(actorUserId) && command.roleCode === 'ADMIN')
+      throw new ForbiddenException({ code: 'ROLE_SELF_ESCALATION_FORBIDDEN' });
+
+    if (currentRole === 'ADMIN' && command.roleCode === 'MEMBER') {
+      const eligibleAdmins = await this.eligibleAdminIds(
+        organizationId,
+        session,
+      );
+      if (
+        eligibleAdmins.some((id) => id.equals(membership.userId)) &&
+        eligibleAdmins.length <= 1
+      )
+        throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
+    }
+
+    const role = await this.roles()
+      .findOne({
+        code: command.roleCode,
+        isSystem: true,
+        ...(command.roleCode === 'ADMIN'
+          ? { permissions: organizationMembershipManagePermission }
+          : {}),
+      })
+      .session(session)
+      .lean()
+      .exec();
+    if (!role)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+
+    const nextRoleVersion = actualRoleVersion + 1;
+    if (assignment) {
+      const updated = await this.assignments()
+        .findOneAndUpdate(
+          {
+            _id: assignment._id,
+            organizationId,
+            userId: membership.userId,
+            ...organizationLevel,
+            roleCode: currentRole,
+            mutationFence: actualRoleVersion,
+          },
+          {
+            $set: {
+              roleId: role._id,
+              roleCode: command.roleCode,
+              assignedBy: actorUserId,
+            },
+            $inc: { mutationFence: 1 },
+          },
+          { new: true, session },
+        )
+        .lean()
+        .exec();
+      if (!updated)
+        throw new ConflictException({ code: 'ROLE_VERSION_CONFLICT' });
+    } else {
+      await this.assignments().create(
+        [
+          {
+            organizationId,
+            userId: membership.userId,
+            roleId: role._id,
+            roleCode: command.roleCode,
+            assignedBy: actorUserId,
+            mutationFence: nextRoleVersion,
+          },
+        ],
+        { session },
+      );
+    }
+
+    return {
+      membership: this.mapMembership(organizationIdText, membership),
+      role: { roleCode: command.roleCode, version: nextRoleVersion },
+      audit: {
+        action: 'ORGANIZATION_MEMBER_ROLE_CHANGED',
+        membershipId: membership._id.toHexString(),
+        targetResource: 'ORGANIZATION_MEMBERSHIP' as const,
+        targetResourceId: membership._id.toHexString(),
+        before: {
+          roleCode: currentRole ?? 'UNASSIGNED',
+          roleVersion: actualRoleVersion,
+        },
+        after: { roleCode: command.roleCode, roleVersion: nextRoleVersion },
+      },
+      reason: command.reason,
     };
   }
 

@@ -9,10 +9,11 @@ import {
   Param,
   Post,
   Query,
+  Req,
   Res,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import {
   readCookie,
@@ -133,6 +134,46 @@ function parseSuspend(
     membershipId,
     expectedMembershipVersion: parseVersion(record.expectedMembershipVersion),
     reasonCode: record.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+  };
+}
+
+function parseSetOrganizationRole(
+  body: unknown,
+  membershipId: string,
+): OrganizationMembershipCommand {
+  if (!objectIdPattern.test(membershipId)) return validationFailed();
+  const record = parseObject(body);
+  if (
+    !exactKeys(record, [
+      'expectedMembershipVersion',
+      'expectedRoleVersion',
+      'roleCode',
+      'reason',
+    ])
+  )
+    return validationFailed();
+  const membershipVersion = parseVersion(record.expectedMembershipVersion);
+  if (
+    !Number.isSafeInteger(record.expectedRoleVersion) ||
+    Number(record.expectedRoleVersion) < 0
+  )
+    return validationFailed();
+  if (record.roleCode !== 'ADMIN' && record.roleCode !== 'MEMBER')
+    return validationFailed();
+  if (
+    typeof record.reason !== 'string' ||
+    record.reason.length > 500 ||
+    record.reason.trim().length < 1 ||
+    record.reason.trim().length > 500
+  )
+    return validationFailed();
+  return {
+    command: 'SET_ORGANIZATION_ROLE',
+    membershipId,
+    expectedMembershipVersion: membershipVersion,
+    expectedRoleVersion: Number(record.expectedRoleVersion),
+    roleCode: record.roleCode,
+    reason: record.reason.trim(),
   };
 }
 
@@ -276,6 +317,32 @@ export class OrganizationMembershipCommandController {
       correlationId,
       organizationId,
       () => parseSuspend(body, membershipId),
+      response,
+    );
+  }
+
+  @Post('memberships/:membershipId/role')
+  @HttpCode(200)
+  async setOrganizationRole(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Param('membershipId') membershipId: string,
+    @Body() body: unknown,
+    @Req() request: Request & { requestId?: string },
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.executeAction(
+      authorization,
+      cookie,
+      csrfHeader,
+      idempotencyKey,
+      request.requestId ?? correlationId,
+      organizationId,
+      () => parseSetOrganizationRole(body, membershipId),
       response,
     );
   }
