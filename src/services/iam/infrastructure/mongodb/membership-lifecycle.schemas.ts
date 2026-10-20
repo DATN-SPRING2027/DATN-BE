@@ -33,32 +33,43 @@ type InvitationProfile = { contractVersion: number };
 function v2(this: InvitationProfile): boolean {
   return this.contractVersion === 2;
 }
+function v3(this: InvitationProfile): boolean {
+  return this.contractVersion === 3;
+}
 
 // Legacy writes retain profile1 until the separately reviewed compatibility cutover.
 export const membershipInvitationSchema = new Schema(
   {
     organizationId: { type: Schema.Types.ObjectId, required: true },
     email: { type: String, required: true, lowercase: true, trim: true },
-    contractVersion: { type: Number, required: true, enum: [1, 2], default: 1 },
+    contractVersion: {
+      type: Number,
+      required: true,
+      enum: [1, 2, 3],
+      default: 1,
+    },
     version: membershipVersion(),
     membershipId: { type: Schema.Types.ObjectId, required: v2 },
     targetUserId: { type: Schema.Types.ObjectId, required: v2 },
+    tokenHash: { type: String, required: v3, match: /^[a-f\d]{64}$/ },
     supersedesInvitationId: Schema.Types.ObjectId,
     roleCode: {
       type: String,
       enum: ['ADMIN', 'TEAM_LEADER', 'MEMBER'],
       required: function (this: InvitationProfile) {
-        return !v2.call(this);
+        return !v2.call(this) && !v3.call(this);
       },
       validate: function (this: InvitationProfile, value: unknown) {
-        return !v2.call(this) || value === undefined;
+        return !(v2.call(this) || v3.call(this)) || value === undefined;
       },
     },
     status: {
       type: String,
       required: true,
       validate: function (this: InvitationProfile, value: string) {
-        return (v2.call(this) ? invitationStates : legacyStates).has(value);
+        return (
+          v2.call(this) || v3.call(this) ? invitationStates : legacyStates
+        ).has(value);
       },
     },
     invitedBy: { type: Schema.Types.ObjectId, required: true },
@@ -91,9 +102,11 @@ function exactFields(value: Record<string, unknown>, fields: string[]) {
 interface OperationBinding {
   _id: unknown;
   command: string;
-  membershipId: unknown;
+  contractVersion?: number;
+  invitationId?: unknown;
+  membershipId?: unknown;
   organizationId: unknown;
-  targetUserId: unknown;
+  targetUserId?: unknown;
 }
 const resultStates: Record<string, string> = {
   INVITE: 'PENDING_INVITE',
@@ -155,6 +168,33 @@ function validResult(binding: OperationBinding, value: unknown): boolean {
       version(role.version)
     );
   }
+  if (
+    binding.contractVersion === 3 &&
+    ['INVITE', 'RESEND', 'CANCEL'].includes(binding.command)
+  ) {
+    if (!record(value) || 'membership' in value) return false;
+    const invite = value.invitation;
+    const expectedStatus =
+      binding.command === 'CANCEL' ? 'CANCELLED' : 'PENDING';
+    const requiresTargetInvitation = ['RESEND', 'CANCEL'].includes(
+      binding.command,
+    );
+    return (
+      exactFields(value, ['operationId', 'invitation']) &&
+      record(invite) &&
+      exactFields(invite, ['id', 'status', 'version', 'expiresAt']) &&
+      objectId(invite.id) &&
+      (binding.command !== 'INVITE' || binding.invitationId == null) &&
+      (!requiresTargetInvitation || objectId(String(binding.invitationId))) &&
+      (binding.command !== 'CANCEL' ||
+        invite.id === String(binding.invitationId)) &&
+      (binding.command !== 'RESEND' ||
+        invite.id !== String(binding.invitationId)) &&
+      invite.status === expectedStatus &&
+      version(invite.version) &&
+      isoDate(invite.expiresAt)
+    );
+  }
   const member = value.membership;
   if (
     !exactFields(value, [
@@ -186,6 +226,10 @@ function validResult(binding: OperationBinding, value: unknown): boolean {
     record(invite) &&
     exactFields(invite, ['id', 'status', 'version', 'expiresAt']) &&
     objectId(invite.id) &&
+    (binding.contractVersion !== 3 ||
+      binding.command !== 'ACCEPT' ||
+      (invite.id === String(binding.invitationId) &&
+        invite.status === 'ACCEPTED')) &&
     typeof invite.status === 'string' &&
     invitationStates.has(invite.status) &&
     version(invite.version) &&
@@ -197,8 +241,34 @@ export const membershipOperationSchema = new Schema(
   {
     actorUserId: { type: Schema.Types.ObjectId, required: true },
     organizationId: { type: Schema.Types.ObjectId, required: true },
-    membershipId: { type: Schema.Types.ObjectId, required: true },
-    targetUserId: { type: Schema.Types.ObjectId, required: true },
+    contractVersion: { type: Number, required: true, enum: [2, 3], default: 2 },
+    invitationId: {
+      type: Schema.Types.ObjectId,
+      required: function (this: { command: string; contractVersion: number }) {
+        return (
+          this.contractVersion === 3 &&
+          ['RESEND', 'CANCEL', 'ACCEPT'].includes(this.command)
+        );
+      },
+    },
+    membershipId: {
+      type: Schema.Types.ObjectId,
+      required: function (this: { command: string; contractVersion: number }) {
+        return (
+          this.contractVersion !== 3 ||
+          !['INVITE', 'RESEND', 'CANCEL'].includes(this.command)
+        );
+      },
+    },
+    targetUserId: {
+      type: Schema.Types.ObjectId,
+      required: function (this: { command: string; contractVersion: number }) {
+        return (
+          this.contractVersion !== 3 ||
+          !['INVITE', 'RESEND', 'CANCEL'].includes(this.command)
+        );
+      },
+    },
     keyHash: { type: String, required: true, match: /^[a-f\d]{64}$/ },
     fingerprintHash: { type: String, required: true, match: /^[a-f\d]{64}$/ },
     command: {
