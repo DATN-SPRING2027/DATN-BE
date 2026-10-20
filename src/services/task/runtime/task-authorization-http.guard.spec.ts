@@ -142,6 +142,7 @@ async function createTestApplication(options?: {
         projectId,
         organizationId: 'organization-from-test-fixture',
         organizationMembershipStatus: 'ACTIVE',
+        projectMembershipStatus: 'ACTIVE',
       },
     }),
   };
@@ -565,6 +566,7 @@ describe('TaskAuthorizationHttpGuard over a real Nest HTTP boundary', () => {
             projectId,
             organizationId: 'organization-from-test-fixture',
             organizationMembershipStatus: 'ACTIVE',
+            projectMembershipStatus: 'ACTIVE',
           },
         };
       }),

@@ -200,6 +200,7 @@ async function createTaskHttpFixture(options?: {
         projectId: project,
         organizationId: 'test-organization',
         organizationMembershipStatus: 'ACTIVE',
+        projectMembershipStatus: 'ACTIVE',
       },
     }),
   };
