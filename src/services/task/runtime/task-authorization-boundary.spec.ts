@@ -154,6 +154,7 @@ describe('TaskAuthorizationBoundary', () => {
       'KEY_RESOLUTION_FAILED',
       'VERIFICATION_FAILED',
       'MALFORMED_CONTEXT',
+      'KEY_CONFIGURATION_INVALID',
     ];
 
     it('names exactly the verifier faults and only failures the trust boundary can emit', () => {

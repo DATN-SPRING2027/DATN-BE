@@ -768,7 +768,7 @@ integration(
         true,
       ]);
       expect(results.find(({ accepted }) => !accepted)?.reason).toBe(
-        'VERIFICATION_FAILED',
+        'REPLAY_DETECTED',
       );
       expect(
         await connection!

@@ -21,6 +21,8 @@ export const TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES = [
   'EXPIRED',
   'LIFETIME_EXCEEDED',
   'REQUEST_MISMATCH',
+  'REPLAY_DETECTED',
+  'KEY_CONFIGURATION_INVALID',
 ] as const;
 
 export type TaskInboundContextVerificationFailure =
@@ -30,9 +32,12 @@ export type TaskInboundContextVerificationFailure =
  * Failures that mean the verifier could not verify, not that the credential was
  * refused (DATN-97 ERR-2): they are a temporary service condition (503), while
  * every other failure is a missing or refused credential (401).
- * VERIFICATION_FAILED and UNSUPPORTED_PROFILE are still shared by a credential
- * fault and a server fault (a replayed assertion; a key provider returning a
- * mismatched key); the verifier pull request must split them.
+ * No failure is shared by both kinds: a replayed assertion is REPLAY_DETECTED
+ * (refused credential), a private, malformed or mismatched verification key is
+ * KEY_CONFIGURATION_INVALID (server configuration fault), VERIFICATION_FAILED
+ * is reserved for internal verifier faults such as an unreachable replay store,
+ * and UNSUPPORTED_PROFILE only means the token header does not match the
+ * configured profile.
  */
 export const TASK_INBOUND_CONTEXT_VERIFIER_FAULTS: readonly TaskInboundContextVerificationFailure[] =
   [
@@ -40,6 +45,7 @@ export const TASK_INBOUND_CONTEXT_VERIFIER_FAULTS: readonly TaskInboundContextVe
     'KEY_RESOLUTION_FAILED',
     'VERIFICATION_FAILED',
     'MALFORMED_CONTEXT',
+    'KEY_CONFIGURATION_INVALID',
   ];
 
 const verificationFailureSet = new Set<string>(

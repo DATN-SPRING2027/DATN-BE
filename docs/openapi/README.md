@@ -85,11 +85,13 @@ repeated the approval for:
   key resolution failed, internal or malformed output) is a new reason,
   `CONTEXT_VERIFIER_UNAVAILABLE`, and answers 503, the default unconfigured
   verifier included; a missing or refused credential still answers 401. Every
-  failure of the trust boundary is classified in the entry.
-  `VERIFICATION_FAILED` (also raised for a replayed assertion) and
-  `UNSUPPORTED_PROFILE` (also raised for a mismatched key) are shared by a
-  credential fault and a server fault today; the verifier pull request must
-  split them.
+  failure of the trust boundary is classified in the entry. No failure is shared
+  by a credential fault and a server fault: a replayed assertion is
+  `REPLAY_DETECTED` (401), an unusable verification key is
+  `KEY_CONFIGURATION_INVALID` (503), `VERIFICATION_FAILED` is reserved for
+  internal verifier faults such as an unreachable replay store (503), and
+  `UNSUPPORTED_PROFILE` only means the token header does not match the
+  configured profile (401).
 - `HDR-1`: every 401 carries `WWW-Authenticate: Bearer` (RFC 9110 §15.5.2).
 - `CACHE-2`: `Cache-Control: no-store` on every response of both routes, errors
   included, and not only on 200.

@@ -254,21 +254,21 @@ function verifyTaskDelegationAssertionPrototype(
   }
   if (!encodedKey) throw new TaskDelegationAssertionError('UNKNOWN_KEY_ID');
   if (!(encodedKey instanceof KeyObject) && containsPrivatePem(encodedKey)) {
-    throw new TaskDelegationAssertionError('UNSUPPORTED_PROFILE');
+    throw new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID');
   }
 
   let publicKey: KeyObject;
   try {
     if (encodedKey instanceof KeyObject) {
       if (encodedKey.type !== 'public') {
-        throw new TaskDelegationAssertionError('UNSUPPORTED_PROFILE');
+        throw new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID');
       }
       publicKey = encodedKey;
     } else {
       publicKey = createPublicKey(encodedKey);
     }
   } catch {
-    throw new TaskDelegationAssertionError('UNSUPPORTED_PROFILE');
+    throw new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID');
   }
   const keyMatchesAlgorithm =
     options.signatureAlgorithm === 'EdDSA'
@@ -276,7 +276,7 @@ function verifyTaskDelegationAssertionPrototype(
       : publicKey.asymmetricKeyType === 'rsa' &&
         (publicKey.asymmetricKeyDetails?.modulusLength ?? 0) >= 2048;
   if (!keyMatchesAlgorithm) {
-    throw new TaskDelegationAssertionError('UNSUPPORTED_PROFILE');
+    throw new TaskDelegationAssertionError('KEY_CONFIGURATION_INVALID');
   }
 
   let signature: Buffer;
