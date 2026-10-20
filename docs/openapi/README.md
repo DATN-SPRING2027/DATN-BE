@@ -81,7 +81,15 @@ repeated the approval for:
   `TaskAuthorizationBoundary`. `INVALID_REQUEST` is a server fault and answers a
   generic 500, never 404. A failed Task ownership lookup is a new reason,
   `RESOURCE_SCOPE_UNAVAILABLE`, and answers 503, so that a persistence failure is
-  never reported as a missing Task.
+  never reported as a missing Task. A verifier that cannot verify (unavailable,
+  key resolution failed, internal or malformed output) is a new reason,
+  `CONTEXT_VERIFIER_UNAVAILABLE`, and answers 503, the default unconfigured
+  verifier included; a missing or refused credential still answers 401. Every
+  failure of the trust boundary is classified in the entry.
+  `VERIFICATION_FAILED` (also raised for a replayed assertion) and
+  `UNSUPPORTED_PROFILE` (also raised for a mismatched key) are shared by a
+  credential fault and a server fault today; the verifier pull request must
+  split them.
 - `HDR-1`: every 401 carries `WWW-Authenticate: Bearer` (RFC 9110 §15.5.2).
 - `CACHE-2`: `Cache-Control: no-store` on every response of both routes, errors
   included, and not only on 200.

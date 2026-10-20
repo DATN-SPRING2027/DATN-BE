@@ -303,6 +303,82 @@ describe('DATN-97 Task slice OpenAPI (approved D05-DR1 list/detail contract)', (
     expect(unavailable).toMatch(/never reported as a missing Task/);
   });
 
+  it('classifies every failure of the inbound context trust boundary in ERR-2 (second review 20/10/2026)', () => {
+    const source = readFileSync(
+      resolve(
+        process.cwd(),
+        'src/services/task/runtime/task-inbound-context.ts',
+      ),
+      'utf8',
+    );
+    const list =
+      /TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES = \[([^\]]+)\]/.exec(
+        source,
+      )?.[1] ?? '';
+    const failures = [...list.matchAll(/'([A-Z_]+)'/g)].map(
+      (match) => match[1],
+    );
+    expect(failures.length).toBeGreaterThanOrEqual(16);
+
+    const mapping = ownerDecision('ERR-2');
+    const tokens = (pattern: RegExp) =>
+      [...(pattern.exec(mapping)?.[1] ?? '').matchAll(/[A-Z][A-Z_]+/g)].map(
+        (match) => match[0],
+      );
+    const refused = tokens(
+      /Rejected credential \(UNVERIFIED_CONTEXT, 401\): ([^.]+)\./,
+    );
+    const unavailable = tokens(
+      /Verifier cannot verify \(CONTEXT_VERIFIER_UNAVAILABLE, 503\): ([^.]+)\./,
+    );
+
+    expect([...unavailable].sort()).toEqual([
+      'KEY_RESOLUTION_FAILED',
+      'MALFORMED_CONTEXT',
+      'VERIFICATION_FAILED',
+      'VERIFIER_UNAVAILABLE',
+    ]);
+    expect([...refused, ...unavailable].sort()).toEqual([...failures].sort());
+    expect(new Set([...refused, ...unavailable]).size).toBe(
+      refused.length + unavailable.length,
+    );
+    expect(refused).toContain('UNSUPPORTED_PROFILE');
+
+    expect(mapping).toMatch(
+      /the new reason CONTEXT_VERIFIER_UNAVAILABLE maps to 503/,
+    );
+    expect(mapping).toMatch(
+      /unexpected error raised while verifying maps to it/,
+    );
+    expect(mapping).toMatch(
+      /default unconfigured verifier raises VERIFIER_UNAVAILABLE, so it answers 503 and no longer 401/,
+    );
+    expect(mapping).toMatch(
+      /tells an outage from a refused credential by the status and code/,
+    );
+    expect(mapping).toMatch(
+      /VERIFICATION_FAILED is also raised when a replayed assertion is refused[^.]*401/,
+    );
+    expect(mapping).toMatch(
+      /UNSUPPORTED_PROFILE is also raised when the key provider returns a private or mismatched key[^.]*503/,
+    );
+    expect(mapping).toMatch(/verifier pull request must split them/);
+
+    const responses = document.components.responses;
+    expect(responses.AuthorizationUnavailable.description).toMatch(
+      /CONTEXT_VERIFIER_UNAVAILABLE/,
+    );
+    expect(responses.AuthorizationUnavailable.description).toMatch(
+      /the credential verifier is unavailable/,
+    );
+    expect(responses.AuthorizationUnavailable.description).toMatch(
+      /never as a refused credential \(401\)/,
+    );
+    expect(responses.Unauthenticated.description).toMatch(
+      /Only a missing or refused credential answers 401/,
+    );
+  });
+
   it('records HDR-1, CACHE-2 and STATUS-1 and keeps the approved ERR-1 and CACHE-1 text as written', () => {
     expect(ownerDecision('HDR-1')).toMatch(
       /WWW-Authenticate: Bearer, as RFC 9110 section 15\.5\.2 requires/,
