@@ -22,7 +22,7 @@ export class ConsumingTaskDelegationAssertionPrototypeVerifier implements TaskIn
       throw new TaskInboundContextVerificationError('VERIFICATION_FAILED');
     }
     if (!consumed) {
-      throw new TaskInboundContextVerificationError('VERIFICATION_FAILED');
+      throw new TaskInboundContextVerificationError('REPLAY_DETECTED');
     }
     return verified.context;
   }
