@@ -17,14 +17,14 @@ export type OrganizationMembershipCommand =
   | {
       command: 'RESEND';
       invitationId: string;
-      expectedMembershipVersion: number;
+      expectedMembershipVersion?: number;
       expectedInvitationVersion: number;
       reasonCode: 'ACCESS_REQUEST' | 'ACCESS_REVIEW';
     }
   | {
       command: 'CANCEL';
       invitationId: string;
-      expectedMembershipVersion: number;
+      expectedMembershipVersion?: number;
       expectedInvitationVersion: number;
       reasonCode: 'INVITATION_CANCELLED';
     }
@@ -42,6 +42,16 @@ export type OrganizationMembershipCommand =
       roleCode: 'ADMIN' | 'MEMBER';
       reason: string;
     };
+
+export interface InvitationMutationAcknowledgement {
+  operationId: string;
+  invitation: {
+    id: string;
+    status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
+    version: number;
+    expiresAt: string;
+  };
+}
 
 export interface MembershipMutationAcknowledgement {
   operationId: string;
@@ -77,7 +87,7 @@ export interface PlatformInvitationCommandInput {
 
 export interface MembershipMutationResult {
   httpStatus: 200 | 201;
-  body: MembershipMutationAcknowledgement;
+  body: MembershipMutationAcknowledgement | InvitationMutationAcknowledgement;
   replayed: boolean;
 }
 
@@ -94,15 +104,12 @@ export interface PlatformMembershipSuspendInput {
 
 export interface AdminInvitationSummary {
   id: string;
-  membershipId: string;
   organizationId: string;
   status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
   version: number;
   expiresAt: string;
   createdAt: string;
-  membershipVersion: number;
-  targetUserId: string;
-  email: string;
+  invitedEmail: string;
 }
 
 export interface AdminInvitationPage {

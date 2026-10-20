@@ -108,10 +108,12 @@ export class OrganizationMembershipCommandService {
     }
     if (command.command === 'RESEND' || command.command === 'CANCEL') {
       if (
-        Object.keys(command).length !== 5 ||
+        Object.keys(command).length !==
+          (command.expectedMembershipVersion === undefined ? 4 : 5) ||
         !resourceIdPattern.test(command.invitationId) ||
-        !Number.isSafeInteger(command.expectedMembershipVersion) ||
-        command.expectedMembershipVersion < 1 ||
+        (command.expectedMembershipVersion !== undefined &&
+          (!Number.isSafeInteger(command.expectedMembershipVersion) ||
+            command.expectedMembershipVersion < 1)) ||
         !Number.isSafeInteger(command.expectedInvitationVersion) ||
         command.expectedInvitationVersion < 1
       )

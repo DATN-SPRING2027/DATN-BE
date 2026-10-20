@@ -332,14 +332,14 @@ describe('IAM OpenAPI contract', () => {
     );
     expect(invitations?.responses['404']).toBeDefined();
     expect(invitations?.description).toContain(
-      'unexpired V2 invitation metadata',
+      'unexpired V3 invitation metadata',
     );
     expect(
       JSON.stringify(contract.components.schemas.C02AdminInvitation),
     ).not.toMatch(/token|secret|credential/i);
   });
 
-  it('documents Platform invitation commands with the no-write A7/A8 runtime gate', () => {
+  it('documents Platform invitation commands with asynchronous email delivery', () => {
     const invite =
       contract.paths[
         '/api/v1/iam/platform/organizations/{organizationId}/invitations'
@@ -360,11 +360,8 @@ describe('IAM OpenAPI contract', () => {
       expect(operation).toMatchObject({
         'x-platform-permission': 'platform.memberships.invitation.manage',
         'x-contract-status': 'USER_APPROVED',
-        'x-runtime-status': 'BLOCKED_A7_A8',
-        'x-readiness-gates': [
-          'A7_NOTIFICATION_CONTRACT_PROVIDER',
-          'A8_COORDINATED_CUTOVER',
-        ],
+        'x-runtime-status': 'IMPLEMENTED_BACKEND',
+        'x-readiness-gates': [],
       });
       expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
         expect.arrayContaining([
@@ -373,9 +370,7 @@ describe('IAM OpenAPI contract', () => {
           '__Host-csrf',
         ]),
       );
-      expect(operation?.responses['503']?.description).toContain(
-        'performs no membership, invitation, operation, outbox, or audit mutation',
-      );
+      expect(operation?.responses['503']).toBeDefined();
     }
     expect(invite?.requestBody).toMatchObject({
       content: {
@@ -384,6 +379,9 @@ describe('IAM OpenAPI contract', () => {
         },
       },
     });
+    expect(invite?.description).toContain(
+      'even when email delivery is unavailable',
+    );
     expect(resend?.requestBody).toMatchObject({
       content: {
         'application/json': {
@@ -989,9 +987,10 @@ describe('IAM OpenAPI contract', () => {
               'listOrganizationMembershipsV1',
               'getOrganizationMembershipV1',
               'listOrganizationInvitations',
-              'getAccountInvitationV2',
-              'listAccountInvitationsV2',
-              'acceptOrganizationInvitationV2',
+              'getAccountInvitationV3',
+              'listAccountInvitationsV3',
+              'acceptOrganizationInvitationV3',
+              'resolveOrganizationInvitationTokenV3',
               'createOrganizationInvitation',
               'resendOrganizationMembershipInvitation',
               'cancelOrganizationMembershipInvitation',
@@ -1143,10 +1142,13 @@ describe('IAM OpenAPI contract', () => {
     ]);
   });
 
-  it('documents the approved Organization Membership admin commands and blocked legacy acceptance', () => {
+  it('documents the approved V3 Organization invitation commands and acceptance', () => {
     const accountList = contract.paths['/api/v1/auth/invitations'].get!;
+    const accountDetail =
+      contract.paths['/api/v1/auth/invitations/{invitationId}'].get!;
     const accept =
       contract.paths['/api/v1/auth/invitations/{invitationId}/accept'].post!;
+    const resolve = contract.paths['/api/v1/auth/invitations/resolve'].post!;
     const orgPath =
       contract.paths['/api/v1/iam/organizations/{organizationId}/invitations'];
     const resend =
@@ -1162,10 +1164,35 @@ describe('IAM OpenAPI contract', () => {
         '/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/suspend'
       ].post!;
 
-    expect(accountList.operationId).toBe('listAccountInvitationsV2');
+    expect(accountList.operationId).toBe('listAccountInvitationsV3');
+    expect(accountDetail.operationId).toBe('getAccountInvitationV3');
     expect(accountList.description).toContain('exact normalized account email');
-    expect(accept.description).toContain('Runtime acceptance remains blocked');
+    expect(accept.operationId).toBe('acceptOrganizationInvitationV3');
+    expect(accept.description).toContain('authenticated account email');
+    expect(accept.description).toContain('commit atomically');
     expect(accept.responses['503']).toBeDefined();
+    expect(accept.responses['410']).toBeDefined();
+    expect(accept.responses['200']).toHaveProperty(
+      'content.application/json.schema.$ref',
+      '#/components/schemas/C02AcceptInvitationAck',
+    );
+    expect(resolve).toMatchObject({
+      operationId: 'resolveOrganizationInvitationTokenV3',
+      security: [],
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
+      'x-readiness-gates': [],
+      responses: {
+        '200': {
+          headers: {
+            'Cache-Control': { schema: { const: 'no-store' } },
+          },
+        },
+      },
+    });
+    expect(resolve.requestBody).toHaveProperty(
+      'content.application/json.schema.$ref',
+      '#/components/schemas/C02ResolveInvitationRequest',
+    );
     expect(accept.parameters?.map((parameter) => parameter.name)).toEqual([
       'invitationId',
       'Idempotency-Key',
@@ -1183,18 +1210,15 @@ describe('IAM OpenAPI contract', () => {
     expect(orgPath.post?.description).toContain(
       'shared 30 committed invite/resend',
     );
-    expect(orgPath.post?.description).toContain('outbox intent');
+    expect(orgPath.post?.description).toContain('encrypted delivery outbox');
     expect(orgPath.post?.description).toContain(
-      'outbox intent does not prove email delivery',
+      'asynchronous email delivery can remain pending or retry',
     );
     expect(orgPath.post).toMatchObject({
       'x-contract-status': 'USER_APPROVED',
-      'x-runtime-status': 'BLOCKED_A7_A8',
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
       'x-permission': 'organization.memberships.manage',
-      'x-readiness-gates': [
-        'A7_NOTIFICATION_CONTRACT_PROVIDER',
-        'A8_COORDINATED_CUTOVER',
-      ],
+      'x-readiness-gates': [],
     });
     expect(orgPath.post?.requestBody).toMatchObject({
       content: {
@@ -1212,15 +1236,12 @@ describe('IAM OpenAPI contract', () => {
     expect(cancel.operationId).toBe('cancelOrganizationMembershipInvitation');
     expect(suspend.operationId).toBe('suspendOrganizationMembership');
     expect(resend).toMatchObject({
-      'x-runtime-status': 'BLOCKED_A7_A8',
-      'x-readiness-gates': [
-        'A7_NOTIFICATION_CONTRACT_PROVIDER',
-        'A8_COORDINATED_CUTOVER',
-      ],
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
+      'x-readiness-gates': [],
     });
     expect(cancel).toMatchObject({
-      'x-runtime-status': 'BLOCKED_A8',
-      'x-readiness-gates': ['A8_COORDINATED_CUTOVER'],
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
+      'x-readiness-gates': [],
     });
     expect(suspend).toMatchObject({
       'x-runtime-status': 'IMPLEMENTED_BACKEND',
@@ -1233,6 +1254,22 @@ describe('IAM OpenAPI contract', () => {
     expect(cancel.parameters?.map((parameter) => parameter.name)).toContain(
       'Idempotency-Key',
     );
+    for (const request of [
+      orgPath.post?.requestBody,
+      resend.requestBody,
+      cancel.requestBody,
+      accept.requestBody,
+    ]) {
+      expect(JSON.stringify(request)).not.toContain(
+        'expectedMembershipVersion',
+      );
+    }
+    expect(contract.components.schemas.C02MembershipMutationAck).toHaveProperty(
+      'oneOf',
+    );
+    expect(
+      contract.components.schemas.C02MembershipMutationAck.oneOf,
+    ).toHaveLength(2);
     expect(suspend.parameters?.map((parameter) => parameter.name)).toContain(
       'Idempotency-Key',
     );
@@ -1267,8 +1304,16 @@ describe('IAM OpenAPI contract', () => {
       required: ['email', 'reasonCode'],
     });
     expect(contract.components.schemas.C02MembershipMutationAck).toMatchObject({
-      additionalProperties: false,
-      required: ['operationId', 'membership'],
+      oneOf: [
+        {
+          additionalProperties: false,
+          required: ['operationId', 'membership'],
+        },
+        {
+          additionalProperties: false,
+          required: ['operationId', 'invitation'],
+        },
+      ],
     });
     expect(
       contract.components.schemas.C02MembershipMutationState.properties,

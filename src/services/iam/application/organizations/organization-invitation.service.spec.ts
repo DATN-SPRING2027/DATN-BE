@@ -1,4 +1,5 @@
 import { HttpException, UnprocessableEntityException } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { AuthenticatedAccountIdentity } from '../authentication/authentication.application.service';
 import type { OrganizationInvitationRepository } from './organization-invitation.repository';
 import {
@@ -24,6 +25,11 @@ describe('OrganizationInvitationService', () => {
         pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
       }),
       getForRecipient: jest.fn().mockResolvedValue(null),
+      resolveByTokenHash: jest.fn().mockResolvedValue(null),
+      acceptForRecipient: jest.fn().mockResolvedValue({
+        acknowledgement: { operationId: 'b'.repeat(24) },
+        replayed: false,
+      }),
     };
     service = new OrganizationInvitationService(repository);
   });
@@ -71,5 +77,43 @@ describe('OrganizationInvitationService', () => {
       'invitee@example.com',
       expect.any(Date),
     );
+  });
+
+  it('hashes the one-time token before resolving and returns no details for unknown tokens', async () => {
+    const token = 't'.repeat(43);
+    await expect(service.resolveToken(token)).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(repository.resolveByTokenHash).toHaveBeenCalledWith(
+      createHash('sha256').update(token).digest('hex'),
+      expect.any(Date),
+    );
+    await expect(service.resolveToken('short')).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(repository.resolveByTokenHash).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts only with the authenticated account identity and invitation version', async () => {
+    await service.accept(account, 'a'.repeat(24), 3, '0123456789abcdef');
+    expect(repository.acceptForRecipient).toHaveBeenCalledTimes(1);
+    const call = repository.acceptForRecipient.mock.calls[0]?.[0];
+    expect(call).toMatchObject({
+      invitationId: 'a'.repeat(24),
+      actorUserId: account.id,
+      authenticatedEmail: 'invitee@example.com',
+      expectedInvitationVersion: 3,
+      idempotencyKey: '0123456789abcdef',
+    });
+    expect(call?.now).toBeInstanceOf(Date);
+    await expect(
+      service.accept(
+        { ...account, email: 'bad-email' },
+        'a'.repeat(24),
+        3,
+        '0123456789abcdef',
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(repository.acceptForRecipient).toHaveBeenCalledTimes(1);
   });
 });

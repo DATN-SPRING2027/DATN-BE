@@ -469,6 +469,7 @@ export class PlatformAdministrationService {
     if (
       (command.command !== 'RESEND' && command.command !== 'CANCEL') ||
       !resourceIdPattern.test(command.invitationId) ||
+      command.expectedMembershipVersion === undefined ||
       !Number.isSafeInteger(command.expectedMembershipVersion) ||
       command.expectedMembershipVersion < 1 ||
       !Number.isSafeInteger(command.expectedInvitationVersion) ||

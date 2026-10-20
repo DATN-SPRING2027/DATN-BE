@@ -8,6 +8,9 @@ import { PASSWORD_RESET_MAILER } from './application/authentication/password-res
 import { PasswordResetService } from './application/authentication/password-reset.service';
 import { EmailRegistrationService } from './application/authentication/email-registration.service';
 import { EmailRegistrationOutboxWorker } from './infrastructure/email/email-registration-outbox.worker';
+import { OrganizationInvitationOutboxWorker } from './infrastructure/email/organization-invitation-outbox.worker';
+import { OrganizationInvitationPayloadCipher } from './infrastructure/email/organization-invitation-payload.cipher';
+import { ORGANIZATION_INVITATION_MAILER } from './application/organizations/organization-invitation.mailer';
 import { EMAIL_REGISTRATION_MAILER } from './application/authentication/email-registration.mailer';
 import { SmtpEmailRegistrationMailer } from './infrastructure/email/smtp-email-registration.mailer';
 import { GoogleOAuthService } from './application/authentication/google-oauth.service';
@@ -123,15 +126,24 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     GoogleOAuthService,
     { provide: AUTH_SECURITY_STORE, useExisting: RedisService },
     { provide: PASSWORD_RESET_MAILER, useClass: SmtpPasswordResetMailer },
+    SmtpEmailRegistrationMailer,
     {
       provide: EMAIL_REGISTRATION_MAILER,
-      useClass: SmtpEmailRegistrationMailer,
+      useExisting: SmtpEmailRegistrationMailer,
     },
+    {
+      provide: ORGANIZATION_INVITATION_MAILER,
+      useExisting: SmtpEmailRegistrationMailer,
+    },
+    OrganizationInvitationPayloadCipher,
     ...(process.env.INFRA_ENABLED === 'true'
       ? [PasswordResetOutboxWorker]
       : []),
     ...(process.env.INFRA_ENABLED === 'true'
       ? [EmailRegistrationOutboxWorker]
+      : []),
+    ...(process.env.INFRA_ENABLED === 'true'
+      ? [OrganizationInvitationOutboxWorker]
       : []),
     LeaderDirectedLoginEligibilityPolicy,
     MembershipOrganizationContextResolver,

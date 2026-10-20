@@ -4,21 +4,18 @@ import { MongoOrganizationInvitationRepository } from './organization-invitation
 
 const userId = new Types.ObjectId('751a2b3c4d5e6f7a8b9c0d1f');
 const organizationId = new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1f');
-const membershipId = new Types.ObjectId('751a2b3c4d5e6f7a8b9c0d1e');
 const invitationId = new Types.ObjectId('851a2b3c4d5e6f7a8b9c0d1f');
 const now = new Date('2026-10-14T00:00:00.000Z');
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
     _id: invitationId,
-    membershipId,
     organizationId,
     status: 'PENDING',
     version: 1,
     expiresAt: new Date('2026-10-21T00:00:00.000Z'),
     createdAt: new Date('2026-10-14T00:00:00.000Z'),
-    membershipVersion: 1,
-    membershipStatus: 'PENDING_INVITE',
+    email: 'invitee@example.test',
     organizationName: 'Continuum',
     ...overrides,
   };
@@ -44,7 +41,7 @@ function repositoryWithAggregate(result: unknown[]) {
 }
 
 describe('MongoOrganizationInvitationRepository', () => {
-  it('lists only pending, live invitations bound to the current user and normalized email', async () => {
+  it('lists only pending, live V3 invitations bound to the normalized email', async () => {
     const { repository, aggregate, pipelines } = repositoryWithAggregate([
       { data: [row()], total: [{ count: 1 }] },
     ]);
@@ -61,8 +58,7 @@ describe('MongoOrganizationInvitationRepository', () => {
     const pipeline = pipelines[0] as Array<Record<string, unknown>>;
     expect(pipeline[0]).toEqual({
       $match: {
-        contractVersion: 2,
-        targetUserId: userId,
+        contractVersion: 3,
         email: 'invitee@example.test',
       },
     });
@@ -70,7 +66,6 @@ describe('MongoOrganizationInvitationRepository', () => {
       $match: {
         status: 'PENDING',
         expiresAt: { $gt: now },
-        membershipStatus: 'PENDING_INVITE',
       },
     });
     expect(pipeline.at(-1)).toEqual({
@@ -83,13 +78,12 @@ describe('MongoOrganizationInvitationRepository', () => {
       data: [
         {
           id: invitationId.toHexString(),
-          membershipId: membershipId.toHexString(),
           organizationId: organizationId.toHexString(),
           status: 'PENDING',
           version: 1,
           expiresAt: '2026-10-21T00:00:00.000Z',
           createdAt: '2026-10-14T00:00:00.000Z',
-          membershipVersion: 1,
+          invitedEmail: 'invitee@example.test',
           organizationName: 'Continuum',
         },
       ],
@@ -112,27 +106,20 @@ describe('MongoOrganizationInvitationRepository', () => {
     const pipeline = pipelines[0] as Array<Record<string, unknown>>;
     expect(pipeline[0]).toEqual({
       $match: {
-        contractVersion: 2,
-        targetUserId: userId,
+        contractVersion: 3,
         email: 'invitee@example.test',
       },
     });
     expect(pipeline).toContainEqual({ $match: { _id: invitationId } });
     expect(result).toEqual({
-      membership: {
-        id: membershipId.toHexString(),
-        status: 'PENDING_INVITE',
-        version: 1,
-      },
       invitation: {
         id: invitationId.toHexString(),
-        membershipId: membershipId.toHexString(),
         organizationId: organizationId.toHexString(),
         status: 'EXPIRED',
         version: 1,
         expiresAt: '2026-10-13T23:59:00.000Z',
         createdAt: '2026-10-14T00:00:00.000Z',
-        membershipVersion: 1,
+        invitedEmail: 'invitee@example.test',
         organizationName: 'Continuum',
       },
     });
