@@ -1,0 +1,403 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Continuum AI Task internal API — DATN-97 create (proposal)",
+    "version": "0.1.0-draft",
+    "description": "Proposed contract for the create operation of the DATN-97 (D-05) seven-field Task slice. It is NOT approved: create was left out of the approved list and detail contract (https://github.com/DATN-SPRING2027/DATN-BE/pull/55) until DR-7(c)(d) is recorded. It follows that contract: the internal /internal/tasks prefix, the existing error shape, the denial mapping ERR-1 and ERR-2, Cache-Control no-store on every response and WWW-Authenticate: Bearer on 401. The route would be disabled by default behind the deny-by-default authorization boundary, so no route may be activated from this contract. Choices proposed by the task owner are listed in x-owner-decisions; what still waits for an authority is listed in x-pending-decisions."
+  },
+  "x-approval-status": "PROPOSED. Not approved by the Leader or by any other authority; DR-3, DR-7(c)(d), DR-8 and AUTH-1 are not decided. No route activation, production use or policy ALLOW follows from this document.",
+  "x-approval-conditions": [
+    "Proposed conditions for the approval being asked: the approval covers only the create operation and the seven-field Task described here.",
+    "DR-7(c)(d) are recorded by an authority before any implementation starts (D05-DR2).",
+    "The route stays off by default behind its own flag, and DenyAll stays the default policy until DR-3 and DR-8 are decided and built.",
+    "The replay store of DR3-1 is on before the route is enabled anywhere.",
+    "The handler maps the repository result as CREATE-2 and never answers a generic 403."
+  ],
+  "x-decision-refs": [
+    "Approved list and detail contract and its owner decisions (PATH-1, LIMIT-1, CURSOR-1, ERR-1, CACHE-1, ERR-2, HDR-1, CACHE-2, STATUS-1): https://github.com/DATN-SPRING2027/DATN-BE/pull/55",
+    "Leader decisions on D05-DR1 (DR-1, DR-2, DR-4, DR-5, DR-6, DR-7(a)(b) approved; DR-3, DR-7(c)(d), DR-8 DEFER): https://github.com/DATN-SPRING2027/Document/pull/44#issuecomment-6248155568",
+    "Document decision record doc 27 (D05-DR1, renumbered from 25): https://github.com/DATN-SPRING2027/Document/pull/46"
+  ],
+  "x-owner-decisions": [
+    "SOURCE-3: proposals recorded by the task owner Nguyen Hong Phuc on 20/10/2026 for the create operation and for the deferred decisions DR-3, DR-7(c)(d) and DR-8, ahead of a Leader decision. They are NOT approved by any authority. They allow no route activation, no production use and no policy ALLOW, and they change neither the list and detail contract (https://github.com/DATN-SPRING2027/DATN-BE/pull/55) nor the approved conditions of that contract.",
+    "CREATE-1 (task owner, 20/10/2026): POST /internal/tasks/projects/{projectId}/tasks with the body {title}. 201 with the seven-field Task and a Location header; 401, 404 and 503 follow ERR-1 and ERR-2; 422 only for the body (after authorization); 500 for a server fault; Cache-Control no-store on every response and WWW-Authenticate: Bearer on 401 as in the list and detail contract. DR-1, DR-5 and DR-7(a)(b) apply as approved: the P3 creation event, no title length cap, the existing error shape.",
+    "CREATE-2 (task owner, 20/10/2026): repository result to response. COMMITTED, with or without reconciliation, is 201. REJECTED / INVALID_INPUT is 422 TASK_VALIDATION_FAILED. REJECTED / INVALID_TRUSTED_CONTEXT is a server fault: a generic 500, logged internally and never echoed. ABORTED is 503 RETRY_LATER. UNCERTAIN is 503 TASK_CREATE_UNCERTAIN with details.taskId. The handler never reports the repository state names to the caller.",
+    "CREATE-3 (task owner, 20/10/2026): the route stays off by default behind its own explicit flag, in addition to the flag of the list and detail routes, and registers only when both are on. The default verifier, scope evidence and DenyAll policy stay unchanged, so create is unreachable until DR-3, DR-8 and the replay condition of DR3-1 are decided and built.",
+    "DR7C-1 (task owner, 20/10/2026): Idempotency-Key is excluded from the first create slice. The existing task_operations schema holds lifecycle results only (status, version, completedAt, updatedAt), so a create key would need a schema change and a database pull request. Task titles are not unique (doc 22 P2), so a client retry can create a duplicate Task but cannot corrupt data.",
+    "DR7D-1 (task owner, 20/10/2026): ABORTED, a confirmed abort with nothing written, maps to 503 with the existing RETRY_LATER code, which the error filter answers with Retry-After. UNCERTAIN maps to 503 with the code TASK_CREATE_UNCERTAIN, following the IAM precedent PLATFORM_JOB_OPERATION_UNCERTAIN, and the client resolves it with the detail operation. The repository returns the taskId for UNCERTAIN, but StructuredExceptionFilter answers details as an empty object for every 5xx status. Proposed default: carry details.taskId through the Task-specific error filter (TaskHttpExceptionFilter, added in DATN-BE PR #66), which only needs a change under src/services/task and leaves the shared filter untouched. Alternative: return no taskId, so a client that cannot find the Task cannot tell a created Task from none and may create a duplicate.",
+    "DR3-1 (task owner, 20/10/2026): proposed answer to the five open points of DR-3. (1) Issuer: IAM mints the delegation assertion and iss is the exact issuer string configured on the Task verifier; the verifier has no default. (2) Audience: aud is the exact Task service identifier configured on the verifier and any other audience is rejected. (3) Token: a compact JWT signed with EdDSA (Ed25519) whose header holds exactly alg, typ and kid; typ is proposed as at+jwt, following RFC 9068 whose client_id claim the prototype already uses, unless the issuer owner objects; verification keys form a set loaded by the Task service owner and chosen by kid, never fetched from a location named in the token; the claims are exactly iss, aud, sub, client_id, act.sub (the Gateway service id), project_id, htm, htu, jti, rid, iat, nbf, exp and an optional body_sha256, which a body-carrying request such as create must include; the lifetime is at most 60 seconds with 5 seconds of clock skew. The existing IAM user access token (HS256 with the shared JWT_SECRET) must not be reused as the assertion, because every holder of that secret could forge it. (4) mTLS: a deployment condition between the Gateway and the Task service, not application code; the application only checks that act.sub is the expected Gateway service id and never inspects the peer certificate. (5) Replay protection: the replay store stays off for list and detail (GET, request-bound, short-lived) and must be on before create or any mutation is enabled, using the prototype's unique (iss, jti) marker with an expiry; that is a new collection and needs its own database pull request. No code issues this assertion yet: the issuer in IAM or the Gateway, the key set and the service identity are a separate task and no owner is recorded for it. The verifier failure classification (401 or 503) is in ERR-2 of the list and detail contract.",
+    "DR8-1 (task owner, 20/10/2026): proposed answer to the two open points of DR-8. (1) Source: the Organization id and the ACTIVE Organization Membership and ProjectMembership facts come as claims inside the same IAM-signed assertion, never from the caller, not from a synchronous IAM call and not from a Task-side read model, so the Task service keeps no copy of IAM data. (2) Revocation: a revoked membership stays effective until the assertion expires, at most about 65 seconds (60 seconds of lifetime plus 5 seconds of skew), which is accepted for the read-only list and detail (RISK-1); before create or any mutation it must be re-checked at its source or the lifetime shortened. Gaps this proposal exposes: the prototype verifier accepts an exact claim list, so it must be extended with the new claims; the Task scope-evidence type carries both membership statuses since DATN-BE PR #68, but no provider reads the claims yet. Neither the new claims nor the scope-evidence source exists yet.",
+    "RISK-1 (task owner, 20/10/2026): residual risks accepted for the read-only list and detail operations. A captured assertion can repeat the same bound GET for up to 60 seconds. A revoked membership stays effective for up to about 65 seconds. The application does not check the mTLS peer itself. Before create or any mutation is enabled, the replay store must be turned on and membership must be re-checked at its source or the lifetime shortened, each in a separate reviewed change."
+  ],
+  "x-pending-decisions": [
+    "APPROVAL-C: this create contract is a proposal. The implementation (D05-DR2 in AGENTS.md) starts only after an authority approves this OpenAPI and records DR-7(c)(d).",
+    "DR7-1: DR-7(c)(d) are decided by DR7C-1 and DR7D-1 only when an authority records them; until then they stay DEFER.",
+    "DR4-C: whether DR-4 (both memberships ACTIVE) covers create. The Leader's decision of 18/10/2026 says create/list/detail, the confirmation of 19/10/2026 names list and detail only.",
+    "AUTH-1: the bearer credential is an opaque verifier input; DR3-1 and DR8-1 propose the trust profile, the replay policy and the scope-evidence source but are not approved, and no issuer exists yet."
+  ],
+  "tags": [
+    {
+      "name": "Task create (proposal)",
+      "description": "Internal Task-service create route for the DATN-97 seven-field slice. Proposed; disabled by default."
+    }
+  ],
+  "security": [
+    {
+      "taskDelegationBearer": []
+    }
+  ],
+  "paths": {
+    "/internal/tasks/projects/{projectId}/tasks": {
+      "post": {
+        "tags": [
+          "Task create (proposal)"
+        ],
+        "summary": "Create a Task in one Project",
+        "operationId": "createProjectTaskInternalV1",
+        "description": "PROPOSAL, not approved. Creates one Task in the Project of the path with the title of the body. The server sets id, projectId, createdBy (the verified actor), createdAt, updatedAt and version, and writes the approved creation event in the same transaction (doc 22 P3); none of them is accepted from the body. Per DR-4 as recorded on 18/10/2026 (create, list and detail), the caller needs an ACTIVE Organization Membership and an ACTIVE ProjectMembership, both validated server-side; whether DR-4 covers create is asked in x-pending-decisions (DR4-C). Authorization runs before the body is validated, except that a body that is not syntactically valid JSON is rejected first by the body parser (422). The delegated assertion of a body-carrying request binds the SHA-256 of the exact body bytes (body_sha256). There is no Idempotency-Key header and no expectedVersion (DR7C-1).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The Task was created (repository result COMMITTED, including a commit that the repository reconciled after an uncertain transaction).",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "description": "Path of the new Task: the detail operation of the same Project.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^/internal/tasks/projects/[a-f0-9]{24}/tasks/[a-f0-9]{24}$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "taskDelegationBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Opaque delegated-context credential from the trusted caller, treated as a verifier input. Its profile and the service identity are DR-3 (DEFER) and are not defined by this contract. Browser-supplied actor or Project headers are never identity proof."
+      }
+    },
+    "parameters": {
+      "ProjectId": {
+        "name": "projectId",
+        "in": "path",
+        "required": true,
+        "description": "Project id. It must match the Project bound in the verified context; a mismatch or a malformed value is reported as 404.",
+        "schema": {
+          "$ref": "#/components/schemas/ObjectIdString"
+        }
+      }
+    },
+    "responses": {
+      "Unauthenticated": {
+        "description": "The credential is missing, malformed or cannot be verified (authorization denial UNVERIFIED_CONTEXT). The response carries WWW-Authenticate: Bearer (RFC 9110 section 15.5.2, owner decision HDR-1) and exposes no token or profile detail. Only a missing or refused credential answers 401; a verifier that cannot verify answers 503 (ERR-2). Profile details are DR-3.",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string",
+              "const": "Bearer"
+            }
+          },
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": "TASK_UNAUTHENTICATED",
+              "message": "Authentication is missing or invalid",
+              "details": {},
+              "requestId": "req-example"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The Project does not exist or is not visible to the caller. Non-member and cross-scope access return this response without revealing existence (DR-5); a denied permission and a malformed projectId also return it (owner decision ERR-1). Like every response of this route it is Cache-Control: no-store (CACHE-2).",
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": "TASK_NOT_FOUND",
+              "message": "Task not found",
+              "details": {},
+              "requestId": "req-example"
+            }
+          }
+        }
+      },
+      "ValidationFailed": {
+        "description": "The request body is not a JSON object with exactly the string property title, or the title has no non-white-space character (repository result REJECTED / INVALID_INPUT). Authorization runs first for every rule except JSON syntax: a body that is not syntactically valid JSON is rejected by the body parser before authorization, the only validation that precedes it, and also answers this response. An unknown property, a missing, non-string or blank title answer it after authorization, so a caller who is not allowed never learns whether the rest of the body was valid.",
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": "TASK_VALIDATION_FAILED",
+              "message": "Request validation failed",
+              "details": {
+                "messages": [
+                  "title must contain a non-white-space character"
+                ]
+              },
+              "requestId": "req-example"
+            }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "Create cannot be completed now. Three causes share the status and are told apart by code. TASK_AUTHORIZATION_UNAVAILABLE: scope evidence, the permission policy, the Task ownership lookup or the credential verifier is unavailable (owner decision ERR-2); nothing was written. RETRY_LATER: the transaction was confirmed aborted (repository result ABORTED), nothing was written and the client may retry; the response carries Retry-After. TASK_CREATE_UNCERTAIN: the outcome is unknown (repository result UNCERTAIN); details.taskId is the id the Task would have, and the client resolves the outcome with the detail operation (GET of the same path with the taskId): 200 means it was created, 404 means it was not. No Idempotency-Key exists (DR7C-1), so a client that retries instead of checking may create a duplicate Task.",
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          },
+          "Retry-After": {
+            "description": "Present only for RETRY_LATER (set by the existing error filter).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "examples": {
+              "authorizationUnavailable": {
+                "summary": "Authorization cannot be evaluated",
+                "value": {
+                  "code": "TASK_AUTHORIZATION_UNAVAILABLE",
+                  "message": "Authorization is temporarily unavailable",
+                  "details": {},
+                  "requestId": "req-example"
+                }
+              },
+              "aborted": {
+                "summary": "Confirmed abort, nothing written",
+                "value": {
+                  "code": "RETRY_LATER",
+                  "message": "The operation was not applied, retry later",
+                  "details": {},
+                  "requestId": "req-example"
+                }
+              },
+              "uncertain": {
+                "summary": "Outcome unknown",
+                "value": {
+                  "code": "TASK_CREATE_UNCERTAIN",
+                  "message": "The outcome of the create operation is unknown",
+                  "details": {
+                    "taskId": "650000000000000000000001"
+                  },
+                  "requestId": "req-example"
+                }
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "The operation failed unexpectedly, the internal authorization request built by the guard was malformed (INVALID_REQUEST, owner decision ERR-2), or the repository rejected the trusted context built from the verified claims (REJECTED / INVALID_TRUSTED_CONTEXT, a server fault). The reason is logged internally and never echoed. The response contains no database details, stack trace, topology or credentials.",
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": "HTTP_500",
+              "message": "Internal server error",
+              "details": {},
+              "requestId": "req-example"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ObjectIdString": {
+        "type": "string",
+        "pattern": "^[a-fA-F0-9]{24}$",
+        "minLength": 24,
+        "maxLength": 24,
+        "description": "Opaque 24-character hexadecimal id."
+      },
+      "Task": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The approved D-03 seven-field Task, as in the list and detail contract. A new Task has version 1 and updatedAt equal to createdAt. No status, priority, assignee, team, dueDate, tags or description exists in this slice.",
+        "required": [
+          "id",
+          "projectId",
+          "title",
+          "createdBy",
+          "createdAt",
+          "updatedAt",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "projectId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "title": {
+            "type": "string",
+            "description": "The original string as stored. No business length cap and no normalization (doc 22 P2, DR-7(b)); existing BSON size limits apply."
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 UTC."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 UTC. The time of the last change to the Task and never earlier than createdAt. It equals createdAt for a Task that has not changed since creation."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Informational document version, an integer of at least 1. It is 1 at creation and the stored value may be greater than 1 after later changes allowed by the lifecycle database contract (DATN-BE PR #58). It is not a CAS/ETag and there is no expectedVersion in this slice (DR-1)."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "details",
+          "requestId"
+        ],
+        "description": "The existing backend error shape produced by StructuredExceptionFilter (DR-5).",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "details": {
+            "type": "object",
+            "description": "Machine-readable context. Use an empty object when no additional context is safe to expose.",
+            "additionalProperties": true
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "description": "Exactly one property. Any other property is rejected (422).",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]",
+            "description": "At least one character that is not Unicode white space (the rule of TaskDataRepository). The title is stored as given: no trimming, no normalization and no business length cap (DR-7(b), doc 22 P2); existing BSON size limits apply. Titles are not unique."
+          }
+        }
+      }
+    }
+  }
+}

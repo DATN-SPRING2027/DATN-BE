@@ -99,3 +99,22 @@ repeated the approval for:
 The handler pull request must implement these; the contract test fails if a
 denial reason is added to the boundary without being mapped in `ERR-2`.
 `src/contracts/task-slice-openapi.spec.ts` guards the scope of the contract.
+
+## Task create (DATN-97): task-v1-d05-create.openapi.json
+
+A **proposal, not approved**: the create operation (`POST /internal/tasks/projects/{projectId}/tasks`,
+body `{title}`) that was left out of the approved list and detail contract until DR-7(c)(d)
+is recorded. It reuses that contract's error shape, denial mapping (`ERR-1`, `ERR-2`), `no-store`
+and `WWW-Authenticate` rules, and adds:
+
+- `201` with the seven-field Task and a `Location` header; `422` only for the body, after
+  authorization; a server fault for a rejected trusted context (`500`).
+- `503` with three causes told apart by code: `TASK_AUTHORIZATION_UNAVAILABLE`, `RETRY_LATER`
+  (confirmed abort, with `Retry-After`) and `TASK_CREATE_UNCERTAIN` (`details.taskId`, resolved
+  with the detail operation).
+- No `Idempotency-Key` (`DR7C-1`). The title rule equals the repository's.
+- Proposed answers for the deferred decisions DR-3, DR-7(c)(d) and DR-8 (`DR3-1`, `DR7C-1`,
+  `DR7D-1`, `DR8-1`, `RISK-1`) and the open question whether DR-4 covers create (`DR4-C`).
+
+None of it is approved by any authority and none of it allows route activation, production use
+or policy `ALLOW`. `src/contracts/task-create-openapi.spec.ts` guards the file.
