@@ -12,6 +12,9 @@ import { Types } from 'mongoose';
 import type { Connection } from 'mongoose';
 import {
   ORGANIZATION_INVITATION_MAILER,
+  ORGANIZATION_INVITATION_DELIVERY_FAILURE_REASONS,
+  type OrganizationInvitationDeliveryFailureReason,
+  type OrganizationInvitationDeliveryResult,
   type OrganizationInvitationMailer,
 } from '../../application/organizations/organization-invitation.mailer';
 import { IAM_PERSISTENCE } from '../persistence';
@@ -35,7 +38,15 @@ interface InvitationDeliveryPayload {
     leaseId?: string;
     leaseUntil?: Date;
     nextAttemptAt?: Date;
+    receipt?: InvitationDeliveryReceipt;
   };
+}
+
+interface InvitationDeliveryReceipt {
+  accepted: true;
+  provider: 'SMTP';
+  providerMessageId: string | null;
+  acceptedAt: Date;
 }
 
 interface InvitationDeliveryEvent {
@@ -141,10 +152,12 @@ export class OrganizationInvitationOutboxWorker
         event._id,
         leaseId,
         payload.delivery?.attemptCount ?? 1,
+        'DELIVERY_INPUT_UNAVAILABLE',
       );
       return 'RETRY';
     }
 
+    let deliveryResult: OrganizationInvitationDeliveryResult;
     try {
       const token = this.cipher.decryptToken(payload.encryptedToken, {
         invitationId: payload.invitationId,
@@ -153,13 +166,58 @@ export class OrganizationInvitationOutboxWorker
         tokenHash: payload.tokenHash,
       });
       const invitationUrl = this.createInvitationUrl(token);
-      await this.mailer.sendOrganizationInvitation({
+      deliveryResult = await this.mailer.sendOrganizationInvitation({
         recipientEmail: payload.recipientEmail,
         organizationName: organization.name,
         invitationUrl,
         expiresAt: invitation.expiresAt,
       });
-      await this.connection.collection('outbox_events').updateOne(
+    } catch {
+      await this.scheduleRetry(
+        event._id,
+        leaseId,
+        payload.delivery?.attemptCount ?? 1,
+        'SMTP_PROVIDER_ERROR',
+      );
+      return (payload.delivery?.attemptCount ?? 1) >= MAX_ATTEMPTS
+        ? 'FAILED'
+        : 'RETRY';
+    }
+
+    if (isDeliveryFailure(deliveryResult)) {
+      if (!deliveryResult.retryable) {
+        await this.finishFailed(
+          event._id,
+          leaseId,
+          deliveryResult.failureReason,
+        );
+        return 'FAILED';
+      }
+      await this.scheduleRetry(
+        event._id,
+        leaseId,
+        payload.delivery?.attemptCount ?? 1,
+        deliveryResult.failureReason,
+      );
+      return (payload.delivery?.attemptCount ?? 1) >= MAX_ATTEMPTS
+        ? 'FAILED'
+        : 'RETRY';
+    }
+
+    if (!isDeliveryAccepted(deliveryResult)) {
+      await this.finishFailed(event._id, leaseId, 'DELIVERY_RESULT_INVALID');
+      return 'FAILED';
+    }
+
+    const receipt: InvitationDeliveryReceipt = {
+      accepted: true,
+      provider: deliveryResult.provider,
+      providerMessageId: deliveryResult.providerMessageId,
+      acceptedAt: deliveryResult.acceptedAt,
+    };
+    const published = await this.connection
+      .collection('outbox_events')
+      .updateOne(
         {
           _id: event._id,
           eventName: EVENT_NAME,
@@ -167,7 +225,11 @@ export class OrganizationInvitationOutboxWorker
           'payload.delivery.leaseId': leaseId,
         },
         {
-          $set: { status: 'PUBLISHED', publishedAt: new Date() },
+          $set: {
+            status: 'PUBLISHED',
+            publishedAt: receipt.acceptedAt,
+            'payload.delivery.receipt': receipt,
+          },
           $unset: {
             'payload.encryptedToken': '',
             'payload.delivery.leaseId': '',
@@ -176,17 +238,13 @@ export class OrganizationInvitationOutboxWorker
           },
         },
       );
-      return 'SENT';
-    } catch {
-      await this.scheduleRetry(
-        event._id,
-        leaseId,
-        payload.delivery?.attemptCount ?? 1,
+    if (published.matchedCount !== 1) {
+      this.logger.warn(
+        'organization_invitation_delivery_receipt_not_persisted',
       );
-      return (payload.delivery?.attemptCount ?? 1) >= MAX_ATTEMPTS
-        ? 'FAILED'
-        : 'RETRY';
+      return 'IDLE';
     }
+    return 'SENT';
   }
 
   private async poll(): Promise<void> {
@@ -205,6 +263,7 @@ export class OrganizationInvitationOutboxWorker
     eventId: Types.ObjectId,
     leaseId: string,
     attemptCount: number,
+    failureReason: OrganizationInvitationDeliveryFailureReason,
   ): Promise<void> {
     const terminal = attemptCount >= MAX_ATTEMPTS;
     const delay = Math.min(
@@ -220,10 +279,10 @@ export class OrganizationInvitationOutboxWorker
       },
       {
         ...(terminal
-          ? { $set: { status: 'FAILED', lastError: 'DELIVERY_FAILED' } }
+          ? { $set: { status: 'FAILED', lastError: failureReason } }
           : {
               $set: {
-                lastError: 'DELIVERY_FAILED',
+                lastError: failureReason,
                 'payload.delivery.nextAttemptAt': new Date(Date.now() + delay),
               },
             }),
@@ -293,5 +352,48 @@ function isDeliveryPayload(value: unknown): value is InvitationDeliveryPayload {
     /^[a-f\d]{64}$/.test(payload.tokenHash) &&
     typeof payload.encryptedToken === 'string' &&
     payload.encryptedToken.length <= 4096
+  );
+}
+
+function isDeliveryAccepted(
+  value: OrganizationInvitationDeliveryResult,
+): value is Extract<OrganizationInvitationDeliveryResult, { accepted: true }> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    value.accepted === true &&
+    value.provider === 'SMTP' &&
+    (value.providerMessageId === null ||
+      (typeof value.providerMessageId === 'string' &&
+        value.providerMessageId.length <= 254 &&
+        !/\p{Cc}/u.test(value.providerMessageId))) &&
+    value.acceptedAt instanceof Date &&
+    Number.isFinite(value.acceptedAt.getTime())
+  );
+}
+
+function isDeliveryFailure(
+  value: OrganizationInvitationDeliveryResult,
+): value is Extract<OrganizationInvitationDeliveryResult, { accepted: false }> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    value.accepted === false &&
+    value.provider === 'SMTP' &&
+    value.providerMessageId === null &&
+    value.acceptedAt === null &&
+    typeof value.retryable === 'boolean' &&
+    isSafeFailureReason(value.failureReason)
+  );
+}
+
+function isSafeFailureReason(
+  value: unknown,
+): value is OrganizationInvitationDeliveryFailureReason {
+  return (
+    typeof value === 'string' &&
+    (
+      ORGANIZATION_INVITATION_DELIVERY_FAILURE_REASONS as readonly string[]
+    ).includes(value)
   );
 }
