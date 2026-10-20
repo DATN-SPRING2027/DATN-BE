@@ -34,11 +34,15 @@ export interface TaskHttpRequestBinding {
   method: string;
   target: string;
   projectId: string;
-  /** SHA-256 of the original HTTP body bytes, when a body is present. */
+  /** SHA-256 of the original HTTP body bytes, including a zero-length body. */
   bodySha256?: string;
 }
 
 type TaskExpressRequest = Request & { rawBody?: unknown };
+type RequestBindingResult =
+  | { kind: 'bound'; binding: TaskHttpRequestBinding }
+  | { kind: 'invalid' }
+  | { kind: 'body-unavailable' };
 type AuthorizedTaskContext = Extract<
   TaskAuthorizationResult,
   { kind: 'authorized' }
@@ -199,7 +203,7 @@ function readBearerCredential(headers: unknown): string | undefined {
 function createRequestBinding(
   request: TaskExpressRequest,
   projectId: string,
-): TaskHttpRequestBinding | undefined {
+): RequestBindingResult {
   try {
     const method = request.method;
     const target = request.originalUrl || request.url;
@@ -213,33 +217,67 @@ function createRequestBinding(
       target.startsWith('//') ||
       hasForbiddenTargetCharacters(target)
     ) {
-      return undefined;
+      return { kind: 'invalid' };
     }
 
-    const rawBody = request.rawBody;
+    let rawBody = Buffer.isBuffer(request.rawBody)
+      ? request.rawBody
+      : undefined;
     if (
       method.toUpperCase() !== 'GET' &&
       method.toUpperCase() !== 'HEAD' &&
-      !Buffer.isBuffer(rawBody)
+      rawBody === undefined
     ) {
-      return undefined;
+      if (!hasNoRequestBody(request)) return { kind: 'body-unavailable' };
+      rawBody = Buffer.alloc(0);
     }
 
     return {
-      method: method.toUpperCase(),
-      target,
-      projectId,
-      ...(Buffer.isBuffer(rawBody)
-        ? {
-            bodySha256: createHash('sha256')
-              .update(rawBody)
-              .digest('base64url'),
-          }
-        : {}),
+      kind: 'bound',
+      binding: {
+        method: method.toUpperCase(),
+        target,
+        projectId,
+        ...(rawBody !== undefined
+          ? {
+              bodySha256: createHash('sha256')
+                .update(rawBody)
+                .digest('base64url'),
+            }
+          : {}),
+      },
     };
   } catch {
-    return undefined;
+    return { kind: 'invalid' };
   }
+}
+
+/** A missing raw body is an empty body only when HTTP framing proves it. */
+function hasNoRequestBody(request: TaskExpressRequest): boolean {
+  const headers = request.headers as unknown;
+  if (
+    typeof headers !== 'object' ||
+    headers === null ||
+    Array.isArray(headers)
+  ) {
+    return false;
+  }
+
+  const contentLength = Object.getOwnPropertyDescriptor(
+    headers,
+    'content-length',
+  );
+  const transferEncoding = Object.getOwnPropertyDescriptor(
+    headers,
+    'transfer-encoding',
+  );
+  if (transferEncoding !== undefined) return false;
+  if (contentLength === undefined) return true;
+  return (
+    'value' in contentLength &&
+    typeof contentLength.value === 'string' &&
+    /^0+$/.test(contentLength.value)
+  );
 }
 
 function hasForbiddenTargetCharacters(target: string): boolean {
@@ -263,11 +301,12 @@ function hasForbiddenTargetCharacters(target: string): boolean {
  * token profile or establish service identity. A rejected request is answered
  * with the ERR-1/ERR-2 outcome for its reason: 401 for a missing or unverified
  * credential, 404 for a request that must not reveal existence, 503 when
- * authorization cannot be evaluated, and a generic 500 (logged, never echoed)
- * for a malformed internal authorization request; it never answers a generic 403.
- * Non-GET/HEAD handlers require Nest raw-body capture so the verifier can bind
- * the original body bytes. No handler is registered by TaskRuntimeModule
- * unless the explicit Task routes flag is on.
+ * authorization cannot be evaluated, and a generic 500 when the internal
+ * authorization request is malformed (logged, never echoed). It never answers
+ * a generic 403.
+ * Non-GET/HEAD handlers require Nest raw-body capture for a body-bearing
+ * request; otherwise HTTP framing must prove the body is empty. No handler is
+ * registered by TaskRuntimeModule unless the explicit Task routes flag is on.
  */
 @Injectable()
 export class TaskAuthorizationHttpGuard implements CanActivate {
@@ -312,8 +351,12 @@ export class TaskAuthorizationHttpGuard implements CanActivate {
       throw taskNotFoundException();
     }
 
-    const requestBinding = createRequestBinding(request, projectId);
-    if (!requestBinding) throw taskNotFoundException();
+    const bindingResult = createRequestBinding(request, projectId);
+    if (bindingResult.kind === 'body-unavailable') {
+      throw taskAuthorizationUnavailableException();
+    }
+    if (bindingResult.kind === 'invalid') throw taskNotFoundException();
+    const requestBinding = bindingResult.binding;
 
     let result: TaskAuthorizationResult;
     try {

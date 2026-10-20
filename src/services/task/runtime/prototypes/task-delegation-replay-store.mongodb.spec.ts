@@ -264,6 +264,7 @@ async function createReplayGuardHttpApp(options: {
           projectId: requestedProjectId,
           organizationId: 'organization-from-test-fixture',
           organizationMembershipStatus: 'ACTIVE' as const,
+          projectMembershipStatus: 'ACTIVE' as const,
         },
       };
     }),
@@ -767,7 +768,7 @@ integration(
         true,
       ]);
       expect(results.find(({ accepted }) => !accepted)?.reason).toBe(
-        'VERIFICATION_FAILED',
+        'REPLAY_DETECTED',
       );
       expect(
         await connection!

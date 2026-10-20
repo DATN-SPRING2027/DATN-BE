@@ -318,7 +318,7 @@ describe('DATN-97 Task slice OpenAPI (approved D05-DR1 list/detail contract)', (
     const failures = [...list.matchAll(/'([A-Z_]+)'/g)].map(
       (match) => match[1],
     );
-    expect(failures.length).toBeGreaterThanOrEqual(16);
+    expect(failures.length).toBeGreaterThanOrEqual(18);
 
     const mapping = ownerDecision('ERR-2');
     const tokens = (pattern: RegExp) =>
@@ -333,6 +333,7 @@ describe('DATN-97 Task slice OpenAPI (approved D05-DR1 list/detail contract)', (
     );
 
     expect([...unavailable].sort()).toEqual([
+      'KEY_CONFIGURATION_INVALID',
       'KEY_RESOLUTION_FAILED',
       'MALFORMED_CONTEXT',
       'VERIFICATION_FAILED',
@@ -343,6 +344,7 @@ describe('DATN-97 Task slice OpenAPI (approved D05-DR1 list/detail contract)', (
       refused.length + unavailable.length,
     );
     expect(refused).toContain('UNSUPPORTED_PROFILE');
+    expect(refused).toContain('REPLAY_DETECTED');
 
     expect(mapping).toMatch(
       /the new reason CONTEXT_VERIFIER_UNAVAILABLE maps to 503/,
@@ -357,12 +359,21 @@ describe('DATN-97 Task slice OpenAPI (approved D05-DR1 list/detail contract)', (
       /tells an outage from a refused credential by the status and code/,
     );
     expect(mapping).toMatch(
-      /VERIFICATION_FAILED is also raised when a replayed assertion is refused[^.]*401/,
+      /No failure is shared by a credential fault and a server fault any more/,
     );
     expect(mapping).toMatch(
-      /UNSUPPORTED_PROFILE is also raised when the key provider returns a private or mismatched key[^.]*503/,
+      /REPLAY_DETECTED is an assertion that was already consumed, a refused credential \(401\)/,
     );
-    expect(mapping).toMatch(/verifier pull request must split them/);
+    expect(mapping).toMatch(
+      /KEY_CONFIGURATION_INVALID is a verification key that is private, malformed or does not match the configured algorithm, a server configuration fault \(503\)/,
+    );
+    expect(mapping).toMatch(
+      /VERIFICATION_FAILED is reserved for internal verifier faults[^.]*\(503\)/,
+    );
+    expect(mapping).toMatch(
+      /UNSUPPORTED_PROFILE only means that the token header does not match the configured profile \(401\)/,
+    );
+    expect(mapping).not.toMatch(/verifier pull request must split them/);
 
     const responses = document.components.responses;
     expect(responses.AuthorizationUnavailable.description).toMatch(

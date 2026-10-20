@@ -21,11 +21,17 @@ export const TASK_RESOURCE_PROJECT_RESOLVER = Symbol(
 export const TASK_OPERATIONS = ['create', 'list', 'detail', 'history'] as const;
 export type TaskOperation = (typeof TASK_OPERATIONS)[number];
 
+/**
+ * DR-4: both memberships must be ACTIVE. A provider reports anything else
+ * (non-member, inactive or revoked membership) as `denied`, never as resolved
+ * evidence.
+ */
 export interface TaskProjectScopeEvidence {
   actorUserId: string;
   projectId: string;
   organizationId: string;
   organizationMembershipStatus: 'ACTIVE';
+  projectMembershipStatus: 'ACTIVE';
 }
 
 export type TaskProjectScopeEvidenceResult =
@@ -35,8 +41,9 @@ export type TaskProjectScopeEvidenceResult =
 
 /**
  * Resolves the Project owner Organization and the actor's current ACTIVE
- * Organization Membership from server-owned data. This evidence is necessary
- * for scoped access but never grants a Task operation by itself.
+ * Organization Membership and ACTIVE ProjectMembership from server-owned data.
+ * This evidence is necessary for scoped access but never grants a Task
+ * operation by itself.
  */
 export interface TaskProjectScopeEvidenceProvider {
   resolve(
@@ -191,18 +198,20 @@ function parseScopeEvidence(
   if (!evidence) return undefined;
   const keys = Object.keys(evidence).sort();
   if (
-    keys.length !== 4 ||
+    keys.length !== 5 ||
     keys[0] !== 'actorUserId' ||
     keys[1] !== 'organizationId' ||
     keys[2] !== 'organizationMembershipStatus' ||
     keys[3] !== 'projectId' ||
+    keys[4] !== 'projectMembershipStatus' ||
     typeof evidence.actorUserId !== 'string' ||
     evidence.actorUserId.length === 0 ||
     typeof evidence.projectId !== 'string' ||
     evidence.projectId.length === 0 ||
     typeof evidence.organizationId !== 'string' ||
     evidence.organizationId.length === 0 ||
-    evidence.organizationMembershipStatus !== 'ACTIVE'
+    evidence.organizationMembershipStatus !== 'ACTIVE' ||
+    evidence.projectMembershipStatus !== 'ACTIVE'
   ) {
     return undefined;
   }
@@ -212,6 +221,7 @@ function parseScopeEvidence(
     projectId: evidence.projectId,
     organizationId: evidence.organizationId,
     organizationMembershipStatus: 'ACTIVE',
+    projectMembershipStatus: 'ACTIVE',
   };
 }
 

@@ -10,6 +10,12 @@ export interface TaskRuntimeConfig {
    * route still passes the deny-by-default authorization boundary.
    */
   routesEnabled?: boolean;
+  /**
+   * Registers the Task create route only when TASK_CREATE_ROUTE_ENABLED is
+   * exactly `true` and the routes flag is on too. Create stays unreachable until
+   * DR-3, DR-8 and the replay condition of the create contract are built.
+   */
+  createRouteEnabled?: boolean;
 }
 
 const MIN_TASK_PORT = 1024;
@@ -131,5 +137,6 @@ export function createTaskRuntimeConfig(
     mongoUri,
     port,
     routesEnabled: environment.TASK_ROUTES_ENABLED === 'true',
+    createRouteEnabled: environment.TASK_CREATE_ROUTE_ENABLED === 'true',
   };
 }

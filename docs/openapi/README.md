@@ -49,7 +49,7 @@ deployment URI and all credentials remain environment configuration.
 Task slice: internal list-by-Project and detail only, under `/internal/tasks`.
 The Leader **approved it for those two operations on 19/10/2026** (DATN-BE PR #55,
 `x-approval-status` and `x-approval-conditions` in the file), following the
-Document D05-DR1 decision record (doc 25). The approval does not cover create,
+Document D05-DR1 decision record (doc 27). The approval does not cover create,
 DR-3, DR-7(c)(d), DR-8 or `AUTH-1`, and allows no route activation, production
 use or policy `ALLOW` yet. Create is omitted until DR-7(c)(d)
 is decided; there is no mutation, status, assignment, filter, sort, history or
@@ -85,11 +85,13 @@ repeated the approval for:
   key resolution failed, internal or malformed output) is a new reason,
   `CONTEXT_VERIFIER_UNAVAILABLE`, and answers 503, the default unconfigured
   verifier included; a missing or refused credential still answers 401. Every
-  failure of the trust boundary is classified in the entry.
-  `VERIFICATION_FAILED` (also raised for a replayed assertion) and
-  `UNSUPPORTED_PROFILE` (also raised for a mismatched key) are shared by a
-  credential fault and a server fault today; the verifier pull request must
-  split them.
+  failure of the trust boundary is classified in the entry. No failure is shared
+  by a credential fault and a server fault: a replayed assertion is
+  `REPLAY_DETECTED` (401), an unusable verification key is
+  `KEY_CONFIGURATION_INVALID` (503), `VERIFICATION_FAILED` is reserved for
+  internal verifier faults such as an unreachable replay store (503), and
+  `UNSUPPORTED_PROFILE` only means the token header does not match the
+  configured profile (401).
 - `HDR-1`: every 401 carries `WWW-Authenticate: Bearer` (RFC 9110 §15.5.2).
 - `CACHE-2`: `Cache-Control: no-store` on every response of both routes, errors
   included, and not only on 200.
@@ -99,3 +101,22 @@ repeated the approval for:
 The handler pull request must implement these; the contract test fails if a
 denial reason is added to the boundary without being mapped in `ERR-2`.
 `src/contracts/task-slice-openapi.spec.ts` guards the scope of the contract.
+
+## Task create (DATN-97): task-v1-d05-create.openapi.json
+
+A **proposal, not approved**: the create operation (`POST /internal/tasks/projects/{projectId}/tasks`,
+body `{title}`) that was left out of the approved list and detail contract until DR-7(c)(d)
+is recorded. It reuses that contract's error shape, denial mapping (`ERR-1`, `ERR-2`), `no-store`
+and `WWW-Authenticate` rules, and adds:
+
+- `201` with the seven-field Task and a `Location` header; `422` only for the body, after
+  authorization; a server fault for a rejected trusted context (`500`).
+- `503` with three causes told apart by code: `TASK_AUTHORIZATION_UNAVAILABLE`, `RETRY_LATER`
+  (confirmed abort, with `Retry-After`) and `TASK_CREATE_UNCERTAIN` (`details.taskId`, resolved
+  with the detail operation).
+- No `Idempotency-Key` (`DR7C-1`). The title rule equals the repository's.
+- Proposed answers for the deferred decisions DR-3, DR-7(c)(d) and DR-8 (`DR3-1`, `DR7C-1`,
+  `DR7D-1`, `DR8-1`, `RISK-1`) and the open question whether DR-4 covers create (`DR4-C`).
+
+None of it is approved by any authority and none of it allows route activation, production use
+or policy `ALLOW`. `src/contracts/task-create-openapi.spec.ts` guards the file.

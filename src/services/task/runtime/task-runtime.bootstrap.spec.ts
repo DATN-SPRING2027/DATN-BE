@@ -14,6 +14,7 @@ import type { Server as HttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { bootstrapTaskRuntime } from '../main';
 import { requestIdMiddleware } from '../../../common/http/request-id.middleware';
+import { TaskHttpExceptionFilter } from '../http/task-http-exception.filter';
 import { TaskReadController } from '../http/task-read.controller';
 import { TaskRuntimeModule } from './task-runtime.module';
 
@@ -56,6 +57,7 @@ describe('bootstrapTaskRuntime', () => {
   it('creates only the dormant local application on loopback', async () => {
     const app = {
       use: jest.fn(),
+      useGlobalFilters: jest.fn(),
       setGlobalPrefix: jest.fn(),
       enableShutdownHooks: jest.fn(),
       listen: jest.fn().mockResolvedValue(undefined),
@@ -76,6 +78,9 @@ describe('bootstrapTaskRuntime', () => {
     expect(appOptions).toEqual({ logger: false, rawBody: true });
     expect(app.setGlobalPrefix).toHaveBeenCalledWith('internal');
     expect(app.use).toHaveBeenCalledWith(requestIdMiddleware);
+    expect(app.useGlobalFilters).toHaveBeenCalledWith(
+      expect.any(TaskHttpExceptionFilter),
+    );
     expect(app.enableShutdownHooks).toHaveBeenCalled();
     expect(app.listen).toHaveBeenCalledWith(3909, '127.0.0.1');
     expect(app.close).not.toHaveBeenCalled();
@@ -84,6 +89,7 @@ describe('bootstrapTaskRuntime', () => {
   it('passes the routes flag to the module only when TASK_ROUTES_ENABLED is true', async () => {
     const app = {
       use: jest.fn(),
+      useGlobalFilters: jest.fn(),
       setGlobalPrefix: jest.fn(),
       enableShutdownHooks: jest.fn(),
       listen: jest.fn().mockResolvedValue(undefined),
@@ -116,6 +122,7 @@ describe('bootstrapTaskRuntime', () => {
       const setupError = new Error('startup setup failed');
       const app = {
         use: jest.fn(),
+        useGlobalFilters: jest.fn(),
         setGlobalPrefix: jest.fn(),
         enableShutdownHooks: jest.fn(),
         listen: jest.fn().mockResolvedValue(undefined),
@@ -184,6 +191,7 @@ describe('bootstrapTaskRuntime', () => {
     const listenError = new Error('address already in use');
     const app = {
       use: jest.fn(),
+      useGlobalFilters: jest.fn(),
       setGlobalPrefix: jest.fn(),
       enableShutdownHooks: jest.fn(),
       listen: jest.fn().mockRejectedValue(listenError),
