@@ -79,6 +79,10 @@ test('adds only missing tracking fields/approved ADMIN permissions, retaining le
     (row) => row.collection === 'organization_invitations',
   );
   assert.deepEqual(invite.set, { contractVersion: 1, version: 1 });
+  const assignment = plan.updates.find(
+    (row) => row.collection === 'role_assignments' && row.id === id(5),
+  );
+  assert.deepEqual(assignment.set, { mutationFence: 0 });
   assert.equal(JSON.stringify(plan).includes('email@example.test'), false);
   assert.ok(
     plan.indexes.some(

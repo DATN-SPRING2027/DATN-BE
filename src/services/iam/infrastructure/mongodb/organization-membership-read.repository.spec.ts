@@ -138,6 +138,33 @@ describe('Membership read persistence failures over HTTP', () => {
       roleVersion: 4,
     });
   });
+  it('fails closed when an assigned Organization role has no migrated fence', async () => {
+    const roleId = new Types.ObjectId();
+    memberExec.mockImplementation((list: boolean) =>
+      Promise.resolve(
+        list
+          ? [
+              {
+                data: [
+                  {
+                    ...row(),
+                    organizationRoleAssignments: [
+                      {
+                        roleId,
+                        roleCode: 'MEMBER',
+                        catalogRoleCode: 'MEMBER',
+                      },
+                    ],
+                  },
+                ],
+                total: [{ count: 1 }],
+              },
+            ]
+          : [],
+      ),
+    );
+    unavailable(await get(false).expect(503));
+  });
   it('fails closed when Organization role data is ambiguous or does not match catalog', async () => {
     memberExec.mockImplementation((list: boolean) =>
       Promise.resolve(

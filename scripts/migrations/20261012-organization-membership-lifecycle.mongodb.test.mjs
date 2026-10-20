@@ -349,6 +349,15 @@ integration(
               'organization.memberships.manage',
             ],
           );
+          const assignments = await db
+            .collection('role_assignments')
+            .find({ organizationId: org })
+            .toArray();
+          assert.equal(assignments.length, 2);
+          assert.deepEqual(
+            assignments.map((assignment) => assignment.mutationFence),
+            [0, 0],
+          );
           assert.deepEqual(
             await db.collection('sentinel').find().toArray(),
             before.sentinel,
