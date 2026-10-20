@@ -120,6 +120,8 @@ integration('MongoProjectRepository transaction and unique index', () => {
           'project.members.list',
           'project.members.add',
           'project.members.remove',
+          'project.update',
+          'project.visibility.manage',
         ],
         isSystem: true,
       });

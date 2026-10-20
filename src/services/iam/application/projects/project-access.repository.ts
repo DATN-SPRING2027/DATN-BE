@@ -26,6 +26,29 @@ export interface ProjectMemberCandidateRecord {
   isProjectMember: boolean;
 }
 
+export interface ProjectLeaderRecord {
+  userId: string;
+  fullName: string;
+  email: string;
+  avatarUrl: string | null;
+  role: 'TEAM_LEADER';
+  status: 'ACTIVE' | 'INACTIVE';
+}
+
+export interface ProjectLeaderCandidateRecord {
+  userId: string;
+  fullName: string;
+  email: string;
+  avatarUrl: string | null;
+  role: 'MEMBER';
+  status: 'ACTIVE';
+}
+
+export type ProjectSettingsUpdateInput = Readonly<{
+  name?: string;
+  description?: string | null;
+}>;
+
 export interface ProjectMembershipListQuery {
   page: number;
   pageSize: number;
@@ -33,6 +56,12 @@ export interface ProjectMembershipListQuery {
 }
 
 export interface ProjectAccessRepository {
+  updateSettings(
+    organizationId: string,
+    actorId: string,
+    projectId: string,
+    input: ProjectSettingsUpdateInput,
+  ): Promise<ProjectRecord>;
   changeVisibility(
     organizationId: string,
     actorId: string,
@@ -49,6 +78,15 @@ export interface ProjectAccessRepository {
     projectId: string,
     search?: string,
   ): Promise<ProjectMemberCandidateRecord[]>;
+  listLeaders(
+    organizationId: string,
+    projectId: string,
+  ): Promise<ProjectLeaderRecord[]>;
+  listLeaderCandidates(
+    organizationId: string,
+    projectId: string,
+    search?: string,
+  ): Promise<ProjectLeaderCandidateRecord[]>;
   addMember(
     organizationId: string,
     actorId: string,

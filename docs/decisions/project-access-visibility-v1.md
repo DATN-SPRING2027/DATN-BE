@@ -1,5 +1,7 @@
 # Visibility completion amendment — 2026-10-14
 
+> **Current Project MVP policy — 2026-10-20:** [Project MVP contract V1 in the sibling Document repository](../../../Document/research-docs/Workspace/13-project-mvp-contract-v1.md) supersedes conflicting Project-specific decisions below. Project-scoped Leaders may update name/description and both visibility directions with their exact permission. Leader list/appointment remains Organization Admin-only. A Project may have zero or multiple Leaders.
+
 The requester authorized resolving all blockers and completing the visibility UI
 following the approved bidirectional mutation. GET on the existing visibility
 path now provides a read-only access signal using exactly the existing PATCH
@@ -66,22 +68,22 @@ The following exact V1 action codes are used with the existing `Role.permissions
 
 | Permission | Required assignment | Allowed operation |
 |---|---|---|
-| `project.visibility.manage` | Organization-scoped `ADMIN` | Transition a Project from `PRIVATE` to `PUBLIC` only. |
+| `project.update` | Project-scoped `TEAM_LEADER` with active ProjectMembership | Update only Project name and description. Organization `ADMIN` does not gain this action by role name. |
+| `project.visibility.manage` | Organization-scoped `ADMIN`, or Project-scoped `TEAM_LEADER` with active ProjectMembership | Transition an active Project between `PRIVATE` and `PUBLIC`. |
 | `project.leader.manage` | Organization-scoped `ADMIN` | Assign, replace, or revoke a project-scoped `TEAM_LEADER` appointment for active Project members. |
 | `project.members.list` | Project-scoped `TEAM_LEADER` | List members for that Project. |
 | `project.members.add` | Project-scoped `TEAM_LEADER` | Add an active Organization member as an ordinary Project `MEMBER`. |
 | `project.members.remove` | Project-scoped `TEAM_LEADER` | Deactivate ProjectMembership for a member in that Project. |
 | `project.members.role.change` | Disabled in V1 | No role-change operation is authorized or exposed. Do not provision this permission. |
 
-`ADMIN` at Organization scope grants only the two listed V1 permissions. It does not grant Project Membership list/add/remove or role-change operations by implication. `TEAM_LEADER` at Project scope grants only the three listed membership operations when all scope and membership evidence is valid. `TEAM_LEADER` never authorizes self-escalation, appointment/change/revocation of another Project Leader, or assignment beyond its permission ceiling. Those appointment operations require an Organization-scoped `ADMIN` assignment and `project.leader.manage`.
+`ADMIN` at Organization scope grants Project metadata reads and the explicit visibility and Project Leader actions provisioned to that Role. It does not grant Project detail update or Project Membership list/add/remove by implication. `TEAM_LEADER` at Project scope may use only the exact Project permissions provisioned to its Role when scope and active membership evidence are valid. `TEAM_LEADER` never authorizes appointment/change/revocation of another Project Leader or assignment beyond its permission ceiling. Those appointment operations require an Organization-scoped `ADMIN` assignment and `project.leader.manage`.
 
 ## Visibility
 
 - New Projects remain `PRIVATE`.
-- V1 authorizes `PRIVATE` → `PUBLIC` only. `PUBLIC` → `PRIVATE` is `UNKNOWN` and must not be implemented by this decision.
+- Current Project MVP authorizes `PRIVATE` → `PUBLIC` and `PUBLIC` → `PRIVATE` through `project.visibility.manage`.
 - The existing public-read rule remains read-only Project metadata for authenticated Users with `ACTIVE` OrganizationMembership in the same trusted Organization. It does not authorize nested resources or expose private/internal content.
-- Only `PRIVATE` → `PUBLIC` is a V1 mutation. `PUBLIC` → `PRIVATE` remains `UNKNOWN` and is not implemented.
-- A visibility mutation requires the current Project to be `PRIVATE`, active Organization context, an Organization-scoped `ADMIN` assignment, and `project.visibility.manage` in the resolved Role. Project membership is not required for this Organization-scoped action. A Project-scoped `TEAM_LEADER` cannot publish by role name or scope alone.
+- Both visibility directions are audited mutations. A mutation requires an active Project, active Organization context, and a current matching `ADMIN` assignment at Organization scope or `TEAM_LEADER` assignment at Project scope, with `project.visibility.manage` in the resolved Role. Project Leaders also require active ProjectMembership. Same-state requests conflict after authorization.
 
 ## Membership operations
 
@@ -96,16 +98,17 @@ The following exact V1 action codes are used with the existing `Role.permissions
 
 ## API contract and audit
 
-The accepted V1 contract is limited to:
+The current Project MVP contract supports:
 
-- returning the existing stored `visibility` value in Project responses;
-- a visibility-only mutation for the approved `PRIVATE` → `PUBLIC` transition;
+- returning Project metadata and stored `visibility`;
+- patching only supplied `name` and/or `description` under `project.update`;
+- permission-backed visibility mutations in either direction;
 - Project member list/add/remove operations;
-- assign/replace/revoke Project Leader operations.
+- listing and assign/replace/revoke Project Leaders for Organization Admins.
 
-Project metadata update, archive/restore, all member role transitions, and `PUBLIC` → `PRIVATE` remain outside the accepted contract. The OpenAPI's proposed membership `PATCH` remains explicitly proposed and is not enabled by this decision.
+Archive/restore/delete and generic member role transitions remain outside this MVP. The OpenAPI's proposed membership `PATCH` remains explicitly proposed and is not enabled. Zero or multiple Project Leaders are valid.
 
-All enabled V1 visibility, Leader Project, and Project Membership mutations must persist to `continuum_audit.audit_logs_iam`, following ADR-003/DEC-011. Required actions are `PROJECT_VISIBILITY_CHANGED`, `PROJECT_LEADER_ASSIGNED`, `PROJECT_LEADER_CHANGED`, `PROJECT_LEADER_REVOKED`, `PROJECT_MEMBER_ADDED`, and `PROJECT_MEMBER_REMOVED`. `PROJECT_MEMBER_ROLE_CHANGED` is not a V1 event because role changes are disabled. IAM and audit writes use a shared MongoDB client session and require replica-set integration verification.
+All enabled Project settings, visibility, Leader, and Project Membership mutations persist to `continuum_audit.audit_logs_iam`, following ADR-003/DEC-011. Required actions include `PROJECT_SETTINGS_UPDATED`, `PROJECT_VISIBILITY_CHANGED`, `PROJECT_LEADER_ASSIGNED`, `PROJECT_LEADER_CHANGED`, `PROJECT_LEADER_REVOKED`, `PROJECT_MEMBER_ADDED`, and `PROJECT_MEMBER_REMOVED`. `PROJECT_MEMBER_ROLE_CHANGED` is not enabled because role changes are out of MVP. IAM and audit writes use a shared MongoDB client session and require replica-set integration verification.
 
 The existing audit event shape supports `organizationId`, `projectId`, `actorUserId`, `action`, `targetResource`, `targetResourceId`, optional `metadata`, and `occurredAt`. No new audit fields are introduced here. The contract does not define before/after role values, target-user snapshot semantics, retention, or indexes. Implementations use only the existing fields and stable Project, ProjectMembership, or RoleAssignment IDs; they do not claim an event records a before/after diff. A leader replacement emits `PROJECT_LEADER_CHANGED` for each of the two affected RoleAssignment IDs. This persists the mutation and both affected assignment identities; the existing contract has no approved snapshot or correlation field.
 

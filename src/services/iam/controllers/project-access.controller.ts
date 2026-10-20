@@ -19,7 +19,10 @@ import { AuthenticationApplicationService } from '../application/authentication/
 import { ProjectAccessAuthorizationGuard } from '../application/authorization/project-access-authorization.guard';
 import { RequireProjectAccessPermission } from '../application/authorization/project-access-permission.decorator';
 import { ProjectAccessService } from '../application/projects/project-access.service';
-import type { ProjectMembershipListQuery } from '../application/projects/project-access.repository';
+import type {
+  ProjectMembershipListQuery,
+  ProjectSettingsUpdateInput,
+} from '../application/projects/project-access.repository';
 
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f\d]{24}$/i.test(value);
@@ -96,12 +99,81 @@ function leaderChangeFromBody(body: unknown): {
   };
 }
 
+function projectSettingsUpdateFromBody(
+  body: unknown,
+): ProjectSettingsUpdateInput {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    return invalid();
+  const record = body as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length === 0 ||
+    keys.some((key) => key !== 'name' && key !== 'description')
+  )
+    return invalid();
+
+  const input: { name?: string; description?: string | null } = {};
+  if ('name' in record) {
+    if (
+      typeof record.name !== 'string' ||
+      record.name.trim().length < 1 ||
+      record.name.trim().length > 200
+    )
+      return invalid();
+    input.name = record.name.trim();
+  }
+  if ('description' in record) {
+    if (
+      record.description !== null &&
+      (typeof record.description !== 'string' ||
+        record.description.length > 2000)
+    )
+      return invalid();
+    input.description = record.description;
+  }
+  return input;
+}
+
+function leaderCandidateSearch(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length > 254) return invalid();
+  const search = value.trim();
+  return search.length > 0 ? search : undefined;
+}
+
 @Controller('iam/projects/:projectId')
 export class ProjectAccessController {
   constructor(
     private readonly auth: AuthenticationApplicationService,
     private readonly access: ProjectAccessService,
   ) {}
+
+  @Get('settings-access')
+  @RequireProjectAccessPermission('project.update')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  getSettingsAccess(@Res({ passthrough: true }) response: Response) {
+    response.setHeader('Cache-Control', 'no-store');
+    return { canUpdateProject: true };
+  }
+
+  @Patch()
+  @RequireProjectAccessPermission('project.update')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  async updateSettings(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    return this.access.updateSettings(
+      actor,
+      projectId,
+      projectSettingsUpdateFromBody(body),
+    );
+  }
 
   @Get('visibility')
   @RequireProjectAccessPermission('project.visibility.manage')
@@ -156,6 +228,39 @@ export class ProjectAccessController {
       actor,
       projectId,
       membershipListQuery(query),
+    );
+  }
+
+  @Get('leaders')
+  @RequireProjectAccessPermission('project.leader.manage')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  async listLeaders(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    return this.access.listLeaders(actor, projectId);
+  }
+
+  @Get('leader-candidates')
+  @RequireProjectAccessPermission('project.leader.manage')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  async listLeaderCandidates(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Query('email') emailQuery: unknown,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    return this.access.listLeaderCandidates(
+      actor,
+      projectId,
+      leaderCandidateSearch(emailQuery),
     );
   }
 
