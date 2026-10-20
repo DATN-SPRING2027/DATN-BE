@@ -40,6 +40,7 @@ const resolvedScope = {
     projectId,
     organizationId,
     organizationMembershipStatus: 'ACTIVE' as const,
+    projectMembershipStatus: 'ACTIVE' as const,
   },
 };
 
@@ -543,6 +544,91 @@ describe('TaskAuthorizationBoundary', () => {
     });
     expect(policy.decide).not.toHaveBeenCalled();
     await close();
+  });
+
+  describe('ProjectMembership evidence (DR-4)', () => {
+    const withEvidence = (overrides: Record<string, unknown>) => ({
+      kind: 'resolved' as const,
+      evidence: { ...resolvedScope.evidence, ...overrides },
+    });
+
+    it.each([
+      [
+        'a missing projectMembershipStatus',
+        { projectMembershipStatus: undefined },
+      ],
+      [
+        'an INACTIVE projectMembershipStatus',
+        { projectMembershipStatus: 'INACTIVE' },
+      ],
+      [
+        'an unknown projectMembershipStatus',
+        { projectMembershipStatus: 'PENDING' },
+      ],
+    ])(
+      'fails closed for %s without evaluating the policy',
+      async (_label, overrides) => {
+        const evidence = withEvidence(overrides);
+        if (overrides.projectMembershipStatus === undefined) {
+          delete (evidence.evidence as Record<string, unknown>)
+            .projectMembershipStatus;
+        }
+        const policy = permissionPolicy();
+        const { boundary, close } = await createRuntimeBoundary({
+          verifier: { verify: jest.fn().mockResolvedValue(verifiedContext) },
+          scopeProvider: scopeProvider({
+            resolve: jest.fn().mockResolvedValue(evidence),
+          }),
+          permissionPolicy: policy,
+        });
+
+        await expect(boundary.authorize(request())).resolves.toEqual({
+          kind: 'denied',
+          reason: 'PROJECT_SCOPE_UNAVAILABLE',
+        });
+        expect(policy.decide).not.toHaveBeenCalled();
+        await close();
+      },
+    );
+
+    it('treats a provider denial of a non-member as a denied scope', async () => {
+      const policy = permissionPolicy();
+      const { boundary, close } = await createRuntimeBoundary({
+        verifier: { verify: jest.fn().mockResolvedValue(verifiedContext) },
+        scopeProvider: scopeProvider({
+          resolve: jest.fn().mockResolvedValue({ kind: 'denied' }),
+        }),
+        permissionPolicy: policy,
+      });
+
+      await expect(boundary.authorize(request())).resolves.toEqual({
+        kind: 'denied',
+        reason: 'PROJECT_SCOPE_DENIED',
+      });
+      expect(policy.decide).not.toHaveBeenCalled();
+      await close();
+    });
+
+    it('passes both ACTIVE memberships to the permission policy as facts', async () => {
+      const policy = permissionPolicy({
+        decide: jest.fn().mockResolvedValue('DENY'),
+      });
+      const { boundary, close } = await createRuntimeBoundary({
+        verifier: { verify: jest.fn().mockResolvedValue(verifiedContext) },
+        scopeProvider: scopeProvider(),
+        permissionPolicy: policy,
+      });
+
+      await boundary.authorize(request());
+
+      expect(policy.decide).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationMembershipStatus: 'ACTIVE',
+          projectMembershipStatus: 'ACTIVE',
+        }),
+      );
+      await close();
+    });
   });
 
   it('fails closed and sanitizes permission-policy failures', async () => {

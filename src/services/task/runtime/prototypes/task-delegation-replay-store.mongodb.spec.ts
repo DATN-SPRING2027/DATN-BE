@@ -264,6 +264,7 @@ async function createReplayGuardHttpApp(options: {
           projectId: requestedProjectId,
           organizationId: 'organization-from-test-fixture',
           organizationMembershipStatus: 'ACTIVE' as const,
+          projectMembershipStatus: 'ACTIVE' as const,
         },
       };
     }),
