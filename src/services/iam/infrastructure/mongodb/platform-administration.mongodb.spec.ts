@@ -655,8 +655,13 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     });
     expect(JSON.stringify(page)).not.toContain('must-not-be-projected');
     await expect(
-      connection.collection('organization_invitations').findOne({ _id: legacyInvitationId }),
-    ).resolves.toMatchObject({ contractVersion: 2, email: 'legacy-invitee@example.test' });
+      connection
+        .collection('organization_invitations')
+        .findOne({ _id: legacyInvitationId }),
+    ).resolves.toMatchObject({
+      contractVersion: 2,
+      email: 'legacy-invitee@example.test',
+    });
   });
 
   it('updates Organization and Project metadata with fresh authority, CAS and atomic audit', async () => {

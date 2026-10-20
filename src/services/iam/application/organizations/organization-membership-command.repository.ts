@@ -71,9 +71,9 @@ export interface MembershipMutationAcknowledgement {
   role?: { roleCode: 'ADMIN' | 'MEMBER'; version: number };
 }
 
-export type PlatformInvitationCommand = Exclude<
+export type PlatformInvitationCommand = Extract<
   OrganizationMembershipCommand,
-  { command: 'SUSPEND' }
+  { command: 'INVITE' | 'RESEND' | 'CANCEL' }
 >;
 
 export interface PlatformInvitationCommandInput {

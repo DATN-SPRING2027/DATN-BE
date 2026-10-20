@@ -33,16 +33,36 @@ describe('SmtpEmailRegistrationMailer organization invitations', () => {
 
     await mailer.sendOrganizationInvitation({
       recipientEmail: 'invitee@example.test',
-      organizationName: 'Alpha\r\nBcc: attacker@example.test',
-      invitationUrl: 'https://continuum.example.test/organization/invitations#opaque',
+      organizationName: 'Alpha\r\nBcc: attacker@example.test\u2028Newsletter',
+      invitationUrl:
+        'https://continuum.example.test/organization/invitations#opaque',
       expiresAt: new Date('2026-10-28T00:00:00.000Z'),
     });
 
-    const message = sendMail.mock.calls[0]?.[0] as { subject: string };
+    const mailCalls = sendMail.mock.calls as unknown as Array<
+      [{ subject: string; text: string }]
+    >;
+    const message = mailCalls[0]?.[0];
     expect(message.subject).toBe(
-      'Invitation to join Alpha Bcc: attacker@example.test on Continuum AI',
+      'Invitation to join Alpha Bcc: attacker@example.test Newsletter on Continuum AI',
     );
-    expect(message.subject).not.toMatch(/[\r\n\u0000-\u001f\u007f-\u009f]/);
+    expect(
+      Array.from(message.subject).every((character) => {
+        const code = character.charCodeAt(0);
+        return !(
+          code <= 0x1f ||
+          (code >= 0x7f && code <= 0x9f) ||
+          code === 0x2028 ||
+          code === 0x2029
+        );
+      }),
+    ).toBe(true);
+    expect(message.text).toContain(
+      'You have been invited to join Alpha Bcc: attacker@example.test Newsletter on Continuum AI.',
+    );
+    expect(message.text).not.toContain(
+      'attacker@example.test\nNewsletter on Continuum AI',
+    );
     expect(close).toHaveBeenCalledTimes(1);
   });
 });

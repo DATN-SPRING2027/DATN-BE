@@ -102,10 +102,19 @@ export class SmtpEmailRegistrationMailer
       socketTimeout: 20_000,
     });
     const safeOrganizationName = escapeHtml(input.organizationName);
-    const subjectOrganizationName = input.organizationName
-      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim() || 'your organization';
+    const subjectOrganizationName =
+      Array.from(input.organizationName, (character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint <= 0x1f ||
+          (codePoint >= 0x7f && codePoint <= 0x9f) ||
+          codePoint === 0x2028 ||
+          codePoint === 0x2029
+          ? ' '
+          : character;
+      })
+        .join('')
+        .replace(/\s+/g, ' ')
+        .trim() || 'your organization';
     const safeUrl = escapeHtml(input.invitationUrl);
     const expiry = input.expiresAt.toISOString();
     try {
@@ -114,7 +123,7 @@ export class SmtpEmailRegistrationMailer
         to: input.recipientEmail,
         subject: `Invitation to join ${subjectOrganizationName} on Continuum AI`,
         text: [
-          `You have been invited to join ${input.organizationName} on Continuum AI.`,
+          `You have been invited to join ${subjectOrganizationName} on Continuum AI.`,
           `Review and accept this email-bound invitation before ${expiry}: ${input.invitationUrl}`,
           'If you were not expecting this invitation, you can ignore this email.',
         ].join('\n\n'),

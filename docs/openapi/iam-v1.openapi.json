@@ -112,7 +112,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Request email/password registration",
-        "description": "Accepts a name and email only; no User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
+        "description": "Accepts a name and email, plus an optional non-secret invitation ID used only to return a verified registration flow to that pending invitation. No User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
         "operationId": "requestEmailRegistration",
         "security": [],
         "requestBody": {
@@ -7496,7 +7496,8 @@
         "required": ["fullName", "email"],
         "properties": {
           "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
-          "email": { "type": "string", "format": "email", "maxLength": 320 }
+          "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "returnToInvitationId": { "type": "string", "minLength": 24, "maxLength": 24, "pattern": "^[a-fA-F0-9]{24}$", "description": "Non-secret invitation identifier for the post-verification sign-in continuation. The authenticated email must still match before acceptance." }
         }
       },
       "EmailRegistrationVerify": {

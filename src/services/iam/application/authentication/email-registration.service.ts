@@ -64,6 +64,7 @@ export interface RequestEmailRegistrationInput {
   fullName: string;
   email: string;
   sourceIp: string;
+  returnToInvitationId?: string;
 }
 
 export interface CompleteEmailRegistrationInput {
@@ -117,7 +118,7 @@ export class EmailRegistrationService {
 
     try {
       await this.outbox.assertReady();
-      this.createVerificationUrl('A'.repeat(43));
+      this.createVerificationUrl('A'.repeat(43), input.returnToInvitationId);
     } catch {
       this.logger.warn('email_registration_request_unavailable');
       throw new EmailRegistrationRequestUnavailableError();
@@ -150,7 +151,10 @@ export class EmailRegistrationService {
           ? {
               payload: {
                 recipientEmail: normalizedEmail,
-                verificationUrl: this.createVerificationUrl(token),
+                verificationUrl: this.createVerificationUrl(
+                  token,
+                  input.returnToInvitationId,
+                ),
               },
             }
           : {}),
@@ -245,7 +249,10 @@ export class EmailRegistrationService {
     }
   }
 
-  private createVerificationUrl(token: string): string {
+  private createVerificationUrl(
+    token: string,
+    returnToInvitationId?: string,
+  ): string {
     const configuredUrl = this.config.get<string>('WEB_APP_URL');
     const webAppUrl =
       configuredUrl ||
@@ -259,6 +266,14 @@ export class EmailRegistrationService {
       throw new Error('WEB_APP_URL must use HTTPS outside localhost');
 
     const verificationUrl = new URL('/verify-email', baseUrl);
+    if (returnToInvitationId) {
+      if (!/^[a-f\d]{24}$/i.test(returnToInvitationId))
+        throw new Error('returnToInvitationId is invalid');
+      verificationUrl.searchParams.set(
+        'returnToInvitationId',
+        returnToInvitationId,
+      );
+    }
     verificationUrl.hash = new URLSearchParams({ token }).toString();
     return verificationUrl.toString();
   }

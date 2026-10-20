@@ -1,8 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import {
-  ForbiddenException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { CollectionInfo } from 'mongodb';
 import mongoose, { Types, type ClientSession, type Connection } from 'mongoose';
