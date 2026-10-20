@@ -72,4 +72,22 @@ carries more fields than the seven in the response; the handler must return
 only the seven approved fields. `updatedAt` and `version` are returned as
 stored, so after a later lifecycle change they can differ from `createdAt` and
 from `1`.
+
+On 20/10/2026 the reviewer `kudotruong212` requested changes on PR #55. The file
+now records, in `x-owner-decisions`, four additions that the Leader has **not**
+repeated the approval for:
+
+- `ERR-2`: the complete mapping of every denial reason of
+  `TaskAuthorizationBoundary`. `INVALID_REQUEST` is a server fault and answers a
+  generic 500, never 404. A failed Task ownership lookup is a new reason,
+  `RESOURCE_SCOPE_UNAVAILABLE`, and answers 503, so that a persistence failure is
+  never reported as a missing Task.
+- `HDR-1`: every 401 carries `WWW-Authenticate: Bearer` (RFC 9110 §15.5.2).
+- `CACHE-2`: `Cache-Control: no-store` on every response of both routes, errors
+  included, and not only on 200.
+- `STATUS-1`: list and detail return Tasks of every lifecycle status, including
+  `CANCELLED`, with no implicit status filter and still no `status` field.
+
+The handler pull request must implement these; the contract test fails if a
+denial reason is added to the boundary without being mapped in `ERR-2`.
 `src/contracts/task-slice-openapi.spec.ts` guards the scope of the contract.
