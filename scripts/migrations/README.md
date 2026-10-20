@@ -407,3 +407,102 @@ and `userFence`, plus V1/V2 authority-operation validation, are documented in
 [`../../docs/work-packages/platform-session-fence-and-v2-authority-schema-db-v1.md`](../../docs/work-packages/platform-session-fence-and-v2-authority-schema-db-v1.md).
 They require no data migration or index command. Merge the DB schema branch
 before enabling backend writes of V2 expansion records or session-fence fields.
+
+## Project creator Team Leader bootstrap
+
+The current creator bootstrap policy is documented in
+[`../docs/decisions/project-creator-team-leader-bootstrap-v1.md`](../docs/decisions/project-creator-team-leader-bootstrap-v1.md).
+Project creation assigns the creator the current project-scoped `TEAM_LEADER`
+Role. The data migration promotes eligible existing creator assignments from
+`MEMBER` to `TEAM_LEADER`; it changes no schema, indexes, collections, or
+Project Membership records. The migration requires the current `TEAM_LEADER`
+Role to provide `project.read`, `project.members.list`, `project.members.add`,
+and `project.members.remove`.
+
+First run a dry run against one explicitly selected Project in the intended
+environment and save the complete JSON report:
+
+```sh
+node --env-file=.env scripts/migrations/20261019-project-creator-leader.mjs --project-id=<projectId> > project-creator-leader-dry-run.json
+```
+
+Review `databaseName`, `targetFingerprint`, `isSafe`, `plannedPromotions`,
+`alreadyCompliant`, and `skippedProjects`. Apply only when the report is safe,
+the target and planned RoleAssignment IDs are expected, and the current Role
+has the required permissions. Pass the exact report hash and same Project ID:
+
+```sh
+npm run migrate:project-creator-leader -- --apply --project-id=<projectId> --expected-report-sha256=<reportSha256>
+```
+
+The apply mode refuses a missing or changed report hash, an unsafe plan, a
+changed RoleAssignment, or a skipped Project. All planned RoleAssignment
+updates run in one MongoDB transaction; a failed update aborts the transaction.
+Use a MongoDB deployment that supports transactions. The script has no
+automatic rollback mode. A successful promotion can be reverted only through
+a separately reviewed, targeted operation using the exact prior Role IDs and
+RoleAssignment IDs; do not infer rollback data from the role code alone. This
+review did not execute the data migration.
+
+## Project Settings Leader permissions
+
+`20261019-project-settings-leader-permissions.mjs` provisions the missing
+project settings permissions (`project.update`, `project.visibility.manage`) to
+the system `TEAM_LEADER` Role in the IAM database.
+
+The migration preserves existing permissions (`project.read`,
+`project.members.list`, `project.members.add`, `project.members.remove`). It
+makes no changes to users, projects, role assignments, role identity
+(`code`, `name`, `isSystem`), collections, schemas, or indexes.
+
+Database resolution strictly uses the canonical IAM resolver
+(`resolveIamDatabaseName`). An explicit `--database` override must exactly
+match that resolver's result. Shared mode resolves to `MONGODB_DATABASE`;
+dedicated mode resolves to `continuum_iam`.
+
+Dry-run is read-only and prints a credential-free target fingerprint, preflight
+counts, planned permission additions, and `reportSha256`:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs > 20261019-project-settings-leader-permissions-before.json
+$before = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-before.json' -Raw | ConvertFrom-Json
+```
+
+Confirm `databaseName`, `targetFingerprint`, the single system `TEAM_LEADER`
+Role ID, the exact missing permissions, and an empty `issues` list before
+applying that report:
+
+```powershell
+$receiptBytes = New-Object byte[] 32
+$receiptRng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$receiptRng.GetBytes($receiptBytes)
+$env:PROJECT_SETTINGS_RECEIPT_KEY = [Convert]::ToBase64String($receiptBytes)
+$receiptRng.Dispose()
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --apply "--expected-report-sha256=$($before.reportSha256)" > 20261019-project-settings-leader-permissions-applied.json
+$applied = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-applied.json' -Raw | ConvertFrom-Json
+```
+
+Apply is additive and idempotent. A successful `APPLIED` result includes an
+`applyReceipt` containing the exact permission additions and the verified
+post-apply permission snapshot, authenticated with an HMAC. Apply and rollback
+require the same `PROJECT_SETTINGS_RECEIPT_KEY` (at least 32 bytes). Keep it in
+an approved secret store or the same protected shell session; never put it in
+the report or commit it.
+
+For rollback, run and review a fresh dry-run for the current state. Rollback
+requires the saved successful apply report and its separately reviewed receipt
+HMAC. It verifies that the Role identity (`code`, `name`, `isSystem`) and full
+permission list still match the post-apply snapshot before removing only the
+permissions recorded as added by that apply. A forged report without the
+receipt key, or any later Role identity or permission change, makes rollback
+fail before the write:
+
+```powershell
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs > 20261019-project-settings-leader-permissions-current.json
+$current = Get-Content -LiteralPath '20261019-project-settings-leader-permissions-current.json' -Raw | ConvertFrom-Json
+node --env-file=.env scripts/migrations/20261019-project-settings-leader-permissions.mjs --rollback "--expected-report-sha256=$($current.reportSha256)" "--expected-apply-receipt-hmac=$($applied.result.applyReceipt.receiptHmac)" --rollback-from-report=20261019-project-settings-leader-permissions-applied.json
+```
+
+If the apply report or receipt is unavailable, or the Role permissions changed
+after apply, the script refuses rollback; use a separately reviewed targeted
+recovery procedure.

@@ -113,9 +113,14 @@ integration('MongoProjectRepository transaction and unique index', () => {
       const user = new Types.ObjectId().toString();
       await db.collection('roles').insertOne({
         _id: new Types.ObjectId(),
-        code: 'MEMBER',
-        name: 'Member',
-        permissions: ['project.read'],
+        code: 'TEAM_LEADER',
+        name: 'Team Leader',
+        permissions: [
+          'project.read',
+          'project.members.list',
+          'project.members.add',
+          'project.members.remove',
+        ],
         isSystem: true,
       });
       await db.collection('organization_memberships').insertOne({
@@ -195,7 +200,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
       });
       expect(auditEvent?.metadata).toMatchObject({
         bootstrap: {
-          roleCode: 'MEMBER',
+          roleCode: 'TEAM_LEADER',
         },
       });
       expect(
@@ -211,22 +216,22 @@ integration('MongoProjectRepository transaction and unique index', () => {
           organizationId: new Types.ObjectId(orgA),
           projectId: new Types.ObjectId(first.id),
           userId: new Types.ObjectId(user),
-          roleCode: 'MEMBER',
-        }),
-      ).toBe(1);
-      expect(
-        await db.collection('role_assignments').countDocuments({
-          organizationId: new Types.ObjectId(orgA),
-          projectId: new Types.ObjectId(first.id),
-          userId: new Types.ObjectId(user),
-        }),
-      ).toBe(1);
-      expect(
-        await db.collection('role_assignments').countDocuments({
-          organizationId: new Types.ObjectId(orgA),
-          projectId: new Types.ObjectId(first.id),
-          userId: new Types.ObjectId(user),
           roleCode: 'TEAM_LEADER',
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+        }),
+      ).toBe(1);
+      expect(
+        await db.collection('role_assignments').countDocuments({
+          organizationId: new Types.ObjectId(orgA),
+          projectId: new Types.ObjectId(first.id),
+          userId: new Types.ObjectId(user),
+          roleCode: 'MEMBER',
         }),
       ).toBe(0);
       expect(
@@ -346,10 +351,10 @@ integration('MongoProjectRepository transaction and unique index', () => {
           organizationId: new Types.ObjectId(orgA),
           projectId: new Types.ObjectId(first.id),
           userId: new Types.ObjectId(user),
-          roleCode: 'MEMBER',
+          roleCode: 'TEAM_LEADER',
         });
       if (!creatorRoleAssignment)
-        throw new Error('Creator MEMBER RoleAssignment missing');
+        throw new Error('Creator TEAM_LEADER RoleAssignment missing');
       await db.collection('project_memberships').insertOne({
         organizationId: new Types.ObjectId(orgA),
         projectId: unrelatedProjectId,
@@ -361,7 +366,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
         projectId: unrelatedProjectId,
         userId: publicReaderId,
         roleId: creatorRoleAssignment.roleId,
-        roleCode: 'MEMBER',
+        roleCode: 'TEAM_LEADER',
         assignedBy: new Types.ObjectId(user),
       });
 
@@ -475,13 +480,13 @@ integration('MongoProjectRepository transaction and unique index', () => {
         .expect(404);
 
       currentIdentity = identity;
-      const memberRole = await db.collection('roles').findOne({
-        code: 'MEMBER',
+      const leaderRole = await db.collection('roles').findOne({
+        code: 'TEAM_LEADER',
       });
-      if (!memberRole) throw new Error('Provisioned MEMBER Role missing');
+      if (!leaderRole) throw new Error('Provisioned TEAM_LEADER Role missing');
       const permissionRevoked = await db
         .collection('roles')
-        .updateOne({ _id: memberRole._id }, { $set: { permissions: [] } });
+        .updateOne({ _id: leaderRole._id }, { $set: { permissions: [] } });
       expect(permissionRevoked.modifiedCount).toBe(1);
       await request(app.getHttpServer() as App)
         .get(`/api/v1/iam/projects/${first.id}`)
@@ -495,7 +500,7 @@ integration('MongoProjectRepository transaction and unique index', () => {
       await db
         .collection('roles')
         .updateOne(
-          { _id: memberRole._id },
+          { _id: leaderRole._id },
           { $set: { permissions: ['project.read'] } },
         );
       const creatorMembership = await db

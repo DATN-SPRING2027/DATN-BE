@@ -127,8 +127,11 @@ function parseRequirement(
       (value.resourceIdParam !== undefined &&
         (typeof value.resourceIdParam !== 'string' ||
           value.resourceIdParam.length === 0)) ||
-      (value.operation === 'detail' && value.resourceIdParam === undefined) ||
-      (value.operation !== 'detail' && value.resourceIdParam !== undefined)
+      ((value.operation === 'detail' || value.operation === 'history') &&
+        value.resourceIdParam === undefined) ||
+      (value.operation !== 'detail' &&
+        value.operation !== 'history' &&
+        value.resourceIdParam !== undefined)
     ) {
       return undefined;
     }
@@ -282,10 +285,16 @@ export class TaskAuthorizationHttpGuard implements CanActivate {
     if (!projectId || !contextCandidate) return false;
 
     const resourceId =
-      requirement.operation === 'detail'
+      requirement.operation === 'detail' || requirement.operation === 'history'
         ? readParam(request.params, requirement.resourceIdParam!)
         : undefined;
-    if (requirement.operation === 'detail' && !resourceId) return false;
+    if (
+      (requirement.operation === 'detail' ||
+        requirement.operation === 'history') &&
+      !resourceId
+    ) {
+      return false;
+    }
 
     const requestBinding = createRequestBinding(request, projectId);
     if (!requestBinding) return false;

@@ -24,6 +24,7 @@ function fixture() {
   const access = {
     changeVisibility,
     listMembers: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
+    listMemberCandidates: jest.fn().mockResolvedValue({ data: [] }),
     addMember: jest.fn().mockResolvedValue({ id: 'membership' }),
     removeMember: jest.fn().mockResolvedValue(undefined),
     assignLeader: jest.fn().mockResolvedValue(undefined),
@@ -45,6 +46,7 @@ describe('ProjectAccessController contract validation', () => {
       changeVisibility: 'project.visibility.manage',
       getVisibilityAccess: 'project.visibility.manage',
       listMembers: 'project.members.list',
+      listMemberCandidates: 'project.members.add',
       addMember: 'project.members.add',
       removeMember: 'project.members.remove',
       assignLeader: 'project.leader.manage',
@@ -143,6 +145,24 @@ describe('ProjectAccessController contract validation', () => {
         projectId,
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('lists member candidates filtered by search with no-store cache header', async () => {
+    const { controller, access, response, setHeader } = fixture();
+    await controller.listMemberCandidates(
+      undefined,
+      undefined,
+      'candidate@example.test',
+      undefined,
+      response,
+      projectId,
+    );
+    expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(access.listMemberCandidates).toHaveBeenCalledWith(
+      actor,
+      projectId,
+      'candidate@example.test',
+    );
   });
 
   it('does not accept client-selected roles when adding a Project member', async () => {

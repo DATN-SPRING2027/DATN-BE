@@ -11,7 +11,7 @@ export const TASK_RESOURCE_PROJECT_RESOLVER = Symbol(
   'TASK_RESOURCE_PROJECT_RESOLVER',
 );
 
-export const TASK_OPERATIONS = ['create', 'list', 'detail'] as const;
+export const TASK_OPERATIONS = ['create', 'list', 'detail', 'history'] as const;
 export type TaskOperation = (typeof TASK_OPERATIONS)[number];
 
 export interface TaskProjectScopeEvidence {
@@ -152,8 +152,11 @@ function parseRequest(value: unknown): TaskAuthorizationRequest | undefined {
       (request.resourceId !== undefined &&
         (typeof request.resourceId !== 'string' ||
           request.resourceId.length === 0)) ||
-      (request.operation === 'detail' && request.resourceId === undefined) ||
-      (request.operation !== 'detail' && request.resourceId !== undefined)
+      ((request.operation === 'detail' || request.operation === 'history') &&
+        request.resourceId === undefined) ||
+      (request.operation !== 'detail' &&
+        request.operation !== 'history' &&
+        request.resourceId !== undefined)
     ) {
       return undefined;
     }
@@ -283,7 +286,7 @@ export class TaskAuthorizationBoundary {
     }
 
     let resolvedResourceProjectId: string | undefined;
-    if (request.operation === 'detail') {
+    if (request.operation === 'detail' || request.operation === 'history') {
       try {
         const resolved = await this.resourceProjectResolver.resolveProjectId({
           resourceId: request.resourceId!,

@@ -1,8 +1,21 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { MongooseModule, MongooseModuleOptions } from '@nestjs/mongoose';
+import {
+  getConnectionToken,
+  MongooseModule,
+  MongooseModuleOptions,
+} from '@nestjs/mongoose';
+import type { Connection } from 'mongoose';
 import { TASK_DATABASE_NAME } from '../infrastructure/mongodb/task-contract';
+import { TaskDataRepository } from '../infrastructure/mongodb/task-data.repository';
 import { TaskRuntimeConfig } from './task-runtime.config';
 import { TaskHealthController } from './task-health.controller';
+import { TaskLifecycleCommandService } from './task-lifecycle-command';
+import {
+  TASK_HISTORY_ACCESS_EVIDENCE_PROVIDER,
+  TaskHistoryAccessAuthorizationBoundary,
+  TaskHistoryQueryService,
+  UnconfiguredTaskHistoryAccessEvidenceProvider,
+} from './task-history-query';
 import {
   TASK_INBOUND_CONTEXT_VERIFIER,
   TaskInboundContextTrustBoundary,
@@ -41,9 +54,47 @@ export class TaskRuntimeModule {
         }),
       ],
       providers: [
+        {
+          provide: TaskDataRepository,
+          useFactory: (connection: Connection) => {
+            if (!connection.db)
+              throw new Error('Task MongoDB connection is unavailable');
+            return new TaskDataRepository(connection.db);
+          },
+          inject: [getConnectionToken()],
+        },
+        {
+          provide: TaskLifecycleCommandService,
+          useFactory: (repository: TaskDataRepository) =>
+            new TaskLifecycleCommandService(repository),
+          inject: [TaskDataRepository],
+        },
+        {
+          provide: TaskHistoryQueryService,
+          useFactory: (
+            authorizationBoundary: TaskAuthorizationBoundary,
+            historyAccessBoundary: TaskHistoryAccessAuthorizationBoundary,
+            repository: TaskDataRepository,
+          ) =>
+            new TaskHistoryQueryService(
+              authorizationBoundary,
+              historyAccessBoundary,
+              repository,
+            ),
+          inject: [
+            TaskAuthorizationBoundary,
+            TaskHistoryAccessAuthorizationBoundary,
+            TaskDataRepository,
+          ],
+        },
         TaskInboundContextTrustBoundary,
         TaskAuthorizationBoundary,
         TaskAuthorizationHttpGuard,
+        TaskHistoryAccessAuthorizationBoundary,
+        {
+          provide: TASK_HISTORY_ACCESS_EVIDENCE_PROVIDER,
+          useClass: UnconfiguredTaskHistoryAccessEvidenceProvider,
+        },
         {
           provide: TASK_INBOUND_CONTEXT_VERIFIER,
           useClass: UnconfiguredTaskInboundContextVerifier,
@@ -62,6 +113,9 @@ export class TaskRuntimeModule {
         },
       ],
       exports: [
+        TaskLifecycleCommandService,
+        TaskHistoryQueryService,
+        TaskHistoryAccessAuthorizationBoundary,
         TaskInboundContextTrustBoundary,
         TaskAuthorizationBoundary,
         TaskAuthorizationHttpGuard,

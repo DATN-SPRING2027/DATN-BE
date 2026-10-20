@@ -66,12 +66,20 @@ function fixture(
       ]),
     ),
   };
+  const leaderPermissions = [
+    'project.read',
+    'project.members.list',
+    'project.members.add',
+    'project.members.remove',
+  ];
   const roles = {
-    findOne: jest
-      .fn()
-      .mockReturnValue(
-        query({ _id: roleId, code: 'MEMBER', permissions: ['project.read'] }),
-      ),
+    findOne: jest.fn().mockReturnValue(
+      query({
+        _id: roleId,
+        code: 'TEAM_LEADER',
+        permissions: leaderPermissions,
+      }),
+    ),
     find: jest.fn().mockReturnValue(
       query([
         {
@@ -282,7 +290,7 @@ describe('MongoProjectRepository visibility', () => {
 describe('MongoProjectRepository creation', () => {
   const input = { name: 'Example', code: 'EX' };
 
-  it('bootstraps the creator as a Project MEMBER with read access in one transaction', async () => {
+  it('bootstraps the creator as a Project TEAM_LEADER with project permissions in one transaction', async () => {
     const {
       repository,
       projects,
@@ -311,7 +319,7 @@ describe('MongoProjectRepository creation', () => {
       ],
       { session },
     );
-    expect(roles.findOne).toHaveBeenCalledWith({ code: 'MEMBER' });
+    expect(roles.findOne).toHaveBeenCalledWith({ code: 'TEAM_LEADER' });
     expect(projectMemberships.create).toHaveBeenCalledWith(
       [
         expect.objectContaining({
@@ -330,7 +338,7 @@ describe('MongoProjectRepository creation', () => {
           projectId: new Types.ObjectId(projectId),
           userId: new Types.ObjectId(userId),
           roleId,
-          roleCode: 'MEMBER',
+          roleCode: 'TEAM_LEADER',
           assignedBy: new Types.ObjectId(userId),
         }),
       ],
@@ -351,7 +359,7 @@ describe('MongoProjectRepository creation', () => {
     expect(session.endSession).toHaveBeenCalled();
   });
 
-  it('fails closed without a configured MEMBER role with project.read', async () => {
+  it('fails closed without a configured TEAM_LEADER role with project permissions', async () => {
     const {
       repository,
       projects,
@@ -362,11 +370,15 @@ describe('MongoProjectRepository creation', () => {
       teams,
     } = fixture();
     roles.findOne.mockReturnValue(
-      query({ _id: roleId, code: 'MEMBER', permissions: [] }),
+      query({
+        _id: roleId,
+        code: 'TEAM_LEADER',
+        permissions: ['project.read'],
+      }),
     );
 
     await expect(repository.create(orgId, userId, input)).rejects.toThrow(
-      'Project bootstrap requires a MEMBER Role with project.read',
+      'Project bootstrap requires a TEAM_LEADER Role with project permissions',
     );
     expect(projects.create).not.toHaveBeenCalled();
     expect(projectMemberships.create).not.toHaveBeenCalled();
@@ -375,7 +387,7 @@ describe('MongoProjectRepository creation', () => {
     expect(audit.insertOne).not.toHaveBeenCalled();
   });
 
-  it('fails closed when the MEMBER Role is missing', async () => {
+  it('fails closed when the TEAM_LEADER Role is missing', async () => {
     const {
       repository,
       projects,
@@ -388,7 +400,7 @@ describe('MongoProjectRepository creation', () => {
     roles.findOne.mockReturnValue(query(null));
 
     await expect(repository.create(orgId, userId, input)).rejects.toThrow(
-      'Project bootstrap requires a MEMBER Role with project.read',
+      'Project bootstrap requires a TEAM_LEADER Role with project permissions',
     );
     expect(projects.create).not.toHaveBeenCalled();
     expect(projectMemberships.create).not.toHaveBeenCalled();

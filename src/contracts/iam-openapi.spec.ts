@@ -710,14 +710,39 @@ describe('IAM OpenAPI contract', () => {
     );
     expect(createProject?.description).toContain('New Projects are PRIVATE');
     expect(createProject?.description).toContain(
-      'ACTIVE ProjectMembership with a project-scoped MEMBER RoleAssignment',
+      'ACTIVE ProjectMembership with a project-scoped TEAM_LEADER RoleAssignment',
     );
+    expect(createProject?.description).toContain('project.members.add');
+    expect(createProject?.description).toContain('project.members.remove');
     expect(createProject?.description).toContain(
-      'does not make the creator a Project Leader',
+      'no separate Project owner or Team record',
     );
-    expect(createProject?.description).toContain(
-      'current MEMBER Role with project.read',
-    );
+  });
+
+  it('documents the authorized, capped member candidate search contract', () => {
+    const candidates =
+      contract.paths['/api/v1/iam/projects/{projectId}/member-candidates'].get;
+    expect(candidates?.operationId).toBe('listProjectMemberCandidates');
+    expect(candidates?.description).toContain('project.members.add');
+    expect(candidates?.description).toContain('at most 50 candidates');
+    expect(candidates?.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ProjectMemberCandidates' },
+        },
+      },
+    });
+    expect(contract.components.schemas.ProjectMemberCandidates).toMatchObject({
+      properties: { data: { maxItems: 50 } },
+    });
+    expect(contract.components.schemas.ProjectMemberCandidate).toMatchObject({
+      required: expect.arrayContaining([
+        'userId',
+        'email',
+        'organizationMembershipStatus',
+        'isProjectMember',
+      ]),
+    });
   });
 
   it('documents PUBLIC Project metadata visibility for active Organization members', () => {
@@ -768,6 +793,18 @@ describe('IAM OpenAPI contract', () => {
       $ref: '#/components/responses/Conflict',
     });
     expect(memberList?.description).toContain('project.members.list');
+    expect(memberList?.description).toContain(
+      'optional user profile projection',
+    );
+    expect(contract.components.schemas.ProjectMembership).toMatchObject({
+      properties: {
+        user: { $ref: '#/components/schemas/ProjectMemberUser' },
+      },
+    });
+    expect(contract.components.schemas.ProjectMemberUser).toMatchObject({
+      required: ['id', 'email', 'avatarUrl'],
+      properties: { avatarUrl: { type: ['string', 'null'] } },
+    });
     expect(memberAdd?.description).toContain('project.members.add');
     expect(memberRemove?.description).toContain('project.members.remove');
     expect(memberRemove?.description).toContain(

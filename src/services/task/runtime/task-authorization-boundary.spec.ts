@@ -1,5 +1,7 @@
 import { Test } from '@nestjs/testing';
+import { getConnectionToken } from '@nestjs/mongoose';
 import { TaskRuntimeModule } from './task-runtime.module';
+import { TASK_DATABASE_NAME } from '../infrastructure/mongodb/task-contract';
 import {
   TaskAuthorizationBoundary,
   TASK_OPERATION_PERMISSION_POLICY,
@@ -66,7 +68,13 @@ async function createRuntimeBoundary(options?: {
     port: 3100,
   });
   const builder = Test.createTestingModule({
-    providers: dynamicModule.providers ?? [],
+    providers: [
+      {
+        provide: getConnectionToken(),
+        useValue: { db: { databaseName: TASK_DATABASE_NAME } },
+      },
+      ...(dynamicModule.providers ?? []),
+    ],
   });
 
   if (options?.verifier) {
@@ -153,7 +161,7 @@ describe('TaskAuthorizationBoundary', () => {
     await close();
   });
 
-  it.each(['create', 'list', 'detail'] as const)(
+  it.each(['create', 'list', 'detail', 'history'] as const)(
     'denies %s when no operation grant exists',
     async (operation) => {
       const policy = permissionPolicy();
@@ -168,7 +176,9 @@ describe('TaskAuthorizationBoundary', () => {
       });
       const input = request({
         operation,
-        ...(operation === 'detail' ? { resourceId: 'task-id' } : {}),
+        ...(operation === 'detail' || operation === 'history'
+          ? { resourceId: 'task-id' }
+          : {}),
       });
 
       await expect(boundary.authorize(input)).resolves.toEqual({
@@ -291,6 +301,40 @@ describe('TaskAuthorizationBoundary', () => {
     });
     expect(scopes.resolve).not.toHaveBeenCalled();
     expect(policy.decide).not.toHaveBeenCalled();
+    await close();
+  });
+
+  it('resolves the task resource and passes history as a distinct permission operation', async () => {
+    const policy: TaskOperationPermissionPolicy = {
+      decide: jest.fn().mockResolvedValue('ALLOW'),
+    };
+    const resolver: TaskResourceProjectResolver = {
+      resolveProjectId: jest.fn().mockResolvedValue(projectId),
+    };
+    const { boundary, close } = await createRuntimeBoundary({
+      verifier: { verify: jest.fn().mockResolvedValue(verifiedContext) },
+      scopeProvider: scopeProvider(),
+      permissionPolicy: policy,
+      resourceResolver: resolver,
+    });
+
+    await expect(
+      boundary.authorize(
+        request({ operation: 'history', resourceId: 'task-id' }),
+      ),
+    ).resolves.toMatchObject({ kind: 'authorized', operation: 'history' });
+    expect(resolver.resolveProjectId).toHaveBeenCalledWith({
+      resourceId: 'task-id',
+      requestedProjectId: projectId,
+    });
+    expect(policy.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'history',
+        actorUserId,
+        projectId,
+        resolvedResourceProjectId: projectId,
+      }),
+    );
     await close();
   });
 
