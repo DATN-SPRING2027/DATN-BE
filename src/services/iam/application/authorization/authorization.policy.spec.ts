@@ -353,6 +353,8 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
   );
 
   it.each([
+    'project.update',
+    'project.visibility.manage',
     'project.members.list',
     'project.members.add',
     'project.members.remove',
@@ -476,14 +478,6 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
       projectId,
       'ADMIN',
       'ADMIN',
-      ['project.visibility.manage'],
-    ],
-    [
-      'a project-scoped TEAM_LEADER cannot change visibility',
-      'project.visibility.manage',
-      projectId,
-      'TEAM_LEADER',
-      'TEAM_LEADER',
       ['project.visibility.manage'],
     ],
     [

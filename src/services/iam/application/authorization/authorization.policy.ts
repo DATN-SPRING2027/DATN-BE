@@ -63,12 +63,14 @@ export const PLATFORM_V2_PERMISSIONS: readonly PlatformPermission[] = [
 ];
 export const PLATFORM_PERMISSIONS = PLATFORM_V2_PERMISSIONS;
 export type ProjectAccessPermission =
+  | 'project.update'
   | 'project.visibility.manage'
   | 'project.leader.manage'
   | 'project.members.list'
   | 'project.members.add'
   | 'project.members.remove';
 const enabledProjectAccessPermissions: ReadonlySet<string> = new Set([
+  'project.update',
   'project.visibility.manage',
   'project.leader.manage',
   'project.members.list',
@@ -339,38 +341,41 @@ export class AuthorizationPolicy {
     if (input.explicitDeny !== 'CLEAR')
       return { allowed: false, reason: 'EXPLICIT_DENY_OR_UNKNOWN' };
 
-    const requiresOrganizationAdmin =
-      permission === 'project.visibility.manage' ||
-      permission === 'project.leader.manage';
-    if (
-      !requiresOrganizationAdmin &&
-      (!input.projectMembership ||
-        !sameObjectId(input.projectMembership.userId, subject.userId) ||
-        !sameObjectId(
-          input.projectMembership.organizationId,
-          requestedOrganizationId,
-        ) ||
-        !sameObjectId(input.projectMembership.projectId, requestedProjectId) ||
-        input.projectMembership.status !== 'ACTIVE')
-    )
-      return { allowed: false, reason: 'INACTIVE_MEMBERSHIP' };
-
-    const expectedRole = requiresOrganizationAdmin ? 'ADMIN' : 'TEAM_LEADER';
-    const expectedProjectId = requiresOrganizationAdmin
-      ? null
-      : requestedProjectId;
-    const allowed = input.assignments.some(
-      (assignment) =>
-        sameObjectId(assignment.userId, subject.userId) &&
-        sameObjectId(assignment.organizationId, requestedOrganizationId) &&
-        (assignment.projectId === null
-          ? expectedProjectId === null
-          : expectedProjectId !== null &&
-            sameObjectId(assignment.projectId, expectedProjectId)) &&
-        assignment.roleCode === expectedRole &&
-        assignment.resolvedRoleCode === expectedRole &&
-        hasPermission(assignment.permissions, permission),
+    const hasProjectMembership = Boolean(
+      input.projectMembership &&
+      sameObjectId(input.projectMembership.userId, subject.userId) &&
+      sameObjectId(
+        input.projectMembership.organizationId,
+        requestedOrganizationId,
+      ) &&
+      sameObjectId(input.projectMembership.projectId, requestedProjectId) &&
+      input.projectMembership.status === 'ACTIVE',
     );
+    const allowedScopes =
+      permission === 'project.visibility.manage'
+        ? [
+            { roleCode: 'ADMIN', projectId: null },
+            { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
+          ]
+        : permission === 'project.leader.manage'
+          ? [{ roleCode: 'ADMIN', projectId: null }]
+          : [{ roleCode: 'TEAM_LEADER', projectId: requestedProjectId }];
+    const allowed = allowedScopes.some((scope) => {
+      if (scope.roleCode === 'TEAM_LEADER' && !hasProjectMembership)
+        return false;
+      return input.assignments.some(
+        (assignment) =>
+          sameObjectId(assignment.userId, subject.userId) &&
+          sameObjectId(assignment.organizationId, requestedOrganizationId) &&
+          (assignment.projectId === null
+            ? scope.projectId === null
+            : scope.projectId !== null &&
+              sameObjectId(assignment.projectId, scope.projectId)) &&
+          assignment.roleCode === scope.roleCode &&
+          assignment.resolvedRoleCode === scope.roleCode &&
+          hasPermission(assignment.permissions, permission),
+      );
+    });
     return allowed
       ? { allowed: true }
       : { allowed: false, reason: 'NO_DOCUMENTED_PERMISSION' };

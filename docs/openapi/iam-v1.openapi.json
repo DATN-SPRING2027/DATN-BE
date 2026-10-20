@@ -4434,7 +4434,7 @@
       "post": {
         "tags": ["Projects"],
         "summary": "Create a project",
-    "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped TEAM_LEADER RoleAssignment. The current TEAM_LEADER Role must include project.read, project.members.list, project.members.add, and project.members.remove. The Project, membership, assignment, and project.create audit event are committed atomically. The bootstrap creates no separate Project owner or Team record.",
+        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped TEAM_LEADER RoleAssignment. The current TEAM_LEADER Role must include project.read, project.members.list, project.members.add, project.members.remove, project.update, and project.visibility.manage. The Project, membership, assignment, and project.create audit event are committed atomically. The bootstrap creates no separate Project owner or Team record. Project code is unique within the Organization; a duplicate returns 409 PROJECT_CODE_CONFLICT. Create does not use an idempotency key, so retrying after a lost response may return this conflict instead of replaying the original result.",
         "operationId": "createProject",
         "requestBody": {
           "required": true,
@@ -4486,6 +4486,7 @@
       "patch": {
         "tags": ["Projects"],
         "summary": "Update a project",
+        "description": "Patches only supplied name and/or description fields. Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a current project-scoped TEAM_LEADER assignment and project.update in the resolved Role.permissions. Unknown fields, an empty body, a blank name or over-limit values return 422. A null description clears it. Project status and visibility are not changed through this operation. Changes are audited in continuum_audit.audit_logs_iam; Cache-Control: no-store.",
         "operationId": "updateProject",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "requestBody": {
@@ -4514,11 +4515,39 @@
         }
       }
     },
+    "/api/v1/iam/projects/{projectId}/settings-access": {
+      "get": {
+        "tags": ["Projects"],
+        "summary": "Check Project settings access",
+        "description": "Read-only permission check using the same project.update policy as PATCH /iam/projects/{projectId}. Requires an active Organization context, active ProjectMembership, and a current Project-scoped TEAM_LEADER RoleAssignment with project.update. A 200 response does not grant a later mutation; PATCH is independently reauthorized. Cache-Control: no-store.",
+        "operationId": "getProjectSettingsAccess",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "responses": {
+          "200": {
+            "description": "Current actor may update Project details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["canUpdateProject"],
+                  "properties": { "canUpdateProject": { "const": true } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
     "/api/v1/iam/projects/{projectId}/visibility": {
       "get": {
         "tags": ["Projects"],
         "summary": "Check visibility management access",
-        "description": "Read-only permission check using the same authorization guard as PATCH: ACTIVE OrganizationMembership, Organization-scoped ADMIN assignment and project.visibility.manage. Returns canManageVisibility=true on 200, 403 means denied. Archived, missing and cross-organization Projects fail closed. No mutation or audit event is created. Cache-Control: no-store. A later PATCH is independently reauthorized.",
+        "description": "Read-only permission check using the same authorization policy as PATCH: either a Project-scoped TEAM_LEADER with ACTIVE ProjectMembership or an Organization-scoped ADMIN with ACTIVE OrganizationMembership, and project.visibility.manage in the resolved Role.permissions. Returns canManageVisibility=true on 200, 403 means denied. Archived, missing and cross-organization Projects fail closed. No mutation or audit event is created. Cache-Control: no-store. A later PATCH is independently reauthorized.",
         "operationId": "getProjectVisibilityAccess",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "responses": {
@@ -4544,7 +4573,7 @@
       "patch": {
         "tags": ["Projects"],
         "summary": "Change project visibility",
-        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.visibility.manage in the resolved Role.permissions. Allows PRIVATE to PUBLIC and PUBLIC to PRIVATE. A request for the current visibility returns 409 after authorization succeeds. Making a Project PRIVATE revokes metadata access granted solely by PUBLIC visibility. The mutation is audited in continuum_audit.audit_logs_iam. Project content permissions are unchanged.",
+        "description": "Requires ACTIVE OrganizationMembership and either a current Project-scoped TEAM_LEADER with ACTIVE ProjectMembership or an Organization-scoped ADMIN assignment, with project.visibility.manage in the resolved Role.permissions at that exact scope. Allows PRIVATE to PUBLIC and PUBLIC to PRIVATE. A request for the current visibility returns 409 after authorization succeeds. Making a Project PRIVATE revokes metadata access granted solely by PUBLIC visibility. The mutation is audited in continuum_audit.audit_logs_iam. Project content permissions are unchanged.",
         "operationId": "makeProjectPublic",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "requestBody": {
@@ -4581,7 +4610,7 @@
           "Project Memberships"
         ],
         "summary": "Search project member candidates",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them. Responses are not cacheable.",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them; eligibility filters are applied before the cap. A missing or blank email/search query returns an empty list without enumerating candidates. Responses are not cacheable.",
         "operationId": "listProjectMemberCandidates",
         "parameters": [
           {
@@ -4592,8 +4621,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             },
             "description": "Case-insensitive literal substring used to match an active Organization member's email."
           },
@@ -4602,15 +4630,14 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             },
             "description": "Compatibility alias for email."
           }
         ],
         "responses": {
           "200": {
-            "description": "Matching active Organization members, up to 50 candidates.",
+            "description": "Matching active Organization members, up to 50 candidates; a missing or blank search query returns an empty list.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4764,6 +4791,27 @@
       }
     },
     "/api/v1/iam/projects/{projectId}/leaders": {
+      "get": {
+        "tags": ["Project Memberships"],
+        "summary": "List Project Leaders",
+        "description": "Requires ACTIVE OrganizationMembership, an Organization-scoped ADMIN RoleAssignment and project.leader.manage in the resolved Role.permissions. Returns current TEAM_LEADER assignments in this Project with only userId, fullName, email, nullable avatarUrl, role and status. Stale or inactive memberships are marked INACTIVE. Authentication and private account fields are never returned. Cache-Control: no-store.",
+        "operationId": "listProjectLeaders",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "responses": {
+          "200": {
+            "description": "Safe Project Leader projections.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectLeaderList" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
       "post": {
         "tags": ["Project Memberships"],
         "summary": "Assign a Project Leader",
@@ -4833,6 +4881,38 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/v1/iam/projects/{projectId}/leader-candidates": {
+      "get": {
+        "tags": ["Project Memberships"],
+        "summary": "Search Project Leader candidates",
+        "description": "Requires ACTIVE OrganizationMembership, an Organization-scoped ADMIN RoleAssignment and project.leader.manage. Searches active Users by a case-insensitive literal email substring and returns at most 50 candidates that also have ACTIVE OrganizationMembership and ACTIVE ProjectMembership in this exact Project, excluding current Leaders. Responses contain only userId, fullName, email, nullable avatarUrl, role and status. An empty or omitted email query returns an empty list. Cache-Control: no-store.",
+        "operationId": "listProjectLeaderCandidates",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectId" },
+          {
+            "name": "email",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 254 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Eligible Project Member candidates.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectLeaderCandidateList" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
         }
       }
@@ -7621,8 +7701,56 @@
         "minProperties": 1,
         "properties": {
           "name": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "description": { "type": ["string", "null"], "maxLength": 2000 },
-          "status": { "$ref": "#/components/schemas/ProjectStatus" }
+          "description": { "type": ["string", "null"], "maxLength": 2000 }
+        }
+      },
+      "ProjectLeader": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId", "fullName", "email", "avatarUrl", "role", "status"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "fullName": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "avatarUrl": { "type": ["string", "null"], "format": "uri" },
+          "role": { "const": "TEAM_LEADER" },
+          "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] }
+        }
+      },
+      "ProjectLeaderList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProjectLeader" }
+          }
+        }
+      },
+      "ProjectLeaderCandidate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId", "fullName", "email", "avatarUrl", "role", "status"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "fullName": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "avatarUrl": { "type": ["string", "null"], "format": "uri" },
+          "role": { "const": "MEMBER" },
+          "status": { "const": "ACTIVE" }
+        }
+      },
+      "ProjectLeaderCandidateList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "maxItems": 50,
+            "items": { "$ref": "#/components/schemas/ProjectLeaderCandidate" }
+          }
         }
       },
       "ProjectList": {
