@@ -13,6 +13,39 @@ import { taskValidationFailedException } from '../runtime/task-authorization-htt
 
 const UNAUTHORIZED_STATUS = 401;
 const SERVICE_UNAVAILABLE_STATUS = 503;
+type TaskRequest = Request & { rawBody?: unknown; requestId?: string };
+
+function isJsonMediaType(contentType: unknown): boolean {
+  if (typeof contentType !== 'string') return false;
+  const mediaType = contentType.split(';', 1)[0].trim().toLowerCase();
+  return (
+    mediaType === 'application/json' ||
+    /^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(mediaType)
+  );
+}
+
+/** Nest converts Express's JSON SyntaxError into a BadRequestException. */
+function isConfirmedJsonParseFailure(
+  exception: unknown,
+  request: TaskRequest,
+): boolean {
+  if (
+    !(exception instanceof BadRequestException) ||
+    exception.getStatus() !== 400 ||
+    request.body !== undefined ||
+    !Buffer.isBuffer(request.rawBody) ||
+    !isJsonMediaType(request.headers['content-type'])
+  ) {
+    return false;
+  }
+
+  try {
+    JSON.parse(request.rawBody.toString('utf8'));
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 /** The taskId of an uncertain create outcome, the only 5xx detail the Task API exposes. */
 function uncertainTaskId(exception: unknown): string | undefined {
@@ -58,12 +91,12 @@ export class TaskHttpExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
     const response = http.getResponse<Response>();
+    const request = http.getRequest<TaskRequest>();
     response.setHeader('Cache-Control', 'no-store');
 
-    const mapped =
-      exception instanceof BadRequestException
-        ? taskValidationFailedException(['the body is not valid JSON'])
-        : exception;
+    const mapped = isConfirmedJsonParseFailure(exception, request)
+      ? taskValidationFailedException(['the body is not valid JSON'])
+      : exception;
     if (
       mapped instanceof HttpException &&
       mapped.getStatus() === UNAUTHORIZED_STATUS
@@ -73,7 +106,6 @@ export class TaskHttpExceptionFilter implements ExceptionFilter {
 
     const taskId = uncertainTaskId(mapped);
     if (taskId !== undefined) {
-      const request = http.getRequest<Request & { requestId?: string }>();
       const body = (mapped as HttpException).getResponse() as {
         code: string;
         message: string;

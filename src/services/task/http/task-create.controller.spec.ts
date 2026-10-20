@@ -282,6 +282,28 @@ describe('Task create route (dormant; DATN-97 create contract)', () => {
     expect(test.repository.create).not.toHaveBeenCalled();
   });
 
+  it('authorizes an empty body before returning 422 for the missing Task title', async () => {
+    const verifier = allowed.verifier();
+    const test = await start({ verifier });
+
+    const response = await request(test.http)
+      .post(path)
+      .set('Authorization', `Bearer ${acceptedProof}`)
+      .set('Content-Type', 'application/json')
+      .set('x-request-id', 'req-from-test');
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({
+      code: 'TASK_VALIDATION_FAILED',
+      message: 'Request validation failed',
+      details: { messages: [expect.any(String) as string] },
+      requestId: 'req-from-test',
+    });
+    expect(verifier.verify).toHaveBeenCalledTimes(1);
+    expect(test.repository.create).toHaveBeenCalledTimes(1);
+    expect(test.repository.create.mock.calls[0][1]).toEqual({});
+  });
+
   describe('authorization runs before the body is validated and before anything is written', () => {
     const invalidBody = {};
     const scenarios: [
