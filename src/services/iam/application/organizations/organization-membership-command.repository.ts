@@ -33,6 +33,14 @@ export type OrganizationMembershipCommand =
       membershipId: string;
       expectedMembershipVersion: number;
       reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+    }
+  | {
+      command: 'SET_ORGANIZATION_ROLE';
+      membershipId: string;
+      expectedMembershipVersion: number;
+      expectedRoleVersion: number;
+      roleCode: 'ADMIN' | 'MEMBER';
+      reason: string;
     };
 
 export interface MembershipMutationAcknowledgement {
@@ -50,6 +58,7 @@ export interface MembershipMutationAcknowledgement {
     version: number;
     expiresAt: string;
   };
+  role?: { roleCode: 'ADMIN' | 'MEMBER'; version: number };
 }
 
 export type PlatformInvitationCommand = Exclude<

@@ -41,10 +41,14 @@ Current read authorization is evaluated per request, not a mutation write fence.
 
 No schema, index, historical migration, seed or data change. All queries stay
 inside IAM's service-owned database. Apply/readiness of the already-reviewed
-lifecycle migration is an operator-controlled prerequisite; merging its source
-does not apply shared data. Missing version/dates or malformed projected metadata
-returns503 IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE, rather than fabricating a valid
-DTO. This work does not authorize shared migration apply or writer cutover.
+lifecycle migration (`20261012-organization-membership-lifecycle.mjs`, merged in
+PR #26) is an operator-controlled prerequisite; merging its source does not apply
+shared data. It backfills `role_assignments.mutationFence` to `0` when absent.
+Membership list/detail and role mutation must not be rolled out until the reviewed
+migration has been applied to the target IAM database. Missing version/fence/date
+or malformed projected metadata returns 503 IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE,
+rather than fabricating a valid DTO. This work does not authorize shared
+migration apply or writer cutover.
 
 PR28 review correction (2026-10-14): validate projected email with the existing
 IAM class-validator email validator; malformed stored strings return the same

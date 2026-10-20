@@ -48,7 +48,6 @@ import { ProjectAccessService } from './application/projects/project-access.serv
 import { PROJECT_ACCESS_REPOSITORY } from './application/projects/project-access.repository';
 import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-access.repository';
 import { PlatformController } from './controllers/platform.controller';
-import { AccountOrganizationController } from './controllers/account-organization.controller';
 import { OrganizationProvisioningService } from './application/organizations/organization-provisioning.service';
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from './application/organizations/organization-provisioning.repository';
 import { MongoOrganizationProvisioningRepository } from './infrastructure/mongodb/organization-provisioning.repository';
@@ -112,7 +111,6 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     ProjectController,
     ProjectAccessController,
     PlatformController,
-    AccountOrganizationController,
     OrganizationMembershipCommandController,
     AccountInvitationController,
   ],

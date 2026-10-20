@@ -64,6 +64,10 @@ describe('Gateway Platform route forwarding', () => {
       [RequestMethod.GET, 'iam/platform/memberships'],
       [RequestMethod.GET, 'iam/platform/memberships/:membershipId'],
       [
+        RequestMethod.POST,
+        'iam/organizations/:organizationId/memberships/:membershipId/role',
+      ],
+      [
         RequestMethod.GET,
         'iam/platform/organizations/:organizationId/memberships',
       ],

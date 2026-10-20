@@ -37,6 +37,12 @@ interface MembershipDocument {
     email: string;
     status: UserStatus;
   } | null;
+  organizationRoleAssignments?: {
+    roleCode: string;
+    mutationFence?: number;
+    roleId: Types.ObjectId;
+    catalogRoleCode?: string;
+  }[];
 }
 const queryTimeoutMs = 5000;
 function unavailable(): never {
@@ -54,8 +60,9 @@ const memberProjection = {
   createdAt: 1,
   updatedAt: 1,
   user: 1,
+  organizationRoleAssignments: 1,
 };
-const userLookup: (
+const memberLookups: (
   PipelineStage.Lookup | PipelineStage.Unwind | PipelineStage.Project
 )[] = [
   {
@@ -68,6 +75,53 @@ const userLookup: (
     },
   },
   { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+  {
+    $lookup: {
+      from: 'role_assignments',
+      let: { organizationId: '$organizationId', userId: '$userId' },
+      pipeline: [
+        {
+          $match: {
+            projectId: null,
+            $expr: {
+              $and: [
+                { $eq: ['$organizationId', '$$organizationId'] },
+                { $eq: ['$userId', '$$userId'] },
+              ],
+            },
+          },
+        },
+        {
+          $lookup: {
+            from: 'roles',
+            localField: 'roleId',
+            foreignField: '_id',
+            pipeline: [
+              { $match: { isSystem: true } },
+              { $project: { _id: 0, code: 1 } },
+            ],
+            as: 'catalogRole',
+          },
+        },
+        {
+          $unwind: {
+            path: '$catalogRole',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            roleCode: 1,
+            mutationFence: 1,
+            roleId: 1,
+            catalogRoleCode: '$catalogRole.code',
+          },
+        },
+      ],
+      as: 'organizationRoleAssignments',
+    },
+  },
   { $project: memberProjection },
 ];
 function summary(row: MembershipDocument): OrganizationMembershipSummary {
@@ -84,6 +138,23 @@ function summary(row: MembershipDocument): OrganizationMembershipSummary {
     !Number.isFinite(row.updatedAt.getTime())
   )
     unavailable();
+  const assignments = row.organizationRoleAssignments ?? [];
+  if (!Array.isArray(assignments) || assignments.length > 1) unavailable();
+  const assignment = assignments[0];
+  let roleCode: OrganizationMembershipSummary['roleCode'] = null;
+  let roleVersion = 0;
+  if (assignment) {
+    if (
+      !(assignment.roleId instanceof Types.ObjectId) ||
+      (assignment.roleCode !== 'ADMIN' && assignment.roleCode !== 'MEMBER') ||
+      assignment.catalogRoleCode !== assignment.roleCode ||
+      !Number.isSafeInteger(assignment.mutationFence) ||
+      Number(assignment.mutationFence) < 0
+    )
+      unavailable();
+    roleCode = assignment.roleCode;
+    roleVersion = Number(assignment.mutationFence);
+  }
   const user = row.user;
   if (
     user &&
@@ -100,6 +171,8 @@ function summary(row: MembershipDocument): OrganizationMembershipSummary {
     userId: row.userId.toHexString(),
     status: row.status,
     version: row.version,
+    roleCode,
+    roleVersion,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     user: user
@@ -210,7 +283,7 @@ export class MongoOrganizationMembershipReadRepository implements OrganizationMe
           data: [
             { $skip: (query.page - 1) * query.pageSize },
             { $limit: query.pageSize },
-            ...userLookup,
+            ...memberLookups,
           ],
           total: [{ $count: 'count' }],
         },
@@ -235,7 +308,7 @@ export class MongoOrganizationMembershipReadRepository implements OrganizationMe
           },
         },
         { $limit: 1 },
-        ...userLookup,
+        ...memberLookups,
       ],
     );
     return row ? summary(row) : null;

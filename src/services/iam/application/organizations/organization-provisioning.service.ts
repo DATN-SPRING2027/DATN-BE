@@ -1,14 +1,5 @@
-import {
-  ConflictException,
-  HttpException,
-  Inject,
-  Injectable,
-} from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { AuthenticatedPlatformSubject } from '../authentication/authentication.application.service';
-import {
-  AUTH_SECURITY_STORE,
-  type AuthSecurityStore,
-} from '../authentication/auth-security.store';
 import {
   ORGANIZATION_PROVISIONING_REPOSITORY,
   type OrganizationProvisioningInput,
@@ -20,35 +11,7 @@ export class OrganizationProvisioningService {
   constructor(
     @Inject(ORGANIZATION_PROVISIONING_REPOSITORY)
     private readonly repository: OrganizationProvisioningRepository,
-    @Inject(AUTH_SECURITY_STORE)
-    private readonly security: AuthSecurityStore,
   ) {}
-
-  async createSelfService(
-    actor: AuthenticatedPlatformSubject,
-    input: Pick<OrganizationProvisioningInput, 'name' | 'slug'>,
-  ) {
-    const allowed = await this.security.consumeRateLimit(
-      `organization:create:${actor.id}`,
-      3,
-      3600,
-    );
-    if (!allowed) {
-      throw new HttpException(
-        {
-          code: 'ORGANIZATION_CREATE_RATE_LIMITED',
-          message: 'Too many creation attempts.',
-        },
-        429,
-      );
-    }
-    return this.repository.create(actor.id, {
-      name: input.name,
-      slug: input.slug,
-      plan: 'FREE',
-      firstAdminUserId: actor.id,
-    });
-  }
 
   create(
     actor: AuthenticatedPlatformSubject,

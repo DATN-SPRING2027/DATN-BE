@@ -76,6 +76,15 @@ function resolveLocalReference(
 describe('IAM OpenAPI contract', () => {
   const contract = loadContract();
 
+  it('keeps Organization provisioning on the PLATFORM_OPERATOR API boundary', () => {
+    expect(contract.paths['/api/v1/iam/organizations']).toBeUndefined();
+    expect(
+      contract.paths['/api/v1/iam/platform/organizations'].post?.[
+        'x-platform-permission'
+      ],
+    ).toBe('organization.create');
+  });
+
   it('uses OpenAPI 3.1 and the /api/v1 base path', () => {
     expect(contract.openapi).toBe('3.1.0');
     expect(Object.keys(contract.paths).length).toBeGreaterThan(0);
@@ -987,6 +996,7 @@ describe('IAM OpenAPI contract', () => {
               'resendOrganizationMembershipInvitation',
               'cancelOrganizationMembershipInvitation',
               'suspendOrganizationMembership',
+              'setOrganizationMembershipRole',
             ].includes(operation.operationId)
           ) {
             const name = reference.split('/').at(-1)!;
@@ -1265,6 +1275,113 @@ describe('IAM OpenAPI contract', () => {
     ).toMatchObject({
       status: {
         enum: ['PENDING_INVITE', 'ACTIVE', 'SUSPENDED', 'REMOVED'],
+      },
+    });
+  });
+
+  it('documents the approved Organization role assignment contract exactly', () => {
+    const membershipSummary = contract.components.schemas.C02MembershipSummary;
+    expect(membershipSummary).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining(['roleCode', 'roleVersion']),
+      properties: {
+        roleCode: {
+          oneOf: [
+            { type: 'string', enum: ['ADMIN', 'MEMBER'] },
+            { type: 'null' },
+          ],
+        },
+        roleVersion: { type: 'integer', minimum: 0 },
+      },
+    });
+    const operation =
+      contract.paths[
+        '/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/role'
+      ]?.post;
+    expect(operation?.operationId).toBe('setOrganizationMembershipRole');
+    expect(operation).toMatchObject({
+      'x-contract-status': 'USER_APPROVED',
+      'x-runtime-status': 'IMPLEMENTED_BACKEND',
+      'x-permission': 'organization.memberships.manage',
+      'x-readiness-gates': [],
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }],
+    });
+    expect(operation?.description).toContain(
+      'Project role assignments remain independent',
+    );
+    expect(operation?.description).toContain(
+      "requests targeting the caller's own Membership are denied with 403 (ROLE_SELF_CHANGE_FORBIDDEN)",
+    );
+    expect(operation?.description).toContain('last active ADMIN');
+    expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
+      expect.arrayContaining([
+        'organizationId',
+        'membershipId',
+        'X-CSRF-Token',
+        '__Host-csrf',
+        'Idempotency-Key',
+        'X-Request-Id',
+      ]),
+    );
+    expect(operation?.requestBody).toMatchObject({
+      required: true,
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/C02SetOrganizationRoleRequest',
+          },
+        },
+      },
+    });
+    expect(operation?.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/C02OrganizationRoleMutationAck',
+          },
+        },
+      },
+    });
+    for (const status of ['401', '403', '404', '409', '422', '500', '503']) {
+      expect(operation?.responses[status]).toBeDefined();
+    }
+    expect(operation?.responses['409']?.description).toContain(
+      'LAST_ELIGIBLE_ADMIN',
+    );
+    expect(
+      contract.components.schemas.C02SetOrganizationRoleRequest,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: [
+        'expectedMembershipVersion',
+        'expectedRoleVersion',
+        'roleCode',
+        'reason',
+      ],
+      properties: {
+        expectedMembershipVersion: { type: 'integer', minimum: 1 },
+        expectedRoleVersion: { type: 'integer', minimum: 0 },
+        roleCode: { enum: ['ADMIN', 'MEMBER'] },
+        reason: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 500,
+          pattern: '\\S',
+        },
+      },
+    });
+    expect(
+      contract.components.schemas.C02OrganizationRoleMutationAck,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: ['operationId', 'membership', 'role'],
+    });
+    expect(contract.components.schemas.C02OrganizationRoleState).toMatchObject({
+      additionalProperties: false,
+      required: ['roleCode', 'version'],
+      properties: {
+        roleCode: { enum: ['ADMIN', 'MEMBER'] },
+        version: { type: 'integer', minimum: 1 },
       },
     });
   });

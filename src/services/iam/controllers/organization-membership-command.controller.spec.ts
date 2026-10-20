@@ -120,6 +120,120 @@ describe('OrganizationMembershipCommandController', () => {
     expect(commands.execute).not.toHaveBeenCalled();
   });
 
+  it('parses the exact Organization role request and returns the replay contract', async () => {
+    const membershipId = '951a2b3c4d5e6f7a8b9c0d1f';
+    const body = {
+      operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+      membership: {
+        id: membershipId,
+        organizationId,
+        userId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+        status: 'ACTIVE',
+        version: 3,
+      },
+      role: { roleCode: 'ADMIN', version: 2 },
+    };
+    commands.execute.mockResolvedValueOnce({
+      httpStatus: 200,
+      replayed: true,
+      body,
+    });
+
+    const result = await controller.setOrganizationRole(
+      'Bearer token',
+      '__Host-csrf=csrf-token',
+      'csrf-token',
+      'stable-idempotency-key',
+      undefined,
+      organizationId,
+      membershipId,
+      {
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 1,
+        roleCode: 'ADMIN',
+        reason: 'Approved access review',
+      },
+      { requestId: 'request-id' } as never,
+      response as never,
+    );
+
+    expect(commands.execute).toHaveBeenCalledWith(
+      actor,
+      organizationId,
+      'stable-idempotency-key',
+      {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId,
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 1,
+        roleCode: 'ADMIN',
+        reason: 'Approved access review',
+      },
+      'request-id',
+    );
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Idempotency-Replayed',
+      'true',
+    );
+    expect(result).toEqual(body);
+  });
+
+  it.each([
+    [
+      {
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 0,
+        roleCode: 'TEAM_LEADER',
+        reason: 'review',
+      },
+    ],
+    [
+      {
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: -1,
+        roleCode: 'MEMBER',
+        reason: 'review',
+      },
+    ],
+    [
+      {
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: ' ',
+      },
+    ],
+    [
+      {
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: 'review',
+        extra: true,
+      },
+    ],
+  ])(
+    'rejects invalid or unknown Organization role fields: %o',
+    async (body) => {
+      await expect(
+        controller.setOrganizationRole(
+          'Bearer token',
+          '__Host-csrf=csrf-token',
+          'csrf-token',
+          'stable-idempotency-key',
+          undefined,
+          organizationId,
+          '951a2b3c4d5e6f7a8b9c0d1f',
+          body,
+          { requestId: 'validation-request-id' } as never,
+          response as never,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(commands.execute).not.toHaveBeenCalled();
+    },
+  );
+
   it('authenticates before parsing membership command details', async () => {
     const authenticationError = new ForbiddenException({
       code: 'AUTH_SESSION_INVALID',

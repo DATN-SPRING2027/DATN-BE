@@ -127,4 +127,14 @@ describe('Gateway to IAM membership reads over HTTP', () => {
       .expect(401);
     expect(repository.hasReadAccess).not.toHaveBeenCalled();
   });
+
+  it('does not expose account self-service Organization provisioning', async () => {
+    await request(gateway.getHttpServer() as App)
+      .post('/api/v1/iam/organizations')
+      .send({
+        name: 'Unapproved Organization',
+        slug: 'unapproved-organization',
+      })
+      .expect(404);
+  });
 });

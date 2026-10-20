@@ -172,14 +172,6 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
-  @Post('iam/organizations')
-  createOwnOrganization(
-    @Req() request: Request,
-    @Res() response: Response,
-  ): Promise<void> {
-    return this.forward(request, response);
-  }
-
   @Get('iam/platform/dashboard')
   getPlatformDashboard(
     @Req() request: Request,
@@ -684,6 +676,14 @@ export class GatewayIamController {
 
   @Post('iam/organizations/:organizationId/memberships/:membershipId/suspend')
   suspendOrganizationMembership(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations/:organizationId/memberships/:membershipId/role')
+  setOrganizationMembershipRole(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {

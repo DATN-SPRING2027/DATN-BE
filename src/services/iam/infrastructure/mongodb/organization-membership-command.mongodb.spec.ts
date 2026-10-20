@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { CollectionInfo } from 'mongodb';
 import mongoose, { Types, type ClientSession, type Connection } from 'mongoose';
 import {
   AUDIT_DATABASE_NAME,
@@ -31,6 +32,31 @@ const collections = [
   'platform_authority_assignments',
   'platform_authority_change_locks',
 ];
+type AuditCollectionOptions = {
+  validator?: Record<string, unknown>;
+  validationLevel?: 'off' | 'strict' | 'moderate';
+  validationAction?: 'error' | 'warn';
+};
+function readAuditCollectionOptions(value: unknown): AuditCollectionOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const options = value as Record<string, unknown>;
+  const validator = options.validator;
+  const validationLevel = options.validationLevel;
+  const validationAction = options.validationAction;
+  return {
+    ...(validator && typeof validator === 'object' && !Array.isArray(validator)
+      ? { validator: validator as Record<string, unknown> }
+      : {}),
+    ...(validationLevel === 'off' ||
+    validationLevel === 'strict' ||
+    validationLevel === 'moderate'
+      ? { validationLevel }
+      : {}),
+    ...(validationAction === 'error' || validationAction === 'warn'
+      ? { validationAction }
+      : {}),
+  };
+}
 
 integration('C-02 membership commands on disposable MongoDB 7', () => {
   const databaseName = `datn291commands_${randomUUID().replaceAll('-', '')}`;
@@ -43,7 +69,9 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   const actorMembershipId = new Types.ObjectId();
   const secondAdminMembershipId = new Types.ObjectId();
   const targetMembershipId = new Types.ObjectId();
+  const foreignMembershipId = new Types.ObjectId();
   const roleId = new Types.ObjectId();
+  const memberRoleId = new Types.ObjectId();
   const secret = randomBytes(32).toString('hex');
   let connection: Connection | undefined;
   let repository: MongoOrganizationMembershipCommandRepository;
@@ -57,6 +85,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     command: OrganizationMembershipCommand,
     idempotencyKey = `command-${randomUUID()}`,
     scope = organizationId,
+    correlationId?: string,
   ) {
     return repository.execute({
       actorUserId: actorUserId.toHexString(),
@@ -64,6 +93,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       idempotencyKey,
       command,
       now: new Date('2026-10-14T03:00:00.000Z'),
+      ...(correlationId ? { correlationId } : {}),
     });
   }
 
@@ -184,6 +214,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
+    const userTimestamp = new Date('2026-10-14T02:00:00.000Z');
     await connection!.collection('users').insertMany([
       {
         _id: actorId,
@@ -191,6 +222,8 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         fullName: 'Admin One',
         passwordHash: secret,
         status: 'ACTIVE',
+        createdAt: userTimestamp,
+        updatedAt: userTimestamp,
       },
       {
         _id: secondAdminId,
@@ -198,6 +231,8 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         fullName: 'Admin Two',
         passwordHash: secret,
         status: 'ACTIVE',
+        createdAt: userTimestamp,
+        updatedAt: userTimestamp,
       },
       {
         _id: recipientId,
@@ -205,6 +240,8 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         fullName: 'Invitee',
         passwordHash: secret,
         status: 'ACTIVE',
+        createdAt: userTimestamp,
+        updatedAt: userTimestamp,
       },
       {
         _id: memberId,
@@ -212,6 +249,8 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         fullName: 'Member',
         passwordHash: secret,
         status: 'ACTIVE',
+        createdAt: userTimestamp,
+        updatedAt: userTimestamp,
       },
     ]);
     await connection!.collection('organization_memberships').insertMany([
@@ -247,9 +286,30 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       isSystem: true,
       permissions: ['organization.memberships.manage'],
     });
+    await connection!.collection('roles').insertOne({
+      _id: memberRoleId,
+      code: 'MEMBER',
+      name: 'Member',
+      isSystem: true,
+      permissions: [],
+    });
     await connection!.collection('role_assignments').insertMany([
-      { organizationId, userId: actorId, roleId, roleCode: 'ADMIN' },
-      { organizationId, userId: secondAdminId, roleId, roleCode: 'ADMIN' },
+      {
+        organizationId,
+        userId: actorId,
+        roleId,
+        roleCode: 'ADMIN',
+        assignedBy: actorId,
+        mutationFence: 0,
+      },
+      {
+        organizationId,
+        userId: secondAdminId,
+        roleId,
+        roleCode: 'ADMIN',
+        assignedBy: actorId,
+        mutationFence: 0,
+      },
     ]);
     await connection!.collection('platform_authority_change_locks').insertOne({
       permission: 'PLATFORM_OPERATOR_LIFECYCLE',
@@ -257,7 +317,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       version: 0,
     });
     await connection!.collection('organization_memberships').insertOne({
-      _id: new Types.ObjectId(),
+      _id: foreignMembershipId,
       organizationId: foreignOrganizationId,
       userId: actorId,
       status: 'ACTIVE',
@@ -413,6 +473,338 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       await auditCollection().countDocuments({
         organizationId: organizationId.toHexString(),
         action: 'ORGANIZATION_MEMBERSHIP_SUSPENDED',
+      }),
+    ).toBe(1);
+  });
+
+  it('assigns an Organization role with version checks, exact replay, and scoped audit without changing Project roles', async () => {
+    const projectId = new Types.ObjectId();
+    const key = `organization-role-${randomUUID()}`;
+    const command: OrganizationMembershipCommand = {
+      command: 'SET_ORGANIZATION_ROLE',
+      membershipId: targetMembershipId.toHexString(),
+      expectedMembershipVersion: 3,
+      expectedRoleVersion: 0,
+      roleCode: 'ADMIN',
+      reason: 'Access review completed',
+    };
+    await connection!.collection('role_assignments').insertOne({
+      organizationId,
+      projectId,
+      userId: memberId,
+      roleId: memberRoleId,
+      roleCode: 'MEMBER',
+      assignedBy: actorId,
+      mutationFence: 0,
+    });
+
+    const committed = await invoke(
+      actorId,
+      command,
+      key,
+      organizationId,
+      'role-change-request-123',
+    );
+    const replay = await invoke(
+      actorId,
+      command,
+      key,
+      organizationId,
+      'role-change-request-123',
+    );
+
+    expect(committed).toMatchObject({
+      httpStatus: 200,
+      replayed: false,
+      body: {
+        membership: {
+          id: targetMembershipId.toHexString(),
+          organizationId: organizationId.toHexString(),
+          userId: memberId.toHexString(),
+          status: 'ACTIVE',
+          version: 3,
+        },
+        role: { roleCode: 'ADMIN', version: 1 },
+      },
+    });
+    expect(replay).toEqual({ ...committed, replayed: true });
+    expect(
+      await connection!.collection('organization_memberships').findOne({
+        _id: targetMembershipId,
+      }),
+    ).toMatchObject({ status: 'ACTIVE', version: 3 });
+    expect(
+      await connection!.collection('role_assignments').findOne({
+        organizationId,
+        userId: memberId,
+        projectId: null,
+      }),
+    ).toMatchObject({
+      roleCode: 'ADMIN',
+      mutationFence: 1,
+      assignedBy: actorId,
+    });
+    expect(
+      await connection!.collection('role_assignments').findOne({
+        organizationId,
+        projectId,
+        userId: memberId,
+      }),
+    ).toMatchObject({ roleCode: 'MEMBER', mutationFence: 0 });
+    expect(
+      await connection!.collection('membership_operations').countDocuments({
+        actorUserId: actorId,
+        organizationId,
+        command: 'SET_ORGANIZATION_ROLE',
+      }),
+    ).toBe(1);
+    const audit = await auditCollection().findOne({
+      organizationId: organizationId.toHexString(),
+      action: 'ORGANIZATION_MEMBER_ROLE_CHANGED',
+    });
+    expect(audit).toMatchObject({
+      actorUserId: actorId.toHexString(),
+      scope: 'ORGANIZATION',
+      result: 'SUCCESS',
+      reasonCode: 'ORGANIZATION_ROLE_CHANGED',
+      reason: 'Access review completed',
+      correlationId: 'role-change-request-123',
+      membershipId: targetMembershipId.toHexString(),
+      targetResource: 'ORGANIZATION_MEMBERSHIP',
+      targetResourceId: targetMembershipId.toHexString(),
+      before: { roleCode: 'UNASSIGNED', roleVersion: 0 },
+      after: { roleCode: 'ADMIN', roleVersion: 1 },
+    });
+    expect(audit?.occurredAt).toBeInstanceOf(Date);
+  });
+
+  it('denies Member self-promotion and cross-Organization target lookup without writes', async () => {
+    await expect(
+      invoke(memberId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: targetMembershipId.toHexString(),
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 0,
+        roleCode: 'ADMIN',
+        reason: 'Self promotion attempt',
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN' },
+    });
+    await expect(
+      invoke(actorId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: foreignMembershipId.toHexString(),
+        expectedMembershipVersion: 1,
+        expectedRoleVersion: 0,
+        roleCode: 'ADMIN',
+        reason: 'Cross organization attempt',
+      }),
+    ).rejects.toMatchObject({
+      status: 404,
+      response: { code: 'ORGANIZATION_MEMBERSHIP_NOT_FOUND' },
+    });
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await connection!.collection('role_assignments').countDocuments({
+        organizationId,
+        userId: memberId,
+        projectId: null,
+      }),
+    ).toBe(0);
+  });
+
+  it('denies an Admin changing their own role even when another active Admin remains', async () => {
+    await expect(
+      invoke(actorId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: actorMembershipId.toHexString(),
+        expectedMembershipVersion: 1,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: 'Self demotion attempt',
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'ROLE_SELF_CHANGE_FORBIDDEN' },
+    });
+
+    expect(
+      await connection!.collection('role_assignments').findOne({
+        organizationId,
+        userId: actorId,
+        projectId: null,
+      }),
+    ).toMatchObject({ roleCode: 'ADMIN', mutationFence: 0 });
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+        action: 'ORGANIZATION_MEMBER_ROLE_CHANGED',
+      }),
+    ).toBe(0);
+  });
+
+  it('rejects a role change with a stale membership or role version', async () => {
+    await expect(
+      invoke(actorId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: targetMembershipId.toHexString(),
+        expectedMembershipVersion: 2,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: 'Stale membership attempt',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'MEMBERSHIP_VERSION_CONFLICT' },
+    });
+    await expect(
+      invoke(actorId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: targetMembershipId.toHexString(),
+        expectedMembershipVersion: 3,
+        expectedRoleVersion: 1,
+        roleCode: 'MEMBER',
+        reason: 'Stale role attempt',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'ROLE_VERSION_CONFLICT' },
+    });
+    expect(
+      await connection!.collection('role_assignments').countDocuments({
+        organizationId,
+        userId: memberId,
+        projectId: null,
+      }),
+    ).toBe(0);
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+  });
+
+  it('prevents concurrent cross-member role changes from removing the last active ADMIN', async () => {
+    const results = await Promise.allSettled([
+      invoke(actorId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: secondAdminMembershipId.toHexString(),
+        expectedMembershipVersion: 1,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: 'Admin handoff attempt one',
+      }),
+      invoke(secondAdminId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: actorMembershipId.toHexString(),
+        expectedMembershipVersion: 1,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: 'Admin handoff attempt two',
+      }),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: {
+        status: 403,
+        response: { code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN' },
+      },
+    });
+    expect(
+      await connection!.collection('role_assignments').countDocuments({
+        organizationId,
+        roleCode: 'ADMIN',
+        projectId: null,
+      }),
+    ).toBe(1);
+    expect(
+      await connection!.collection('membership_operations').countDocuments({
+        command: 'SET_ORGANIZATION_ROLE',
+      }),
+    ).toBe(1);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+        action: 'ORGANIZATION_MEMBER_ROLE_CHANGED',
+      }),
+    ).toBe(1);
+  });
+
+  it('rolls back a role assignment and operation when its required audit write fails', async () => {
+    const auditDb = connection!.useDb(AUDIT_DATABASE_NAME, { useCache: true });
+    const idempotencyKey = `audit-rollback-retry-${randomUUID()}`;
+    const command: OrganizationMembershipCommand = {
+      command: 'SET_ORGANIZATION_ROLE',
+      membershipId: targetMembershipId.toHexString(),
+      expectedMembershipVersion: 3,
+      expectedRoleVersion: 0,
+      roleCode: 'MEMBER',
+      reason: 'Access review completed',
+    };
+    const auditCollectionInfo = await auditDb
+      .db!.listCollections<CollectionInfo>(
+        { name: IAM_AUDIT_COLLECTION_NAME },
+        { nameOnly: false },
+      )
+      .next();
+    if (!auditCollectionInfo)
+      throw new Error('Disposable audit collection is unavailable');
+    const previousOptions = readAuditCollectionOptions(
+      auditCollectionInfo.options,
+    );
+    try {
+      await auditDb.db!.command({
+        collMod: IAM_AUDIT_COLLECTION_NAME,
+        validator: { __rejectOrganizationAuditTestWrites: { $exists: true } },
+        validationLevel: 'strict',
+        validationAction: 'error',
+      });
+      await expect(
+        invoke(actorId, command, idempotencyKey),
+      ).rejects.toMatchObject({
+        response: { code: 'IAM_MEMBERSHIP_MUTATION_FAILED' },
+        status: 500,
+      });
+    } finally {
+      await auditDb.db!.command({
+        collMod: IAM_AUDIT_COLLECTION_NAME,
+        validator: previousOptions.validator ?? {},
+        validationLevel: previousOptions.validationLevel ?? 'strict',
+        validationAction: previousOptions.validationAction ?? 'error',
+      });
+    }
+    const retry = await invoke(actorId, command, idempotencyKey);
+    expect(retry).toMatchObject({
+      httpStatus: 200,
+      replayed: false,
+      body: { role: { roleCode: 'MEMBER', version: 1 } },
+    });
+    expect(
+      await connection!.collection('role_assignments').countDocuments({
+        organizationId,
+        userId: memberId,
+        projectId: null,
+        roleCode: 'MEMBER',
+        mutationFence: 1,
+      }),
+    ).toBe(1);
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(1);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+        action: 'ORGANIZATION_MEMBER_ROLE_CHANGED',
       }),
     ).toBe(1);
   });

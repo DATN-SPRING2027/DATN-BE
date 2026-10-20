@@ -42,6 +42,7 @@ describe('Membership read persistence failures over HTTP', () => {
       createdAt: new Date('2026-10-01T00:00:00Z'),
       updatedAt: new Date('2026-10-01T00:00:00Z'),
       user: { _id: userId, email, fullName: 'Member', status: 'ACTIVE' },
+      organizationRoleAssignments: [],
     };
   }
   beforeAll(async () => {
@@ -93,6 +94,104 @@ describe('Membership read persistence failures over HTTP', () => {
       .get(detail ? `${url}/${String(membershipId)}` : url)
       .set('Authorization', 'Bearer fixture');
   }
+  it('returns an unassigned Organization role as null at version zero', async () => {
+    memberExec.mockImplementation((list: boolean) =>
+      Promise.resolve(list ? [{ data: [row()], total: [{ count: 1 }] }] : []),
+    );
+    const response = await get(false).expect(200);
+    const responseBody = response.body as { data: Record<string, unknown>[] };
+    expect(responseBody.data[0]).toMatchObject({
+      roleCode: null,
+      roleVersion: 0,
+    });
+  });
+  it('returns the Organization role code and mutation fence for the membership row', async () => {
+    const roleId = new Types.ObjectId();
+    memberExec.mockImplementation((list: boolean) =>
+      Promise.resolve(
+        list
+          ? [
+              {
+                data: [
+                  {
+                    ...row(),
+                    organizationRoleAssignments: [
+                      {
+                        roleId,
+                        roleCode: 'MEMBER',
+                        catalogRoleCode: 'MEMBER',
+                        mutationFence: 4,
+                      },
+                    ],
+                  },
+                ],
+                total: [{ count: 1 }],
+              },
+            ]
+          : [],
+      ),
+    );
+    const response = await get(false).expect(200);
+    const responseBody = response.body as { data: Record<string, unknown>[] };
+    expect(responseBody.data[0]).toMatchObject({
+      roleCode: 'MEMBER',
+      roleVersion: 4,
+    });
+  });
+  it('fails closed when an assigned Organization role has no migrated fence', async () => {
+    const roleId = new Types.ObjectId();
+    memberExec.mockImplementation((list: boolean) =>
+      Promise.resolve(
+        list
+          ? [
+              {
+                data: [
+                  {
+                    ...row(),
+                    organizationRoleAssignments: [
+                      {
+                        roleId,
+                        roleCode: 'MEMBER',
+                        catalogRoleCode: 'MEMBER',
+                      },
+                    ],
+                  },
+                ],
+                total: [{ count: 1 }],
+              },
+            ]
+          : [],
+      ),
+    );
+    unavailable(await get(false).expect(503));
+  });
+  it('fails closed when Organization role data is ambiguous or does not match catalog', async () => {
+    memberExec.mockImplementation((list: boolean) =>
+      Promise.resolve(
+        list
+          ? [
+              {
+                data: [
+                  {
+                    ...row(),
+                    organizationRoleAssignments: [
+                      {
+                        roleId: new Types.ObjectId(),
+                        roleCode: 'MEMBER',
+                        catalogRoleCode: 'ADMIN',
+                        mutationFence: 0,
+                      },
+                    ],
+                  },
+                ],
+                total: [{ count: 1 }],
+              },
+            ]
+          : [],
+      ),
+    );
+    await get(false).expect(503);
+  });
   function unavailable(response: {
     body: unknown;
     headers: Record<string, unknown>;
