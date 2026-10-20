@@ -19,7 +19,27 @@ describe('createTaskRuntimeConfig', () => {
         'mongodb://task-user:fixture-secret@127.0.0.1:27017/?authSource=admin',
       port: 3909,
       routesEnabled: false,
+      createRouteEnabled: false,
     });
+  });
+
+  it('keeps the create route disabled unless TASK_CREATE_ROUTE_ENABLED is exactly true', () => {
+    expect(createTaskRuntimeConfig(environment()).createRouteEnabled).toBe(
+      false,
+    );
+    for (const value of ['', 'false', 'TRUE', '1', 'yes', ' true']) {
+      expect(
+        createTaskRuntimeConfig(
+          environment({ TASK_CREATE_ROUTE_ENABLED: value }),
+        ).createRouteEnabled,
+      ).toBe(false);
+    }
+    const config = createTaskRuntimeConfig(
+      environment({ TASK_CREATE_ROUTE_ENABLED: 'true' }),
+    );
+    // The flags are independent here; the module requires both for create.
+    expect(config.createRouteEnabled).toBe(true);
+    expect(config.routesEnabled).toBe(false);
   });
 
   it('keeps the Task routes disabled unless TASK_ROUTES_ENABLED is exactly true', () => {

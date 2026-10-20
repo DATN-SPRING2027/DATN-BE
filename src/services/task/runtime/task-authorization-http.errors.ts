@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import type { TaskAuthorizationDenialReason } from './task-authorization-boundary';
 
@@ -51,6 +52,16 @@ export function taskAuthorizationUnavailableException(): ServiceUnavailableExcep
   return new ServiceUnavailableException({
     code: 'TASK_AUTHORIZATION_UNAVAILABLE',
     message: 'Authorization is temporarily unavailable',
+  });
+}
+
+/** 422 for a body that breaks the create contract; `messages` become details.messages. */
+export function taskValidationFailedException(
+  messages: string[],
+): UnprocessableEntityException {
+  return new UnprocessableEntityException({
+    code: 'TASK_VALIDATION_FAILED',
+    message: messages,
   });
 }
 
