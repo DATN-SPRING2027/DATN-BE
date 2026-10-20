@@ -49,7 +49,7 @@ deployment URI and all credentials remain environment configuration.
 Task slice: internal list-by-Project and detail only, under `/internal/tasks`.
 The Leader **approved it for those two operations on 19/10/2026** (DATN-BE PR #55,
 `x-approval-status` and `x-approval-conditions` in the file), following the
-Document D05-DR1 decision record (doc 25). The approval does not cover create,
+Document D05-DR1 decision record (doc 27). The approval does not cover create,
 DR-3, DR-7(c)(d), DR-8 or `AUTH-1`, and allows no route activation, production
 use or policy `ALLOW` yet. Create is omitted until DR-7(c)(d)
 is decided; there is no mutation, status, assignment, filter, sort, history or
