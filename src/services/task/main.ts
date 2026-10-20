@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { requestIdMiddleware } from '../../common/http/request-id.middleware';
 import { createTaskRuntimeConfig } from './runtime/task-runtime.config';
 import { TaskRuntimeModule } from './runtime/task-runtime.module';
 
@@ -13,6 +14,7 @@ export async function bootstrapTaskRuntime(
   });
 
   await withStartupCleanup(app, async () => {
+    app.use(requestIdMiddleware);
     app.setGlobalPrefix('internal');
     app.enableShutdownHooks();
     await app.listen(config.port, '127.0.0.1');
