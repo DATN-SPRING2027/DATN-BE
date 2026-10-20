@@ -217,6 +217,55 @@ describe('DATN-87 immutable operation cache', () => {
     ]);
   });
 
+  it('accepts a scoped Organization role mutation acknowledgement', () => {
+    const roleResult = {
+      operationId: String(operationId),
+      membership: {
+        ...cachedResult.membership,
+        status: 'ACTIVE',
+      },
+      role: { roleCode: 'ADMIN', version: 3 },
+    };
+    expect(
+      new Operation({
+        ...cachedOperation,
+        command: 'SET_ORGANIZATION_ROLE',
+        resultBody: roleResult,
+      }).validateSync(),
+    ).toBeUndefined();
+    expect(
+      new Operation({
+        ...cachedOperation,
+        command: 'SET_ORGANIZATION_ROLE',
+        resultBody: {
+          ...roleResult,
+          membership: {
+            ...roleResult.membership,
+            organizationId: String(new Types.ObjectId()),
+          },
+        },
+      }).validateSync(),
+    ).toBeDefined();
+  });
+
+  it.each([
+    { roleCode: 'TEAM_LEADER', version: 1 },
+    { roleCode: 'ADMIN', version: 0 },
+    { roleCode: 'MEMBER', version: 1, extra: true },
+  ])('rejects an invalid role acknowledgement %j', (role) => {
+    expect(
+      new Operation({
+        ...cachedOperation,
+        command: 'SET_ORGANIZATION_ROLE',
+        resultBody: {
+          operationId: String(operationId),
+          membership: { ...cachedResult.membership, status: 'ACTIVE' },
+          role,
+        },
+      }).validateSync(),
+    ).toBeDefined();
+  });
+
   it.each(['id', 'organizationId', 'userId'])(
     'rejects a result with a different scoped %s',
     (field) => {

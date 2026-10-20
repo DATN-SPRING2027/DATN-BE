@@ -104,6 +104,7 @@ const resultStates: Record<string, string> = {
   REMOVE: 'REMOVED',
   RESUME: 'ACTIVE',
   REINVITE: 'PENDING_INVITE',
+  SET_ORGANIZATION_ROLE: 'ACTIVE',
 };
 function validResult(binding: OperationBinding, value: unknown): boolean {
   if (
@@ -127,6 +128,31 @@ function validResult(binding: OperationBinding, value: unknown): boolean {
       receipt.purpose === 'RIGHTS_REVIEW' &&
       version(receipt.targetMembershipVersion) &&
       isoDate(receipt.expiresAt)
+    );
+  }
+  if (binding.command === 'SET_ORGANIZATION_ROLE') {
+    const member = value.membership;
+    const role = value.role;
+    return (
+      exactFields(value, ['operationId', 'membership', 'role']) &&
+      record(member) &&
+      exactFields(member, [
+        'id',
+        'organizationId',
+        'userId',
+        'status',
+        'version',
+      ]) &&
+      [member.id, member.organizationId, member.userId].every(objectId) &&
+      member.id === String(binding.membershipId) &&
+      member.organizationId === String(binding.organizationId) &&
+      member.userId === String(binding.targetUserId) &&
+      member.status === 'ACTIVE' &&
+      version(member.version) &&
+      record(role) &&
+      exactFields(role, ['roleCode', 'version']) &&
+      (role.roleCode === 'ADMIN' || role.roleCode === 'MEMBER') &&
+      version(role.version)
     );
   }
   const member = value.membership;
@@ -188,6 +214,7 @@ export const membershipOperationSchema = new Schema(
         'RESUME',
         'REINVITE',
         'RIGHTS_REVIEW',
+        'SET_ORGANIZATION_ROLE',
       ],
     },
     status: { type: String, required: true, enum: ['COMMITTED'] },
