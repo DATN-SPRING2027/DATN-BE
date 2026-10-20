@@ -4,6 +4,12 @@ import { TASK_DATABASE_NAME } from '../infrastructure/mongodb/task-contract';
 export interface TaskRuntimeConfig {
   mongoUri: string;
   port: number;
+  /**
+   * Registers the Task list and detail routes only when TASK_ROUTES_ENABLED is
+   * exactly `true`. It never bypasses the entrypoint gates above, and every
+   * route still passes the deny-by-default authorization boundary.
+   */
+  routesEnabled?: boolean;
 }
 
 const MIN_TASK_PORT = 1024;
@@ -121,5 +127,9 @@ export function createTaskRuntimeConfig(
     throw new Error('TASK_SERVICE_PORT must be an integer from 1024 to 65535');
   }
 
-  return { mongoUri, port };
+  return {
+    mongoUri,
+    port,
+    routesEnabled: environment.TASK_ROUTES_ENABLED === 'true',
+  };
 }

@@ -31,6 +31,12 @@ import {
   UnconfiguredTaskResourceProjectResolver,
 } from './task-authorization-boundary';
 import { TaskAuthorizationHttpGuard } from './task-authorization-http.guard';
+import { TaskReadController } from '../http/task-read.controller';
+import {
+  TASK_READ_REPOSITORY,
+  TaskReadService,
+} from '../http/task-read.service';
+import { RepositoryTaskResourceProjectResolver } from './task-repository-resource-project.resolver';
 
 export const TASK_RUNTIME_MONGOOSE_OPTIONS: MongooseModuleOptions = {
   dbName: TASK_DATABASE_NAME,
@@ -46,6 +52,11 @@ export const TASK_RUNTIME_MONGOOSE_OPTIONS: MongooseModuleOptions = {
 })
 export class TaskRuntimeModule {
   static register(config: TaskRuntimeConfig): DynamicModule {
+    // Routes stay off unless TASK_ROUTES_ENABLED is exactly true. Enabling them
+    // adds only the list and detail controller and a resolver that reads the
+    // persisted owning Project; the verifier, scope evidence and policy
+    // defaults below stay deny-by-default either way.
+    const routesEnabled = config.routesEnabled === true;
     return {
       module: TaskRuntimeModule,
       imports: [
@@ -53,6 +64,7 @@ export class TaskRuntimeModule {
           ...TASK_RUNTIME_MONGOOSE_OPTIONS,
         }),
       ],
+      controllers: routesEnabled ? [TaskReadController] : [],
       providers: [
         {
           provide: TaskDataRepository,
@@ -109,8 +121,20 @@ export class TaskRuntimeModule {
         },
         {
           provide: TASK_RESOURCE_PROJECT_RESOLVER,
-          useClass: UnconfiguredTaskResourceProjectResolver,
+          useClass: routesEnabled
+            ? RepositoryTaskResourceProjectResolver
+            : UnconfiguredTaskResourceProjectResolver,
         },
+        // The read service reuses the single TaskDataRepository above.
+        ...(routesEnabled
+          ? [
+              {
+                provide: TASK_READ_REPOSITORY,
+                useExisting: TaskDataRepository,
+              },
+              TaskReadService,
+            ]
+          : []),
       ],
       exports: [
         TaskLifecycleCommandService,

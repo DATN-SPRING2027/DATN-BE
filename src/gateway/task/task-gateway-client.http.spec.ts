@@ -469,7 +469,8 @@ describe('dormant Task Gateway adapter over a real Task HTTP fixture', () => {
       const response = await makeClient(fixture.endpoint).request(
         listRequest(),
       );
-      expect(response.status).toBe(403);
+      // ERR-1: a request that must not reveal existence is answered 404.
+      expect(response.status).toBe(404);
       expect(fixture.state.authorizedContexts).toHaveLength(0);
     } finally {
       await fixture.close();
@@ -495,7 +496,8 @@ describe('dormant Task Gateway adapter over a real Task HTTP fixture', () => {
         } as unknown as Partial<TaskGatewayRequest>),
       });
 
-      expect(response.status).toBe(403);
+      // ERR-1: an unverified credential is answered 401, never a generic 403.
+      expect(response.status).toBe(401);
       expect(fixture.state.authorizedContexts).toHaveLength(0);
       expect(fixture.state.handler).not.toHaveBeenCalled();
     } finally {

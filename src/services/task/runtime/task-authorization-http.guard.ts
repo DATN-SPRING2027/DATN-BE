@@ -2,6 +2,7 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Logger,
   SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
@@ -13,6 +14,12 @@ import {
   type TaskAuthorizationResult,
   type TaskOperation,
 } from './task-authorization-boundary';
+import {
+  taskAuthorizationDeniedException,
+  taskAuthorizationUnavailableException,
+  taskNotFoundException,
+  taskUnauthenticatedException,
+} from './task-authorization-http.errors';
 
 export const TASK_HTTP_AUTHORIZATION_REQUIREMENT = Symbol(
   'TASK_HTTP_AUTHORIZATION_REQUIREMENT',
@@ -253,12 +260,19 @@ function hasForbiddenTargetCharacters(target: string): boolean {
 /**
  * Inert unless attached to an explicitly declared handler. It treats the
  * Authorization credential as an opaque verifier input; it does not select a
- * token profile, establish service identity, or map public rejection errors.
+ * token profile or establish service identity. A rejected request is answered
+ * with the ERR-1/ERR-2 outcome for its reason: 401 for a missing or unverified
+ * credential, 404 for a request that must not reveal existence, 503 when
+ * authorization cannot be evaluated, and a generic 500 (logged, never echoed)
+ * for a malformed internal authorization request; it never answers a generic 403.
  * Non-GET/HEAD handlers require Nest raw-body capture so the verifier can bind
- * the original body bytes. No handler is registered by TaskRuntimeModule.
+ * the original body bytes. No handler is registered by TaskRuntimeModule
+ * unless the explicit Task routes flag is on.
  */
 @Injectable()
 export class TaskAuthorizationHttpGuard implements CanActivate {
+  private readonly logger = new Logger(TaskAuthorizationHttpGuard.name);
+
   constructor(
     private readonly reflector: Reflector,
     private readonly authorizationBoundary: TaskAuthorizationBoundary,
@@ -276,13 +290,15 @@ export class TaskAuthorizationHttpGuard implements CanActivate {
       );
       request = context.switchToHttp().getRequest<TaskExpressRequest>();
     } catch {
-      return false;
+      throw taskAuthorizationUnavailableException();
     }
-    if (!requirement) return false;
+    // A handler that is not declared correctly fails closed as unavailable.
+    if (!requirement) throw taskAuthorizationUnavailableException();
 
-    const projectId = readParam(request.params, requirement.projectIdParam);
     const contextCandidate = readBearerCredential(request.headers);
-    if (!projectId || !contextCandidate) return false;
+    if (!contextCandidate) throw taskUnauthenticatedException();
+    const projectId = readParam(request.params, requirement.projectIdParam);
+    if (!projectId) throw taskNotFoundException();
 
     const resourceId =
       requirement.operation === 'detail' || requirement.operation === 'history'
@@ -293,25 +309,36 @@ export class TaskAuthorizationHttpGuard implements CanActivate {
         requirement.operation === 'history') &&
       !resourceId
     ) {
-      return false;
+      throw taskNotFoundException();
     }
 
     const requestBinding = createRequestBinding(request, projectId);
-    if (!requestBinding) return false;
+    if (!requestBinding) throw taskNotFoundException();
 
+    let result: TaskAuthorizationResult;
     try {
-      const result = await this.authorizationBoundary.authorize({
+      result = await this.authorizationBoundary.authorize({
         operation: requirement.operation,
         contextCandidate,
         requestBinding,
         requestedProjectId: projectId,
         ...(resourceId === undefined ? {} : { resourceId }),
       });
-      return (
-        result.kind === 'authorized' && attachAuthorizedContext(request, result)
-      );
     } catch {
-      return false;
+      throw taskAuthorizationUnavailableException();
     }
+    if (result.kind !== 'authorized') {
+      if (result.reason === 'INVALID_REQUEST') {
+        // ERR-2: a server fault. Only the reason is logged, never request data.
+        this.logger.error(
+          'Task authorization request was malformed (INVALID_REQUEST)',
+        );
+      }
+      throw taskAuthorizationDeniedException(result.reason);
+    }
+    if (!attachAuthorizedContext(request, result)) {
+      throw taskAuthorizationUnavailableException();
+    }
+    return true;
   }
 }

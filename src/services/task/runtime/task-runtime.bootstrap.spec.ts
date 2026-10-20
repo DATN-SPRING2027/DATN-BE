@@ -13,6 +13,8 @@ import {
 import type { Server as HttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { bootstrapTaskRuntime } from '../main';
+import { requestIdMiddleware } from '../../../common/http/request-id.middleware';
+import { TaskReadController } from '../http/task-read.controller';
 import { TaskRuntimeModule } from './task-runtime.module';
 
 const mockedCore = jest.requireMock('@nestjs/core') as unknown as {
@@ -53,6 +55,7 @@ describe('bootstrapTaskRuntime', () => {
 
   it('creates only the dormant local application on loopback', async () => {
     const app = {
+      use: jest.fn(),
       setGlobalPrefix: jest.fn(),
       enableShutdownHooks: jest.fn(),
       listen: jest.fn().mockResolvedValue(undefined),
@@ -72,9 +75,36 @@ describe('bootstrapTaskRuntime', () => {
     expect(runtimeModule.module).toBe(TaskRuntimeModule);
     expect(appOptions).toEqual({ logger: false, rawBody: true });
     expect(app.setGlobalPrefix).toHaveBeenCalledWith('internal');
+    expect(app.use).toHaveBeenCalledWith(requestIdMiddleware);
     expect(app.enableShutdownHooks).toHaveBeenCalled();
     expect(app.listen).toHaveBeenCalledWith(3909, '127.0.0.1');
     expect(app.close).not.toHaveBeenCalled();
+  });
+
+  it('passes the routes flag to the module only when TASK_ROUTES_ENABLED is true', async () => {
+    const app = {
+      use: jest.fn(),
+      setGlobalPrefix: jest.fn(),
+      enableShutdownHooks: jest.fn(),
+      listen: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    createNestApplication.mockResolvedValue(app as never);
+    const environment = {
+      NODE_ENV: 'test',
+      TASK_RUNTIME_ENABLED: 'true',
+      TASK_MONGODB_URI: 'mongodb://127.0.0.1:27017/continuum_task',
+      TASK_SERVICE_PORT: '3909',
+    };
+
+    await bootstrapTaskRuntime(environment);
+    await bootstrapTaskRuntime({ ...environment, TASK_ROUTES_ENABLED: 'true' });
+
+    const [withoutRoutes, withRoutes] = createNestApplication.mock.calls.map(
+      ([runtimeModule]) => runtimeModule as DynamicModule,
+    );
+    expect(withoutRoutes.controllers ?? []).toEqual([]);
+    expect(withRoutes.controllers).toEqual([TaskReadController]);
   });
 
   it.each([
@@ -85,6 +115,7 @@ describe('bootstrapTaskRuntime', () => {
     async (_step, failingMethod) => {
       const setupError = new Error('startup setup failed');
       const app = {
+        use: jest.fn(),
         setGlobalPrefix: jest.fn(),
         enableShutdownHooks: jest.fn(),
         listen: jest.fn().mockResolvedValue(undefined),
@@ -152,6 +183,7 @@ describe('bootstrapTaskRuntime', () => {
   it('preserves the listen error when Nest shutdown also rejects', async () => {
     const listenError = new Error('address already in use');
     const app = {
+      use: jest.fn(),
       setGlobalPrefix: jest.fn(),
       enableShutdownHooks: jest.fn(),
       listen: jest.fn().mockRejectedValue(listenError),
