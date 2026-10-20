@@ -105,6 +105,17 @@ describe('ProjectAccessService', () => {
     expect(result).toEqual({ data: candidates });
   });
 
+  it('does not query member candidates when the search is missing or blank', async () => {
+    await expect(
+      service.listMemberCandidates(actor, projectId),
+    ).resolves.toEqual({ data: [] });
+    await expect(
+      service.listMemberCandidates(actor, projectId, '   '),
+    ).resolves.toEqual({ data: [] });
+
+    expect(listMemberCandidates).not.toHaveBeenCalled();
+  });
+
   it('delegates listMembers and returns paginated result', async () => {
     listMembers.mockResolvedValue({
       data: [

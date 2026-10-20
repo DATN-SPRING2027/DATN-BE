@@ -4434,7 +4434,7 @@
       "post": {
         "tags": ["Projects"],
         "summary": "Create a project",
-    "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped TEAM_LEADER RoleAssignment. The current TEAM_LEADER Role must include project.read, project.members.list, project.members.add, project.members.remove, project.update, and project.visibility.manage. The Project, membership, assignment, and project.create audit event are committed atomically. The bootstrap creates no separate Project owner or Team record.",
+        "description": "Any authenticated User with an ACTIVE Organization Membership in the trusted Organization Context may create a Project in that Organization. New Projects are PRIVATE. An ADMIN or TEAM_LEADER role and a project.create capability grant are not required. Creation bootstraps the creator as an ACTIVE ProjectMembership with a project-scoped TEAM_LEADER RoleAssignment. The current TEAM_LEADER Role must include project.read, project.members.list, project.members.add, project.members.remove, project.update, and project.visibility.manage. The Project, membership, assignment, and project.create audit event are committed atomically. The bootstrap creates no separate Project owner or Team record. Project code is unique within the Organization; a duplicate returns 409 PROJECT_CODE_CONFLICT. Create does not use an idempotency key, so retrying after a lost response may return this conflict instead of replaying the original result.",
         "operationId": "createProject",
         "requestBody": {
           "required": true,
@@ -4610,7 +4610,7 @@
           "Project Memberships"
         ],
         "summary": "Search project member candidates",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them. Responses are not cacheable.",
+        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them; eligibility filters are applied before the cap. A missing or blank email/search query returns an empty list without enumerating candidates. Responses are not cacheable.",
         "operationId": "listProjectMemberCandidates",
         "parameters": [
           {
@@ -4621,8 +4621,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             },
             "description": "Case-insensitive literal substring used to match an active Organization member's email."
           },
@@ -4631,15 +4630,14 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             },
             "description": "Compatibility alias for email."
           }
         ],
         "responses": {
           "200": {
-            "description": "Matching active Organization members, up to 50 candidates.",
+            "description": "Matching active Organization members, up to 50 candidates; a missing or blank search query returns an empty list.",
             "content": {
               "application/json": {
                 "schema": {

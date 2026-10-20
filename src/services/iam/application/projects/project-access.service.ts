@@ -66,10 +66,13 @@ export class ProjectAccessService {
     projectId: string,
     search?: string,
   ) {
+    const searchTerm = search?.trim();
+    if (!searchTerm) return { data: [] };
+
     const candidates = await this.repository.listMemberCandidates(
       actor.organizationId,
       projectId,
-      search,
+      searchTerm,
     );
     return { data: candidates };
   }
