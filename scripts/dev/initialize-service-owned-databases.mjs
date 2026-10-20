@@ -81,6 +81,8 @@ const EXPECTED_SEED = Object.freeze({
         'project.members.list',
         'project.members.add',
         'project.members.remove',
+        'project.update',
+        'project.visibility.manage',
       ],
       isSystem: true,
     },

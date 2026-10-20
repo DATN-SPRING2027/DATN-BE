@@ -18,7 +18,38 @@ describe('createTaskRuntimeConfig', () => {
       mongoUri:
         'mongodb://task-user:fixture-secret@127.0.0.1:27017/?authSource=admin',
       port: 3909,
+      routesEnabled: false,
     });
+  });
+
+  it('keeps the Task routes disabled unless TASK_ROUTES_ENABLED is exactly true', () => {
+    expect(createTaskRuntimeConfig(environment()).routesEnabled).toBe(false);
+    for (const value of ['', 'false', 'TRUE', '1', 'yes', ' true']) {
+      expect(
+        createTaskRuntimeConfig(environment({ TASK_ROUTES_ENABLED: value }))
+          .routesEnabled,
+      ).toBe(false);
+    }
+    expect(
+      createTaskRuntimeConfig(environment({ TASK_ROUTES_ENABLED: 'true' }))
+        .routesEnabled,
+    ).toBe(true);
+  });
+
+  it('does not let TASK_ROUTES_ENABLED bypass the runtime gates', () => {
+    expect(() =>
+      createTaskRuntimeConfig(
+        environment({ NODE_ENV: 'production', TASK_ROUTES_ENABLED: 'true' }),
+      ),
+    ).toThrow('Task runtime is restricted to development and test');
+    expect(() =>
+      createTaskRuntimeConfig(
+        environment({
+          TASK_RUNTIME_ENABLED: 'false',
+          TASK_ROUTES_ENABLED: 'true',
+        }),
+      ),
+    ).toThrow('TASK_RUNTIME_ENABLED must be true');
   });
 
   it('accepts only the Task database path', () => {

@@ -71,6 +71,8 @@ function fixture(
     'project.members.list',
     'project.members.add',
     'project.members.remove',
+    'project.update',
+    'project.visibility.manage',
   ];
   const roles = {
     findOne: jest.fn().mockReturnValue(

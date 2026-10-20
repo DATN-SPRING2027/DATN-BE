@@ -12,8 +12,12 @@ import {
   type TaskResourceProjectResolver,
 } from './task-authorization-boundary';
 import {
+  TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES,
   TASK_INBOUND_CONTEXT_VERIFIER,
+  TASK_INBOUND_CONTEXT_VERIFIER_FAULTS,
+  TaskInboundContextVerificationError,
   type TaskInboundContext,
+  type TaskInboundContextTrustBoundary,
   type TaskInboundContextVerifier,
 } from './task-inbound-context';
 
@@ -121,6 +125,8 @@ describe('TaskAuthorizationBoundary', () => {
   it('uses default Nest providers and rejects caller-supplied identity headers', async () => {
     const { boundary, close } = await createRuntimeBoundary();
 
+    // The default verifier is unconfigured, so it cannot verify anything: that
+    // is a verifier outage (503), not a rejected credential (401).
     await expect(
       boundary.authorize(
         request({
@@ -132,8 +138,103 @@ describe('TaskAuthorizationBoundary', () => {
           },
         }),
       ),
-    ).resolves.toEqual({ kind: 'denied', reason: 'UNVERIFIED_CONTEXT' });
+    ).resolves.toEqual({
+      kind: 'denied',
+      reason: 'CONTEXT_VERIFIER_UNAVAILABLE',
+    });
     await close();
+  });
+
+  describe('verifier failures (ERR-2)', () => {
+    // A verifier that cannot verify is not a rejected credential. Every other
+    // failure of the trust boundary is a credential that was missing or refused.
+    const verifierFaults: readonly string[] = [
+      'VERIFIER_UNAVAILABLE',
+      'KEY_RESOLUTION_FAILED',
+      'VERIFICATION_FAILED',
+      'MALFORMED_CONTEXT',
+    ];
+
+    it('names exactly the verifier faults and only failures the trust boundary can emit', () => {
+      expect([...TASK_INBOUND_CONTEXT_VERIFIER_FAULTS].sort()).toEqual(
+        [...verifierFaults].sort(),
+      );
+      for (const fault of TASK_INBOUND_CONTEXT_VERIFIER_FAULTS) {
+        expect(TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES).toContain(fault);
+      }
+    });
+
+    it.each([...TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES])(
+      'classifies the verifier failure %s',
+      async (failure) => {
+        const scopes = scopeProvider();
+        const policy = permissionPolicy();
+        const { boundary, close } = await createRuntimeBoundary({
+          verifier: {
+            verify: () => {
+              throw new TaskInboundContextVerificationError(failure);
+            },
+          },
+          scopeProvider: scopes,
+          permissionPolicy: policy,
+        });
+
+        const result = await boundary.authorize(request());
+
+        expect(result).toEqual({
+          kind: 'denied',
+          reason: verifierFaults.includes(failure)
+            ? 'CONTEXT_VERIFIER_UNAVAILABLE'
+            : 'UNVERIFIED_CONTEXT',
+        });
+        expect(Object.keys(result).sort()).toEqual(['kind', 'reason']);
+        expect(scopes.resolve).not.toHaveBeenCalled();
+        expect(policy.decide).not.toHaveBeenCalled();
+        await close();
+      },
+    );
+
+    it('treats a throw from the trust boundary itself as a verifier outage', async () => {
+      const scopes = scopeProvider();
+      const policy = permissionPolicy();
+      const boundary = new TaskAuthorizationBoundary(
+        {
+          verify: () => Promise.reject(new Error('trust-boundary-canary')),
+        } as unknown as TaskInboundContextTrustBoundary,
+        scopes,
+        policy,
+        { resolveProjectId: jest.fn() },
+      );
+
+      const result = await boundary.authorize(request());
+
+      expect(result).toEqual({
+        kind: 'denied',
+        reason: 'CONTEXT_VERIFIER_UNAVAILABLE',
+      });
+      expect(JSON.stringify(result)).not.toContain('canary');
+      expect(scopes.resolve).not.toHaveBeenCalled();
+      expect(policy.decide).not.toHaveBeenCalled();
+    });
+
+    it('treats an unexpected error raised while verifying as a verifier outage', async () => {
+      const { boundary, close } = await createRuntimeBoundary({
+        verifier: {
+          verify: () => {
+            throw new Error('jwks-secret-canary');
+          },
+        },
+      });
+
+      const result = await boundary.authorize(request());
+
+      expect(result).toEqual({
+        kind: 'denied',
+        reason: 'CONTEXT_VERIFIER_UNAVAILABLE',
+      });
+      expect(JSON.stringify(result)).not.toContain('canary');
+      await close();
+    });
   });
 
   it('denies when Project scope evidence is not configured', async () => {
@@ -196,7 +297,7 @@ describe('TaskAuthorizationBoundary', () => {
     const { boundary, close } = await createRuntimeBoundary({
       verifier: {
         verify: () => {
-          throw new Error('private verifier detail');
+          throw new TaskInboundContextVerificationError('INVALID_SIGNATURE');
         },
       },
       scopeProvider: scopes,
@@ -205,7 +306,6 @@ describe('TaskAuthorizationBoundary', () => {
 
     const result = await boundary.authorize(request());
     expect(result).toEqual({ kind: 'denied', reason: 'UNVERIFIED_CONTEXT' });
-    expect(JSON.stringify(result)).not.toContain('private verifier detail');
     expect(scopes.resolve).not.toHaveBeenCalled();
     expect(policy.decide).not.toHaveBeenCalled();
     await close();
@@ -225,9 +325,11 @@ describe('TaskAuthorizationBoundary', () => {
       permissionPolicy: policy,
     });
 
+    // Output the verifier should never produce is a verifier fault, not a
+    // rejected credential.
     await expect(boundary.authorize(request())).resolves.toEqual({
       kind: 'denied',
-      reason: 'UNVERIFIED_CONTEXT',
+      reason: 'CONTEXT_VERIFIER_UNAVAILABLE',
     });
     expect(scopes.resolve).not.toHaveBeenCalled();
     expect(policy.decide).not.toHaveBeenCalled();
@@ -353,6 +455,31 @@ describe('TaskAuthorizationBoundary', () => {
       kind: 'denied',
       reason: 'RESOURCE_SCOPE_UNRESOLVED',
     });
+    expect(scopes.resolve).not.toHaveBeenCalled();
+    await close();
+  });
+
+  it('reports an unavailable resource resolver apart from a missing resource and sanitizes the failure', async () => {
+    const scopes = scopeProvider();
+    const resolver: TaskResourceProjectResolver = {
+      resolveProjectId: jest
+        .fn()
+        .mockRejectedValue(new Error('db-secret-canary')),
+    };
+    const { boundary, close } = await createRuntimeBoundary({
+      verifier: { verify: jest.fn().mockResolvedValue(verifiedContext) },
+      scopeProvider: scopes,
+      resourceResolver: resolver,
+    });
+
+    const result = await boundary.authorize(
+      request({ operation: 'detail', resourceId: 'task-id' }),
+    );
+    expect(result).toEqual({
+      kind: 'denied',
+      reason: 'RESOURCE_SCOPE_UNAVAILABLE',
+    });
+    expect(JSON.stringify(result)).not.toContain('db-secret-canary');
     expect(scopes.resolve).not.toHaveBeenCalled();
     await close();
   });

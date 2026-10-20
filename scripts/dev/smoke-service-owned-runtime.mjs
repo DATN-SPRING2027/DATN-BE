@@ -415,14 +415,14 @@ async function main() {
         projectId,
       }),
     ]);
-    if (membershipCount !== 1 || memberAssignmentCount !== 1) {
+    if (membershipCount !== 1 || memberAssignmentCount !== 0) {
       throw new Error(
-        'Project creation did not bootstrap exactly one active Project MEMBER.',
+        'Project creation did not preserve one active ProjectMembership without an ordinary MEMBER assignment.',
       );
     }
-    if (leaderAssignmentCount !== 0 || teamCount !== 0) {
+    if (leaderAssignmentCount !== 1 || teamCount !== 0) {
       throw new Error(
-        'Project creation added a Leader Project assignment or Team.',
+        'Project creation did not bootstrap exactly one Project TEAM_LEADER or created a Team.',
       );
     }
 

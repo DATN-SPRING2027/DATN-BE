@@ -1,5 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { TaskInboundContextTrustBoundary } from './task-inbound-context';
+import {
+  TASK_INBOUND_CONTEXT_VERIFIER_FAULTS,
+  TaskInboundContextTrustBoundary,
+} from './task-inbound-context';
+
+const verifierFaults: ReadonlySet<string> = new Set(
+  TASK_INBOUND_CONTEXT_VERIFIER_FAULTS,
+);
 
 export const TASK_PROJECT_SCOPE_EVIDENCE_PROVIDER = Symbol(
   'TASK_PROJECT_SCOPE_EVIDENCE_PROVIDER',
@@ -80,8 +87,10 @@ export interface TaskAuthorizationRequest {
 export type TaskAuthorizationDenialReason =
   | 'INVALID_REQUEST'
   | 'UNVERIFIED_CONTEXT'
+  | 'CONTEXT_VERIFIER_UNAVAILABLE'
   | 'PROJECT_MISMATCH'
   | 'RESOURCE_SCOPE_UNRESOLVED'
+  | 'RESOURCE_SCOPE_UNAVAILABLE'
   | 'RESOURCE_SCOPE_MISMATCH'
   | 'PROJECT_SCOPE_DENIED'
   | 'PROJECT_SCOPE_UNAVAILABLE'
@@ -274,10 +283,17 @@ export class TaskAuthorizationBoundary {
         request.requestBinding,
       );
     } catch {
-      return { kind: 'denied', reason: 'UNVERIFIED_CONTEXT' };
+      // An unexpected error while verifying is a verifier fault, not a refused
+      // credential (ERR-2); the cause is never exposed.
+      return { kind: 'denied', reason: 'CONTEXT_VERIFIER_UNAVAILABLE' };
     }
     if (verifiedContext.kind !== 'verified') {
-      return { kind: 'denied', reason: 'UNVERIFIED_CONTEXT' };
+      return {
+        kind: 'denied',
+        reason: verifierFaults.has(verifiedContext.reason)
+          ? 'CONTEXT_VERIFIER_UNAVAILABLE'
+          : 'UNVERIFIED_CONTEXT',
+      };
     }
 
     const context = verifiedContext.context;
@@ -297,7 +313,8 @@ export class TaskAuthorizationBoundary {
         }
         resolvedResourceProjectId = resolved;
       } catch {
-        return { kind: 'denied', reason: 'RESOURCE_SCOPE_UNRESOLVED' };
+        // A resolver failure is not proof that the resource is missing.
+        return { kind: 'denied', reason: 'RESOURCE_SCOPE_UNAVAILABLE' };
       }
       if (resolvedResourceProjectId !== request.requestedProjectId) {
         return { kind: 'denied', reason: 'RESOURCE_SCOPE_MISMATCH' };

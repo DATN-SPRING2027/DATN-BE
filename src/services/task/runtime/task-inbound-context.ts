@@ -26,6 +26,22 @@ export const TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES = [
 export type TaskInboundContextVerificationFailure =
   (typeof TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES)[number];
 
+/**
+ * Failures that mean the verifier could not verify, not that the credential was
+ * refused (DATN-97 ERR-2): they are a temporary service condition (503), while
+ * every other failure is a missing or refused credential (401).
+ * VERIFICATION_FAILED and UNSUPPORTED_PROFILE are still shared by a credential
+ * fault and a server fault (a replayed assertion; a key provider returning a
+ * mismatched key); the verifier pull request must split them.
+ */
+export const TASK_INBOUND_CONTEXT_VERIFIER_FAULTS: readonly TaskInboundContextVerificationFailure[] =
+  [
+    'VERIFIER_UNAVAILABLE',
+    'KEY_RESOLUTION_FAILED',
+    'VERIFICATION_FAILED',
+    'MALFORMED_CONTEXT',
+  ];
+
 const verificationFailureSet = new Set<string>(
   TASK_INBOUND_CONTEXT_VERIFICATION_FAILURES,
 );

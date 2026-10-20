@@ -723,6 +723,8 @@ describe('IAM OpenAPI contract', () => {
     );
     expect(createProject?.description).toContain('project.members.add');
     expect(createProject?.description).toContain('project.members.remove');
+    expect(createProject?.description).toContain('project.update');
+    expect(createProject?.description).toContain('project.visibility.manage');
     expect(createProject?.description).toContain(
       'no separate Project owner or Team record',
     );
@@ -768,6 +770,9 @@ describe('IAM OpenAPI contract', () => {
   });
 
   it('documents Project Access V1 scope, permission codes, and leader replacement', () => {
+    const project = contract.paths['/api/v1/iam/projects/{projectId}'];
+    const settingsAccess =
+      contract.paths['/api/v1/iam/projects/{projectId}/settings-access'].get;
     const visibility =
       contract.paths['/api/v1/iam/projects/{projectId}/visibility'].patch;
     const memberList =
@@ -783,6 +788,32 @@ describe('IAM OpenAPI contract', () => {
         '/api/v1/iam/projects/{projectId}/memberships/{membershipId}'
       ].patch;
     const leaders = contract.paths['/api/v1/iam/projects/{projectId}/leaders'];
+    const leaderCandidates =
+      contract.paths['/api/v1/iam/projects/{projectId}/leader-candidates'].get;
+    expect(project.patch?.operationId).toBe('updateProject');
+    expect(project.patch?.description).toContain('project.update');
+    expect(project.patch?.description).toContain('name and/or description');
+    expect(project.patch?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/UpdateProjectRequest' },
+        },
+      },
+    });
+    expect(contract.components.schemas.UpdateProjectRequest).toMatchObject({
+      additionalProperties: false,
+      minProperties: 1,
+      properties: {
+        name: { type: 'string', maxLength: 200 },
+        description: { type: ['string', 'null'], maxLength: 2000 },
+      },
+    });
+    expect(
+      contract.components.schemas.UpdateProjectRequest.properties,
+    ).not.toHaveProperty('status');
+    expect(settingsAccess?.operationId).toBe('getProjectSettingsAccess');
+    expect(settingsAccess?.description).toContain('project.update');
+    expect(settingsAccess?.responses['200']).toBeDefined();
     expect(visibility?.description).toContain('project.visibility.manage');
     expect(visibility?.description).toContain('PRIVATE to PUBLIC');
     expect(visibility?.description).toContain('PUBLIC to PRIVATE');
@@ -829,6 +860,16 @@ describe('IAM OpenAPI contract', () => {
       'project.members.role.change permission is disabled',
     );
     expect(leaders.post?.description).toContain('project.leader.manage');
+    expect(leaders.get?.operationId).toBe('listProjectLeaders');
+    expect(leaders.get?.description).toContain('only userId, fullName, email');
+    expect(leaderCandidates?.operationId).toBe('listProjectLeaderCandidates');
+    expect(leaderCandidates?.description).toContain('project.leader.manage');
+    expect(
+      contract.components.schemas.ProjectLeader.properties,
+    ).not.toHaveProperty('password');
+    expect(
+      contract.components.schemas.ProjectLeader.properties,
+    ).not.toHaveProperty('token');
     expect(leaders.put?.description).toContain('PROJECT_LEADER_CHANGED');
     expect(
       contract.paths['/api/v1/iam/projects/{projectId}/leaders/{userId}'].delete
