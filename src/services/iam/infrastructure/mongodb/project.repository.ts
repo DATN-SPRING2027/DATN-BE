@@ -14,6 +14,7 @@ import type {
   ProjectRepository,
   ProjectStatus,
 } from '../../application/projects/project.repository';
+import { PROJECT_LEADER_REQUIRED_PERMISSIONS } from '../../application/projects/project-permissions';
 import { AuthorizationPolicy } from '../../application/authorization/authorization.policy';
 import {
   AUDIT_DATABASE_NAME,
@@ -90,12 +91,7 @@ export class MongoProjectRepository implements ProjectRepository {
           .session(session)
           .lean()
           .exec();
-        const requiredLeaderPermissions = [
-          'project.read',
-          'project.members.list',
-          'project.members.add',
-          'project.members.remove',
-        ];
+        const requiredLeaderPermissions = PROJECT_LEADER_REQUIRED_PERMISSIONS;
         if (
           !leaderRole ||
           leaderRole.code !== 'TEAM_LEADER' ||

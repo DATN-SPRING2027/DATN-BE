@@ -13,8 +13,12 @@ import type {
   ProjectAccessRepository,
   ProjectMembershipRecord,
   ProjectMemberCandidateRecord,
+  ProjectLeaderRecord,
+  ProjectLeaderCandidateRecord,
   ProjectMembershipListQuery,
+  ProjectSettingsUpdateInput,
 } from '../../application/projects/project-access.repository';
+import { PROJECT_LEADER_REQUIRED_PERMISSIONS } from '../../application/projects/project-permissions';
 import type {
   ProjectRecord,
   ProjectStatus,
@@ -94,6 +98,8 @@ interface OrganizationMembershipDocument {
 const modelName = (collection: string) =>
   `${IAM_PERSISTENCE.databaseName}_${collection}`;
 const validId = (value: string) => /^[a-f\d]{24}$/i.test(value);
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const projectNotFound = () =>
   new NotFoundException({
     code: 'PROJECT_NOT_FOUND',
@@ -117,6 +123,70 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     @Optional()
     private readonly authorizationPolicy = new AuthorizationPolicy(),
   ) {}
+
+  async updateSettings(
+    organizationId: string,
+    actorId: string,
+    projectId: string,
+    input: ProjectSettingsUpdateInput,
+  ): Promise<ProjectRecord> {
+    this.assertIds(organizationId, actorId, projectId);
+    const connection = this.requireConnection();
+    const session = await connection.startSession();
+    try {
+      let result: ProjectRecord | undefined;
+      await session.withTransaction(async () => {
+        const authorizedProject = await this.authorizeMutation(
+          organizationId,
+          actorId,
+          projectId,
+          'project.update',
+          session,
+        );
+        const update: Record<string, unknown> = {};
+        if (input.name !== undefined && input.name !== authorizedProject.name)
+          update.name = input.name;
+        if (Object.hasOwn(input, 'description')) {
+          const nextDescription = input.description ?? null;
+          const currentDescription = authorizedProject.description ?? null;
+          if (nextDescription !== currentDescription)
+            update.description = nextDescription;
+        }
+        if (Object.keys(update).length === 0) {
+          result = this.projectRecord(authorizedProject);
+          return;
+        }
+
+        const project = await this.model<ProjectDocument>('projects')
+          .findOneAndUpdate(
+            {
+              _id: new Types.ObjectId(projectId),
+              organizationId: new Types.ObjectId(organizationId),
+              status: 'ACTIVE',
+            },
+            { $set: update },
+            { new: true, session, runValidators: true },
+          )
+          .lean()
+          .exec();
+        if (!project) throw projectNotFound();
+        result = this.projectRecord(project);
+        await this.audit(session, {
+          organizationId,
+          projectId,
+          actorId,
+          action: 'PROJECT_SETTINGS_UPDATED',
+          targetResource: 'PROJECT',
+          targetResourceId: projectId,
+        });
+      });
+      if (!result)
+        throw new Error('Project settings transaction did not finish');
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
 
   async changeVisibility(
     organizationId: string,
@@ -330,6 +400,238 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       avatarUrl: u.avatarUrl ?? null,
       organizationMembershipStatus: 'ACTIVE',
       isProjectMember: projectMemberSet.has(String(u.userId)),
+    }));
+  }
+
+  async listLeaders(
+    organizationId: string,
+    projectId: string,
+  ): Promise<ProjectLeaderRecord[]> {
+    this.assertIds(organizationId, projectId);
+    await this.requireActiveProject(organizationId, projectId);
+    const organization = new Types.ObjectId(organizationId);
+    const project = new Types.ObjectId(projectId);
+    const assignments = await this.model<RoleAssignmentDocument>(
+      'role_assignments',
+    )
+      .find({
+        organizationId: organization,
+        projectId: project,
+        roleCode: 'TEAM_LEADER',
+      })
+      .select({ _id: 1, userId: 1, roleId: 1 })
+      .lean()
+      .exec();
+    if (assignments.length === 0) return [];
+
+    const roleIds = [
+      ...new Map(
+        assignments.map((item) => [String(item.roleId), item.roleId]),
+      ).values(),
+    ];
+    const roles = await this.model<RoleDocument>('roles')
+      .find({ _id: { $in: roleIds } })
+      .select({ _id: 1, code: 1 })
+      .lean()
+      .exec();
+    const currentRoleIds = new Set(
+      roles
+        .filter((role) => role.code === 'TEAM_LEADER')
+        .map((role) => String(role._id)),
+    );
+    const currentAssignments = assignments.filter((assignment) =>
+      currentRoleIds.has(String(assignment.roleId)),
+    );
+    if (currentAssignments.length === 0) return [];
+
+    const userIds = [
+      ...new Map(
+        currentAssignments.map((item) => [String(item.userId), item.userId]),
+      ).values(),
+    ];
+    const [users, organizationMemberships, projectMemberships] =
+      await Promise.all([
+        this.model<UserDocument>('users')
+          .find({ _id: { $in: userIds } })
+          .select({ _id: 1, email: 1, fullName: 1, avatarUrl: 1, status: 1 })
+          .lean()
+          .exec(),
+        this.model<OrganizationMembershipDocument>('organization_memberships')
+          .find({ organizationId: organization, userId: { $in: userIds } })
+          .select({ userId: 1, status: 1 })
+          .lean()
+          .exec(),
+        this.model<MembershipDocument>('project_memberships')
+          .find({
+            organizationId: organization,
+            projectId: project,
+            userId: { $in: userIds },
+          })
+          .select({ userId: 1, status: 1 })
+          .lean()
+          .exec(),
+      ]);
+    const usersById = new Map(users.map((user) => [String(user._id), user]));
+    const activeOrganizationMembers = new Set(
+      organizationMemberships
+        .filter((membership) => membership.status === 'ACTIVE')
+        .map((membership) => String(membership.userId)),
+    );
+    const activeProjectMembers = new Set(
+      projectMemberships
+        .filter((membership) => membership.status === 'ACTIVE')
+        .map((membership) => String(membership.userId)),
+    );
+
+    return currentAssignments
+      .flatMap((assignment): ProjectLeaderRecord[] => {
+        const userId = String(assignment.userId);
+        const user = usersById.get(userId);
+        if (!user) return [];
+        const active =
+          user.status === 'ACTIVE' &&
+          activeOrganizationMembers.has(userId) &&
+          activeProjectMembers.has(userId);
+        return [
+          {
+            userId,
+            fullName: user.fullName ?? '',
+            email: user.email ?? '',
+            avatarUrl: user.avatarUrl ?? null,
+            role: 'TEAM_LEADER',
+            status: active ? 'ACTIVE' : 'INACTIVE',
+          },
+        ];
+      })
+      .sort(
+        (left, right) =>
+          left.fullName.localeCompare(right.fullName) ||
+          left.email.localeCompare(right.email),
+      );
+  }
+
+  async listLeaderCandidates(
+    organizationId: string,
+    projectId: string,
+    search?: string,
+  ): Promise<ProjectLeaderCandidateRecord[]> {
+    this.assertIds(organizationId, projectId);
+    await this.requireActiveProject(organizationId, projectId);
+    const query = search?.trim();
+    if (!query) return [];
+
+    const organization = new Types.ObjectId(organizationId);
+    const project = new Types.ObjectId(projectId);
+    const projectMemberships = await this.model<MembershipDocument>(
+      'project_memberships',
+    )
+      .find({
+        organizationId: organization,
+        projectId: project,
+        status: 'ACTIVE',
+      })
+      .select({ userId: 1 })
+      .lean()
+      .exec();
+    const projectMemberIds = [
+      ...new Map(
+        projectMemberships.map((membership) => [
+          String(membership.userId),
+          membership.userId,
+        ]),
+      ).values(),
+    ];
+    if (projectMemberIds.length === 0) return [];
+
+    const organizationMemberships =
+      await this.model<OrganizationMembershipDocument>(
+        'organization_memberships',
+      )
+        .find({
+          organizationId: organization,
+          userId: { $in: projectMemberIds },
+          status: 'ACTIVE',
+        })
+        .select({ userId: 1 })
+        .lean()
+        .exec();
+    const activeOrganizationMemberIds = new Set(
+      organizationMemberships.map((membership) => String(membership.userId)),
+    );
+    const scopedProjectMemberIds = projectMemberIds.filter((userId) =>
+      activeOrganizationMemberIds.has(String(userId)),
+    );
+    if (scopedProjectMemberIds.length === 0) return [];
+
+    const projectAssignments = await this.model<RoleAssignmentDocument>(
+      'role_assignments',
+    )
+      .find({
+        organizationId: organization,
+        projectId: project,
+        userId: { $in: scopedProjectMemberIds },
+        roleCode: { $in: ['MEMBER', 'TEAM_LEADER'] },
+      })
+      .select({ userId: 1, roleId: 1, roleCode: 1 })
+      .lean()
+      .exec();
+    const assignedRoleIds = [
+      ...new Map(
+        projectAssignments.map((assignment) => [
+          String(assignment.roleId),
+          assignment.roleId,
+        ]),
+      ).values(),
+    ];
+    const assignedRoles = assignedRoleIds.length
+      ? await this.model<RoleDocument>('roles')
+          .find({ _id: { $in: assignedRoleIds } })
+          .select({ _id: 1, code: 1 })
+          .lean()
+          .exec()
+      : [];
+    const roleCodes = new Map(
+      assignedRoles.map((role) => [String(role._id), role.code]),
+    );
+    const validMemberIds = new Set<string>();
+    const currentLeaderIds = new Set<string>();
+    for (const assignment of projectAssignments) {
+      const userId = String(assignment.userId);
+      const resolvedRoleCode = roleCodes.get(String(assignment.roleId));
+      if (
+        assignment.roleCode === 'TEAM_LEADER' &&
+        resolvedRoleCode === 'TEAM_LEADER'
+      )
+        currentLeaderIds.add(userId);
+      if (assignment.roleCode === 'MEMBER' && resolvedRoleCode === 'MEMBER')
+        validMemberIds.add(userId);
+    }
+
+    const candidateIds = scopedProjectMemberIds.filter((userId) => {
+      const id = String(userId);
+      return validMemberIds.has(id) && !currentLeaderIds.has(id);
+    });
+    if (candidateIds.length === 0) return [];
+
+    const users = await this.model<UserDocument>('users')
+      .find({
+        _id: { $in: candidateIds },
+        status: 'ACTIVE',
+        email: new RegExp(escapeRegExp(query), 'i'),
+      })
+      .select({ _id: 1, email: 1, fullName: 1, avatarUrl: 1 })
+      .sort({ email: 1, _id: 1 })
+      .limit(50)
+      .lean()
+      .exec();
+
+    return users.map((user) => ({
+      userId: String(user._id),
+      fullName: user.fullName ?? '',
+      email: user.email ?? '',
+      avatarUrl: user.avatarUrl ?? null,
+      role: 'MEMBER' as const,
+      status: 'ACTIVE' as const,
     }));
   }
 
@@ -676,12 +978,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
         );
 
         const leaderRole = await this.currentRole('TEAM_LEADER', session);
-        const leaderPermissions = [
-          'project.read',
-          'project.members.list',
-          'project.members.add',
-          'project.members.remove',
-        ];
+        const leaderPermissions = PROJECT_LEADER_REQUIRED_PERMISSIONS;
         if (
           !leaderRole ||
           !leaderPermissions.every((permission) =>
@@ -1000,12 +1297,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
 
         const memberRole = await this.currentRole('MEMBER', session);
         const leaderRole = await this.currentRole('TEAM_LEADER', session);
-        const leaderPermissions = [
-          'project.read',
-          'project.members.list',
-          'project.members.add',
-          'project.members.remove',
-        ];
+        const leaderPermissions = PROJECT_LEADER_REQUIRED_PERMISSIONS;
         if (!memberRole?.permissions.includes('project.read'))
           throw new ConflictException({
             code: 'PROJECT_MEMBER_ROLE_UNAVAILABLE',
@@ -1112,6 +1404,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       ProjectAccessPermission,
       | 'project.visibility.manage'
       | 'project.leader.manage'
+      | 'project.update'
       | 'project.members.add'
       | 'project.members.remove'
     >,
@@ -1221,27 +1514,43 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     });
     if (!decision.allowed) throw new ForbiddenException();
 
-    const requiresOrganizationAdmin =
-      permission === 'project.visibility.manage' ||
-      permission === 'project.leader.manage';
-    const expectedRole = requiresOrganizationAdmin ? 'ADMIN' : 'TEAM_LEADER';
-    const expectedProjectId = requiresOrganizationAdmin
-      ? null
-      : projectObjectId.toHexString();
-    const authorizationAssignment = assignments.find((assignment) => {
-      const role = rolesById.get(String(assignment.roleId));
-      return (
-        String(assignment.userId) === actorId &&
-        String(assignment.organizationId) === organizationId &&
-        (assignment.projectId == null ? null : String(assignment.projectId)) ===
-          expectedProjectId &&
-        assignment.roleCode === expectedRole &&
-        role?.code === expectedRole &&
-        role.permissions.includes(permission)
-      );
-    });
-    if (!user || !membership || !authorizationAssignment)
+    const projectIdValue = projectObjectId.toHexString();
+    const allowedScopes: readonly {
+      roleCode: 'ADMIN' | 'TEAM_LEADER';
+      projectId: string | null;
+    }[] =
+      permission === 'project.visibility.manage'
+        ? [
+            { roleCode: 'ADMIN', projectId: null },
+            { roleCode: 'TEAM_LEADER', projectId: projectIdValue },
+          ]
+        : permission === 'project.leader.manage'
+          ? [{ roleCode: 'ADMIN', projectId: null }]
+          : [{ roleCode: 'TEAM_LEADER', projectId: projectIdValue }];
+    const authorizationMatch = allowedScopes
+      .map((scope) => ({
+        scope,
+        assignment: assignments.find((assignment) => {
+          const role = rolesById.get(String(assignment.roleId));
+          return (
+            String(assignment.userId) === actorId &&
+            String(assignment.organizationId) === organizationId &&
+            (assignment.projectId == null
+              ? null
+              : String(assignment.projectId)) === scope.projectId &&
+            assignment.roleCode === scope.roleCode &&
+            role?.code === scope.roleCode &&
+            role.permissions.includes(permission)
+          );
+        }),
+      }))
+      .find((candidate) => candidate.assignment !== undefined);
+    const authorizationAssignment = authorizationMatch?.assignment;
+    const expectedRole = authorizationMatch?.scope.roleCode;
+    const expectedProjectId = authorizationMatch?.scope.projectId;
+    if (!user || !membership || !authorizationAssignment || !expectedRole)
       throw new ForbiddenException();
+    const requiresProjectMembership = expectedRole === 'TEAM_LEADER';
 
     // These version-key writes create a same-document write conflict with a
     // concurrent membership, assignment, permission, user, or Project change.
@@ -1262,7 +1571,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       },
       session,
     );
-    if (!requiresOrganizationAdmin) {
+    if (requiresProjectMembership) {
       if (!projectMembership) throw new ForbiddenException();
       await this.fenceAuthorizationDocument(
         'project_memberships',

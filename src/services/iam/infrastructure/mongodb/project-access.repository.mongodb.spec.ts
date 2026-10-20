@@ -194,6 +194,8 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
             'project.members.list',
             'project.members.add',
             'project.members.remove',
+            'project.update',
+            'project.visibility.manage',
           ],
           isSystem: true,
         },
@@ -381,12 +383,81 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
       await expect(
         repository.changeVisibility(organization, admin, project, 'PRIVATE'),
       ).rejects.toMatchObject({ status: 409 });
+      await expect(
+        repository.updateSettings(organization, ordinaryMember, project, {
+          name: 'Denied update',
+        }),
+      ).rejects.toMatchObject({ status: 403 });
       expect(
         await auditDb
           .collection('audit_logs_iam')
           .countDocuments({ action: 'PROJECT_VISIBILITY_CHANGED' }),
       ).toBe(2);
       await repository.assignLeader(organization, admin, project, firstLeader);
+      const leaders = await repository.listLeaders(organization, project);
+      expect(leaders).toEqual([
+        {
+          userId: firstLeader,
+          fullName: '',
+          email: `${firstLeader}@example.test`,
+          avatarUrl: null,
+          role: 'TEAM_LEADER',
+          status: 'ACTIVE',
+        },
+      ]);
+      expect(Object.keys(leaders[0]).sort()).toEqual(
+        ['avatarUrl', 'email', 'fullName', 'role', 'status', 'userId'].sort(),
+      );
+      const leaderCandidates = await repository.listLeaderCandidates(
+        organization,
+        project,
+        `${nextLeader}@example.test`,
+      );
+      expect(leaderCandidates.map((candidate) => candidate.userId)).toEqual([
+        nextLeader,
+      ]);
+      await expect(
+        repository.listLeaderCandidates(organization, project),
+      ).resolves.toEqual([]);
+      const publicByLeader = await repository.changeVisibility(
+        organization,
+        firstLeader,
+        project,
+        'PUBLIC',
+      );
+      expect(publicByLeader.visibility).toBe('PUBLIC');
+      const updatedProject = await repository.updateSettings(
+        organization,
+        firstLeader,
+        project,
+        { name: 'Updated Project', description: 'Updated description' },
+      );
+      expect(updatedProject).toMatchObject({
+        id: project,
+        organizationId: organization,
+        name: 'Updated Project',
+        code: 'PA',
+        description: 'Updated description',
+        visibility: 'PUBLIC',
+        status: 'ACTIVE',
+        createdBy: admin,
+      });
+      await repository.updateSettings(organization, firstLeader, project, {
+        description: null,
+      });
+      await repository.updateSettings(organization, firstLeader, project, {
+        description: null,
+      });
+      expect(await projectDocument.findOne({ _id: projectId })).toMatchObject({
+        name: 'Updated Project',
+        description: null,
+        code: 'PA',
+      });
+      expect(
+        await auditDb
+          .collection('audit_logs_iam')
+          .countDocuments({ action: 'PROJECT_SETTINGS_UPDATED' }),
+      ).toBe(2);
       const added = await repository.addMember(
         organization,
         firstLeader,
@@ -804,7 +875,8 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
       ).not.toBeNull();
       const audit = auditDb.collection('audit_logs_iam');
       for (const [action, count] of [
-        ['PROJECT_VISIBILITY_CHANGED', 2],
+        ['PROJECT_VISIBILITY_CHANGED', 3],
+        ['PROJECT_SETTINGS_UPDATED', 2],
         ['PROJECT_MEMBER_ADDED', 1],
         ['PROJECT_LEADER_ASSIGNED', 1],
         ['PROJECT_LEADER_CHANGED', 2],
@@ -813,7 +885,7 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
       ] as const) {
         expect(await audit.countDocuments({ action })).toBe(count);
       }
-      expect(await audit.countDocuments()).toBe(8);
+      expect(await audit.countDocuments()).toBe(11);
     } finally {
       if (
         createdDatabase &&

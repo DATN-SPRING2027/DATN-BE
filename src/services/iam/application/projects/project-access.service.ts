@@ -4,6 +4,7 @@ import {
   PROJECT_ACCESS_REPOSITORY,
   type ProjectAccessRepository,
   type ProjectMembershipListQuery,
+  type ProjectSettingsUpdateInput,
 } from './project-access.repository';
 
 @Injectable()
@@ -12,6 +13,19 @@ export class ProjectAccessService {
     @Inject(PROJECT_ACCESS_REPOSITORY)
     private readonly repository: ProjectAccessRepository,
   ) {}
+
+  updateSettings(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+    input: ProjectSettingsUpdateInput,
+  ) {
+    return this.repository.updateSettings(
+      actor.organizationId,
+      actor.id,
+      projectId,
+      input,
+    );
+  }
 
   changeVisibility(
     actor: AuthenticatedIdentity,
@@ -53,6 +67,27 @@ export class ProjectAccessService {
     search?: string,
   ) {
     const candidates = await this.repository.listMemberCandidates(
+      actor.organizationId,
+      projectId,
+      search,
+    );
+    return { data: candidates };
+  }
+
+  async listLeaders(actor: AuthenticatedIdentity, projectId: string) {
+    const leaders = await this.repository.listLeaders(
+      actor.organizationId,
+      projectId,
+    );
+    return { data: leaders };
+  }
+
+  async listLeaderCandidates(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+    search?: string,
+  ) {
+    const candidates = await this.repository.listLeaderCandidates(
       actor.organizationId,
       projectId,
       search,

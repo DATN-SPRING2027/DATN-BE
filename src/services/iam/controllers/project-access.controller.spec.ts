@@ -23,6 +23,11 @@ function fixture() {
     .mockResolvedValue({ visibility: 'PUBLIC' });
   const access = {
     changeVisibility,
+    updateSettings: jest
+      .fn()
+      .mockResolvedValue({ id: projectId, name: 'Updated' }),
+    listLeaders: jest.fn().mockResolvedValue({ data: [] }),
+    listLeaderCandidates: jest.fn().mockResolvedValue({ data: [] }),
     listMembers: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
     listMemberCandidates: jest.fn().mockResolvedValue({ data: [] }),
     addMember: jest.fn().mockResolvedValue({ id: 'membership' }),
@@ -43,6 +48,8 @@ function fixture() {
 describe('ProjectAccessController contract validation', () => {
   it('guards each enabled route with its exact V1 permission and exposes no role-change route', () => {
     const expected = {
+      getSettingsAccess: 'project.update',
+      updateSettings: 'project.update',
       changeVisibility: 'project.visibility.manage',
       getVisibilityAccess: 'project.visibility.manage',
       listMembers: 'project.members.list',
@@ -52,6 +59,8 @@ describe('ProjectAccessController contract validation', () => {
       assignLeader: 'project.leader.manage',
       changeLeader: 'project.leader.manage',
       revokeLeader: 'project.leader.manage',
+      listLeaders: 'project.leader.manage',
+      listLeaderCandidates: 'project.leader.manage',
     } as const;
     const prototype = ProjectAccessController.prototype;
 
@@ -72,6 +81,75 @@ describe('ProjectAccessController contract validation', () => {
       );
       expect(typeof handler).toBe('function');
     }
+  });
+
+  it('returns a no-store settings access signal and delegates validated Project details', async () => {
+    const { controller, response, setHeader, access } = fixture();
+    expect(controller.getSettingsAccess(response)).toEqual({
+      canUpdateProject: true,
+    });
+    await controller.updateSettings(
+      undefined,
+      undefined,
+      { name: '  Updated name  ', description: null },
+      response,
+      projectId,
+    );
+    expect(access.updateSettings).toHaveBeenCalledWith(actor, projectId, {
+      name: 'Updated name',
+      description: null,
+    });
+    expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+
+    for (const body of [
+      {},
+      { name: '   ' },
+      { name: 'x'.repeat(201) },
+      { description: 'x'.repeat(2001) },
+      { description: 3 },
+      { name: 'Name', code: 'MUTATE-CODE' },
+      null,
+    ]) {
+      await expect(
+        controller.updateSettings(
+          undefined,
+          undefined,
+          body,
+          response,
+          projectId,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    }
+    expect(access.updateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists a safe Leader projection and searches eligible Leader candidates by email', async () => {
+    const { controller, access, response, setHeader } = fixture();
+    const leader = {
+      userId: memberId,
+      fullName: 'Example Leader',
+      email: 'leader@example.test',
+      avatarUrl: null,
+      role: 'TEAM_LEADER',
+      status: 'ACTIVE',
+    };
+    access.listLeaders.mockResolvedValue({ data: [leader] });
+    await expect(
+      controller.listLeaders(undefined, undefined, response, projectId),
+    ).resolves.toEqual({ data: [leader] });
+    await controller.listLeaderCandidates(
+      undefined,
+      undefined,
+      ' member@example.test ',
+      response,
+      projectId,
+    );
+    expect(access.listLeaderCandidates).toHaveBeenCalledWith(
+      actor,
+      projectId,
+      'member@example.test',
+    );
+    expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
   });
 
   it('checks access through a read-only guarded route without mutation', () => {

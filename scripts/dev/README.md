@@ -88,8 +88,9 @@ and [Project creator bootstrap decision](../../docs/decisions/project-creator-me
 The synthetic `ADMIN` also receives the accepted
 `organization.memberships.read` and `organization.memberships.manage`
 permissions so local development can exercise Organization Membership
-administration. `TEAM_LEADER` receives `project.read` and the three approved
-member-management permissions; `MEMBER` receives `project.read`. The disabled
+administration. `TEAM_LEADER` receives `project.read`, the three approved
+member-management permissions, `project.update`, and `project.visibility.manage`;
+`MEMBER` receives `project.read`. The disabled
 `project.members.role.change` permission is absent. These role records are
 inserted only into an explicitly confirmed development database; this is not a
 production role-provisioning mechanism or a grant to any real account. Seeded

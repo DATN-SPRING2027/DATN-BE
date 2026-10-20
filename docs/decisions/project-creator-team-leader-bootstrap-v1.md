@@ -15,12 +15,13 @@ Creation bootstraps the creator with:
 - one project-scoped RoleAssignment to the current `TEAM_LEADER` Role.
 
 The current `TEAM_LEADER` Role must include `project.read`,
-`project.members.list`, `project.members.add`, and `project.members.remove`. If
-the Role is absent or lacks any required permission, creation fails and the
-whole transaction rolls back. The bootstrap creates no separate Project owner
-or Team record. The Project Leader RoleAssignment grants the existing
-permission-backed Project member operations; later leader assignment or
-replacement for existing members remains governed by the Project Access API.
+`project.members.list`, `project.members.add`, `project.members.remove`,
+`project.update`, and `project.visibility.manage`. If the Role is absent or
+lacks any required permission, creation fails and the whole transaction rolls
+back. The bootstrap creates no separate Project owner or Team record. The
+Project Leader RoleAssignment grants only the permission-backed Project
+operations; later Leader appointment, replacement, or revocation remains an
+Organization Admin operation governed by `project.leader.manage`.
 
 No organization role or `project.create` capability grant is required to
 create a Project. This decision changes only the creator bootstrap and does

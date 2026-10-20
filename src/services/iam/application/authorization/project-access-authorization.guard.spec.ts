@@ -84,6 +84,8 @@ describe('ProjectAccessAuthorizationGuard', () => {
     'project.members.list',
     'project.members.add',
     'project.members.remove',
+    'project.update',
+    'project.visibility.manage',
   ])(
     'allows an active Project Leader with the exact %s permission',
     async (permission) => {
@@ -108,6 +110,30 @@ describe('ProjectAccessAuthorizationGuard', () => {
     ];
     const { guard, context } = fixture('project.visibility.manage', facts);
     await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('allows an active Project Leader to read visibility access with the exact project-scoped grant', async () => {
+    const { guard, context } = fixture('project.visibility.manage');
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('does not allow an Organization Admin to update Project details by role name alone', async () => {
+    const facts = evidence('project.update');
+    facts.projectMembership = null;
+    facts.assignments = [
+      {
+        userId,
+        organizationId,
+        projectId: null,
+        roleCode: 'ADMIN',
+        resolvedRoleCode: 'ADMIN',
+        permissions: ['project.update'],
+      },
+    ];
+    const { guard, context } = fixture('project.update', facts);
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
   });
 
   it('still denies unauthorized requests for an already-PUBLIC Project', async () => {
