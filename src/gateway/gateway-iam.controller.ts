@@ -682,6 +682,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('iam/organizations/:organizationId/memberships/:membershipId/role')
+  setOrganizationMembershipRole(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/projects/:projectId')
   getProject(
     @Req() request: Request,
