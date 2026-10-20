@@ -617,6 +617,39 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     ).toBe(0);
   });
 
+  it('denies an Admin changing their own role even when another active Admin remains', async () => {
+    await expect(
+      invoke(actorId, {
+        command: 'SET_ORGANIZATION_ROLE',
+        membershipId: actorMembershipId.toHexString(),
+        expectedMembershipVersion: 1,
+        expectedRoleVersion: 0,
+        roleCode: 'MEMBER',
+        reason: 'Self demotion attempt',
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'ROLE_SELF_CHANGE_FORBIDDEN' },
+    });
+
+    expect(
+      await connection!.collection('role_assignments').findOne({
+        organizationId,
+        userId: actorId,
+        projectId: null,
+      }),
+    ).toMatchObject({ roleCode: 'ADMIN', mutationFence: 0 });
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+        action: 'ORGANIZATION_MEMBER_ROLE_CHANGED',
+      }),
+    ).toBe(0);
+  });
+
   it('rejects a role change with a stale membership or role version', async () => {
     await expect(
       invoke(actorId, {
@@ -656,11 +689,11 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     ).toBe(0);
   });
 
-  it('prevents concurrent role changes from removing the last active ADMIN', async () => {
+  it('prevents concurrent cross-member role changes from removing the last active ADMIN', async () => {
     const results = await Promise.allSettled([
       invoke(actorId, {
         command: 'SET_ORGANIZATION_ROLE',
-        membershipId: actorMembershipId.toHexString(),
+        membershipId: secondAdminMembershipId.toHexString(),
         expectedMembershipVersion: 1,
         expectedRoleVersion: 0,
         roleCode: 'MEMBER',
@@ -668,7 +701,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       }),
       invoke(secondAdminId, {
         command: 'SET_ORGANIZATION_ROLE',
-        membershipId: secondAdminMembershipId.toHexString(),
+        membershipId: actorMembershipId.toHexString(),
         expectedMembershipVersion: 1,
         expectedRoleVersion: 0,
         roleCode: 'MEMBER',
@@ -683,8 +716,8 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     expect(rejected).toMatchObject({
       status: 'rejected',
       reason: {
-        status: 409,
-        response: { code: 'LAST_ELIGIBLE_ADMIN' },
+        status: 403,
+        response: { code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN' },
       },
     });
     expect(

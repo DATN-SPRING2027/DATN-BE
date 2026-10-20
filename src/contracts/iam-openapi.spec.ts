@@ -1268,6 +1268,9 @@ describe('IAM OpenAPI contract', () => {
     expect(operation?.description).toContain(
       'Project role assignments remain independent',
     );
+    expect(operation?.description).toContain(
+      "requests targeting the caller's own Membership are denied with 403 (ROLE_SELF_CHANGE_FORBIDDEN)",
+    );
     expect(operation?.description).toContain('last active ADMIN');
     expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
       expect.arrayContaining([

@@ -1028,6 +1028,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       new Types.ObjectId(command.membershipId),
       session,
     );
+    if (membership.userId.equals(actorUserId))
+      throw new ForbiddenException({ code: 'ROLE_SELF_CHANGE_FORBIDDEN' });
     if (membership.status !== 'ACTIVE')
       throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
     if (membership.version !== command.expectedMembershipVersion)
@@ -1065,9 +1067,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       throw new ConflictException({ code: 'ROLE_VERSION_CONFLICT' });
     if (currentRole === command.roleCode)
       throw new ConflictException({ code: 'ROLE_ALREADY_ASSIGNED' });
-    if (membership.userId.equals(actorUserId) && command.roleCode === 'ADMIN')
-      throw new ForbiddenException({ code: 'ROLE_SELF_ESCALATION_FORBIDDEN' });
-
     if (currentRole === 'ADMIN' && command.roleCode === 'MEMBER') {
       const eligibleAdmins = await this.eligibleAdminIds(
         organizationId,
