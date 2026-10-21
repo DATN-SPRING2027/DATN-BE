@@ -5000,7 +5000,7 @@
       "get": {
         "tags": ["Project Memberships"],
         "summary": "List Project Leaders",
-        "description": "Requires ACTIVE OrganizationMembership, an Organization-scoped ADMIN RoleAssignment and project.leader.manage in the resolved Role.permissions. Returns current TEAM_LEADER assignments in this Project with only userId, fullName, email, nullable avatarUrl, role and status. Stale or inactive memberships are marked INACTIVE. Authentication and private account fields are never returned. Cache-Control: no-store.",
+        "description": "Requires ACTIVE OrganizationMembership and either an Organization-scoped ADMIN RoleAssignment with project.leader.manage or an ACTIVE ProjectMembership with a matching project-scoped TEAM_LEADER RoleAssignment and project.members.list in the resolved Role.permissions. Returns current TEAM_LEADER assignments in this Project with only userId, fullName, email, nullable avatarUrl, role and status. Stale or inactive memberships are marked INACTIVE. Authentication and private account fields are never returned. Cache-Control: no-store.",
         "operationId": "listProjectLeaders",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "responses": {
@@ -5021,7 +5021,7 @@
       "post": {
         "tags": ["Project Memberships"],
         "summary": "Assign a Project Leader",
-        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. The target must already have ACTIVE OrganizationMembership and ACTIVE ProjectMembership in this Project. Assigns the existing TEAM_LEADER Role at Project scope. The event is written to continuum_audit.audit_logs_iam.",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. The target must already have ACTIVE OrganizationMembership and ACTIVE ProjectMembership in this Project (or, when the Project has 0 effective Project Leaders, ACTIVE OrganizationMembership in this Organization, in which case ACTIVE ProjectMembership is created or reactivated in the same transaction). Assigns the existing TEAM_LEADER Role at Project scope. The event is written to continuum_audit.audit_logs_iam.",
         "operationId": "assignProjectLeader",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "requestBody": {
@@ -5075,7 +5075,7 @@
       "delete": {
         "tags": ["Project Memberships"],
         "summary": "Revoke a Project Leader appointment",
-        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. Downgrades the project-scoped RoleAssignment to the current MEMBER Role and retains ACTIVE ProjectMembership. The event is written to continuum_audit.audit_logs_iam.",
+        "description": "Requires ACTIVE OrganizationMembership, an organization-scoped ADMIN RoleAssignment, and project.leader.manage in the resolved Role.permissions. Rejects revoking the last effective Project Leader with 409 LAST_PROJECT_LEADER_REQUIRED. Downgrades the project-scoped RoleAssignment to the current MEMBER Role and retains ACTIVE ProjectMembership. The event is written to continuum_audit.audit_logs_iam.",
         "operationId": "revokeProjectLeader",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },

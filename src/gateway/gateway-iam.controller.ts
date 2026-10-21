@@ -157,6 +157,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('auth/invitations/resolve')
+  resolveInvitationLink(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Post('auth/invitations/:invitationId/accept')
   acceptInvitation(
     @Req() request: Request,
@@ -730,6 +738,22 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Patch('iam/projects/:projectId')
+  updateProject(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/projects/:projectId/settings-access')
+  getProjectSettingsAccess(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/projects/:projectId/visibility')
   getProjectVisibilityAccess(
     @Req() request: Request,
@@ -772,6 +796,22 @@ export class GatewayIamController {
 
   @Delete('iam/projects/:projectId/memberships/:membershipId')
   removeProjectMember(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/projects/:projectId/leaders')
+  listProjectLeaders(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/projects/:projectId/leader-candidates')
+  listProjectLeaderCandidates(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {

@@ -810,7 +810,7 @@ function parsePlatformInvitationAction(
     !('expectedInvitationVersion' in record) ||
     !('reasonCode' in record) ||
     !Number.isSafeInteger(record.expectedMembershipVersion) ||
-    Number(record.expectedMembershipVersion) < 1 ||
+    Number(record.expectedMembershipVersion) < 0 ||
     !Number.isSafeInteger(record.expectedInvitationVersion) ||
     Number(record.expectedInvitationVersion) < 1
   )

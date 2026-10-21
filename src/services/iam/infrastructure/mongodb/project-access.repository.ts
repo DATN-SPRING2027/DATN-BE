@@ -954,7 +954,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
             .session(session)
             .lean()
             .exec();
-        const projectMembership = await this.model<MembershipDocument>(
+        let projectMembership = await this.model<MembershipDocument>(
           'project_memberships',
         )
           .findOne({
@@ -966,8 +966,36 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           .session(session)
           .lean()
           .exec();
-        if (!target || !organizationMembership || !projectMembership)
-          throw membershipNotFound();
+        if (!target || !organizationMembership) throw membershipNotFound();
+        if (!projectMembership) {
+          const existingEffectiveLeaders =
+            await this.findEffectiveLeaderAssignments(
+              organization,
+              project,
+              undefined,
+              session,
+            );
+          if (existingEffectiveLeaders.length > 0) throw membershipNotFound();
+          const upsertedMembership = await this.model<MembershipDocument>(
+            'project_memberships',
+          )
+            .findOneAndUpdate(
+              {
+                organizationId: organization,
+                projectId: project,
+                userId: user,
+              },
+              {
+                $set: { status: 'ACTIVE' },
+                $setOnInsert: { joinedAt: new Date() },
+              },
+              { upsert: true, new: true, session },
+            )
+            .lean()
+            .exec();
+          projectMembership = upsertedMembership;
+        }
+        if (!projectMembership) throw membershipNotFound();
         await this.fenceRecipientEligibility(
           target,
           organizationMembership,
@@ -1133,6 +1161,45 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
               'The current MEMBER Role with project.read is not provisioned.',
           });
         await this.fenceRole(memberRole, 'MEMBER', ['project.read'], session);
+        const survivingLeaders = await this.findEffectiveLeaderAssignments(
+          organization,
+          project,
+          user,
+          session,
+        );
+        const survivor = survivingLeaders[0];
+        if (!survivor)
+          throw new ConflictException({
+            code: 'LAST_PROJECT_LEADER_REQUIRED',
+            message:
+              'The last active Project Leader cannot be revoked without appointing a replacement Leader first.',
+          });
+        await this.fenceRecipientEligibility(
+          survivor.user,
+          survivor.organizationMembership,
+          survivor.projectMembership,
+          organization,
+          project,
+          session,
+        );
+        const fencedSurvivorAssignment = await assignmentModel.updateOne(
+          {
+            _id: survivor.assignment._id,
+            organizationId: organization,
+            projectId: project,
+            userId: survivor.user._id,
+            roleId: leaderRole._id,
+            roleCode: 'TEAM_LEADER',
+          },
+          { $inc: { __v: 1 } },
+          { session, timestamps: false },
+        );
+        if (fencedSurvivorAssignment.modifiedCount !== 1)
+          throw new ConflictException({
+            code: 'LAST_PROJECT_LEADER_REQUIRED',
+            message:
+              'The last active Project Leader cannot be revoked without appointing a replacement Leader first.',
+          });
         const updated = await assignmentModel.updateOne(
           { _id: assignment._id, roleCode: 'TEAM_LEADER' },
           {
@@ -1161,6 +1228,113 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     } finally {
       await session.endSession();
     }
+  }
+
+  private async findEffectiveLeaderAssignments(
+    organization: Types.ObjectId,
+    project: Types.ObjectId,
+    excludeUser?: Types.ObjectId,
+    session?: ClientSession,
+  ): Promise<
+    Array<{
+      assignment: RoleAssignmentDocument;
+      user: UserDocument;
+      organizationMembership: OrganizationMembershipDocument;
+      projectMembership: MembershipDocument;
+    }>
+  > {
+    const assignments = await this.model<RoleAssignmentDocument>(
+      'role_assignments',
+    )
+      .find({
+        organizationId: organization,
+        projectId: project,
+        roleCode: 'TEAM_LEADER',
+        ...(excludeUser ? { userId: { $ne: excludeUser } } : {}),
+      })
+      .session(session ?? null)
+      .lean()
+      .exec();
+    if (assignments.length === 0) return [];
+
+    const roleIds = [
+      ...new Map(
+        assignments.map((item) => [String(item.roleId), item.roleId]),
+      ).values(),
+    ];
+    const roles = await this.model<RoleDocument>('roles')
+      .find({ _id: { $in: roleIds }, code: 'TEAM_LEADER' })
+      .session(session ?? null)
+      .select({ _id: 1, code: 1 })
+      .lean()
+      .exec();
+    const validRoleIds = new Set(roles.map((role) => String(role._id)));
+    const validAssignments = assignments.filter((item) =>
+      validRoleIds.has(String(item.roleId)),
+    );
+    if (validAssignments.length === 0) return [];
+
+    const userIds = [
+      ...new Map(
+        validAssignments.map((item) => [String(item.userId), item.userId]),
+      ).values(),
+    ];
+    const [users, organizationMemberships, projectMemberships] =
+      await Promise.all([
+        this.model<UserDocument>('users')
+          .find({ _id: { $in: userIds }, status: 'ACTIVE' })
+          .session(session ?? null)
+          .lean()
+          .exec(),
+        this.model<OrganizationMembershipDocument>('organization_memberships')
+          .find({
+            organizationId: organization,
+            userId: { $in: userIds },
+            status: 'ACTIVE',
+          })
+          .session(session ?? null)
+          .lean()
+          .exec(),
+        this.model<MembershipDocument>('project_memberships')
+          .find({
+            organizationId: organization,
+            projectId: project,
+            userId: { $in: userIds },
+            status: 'ACTIVE',
+          })
+          .session(session ?? null)
+          .lean()
+          .exec(),
+      ]);
+    const usersById = new Map(users.map((item) => [String(item._id), item]));
+    const orgMembershipsByUserId = new Map(
+      organizationMemberships.map((item) => [String(item.userId), item]),
+    );
+    const projectMembershipsByUserId = new Map(
+      projectMemberships.map((item) => [String(item.userId), item]),
+    );
+
+    const effective: Array<{
+      assignment: RoleAssignmentDocument;
+      user: UserDocument;
+      organizationMembership: OrganizationMembershipDocument;
+      projectMembership: MembershipDocument;
+    }> = [];
+    for (const assignment of validAssignments) {
+      const uid = String(assignment.userId);
+      const user = usersById.get(uid);
+      const organizationMembership = orgMembershipsByUserId.get(uid);
+      const projectMembership = projectMembershipsByUserId.get(uid);
+      if (user && organizationMembership && projectMembership) {
+        effective.push({
+          assignment,
+          user,
+          organizationMembership,
+          projectMembership,
+        });
+      }
+    }
+    return effective;
   }
 
   async changeLeader(

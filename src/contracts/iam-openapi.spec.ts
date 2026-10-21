@@ -902,7 +902,9 @@ describe('IAM OpenAPI contract', () => {
       'project.members.role.change permission is disabled',
     );
     expect(leaders.post?.description).toContain('project.leader.manage');
+    expect(leaders.post?.description).toContain('0 effective Project Leaders');
     expect(leaders.get?.operationId).toBe('listProjectLeaders');
+    expect(leaders.get?.description).toContain('project.members.list');
     expect(leaders.get?.description).toContain('only userId, fullName, email');
     expect(leaderCandidates?.operationId).toBe('listProjectLeaderCandidates');
     expect(leaderCandidates?.description).toContain('project.leader.manage');
@@ -917,6 +919,10 @@ describe('IAM OpenAPI contract', () => {
       contract.paths['/api/v1/iam/projects/{projectId}/leaders/{userId}'].delete
         ?.description,
     ).toContain('project.leader.manage');
+    expect(
+      contract.paths['/api/v1/iam/projects/{projectId}/leaders/{userId}'].delete
+        ?.description,
+    ).toContain('LAST_PROJECT_LEADER_REQUIRED');
     expect(leaders.put?.requestBody).toBeDefined();
   });
 
