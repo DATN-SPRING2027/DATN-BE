@@ -1512,9 +1512,11 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
+                "required": ["expectedUpdatedAt"],
+                "minProperties": 2,
                 "properties": {
-                  "name": { "type": "string", "minLength": 1, "maxLength": 200 },
-                  "description": { "type": ["string", "null"], "maxLength": 1000 },
+                  "name": { "type": "string", "minLength": 2, "maxLength": 100 },
+                  "description": { "type": ["string", "null"], "maxLength": 500 },
                   "expectedUpdatedAt": { "type": "string", "format": "date-time" }
                 }
               }
@@ -1590,7 +1592,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/C02SuspendMembershipRequest"
+                "$ref": "#/components/schemas/C02LifecycleMembershipRequest"
               }
             }
           }
@@ -1666,7 +1668,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/C02SuspendMembershipRequest"
+                "$ref": "#/components/schemas/C02LifecycleMembershipRequest"
               }
             }
           }
@@ -8855,6 +8857,22 @@
           "reasonCode": {
             "type": "string",
             "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW"]
+          }
+        }
+      },
+      "C02LifecycleMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "reasonCode"],
+        "properties": {
+          "expectedMembershipVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "reasonCode": {
+            "type": "string",
+            "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW", "ACCESS_REQUEST"]
           }
         }
       },

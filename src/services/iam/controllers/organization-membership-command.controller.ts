@@ -221,18 +221,34 @@ function parseLifecycleAction(
 ): OrganizationMembershipCommand {
   if (!objectIdPattern.test(membershipId)) return validationFailed();
   const record = parseObject(body);
+  if (!exactKeys(record, ['expectedMembershipVersion', 'reasonCode']))
+    return validationFailed();
+  const reasonCode = parseReason(record.reasonCode);
+  const expectedMembershipVersion = parseVersion(
+    record.expectedMembershipVersion,
+  );
+  if (command === 'SUSPEND') {
+    if (!['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(reasonCode))
+      return validationFailed();
+    return {
+      command,
+      membershipId,
+      expectedMembershipVersion,
+      reasonCode: reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+    };
+  }
   if (
-    !exactKeys(record, ['expectedMembershipVersion', 'reasonCode']) ||
-    !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(
-      parseReason(record.reasonCode),
+    !['SECURITY_INCIDENT', 'ACCESS_REVIEW', 'ACCESS_REQUEST'].includes(
+      reasonCode,
     )
   )
     return validationFailed();
   return {
     command,
     membershipId,
-    expectedMembershipVersion: parseVersion(record.expectedMembershipVersion),
-    reasonCode: record.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+    expectedMembershipVersion,
+    reasonCode: reasonCode as
+      'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST',
   };
 }
 
@@ -263,7 +279,7 @@ function parseOrganizationSettingsUpdate(body: unknown): {
   if ('name' in record) {
     if (typeof record.name !== 'string') return validationFailed();
     const trimmed = record.name.trim();
-    if (trimmed.length < 1 || trimmed.length > 200) return validationFailed();
+    if (trimmed.length < 2 || trimmed.length > 100) return validationFailed();
     name = trimmed;
   }
   let description: string | null | undefined;
@@ -271,7 +287,7 @@ function parseOrganizationSettingsUpdate(body: unknown): {
     if (record.description === null) {
       description = null;
     } else if (typeof record.description === 'string') {
-      if (record.description.length > 1000) return validationFailed();
+      if (record.description.length > 500) return validationFailed();
       const trimmed = record.description.trim();
       description = trimmed.length === 0 ? null : trimmed;
     } else {

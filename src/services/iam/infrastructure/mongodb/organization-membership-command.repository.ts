@@ -469,6 +469,9 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       typeof organization.settings?.description === 'string'
         ? organization.settings.description
         : null;
+    const plan: 'FREE' | 'ENTERPRISE' =
+      organization.settings?.plan === 'ENTERPRISE' ? 'ENTERPRISE' : 'FREE';
+    const status = 'ACTIVE' as const;
 
     return {
       organization: {
@@ -476,8 +479,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         name: organization.name,
         slug: organization.slug,
         description,
-        plan: 'FREE',
-        status: 'ACTIVE',
+        plan,
+        status,
         createdAt: (organization.createdAt ?? new Date(0)).toISOString(),
         updatedAt: (
           organization.updatedAt ??
@@ -514,14 +517,17 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       typeof organization.settings?.description === 'string'
         ? organization.settings.description
         : null;
+    const plan: 'FREE' | 'ENTERPRISE' =
+      organization.settings?.plan === 'ENTERPRISE' ? 'ENTERPRISE' : 'FREE';
+    const status = 'ACTIVE' as const;
     return {
       organization: {
         id: organization._id.toHexString(),
         name: organization.name,
         slug: organization.slug,
         description,
-        plan: 'FREE',
-        status: 'ACTIVE',
+        plan,
+        status,
         createdAt: (organization.createdAt ?? new Date(0)).toISOString(),
         updatedAt: (
           organization.updatedAt ??
@@ -566,8 +572,9 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         if (!current)
           throw new HttpException({ code: 'ORGANIZATION_NOT_FOUND' }, 404);
 
-        const currentUpdatedAt = current.updatedAt ?? current.createdAt;
-        if (input.expectedUpdatedAt && currentUpdatedAt) {
+        const currentUpdatedAt =
+          current.updatedAt ?? current.createdAt ?? new Date(0);
+        if (input.expectedUpdatedAt) {
           const expectedMs = input.expectedUpdatedAt.getTime();
           if (
             !Number.isFinite(expectedMs) ||
@@ -594,21 +601,34 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           ...(current.settings ?? {}),
           description: nextDescription || null,
         };
+        const nextUpdatedAt = new Date(
+          Math.max(input.now.getTime(), currentUpdatedAt.getTime() + 1),
+        );
 
-        await this.organizations()
+        const updateResult = await this.organizations()
           .updateOne(
-            { _id: organizationId },
+            {
+              _id: organizationId,
+              ...(current.updatedAt instanceof Date
+                ? { updatedAt: current.updatedAt }
+                : {}),
+            },
             {
               $set: {
                 name: nextName,
                 settings: nextSettings,
-                updatedAt: input.now,
+                updatedAt: nextUpdatedAt,
               },
               $inc: { membershipAdminRevision: 1 },
             },
-            { session },
+            { session, timestamps: false },
           )
           .exec();
+        if (updateResult.matchedCount !== 1) {
+          throw new ConflictException({
+            code: 'ORGANIZATION_SETTINGS_VERSION_CONFLICT',
+          });
+        }
 
         const operationId = new Types.ObjectId().toHexString();
         await this.writeAudit(
@@ -2265,26 +2285,53 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .lean()
       .exec();
 
+    const projectMembershipsModel =
+      this.optionalModel<ProjectMembershipDocument>('project_memberships');
+
     if (projectLeaderAssignments.length > 0) {
-      const projectIds = projectLeaderAssignments
+      let projectIds = projectLeaderAssignments
         .map((assignment) => assignment.projectId)
         .filter((id): id is Types.ObjectId => id instanceof Types.ObjectId);
+      if (projectMembershipsModel && projectIds.length > 0) {
+        const activeProjectMemberships = await projectMembershipsModel
+          .find(
+            {
+              organizationId,
+              userId: membership.userId,
+              projectId: { $in: projectIds },
+              status: 'ACTIVE',
+            },
+            { projectId: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec();
+        const activeProjectIdSet = new Set(
+          activeProjectMemberships.map((pm) => pm.projectId.toHexString()),
+        );
+        projectIds = projectIds.filter((id) =>
+          activeProjectIdSet.has(id.toHexString()),
+        );
+      }
       const projectsModel = this.optionalModel<ProjectDocument>('projects');
-      const activeLeaderProjects = projectsModel
-        ? await projectsModel
-            .find(
-              {
-                _id: { $in: projectIds },
-                organizationId,
-                status: 'ACTIVE',
-                deletedAt: null,
-              },
-              { _id: 1, code: 1, name: 1 },
-            )
-            .session(session)
-            .lean()
-            .exec()
-        : projectIds.map((id) => ({ _id: id, code: '', name: '' }));
+      const activeLeaderProjects =
+        projectIds.length === 0
+          ? []
+          : projectsModel
+            ? await projectsModel
+                .find(
+                  {
+                    _id: { $in: projectIds },
+                    organizationId,
+                    status: 'ACTIVE',
+                    deletedAt: null,
+                  },
+                  { _id: 1, code: 1, name: 1 },
+                )
+                .session(session)
+                .lean()
+                .exec()
+            : projectIds.map((id) => ({ _id: id, code: '', name: '' }));
 
       if (activeLeaderProjects.length > 0) {
         throw new ConflictException({
@@ -2295,6 +2342,11 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
             projectIds: activeLeaderProjects.map((project) =>
               project._id.toHexString(),
             ),
+            blockingProjects: activeLeaderProjects.map((project) => ({
+              id: project._id.toHexString(),
+              code: project.code,
+              name: project.name,
+            })),
           },
         });
       }
@@ -2325,14 +2377,11 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         {
           organizationId,
           userId: membership.userId,
-          ...organizationLevel,
         },
         { session },
       )
       .exec();
 
-    const projectMembershipsModel =
-      this.optionalModel<ProjectMembershipDocument>('project_memberships');
     if (projectMembershipsModel) {
       await projectMembershipsModel
         .updateMany(

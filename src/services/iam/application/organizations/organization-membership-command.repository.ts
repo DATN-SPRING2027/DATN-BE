@@ -49,13 +49,13 @@ export type OrganizationMembershipCommand =
       command: 'RESUME';
       membershipId: string;
       expectedMembershipVersion: number;
-      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST';
     }
   | {
       command: 'REMOVE';
       membershipId: string;
       expectedMembershipVersion: number;
-      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST';
     }
   | {
       command: 'SET_ORGANIZATION_ROLE';

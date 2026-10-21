@@ -400,7 +400,9 @@ describe('OrganizationMembershipCommandController', () => {
 
   it.each([
     ['resume', 'RESUME', 'ACCESS_REVIEW'],
+    ['resume', 'RESUME', 'ACCESS_REQUEST'],
     ['remove', 'REMOVE', 'SECURITY_INCIDENT'],
+    ['remove', 'REMOVE', 'ACCESS_REQUEST'],
   ] as const)(
     'parses %s membership lifecycle command with expectedMembershipVersion and reasonCode',
     async (methodName, commandCode, reasonCode) => {
@@ -493,6 +495,38 @@ describe('OrganizationMembershipCommandController', () => {
           expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
           name: 'Continuum Updated',
           slug: 'forbidden-slug-change',
+        },
+        { requestId: 'request-id' } as never,
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+    await expect(
+      controller.updateSettings(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'request-id',
+        organizationId,
+        {
+          expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+          name: 'A',
+        },
+        { requestId: 'request-id' } as never,
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+    await expect(
+      controller.updateSettings(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'request-id',
+        organizationId,
+        {
+          expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+          description: 'x'.repeat(501),
         },
         { requestId: 'request-id' } as never,
         response as never,

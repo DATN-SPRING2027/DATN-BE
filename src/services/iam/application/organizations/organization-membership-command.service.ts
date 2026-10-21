@@ -107,6 +107,31 @@ export class OrganizationMembershipCommandService {
   ): Promise<OrganizationSettingsSummary> {
     this.requireOrganizationContext(actor, organizationId);
     if (
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      (input.name === undefined && input.description === undefined)
+    )
+      validationFailed();
+    let normalizedName: string | undefined;
+    if (input.name !== undefined) {
+      if (typeof input.name !== 'string') validationFailed();
+      const trimmed = input.name.trim();
+      if (trimmed.length < 2 || trimmed.length > 100) validationFailed();
+      normalizedName = trimmed;
+    }
+    let normalizedDescription: string | null | undefined;
+    if (input.description !== undefined) {
+      if (input.description === null) {
+        normalizedDescription = null;
+      } else if (typeof input.description === 'string') {
+        if (input.description.length > 500) validationFailed();
+        const trimmed = input.description.trim();
+        normalizedDescription = trimmed.length === 0 ? null : trimmed;
+      } else {
+        validationFailed();
+      }
+    }
+    if (
       !(await this.repository.hasPermission(
         organizationId,
         actor.id,
@@ -124,9 +149,9 @@ export class OrganizationMembershipCommandService {
       actorUserId: actor.id,
       organizationId,
       expectedUpdatedAt: input.expectedUpdatedAt,
-      ...(input.name !== undefined ? { name: input.name } : {}),
-      ...(input.description !== undefined
-        ? { description: input.description }
+      ...(normalizedName !== undefined ? { name: normalizedName } : {}),
+      ...(normalizedDescription !== undefined
+        ? { description: normalizedDescription }
         : {}),
       ...(input.correlationId ? { correlationId: input.correlationId } : {}),
       now: new Date(),
@@ -330,17 +355,26 @@ export class OrganizationMembershipCommandService {
         validationFailed();
       return command;
     }
-    if (
-      command.command === 'SUSPEND' ||
-      command.command === 'RESUME' ||
-      command.command === 'REMOVE'
-    ) {
+    if (command.command === 'SUSPEND') {
       if (
         Object.keys(command).length !== 4 ||
         !resourceIdPattern.test(command.membershipId) ||
         !Number.isSafeInteger(command.expectedMembershipVersion) ||
         command.expectedMembershipVersion < 1 ||
         !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(command.reasonCode)
+      )
+        validationFailed();
+      return command;
+    }
+    if (command.command === 'RESUME' || command.command === 'REMOVE') {
+      if (
+        Object.keys(command).length !== 4 ||
+        !resourceIdPattern.test(command.membershipId) ||
+        !Number.isSafeInteger(command.expectedMembershipVersion) ||
+        command.expectedMembershipVersion < 1 ||
+        !['SECURITY_INCIDENT', 'ACCESS_REVIEW', 'ACCESS_REQUEST'].includes(
+          command.reasonCode,
+        )
       )
         validationFailed();
       return command;

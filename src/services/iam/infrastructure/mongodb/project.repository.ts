@@ -393,6 +393,7 @@ export class MongoProjectRepository implements ProjectRepository {
     if (!validId(projectId)) return null;
     const scope = await this.visibleScope(organizationId, userId);
     if (!scope) return null;
+    const organization = new Types.ObjectId(organizationId);
     const hasPrivateProjectAccess =
       scope.all ||
       scope.projectIds.some((id) => String(id) === projectId.toLowerCase());
@@ -400,12 +401,23 @@ export class MongoProjectRepository implements ProjectRepository {
     const project = await this.model<ProjectDocument>('projects')
       .findOne({
         _id: new Types.ObjectId(projectId),
-        organizationId: new Types.ObjectId(organizationId),
+        organizationId: organization,
         ...(!hasPrivateProjectAccess ? { visibility: 'PUBLIC' } : {}),
       })
       .lean()
       .exec();
-    return project ? this.record(project) : null;
+    if (!project) return null;
+    const baseRecord = this.record(project);
+    const usersModel = this.connection?.models[name('users')] as
+      Model<UserSummaryDocument> | undefined;
+    if (!usersModel) return baseRecord;
+    const [enriched] = await this.enrichProjectGovernanceSummaries(
+      organization,
+      [project],
+      [baseRecord],
+      usersModel,
+    );
+    return enriched ?? baseRecord;
   }
 
   private async visibleScope(
