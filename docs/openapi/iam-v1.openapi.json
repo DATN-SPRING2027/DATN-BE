@@ -907,6 +907,57 @@
         }
       }
     },
+    "/api/v1/iam/organizations": {
+      "post": {
+        "tags": ["Organizations"],
+        "summary": "Create an Organization for the current account",
+        "description": "Requires an authenticated active Human User session and valid CSRF cookie/header. Creates a FREE Organization, ACTIVE first-admin membership, ADMIN role assignment and audit record atomically. The account can bootstrap only itself; it receives no Platform authority. Rate limited to three creation attempts per hour per account.",
+        "operationId": "createOwnOrganization",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "slug"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "slug": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Organization created; the caller is its first ADMIN.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisionedOrganization"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
     "/api/v1/iam/organizations/{organizationId}/invitations": {
       "get": {
         "tags": ["Users"],

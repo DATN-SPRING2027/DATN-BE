@@ -196,6 +196,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('iam/organizations')
+  createOwnOrganization(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/platform/dashboard')
   getPlatformDashboard(
     @Req() request: Request,
