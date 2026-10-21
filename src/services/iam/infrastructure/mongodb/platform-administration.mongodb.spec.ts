@@ -605,62 +605,63 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     ).resolves.toBeNull();
   });
 
-  it('reads pending invitation metadata through the Platform-safe owner query', async () => {
+  it('reads V3 invitation metadata without deleting legacy invitation history', async () => {
     const invitationId = new Types.ObjectId();
-    const pendingMembershipId = new Types.ObjectId();
-    const invitedUserId = new Types.ObjectId();
-    await connection.collection('users').insertOne({
-      _id: invitedUserId,
-      email: 'invitee@example.test',
-      fullName: 'Pending Invitee',
-      status: 'ACTIVE',
-      createdAt: new Date('2026-10-15T00:00:00.000Z'),
-      updatedAt: new Date('2026-10-15T00:00:00.000Z'),
-    });
-    await connection.collection('organization_memberships').insertOne({
-      _id: pendingMembershipId,
-      organizationId,
-      userId: invitedUserId,
-      status: 'PENDING_INVITE',
-      version: 1,
-      mutationFence: 0,
-      createdAt: new Date('2026-10-15T00:00:00.000Z'),
-      updatedAt: new Date('2026-10-15T00:00:00.000Z'),
-    });
+    const legacyInvitationId = new Types.ObjectId();
+    const createdAt = new Date('2026-10-16T00:00:00.000Z');
     await connection.collection('organization_invitations').insertOne({
       _id: invitationId,
       organizationId,
-      membershipId: pendingMembershipId,
-      targetUserId: invitedUserId,
       email: 'invitee@example.test',
+      contractVersion: 3,
+      tokenHash: 'must-not-be-projected',
+      version: 1,
+      status: 'PENDING',
+      invitedBy: adminId,
+      expiresAt: new Date('2026-10-23T00:00:00.000Z'),
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await connection.collection('organization_invitations').insertOne({
+      _id: legacyInvitationId,
+      organizationId,
+      membershipId: new Types.ObjectId(),
+      targetUserId: new Types.ObjectId(),
+      email: 'legacy-invitee@example.test',
       contractVersion: 2,
       version: 1,
       status: 'PENDING',
       invitedBy: adminId,
       expiresAt: new Date('2026-10-23T00:00:00.000Z'),
-      createdAt: new Date('2026-10-16T00:00:00.000Z'),
-      invitationTokenHash: 'must-not-be-projected',
+      createdAt,
+      invitationTokenHash: 'legacy-token-hash',
     });
     const page = await commands.listInvitations(
       organizationId.toHexString(),
       1,
       10,
-      new Date('2026-10-16T00:00:00.000Z'),
+      createdAt,
     );
     expect(page).toMatchObject({
       pagination: { totalItems: 1, page: 1, pageSize: 10 },
       data: [
         {
           id: invitationId.toHexString(),
-          membershipId: pendingMembershipId.toHexString(),
           organizationId: organizationId.toHexString(),
           status: 'PENDING',
-          targetUserId: invitedUserId.toHexString(),
-          email: 'invitee@example.test',
+          invitedEmail: 'invitee@example.test',
         },
       ],
     });
     expect(JSON.stringify(page)).not.toContain('must-not-be-projected');
+    await expect(
+      connection
+        .collection('organization_invitations')
+        .findOne({ _id: legacyInvitationId }),
+    ).resolves.toMatchObject({
+      contractVersion: 2,
+      email: 'legacy-invitee@example.test',
+    });
   });
 
   it('updates Organization and Project metadata with fresh authority, CAS and atomic audit', async () => {

@@ -43,6 +43,16 @@ export type OrganizationMembershipCommand =
       reason: string;
     };
 
+export interface InvitationMutationAcknowledgement {
+  operationId: string;
+  invitation: {
+    id: string;
+    status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
+    version: number;
+    expiresAt: string;
+  };
+}
+
 export interface MembershipMutationAcknowledgement {
   operationId: string;
   membership: {
@@ -61,9 +71,9 @@ export interface MembershipMutationAcknowledgement {
   role?: { roleCode: 'ADMIN' | 'MEMBER'; version: number };
 }
 
-export type PlatformInvitationCommand = Exclude<
+export type PlatformInvitationCommand = Extract<
   OrganizationMembershipCommand,
-  { command: 'SUSPEND' }
+  { command: 'INVITE' | 'RESEND' | 'CANCEL' }
 >;
 
 export interface PlatformInvitationCommandInput {
@@ -72,12 +82,13 @@ export interface PlatformInvitationCommandInput {
   idempotencyKey: string;
   command: PlatformInvitationCommand;
   now: Date;
+  invitationReadinessReady: boolean;
   correlationId?: string;
 }
 
 export interface MembershipMutationResult {
   httpStatus: 200 | 201;
-  body: MembershipMutationAcknowledgement;
+  body: MembershipMutationAcknowledgement | InvitationMutationAcknowledgement;
   replayed: boolean;
 }
 
@@ -94,15 +105,12 @@ export interface PlatformMembershipSuspendInput {
 
 export interface AdminInvitationSummary {
   id: string;
-  membershipId: string;
   organizationId: string;
   status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
   version: number;
   expiresAt: string;
   createdAt: string;
-  membershipVersion: number;
-  targetUserId: string;
-  email: string;
+  invitedEmail: string;
 }
 
 export interface AdminInvitationPage {
@@ -138,6 +146,7 @@ export interface OrganizationMembershipCommandRepository {
       idempotencyKey: string;
       command: OrganizationMembershipCommand;
       now: Date;
+      invitationReadinessReady?: boolean;
       correlationId?: string;
     },
   ): Promise<MembershipMutationResult>;

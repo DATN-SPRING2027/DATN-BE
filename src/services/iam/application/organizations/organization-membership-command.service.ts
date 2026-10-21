@@ -6,6 +6,12 @@ import {
 } from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
 import {
+  areInvitationReadinessGatesReady,
+  ORGANIZATION_INVITATION_READINESS,
+  type OrganizationInvitationReadiness,
+  type OrganizationInvitationReadinessGate,
+} from './organization-invitation-readiness';
+import {
   ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,
   type AdminInvitationPage,
   type MembershipMutationResult,
@@ -38,6 +44,8 @@ export class OrganizationMembershipCommandService {
   constructor(
     @Inject(ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY)
     private readonly repository: OrganizationMembershipCommandRepository,
+    @Inject(ORGANIZATION_INVITATION_READINESS)
+    private readonly invitationReadiness: OrganizationInvitationReadiness,
   ) {}
 
   async listInvitations(
@@ -83,14 +91,44 @@ export class OrganizationMembershipCommandService {
     this.requireOrganizationContext(actor, organizationId);
     if (!idempotencyPattern.test(idempotencyKey)) validationFailed();
     const normalized = this.validateCommand(command);
+    const readinessGates = this.readinessGatesFor(normalized);
+    let invitationReadinessReady: boolean | undefined;
+    if (readinessGates) {
+      if (
+        !(await this.repository.hasPermission(
+          organizationId,
+          actor.id,
+          'organization.memberships.manage',
+        ))
+      )
+        throw new ForbiddenException({
+          code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+        });
+      invitationReadinessReady = await areInvitationReadinessGatesReady(
+        this.invitationReadiness,
+        readinessGates,
+      );
+    }
     return this.repository.execute({
       actorUserId: actor.id,
       organizationId,
       idempotencyKey,
       command: normalized,
       now: new Date(),
+      ...(invitationReadinessReady === undefined
+        ? {}
+        : { invitationReadinessReady }),
       ...(correlationId ? { correlationId } : {}),
     });
+  }
+
+  private readinessGatesFor(
+    command: OrganizationMembershipCommand,
+  ): readonly OrganizationInvitationReadinessGate[] | undefined {
+    if (command.command === 'INVITE' || command.command === 'RESEND')
+      return ['A7_NOTIFICATION_CONTRACT_PROVIDER', 'A8_COORDINATED_CUTOVER'];
+    if (command.command === 'CANCEL') return ['A8_COORDINATED_CUTOVER'];
+    return undefined;
   }
 
   private validateCommand(
@@ -111,7 +149,7 @@ export class OrganizationMembershipCommandService {
         Object.keys(command).length !== 5 ||
         !resourceIdPattern.test(command.invitationId) ||
         !Number.isSafeInteger(command.expectedMembershipVersion) ||
-        command.expectedMembershipVersion < 1 ||
+        command.expectedMembershipVersion < 0 ||
         !Number.isSafeInteger(command.expectedInvitationVersion) ||
         command.expectedInvitationVersion < 1
       )

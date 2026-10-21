@@ -6,6 +6,11 @@ import {
 } from '@nestjs/common';
 import { normalizeMembershipEmail } from '../organizations/organization-membership-command.service';
 import {
+  areInvitationReadinessGatesReady,
+  ORGANIZATION_INVITATION_READINESS,
+  type OrganizationInvitationReadiness,
+} from '../organizations/organization-invitation-readiness';
+import {
   ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,
   type AdminInvitationPage,
   type PlatformInvitationCommandInput,
@@ -75,6 +80,8 @@ export class PlatformAdministrationService {
     private readonly repository: PlatformAdministrationRepository,
     @Inject(ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY)
     private readonly membershipCommands: OrganizationMembershipCommandRepository,
+    @Inject(ORGANIZATION_INVITATION_READINESS)
+    private readonly invitationReadiness: OrganizationInvitationReadiness,
   ) {}
 
   listOrganizations(page: number, pageSize: number) {
@@ -439,8 +446,11 @@ export class PlatformAdministrationService {
     );
   }
 
-  executePlatformInvitationCommand(
-    input: Omit<PlatformInvitationCommandInput, 'now'>,
+  async executePlatformInvitationCommand(
+    input: Omit<
+      PlatformInvitationCommandInput,
+      'now' | 'invitationReadinessReady'
+    >,
   ): Promise<MembershipMutationResult> {
     if (
       !resourceIdPattern.test(input.actorUserId) ||
@@ -457,20 +467,20 @@ export class PlatformAdministrationService {
         Object.keys(command).length !== 3
       )
         validationFailed();
-      return this.membershipCommands.executePlatformInvitationCommand({
+      return this.executeInvitationCommand({
         ...input,
         command: {
           ...command,
           email: normalizeMembershipEmail(command.email),
         },
-        now: new Date(),
       });
     }
     if (
       (command.command !== 'RESEND' && command.command !== 'CANCEL') ||
       !resourceIdPattern.test(command.invitationId) ||
+      command.expectedMembershipVersion === undefined ||
       !Number.isSafeInteger(command.expectedMembershipVersion) ||
-      command.expectedMembershipVersion < 1 ||
+      command.expectedMembershipVersion < 0 ||
       !Number.isSafeInteger(command.expectedInvitationVersion) ||
       command.expectedInvitationVersion < 1 ||
       (command.command === 'RESEND' &&
@@ -480,10 +490,30 @@ export class PlatformAdministrationService {
       Object.keys(command).length !== 5
     )
       validationFailed();
+    return this.executeInvitationCommand({ ...input, command });
+  }
+
+  private async executeInvitationCommand(
+    input: Omit<
+      PlatformInvitationCommandInput,
+      'now' | 'invitationReadinessReady'
+    >,
+  ): Promise<MembershipMutationResult> {
+    const gates =
+      input.command.command === 'CANCEL'
+        ? (['A8_COORDINATED_CUTOVER'] as const)
+        : ([
+            'A7_NOTIFICATION_CONTRACT_PROVIDER',
+            'A8_COORDINATED_CUTOVER',
+          ] as const);
+    const invitationReadinessReady = await areInvitationReadinessGatesReady(
+      this.invitationReadiness,
+      gates,
+    );
     return this.membershipCommands.executePlatformInvitationCommand({
       ...input,
-      command,
       now: new Date(),
+      invitationReadinessReady,
     });
   }
 

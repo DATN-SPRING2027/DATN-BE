@@ -56,6 +56,12 @@ function parseVersion(value: unknown): number {
   return Number(value);
 }
 
+function parseExpectedMembershipVersion(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0)
+    return validationFailed();
+  return Number(value);
+}
+
 function parseReason(value: unknown): string {
   if (typeof value !== 'string' || !reasonCodes.has(value))
     return validationFailed();
@@ -92,7 +98,9 @@ function parseInvitationAction(
     'reasonCode',
   ];
   if (!exactKeys(record, expectedKeys)) return validationFailed();
-  const membershipVersion = parseVersion(record.expectedMembershipVersion);
+  const membershipVersion = parseExpectedMembershipVersion(
+    record.expectedMembershipVersion,
+  );
   const invitationVersion = parseVersion(record.expectedInvitationVersion);
   const reasonCode = parseReason(record.reasonCode);
   if (command === 'RESEND') {

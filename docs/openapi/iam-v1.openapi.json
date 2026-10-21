@@ -112,7 +112,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Request email/password registration",
-        "description": "Accepts a name and email only; no User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
+        "description": "Accepts a name and email, plus an optional non-secret invitation ID used only to return a verified registration flow to that pending invitation. No User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
         "operationId": "requestEmailRegistration",
         "security": [],
         "requestBody": {
@@ -570,12 +570,88 @@
         }
       }
     },
+    "/api/v1/auth/invitations/resolve": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Resolve an opaque invitation token",
+        "description": "Accepts the opaque token from the URL fragment in a no-store request body and returns minimal invitation metadata. The token is hashed for lookup and is never returned. Email binding is enforced again against the authenticated session during acceptance.",
+        "operationId": "resolveOrganizationInvitationTokenV3",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/C02ResolveInvitationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Invitation metadata resolved from the opaque token.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/C02RecipientInvitationDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "500": {
+            "description": "Invitation lookup failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The IAM invitation persistence dependency is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-readiness-gates": []
+      }
+    },
     "/api/v1/auth/invitations": {
       "get": {
         "tags": ["Auth"],
         "summary": "List the signed-in recipient's current invitations",
-        "description": "Returns only current PENDING, unexpired V2 invitations bound to the authenticated active User ID and exact normalized account email, with the current PENDING_INVITE membership version and Organization label. Recipient DTOs exclude targetUserId, recipient email and roleCode. Results are paginated and no-store.",
-        "operationId": "listAccountInvitationsV2",
+        "description": "Returns current V3 email-bound invitations bound to the authenticated User ID and exact normalized account email, without creating or requiring a pending membership. Results include invitedEmail and Organization label, exclude token material and user identifiers, and are paginated and no-store.",
+        "operationId": "listAccountInvitationsV3",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/Page" },
@@ -625,8 +701,8 @@
       "get": {
         "tags": ["Auth"],
         "summary": "Read a bound recipient invitation",
-        "description": "Returns the minimal recipient invitation and membership snapshot. A pending invitation whose expiresAt is at or before the current time is presented as EXPIRED without changing its stored version. The lookup is bound to authenticated User ID and exact normalized account email and is no-store.",
-        "operationId": "getAccountInvitationV2",
+        "description": "Returns the minimal V3 recipient invitation. A pending invitation whose expiresAt is at or before the current time is presented as EXPIRED without changing its stored version. The lookup is bound to authenticated User ID and exact normalized account email and is no-store.",
+        "operationId": "getAccountInvitationV3",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
           {
@@ -687,8 +763,8 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Accept a current bound Organization invitation",
-        "description": "The V2 request requires both membership and invitation versions, idempotency and the CSRF cookie/header pair. It never grants a Role or mints an Organization session. Runtime acceptance remains blocked until the A7 orphan-right evidence and coordinated A8 cutover are verified; while blocked, the endpoint returns 503 IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE and performs no mutation.",
-        "operationId": "acceptOrganizationInvitationV2",
+        "description": "V3 acceptance requires the authenticated account email to match the invitation email, expectedMembershipVersion and expectedInvitationVersion, an Idempotency-Key and the CSRF cookie/header pair. For this email-bound V3 flow no Membership exists before acceptance, so expectedMembershipVersion must be 0; expectedInvitationVersion independently compares the invitation CAS version. Membership creation, invitation acceptance, audit and idempotency record commit atomically. It never grants a Role or mints an Organization session. Acceptance fails closed with 503 until A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF and A8_COORDINATED_CUTOVER are ready.",
+        "operationId": "acceptOrganizationInvitationV3",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
           {
@@ -746,7 +822,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/C02MembershipMutationAck"
+                  "$ref": "#/components/schemas/C02AcceptInvitationAck"
                 }
               }
             }
@@ -759,6 +835,10 @@
           "422": {
             "$ref": "#/components/responses/C02MembershipValidationFailed"
           },
+          "410": {
+            "description": "The invitation has expired.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
           "500": {
             "description": "Required membership mutation write failed and was rolled back.",
             "content": {
@@ -768,7 +848,7 @@
             }
           },
           "503": {
-            "description": "A7/A8 acceptance readiness is unavailable; no mutation was attempted.",
+            "description": "The IAM membership persistence dependency is unavailable; no mutation was committed.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -777,7 +857,7 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-readiness-gates": [
           "A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF",
           "A8_COORDINATED_CUTOVER"
@@ -831,7 +911,7 @@
       "get": {
         "tags": ["Users"],
         "summary": "List pending Organization Membership invitations",
-        "description": "Returns contract V2 pending, unexpired invitations for the scoped Organization, joined to current membership versions. Requires an ACTIVE User and OrganizationMembership plus the current ADMIN Role's organization.memberships.read permission. Role/title claims do not authorize access.",
+        "description": "Returns V3 pending, unexpired email-bound invitations for the scoped Organization. Invitations are listed independently of memberships. Requires an ACTIVE User and OrganizationMembership plus the current ADMIN Role's organization.memberships.read permission. Role/title claims do not authorize access.",
         "operationId": "listOrganizationInvitations",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -877,7 +957,7 @@
       "post": {
         "tags": ["Users"],
         "summary": "Invite an account to an Organization",
-        "description": "Contract V2 invite command. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. The email must identify an existing eligible account. When operational readiness is enabled, it creates PENDING_INVITE membership, invitation, committed operation, allowlisted audit record, and outbox intent atomically. The seven-day invitation expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. An outbox intent does not prove email delivery. New invite operations currently return 503 without mutation while A7 notification-provider evidence and A8 coordinated cutover are blocked; exact committed idempotency replays remain replayable.",
+        "description": "V3 invite command. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. It creates a PENDING email-bound invitation, committed operation, allowlisted audit record, and encrypted delivery outbox intent atomically without creating a membership. The seven-day expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
         "operationId": "createOrganizationInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -960,7 +1040,7 @@
             }
           },
           "503": {
-            "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no mutation; an exact committed idempotency replay returns the stored result.",
+            "description": "The IAM persistence or transaction dependency is unavailable; no command mutation was committed. Email-provider availability does not control this response.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -969,7 +1049,7 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-permission": "organization.memberships.manage",
         "x-readiness-gates": [
           "A7_NOTIFICATION_CONTRACT_PROVIDER",
@@ -981,7 +1061,7 @@
       "post": {
         "tags": ["Organization Memberships"],
         "summary": "Resend a pending invitation",
-        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Supersedes the current V2 pending invitation and creates its successor with membership and invitation version checks. Invite/resend quota, idempotency, audit, and outbox intent are transactional. An outbox intent does not prove email delivery. New commands currently return 503 without mutation while A7 notification-provider evidence and A8 coordinated cutover are blocked; exact committed idempotency replays remain replayable.",
+        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Supersedes the current V3 pending invitation and creates its successor using expectedMembershipVersion and expectedInvitationVersion. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. Invite/resend quota, idempotency, audit, and encrypted outbox intent are transactional. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
         "operationId": "resendOrganizationMembershipInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1060,7 +1140,7 @@
           },
           "429": { "$ref": "#/components/responses/TooManyRequests" },
           "503": {
-            "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no mutation; an exact committed idempotency replay returns the stored result.",
+            "description": "The IAM persistence or transaction dependency is unavailable; no command mutation was committed. Email-provider availability does not control this response.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -1069,7 +1149,7 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-permission": "organization.memberships.manage",
         "x-readiness-gates": [
           "A7_NOTIFICATION_CONTRACT_PROVIDER",
@@ -1081,7 +1161,7 @@
       "post": {
         "tags": ["Organization Memberships"],
         "summary": "Cancel a pending invitation",
-        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Uses expected membership/invitation versions and atomically cancels the invitation, transitions the pending membership to REMOVED, records the committed operation, and writes audit when operationally enabled. New commands currently return 503 without mutation while A8 coordinated cutover is blocked; exact committed idempotency replays remain replayable.",
+        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Uses expectedMembershipVersion and expectedInvitationVersion to cancel the pending invitation and atomically record the operation and audit. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503, including when email delivery is not involved.",
         "operationId": "cancelOrganizationMembershipInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1159,7 +1239,7 @@
             "$ref": "#/components/responses/C02MembershipValidationFailed"
           },
           "503": {
-            "description": "A8 coordinated cutover is blocked. A new command performs no mutation; an exact committed idempotency replay returns the stored result.",
+            "description": "The IAM persistence or transaction dependency is unavailable; no command mutation was committed.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -1168,9 +1248,11 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-permission": "organization.memberships.manage",
-        "x-readiness-gates": ["A8_COORDINATED_CUTOVER"]
+        "x-readiness-gates": [
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/suspend": {
@@ -1778,7 +1860,7 @@
       "get": {
         "tags": ["Platform", "Memberships"],
         "summary": "List current pending invitations for one Organization",
-        "description": "Requires platform.memberships.membership.read at PLATFORM scope. The Organization is resolved from the path and the owner query returns only current unexpired V2 invitation metadata; no invitation token, credential, or tenant content is exposed.",
+        "description": "Requires platform.memberships.membership.read at PLATFORM scope. The Organization is resolved from the path and the owner query returns only current unexpired V3 invitation metadata; no invitation token, credential, or tenant content is exposed.",
         "operationId": "listPlatformOrganizationInvitations",
         "x-platform-permission": "platform.memberships.membership.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -1813,7 +1895,7 @@
       "post": {
         "tags": ["Platform", "Memberships"],
         "summary": "Invite an eligible account to an Organization",
-        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, and an Idempotency-Key. The Organization is resolved from the path. New invitation commands remain no-write 503 until A7 notification-provider evidence and A8 coordinated cutover are accepted; an exact previously committed idempotency replay remains replayable.",
+        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, an eligible email, strict reasonCode, and an Idempotency-Key. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. A new invitation transaction commits its V3 invitation, operation, encrypted outbox event, and audit together. Email delivery remains asynchronous after the readiness gate passes; no membership is created until acceptance.",
         "operationId": "createPlatformOrganizationInvitation",
         "x-platform-permission": "platform.memberships.invitation.manage",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -1895,7 +1977,7 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "503": {
-            "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no membership, invitation, operation, outbox, or audit mutation; an exact committed idempotency replay remains available.",
+            "description": "The IAM persistence or transaction dependency is unavailable; no command mutation was committed. Email-provider availability does not control this response.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -1904,7 +1986,7 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-readiness-gates": [
           "A7_NOTIFICATION_CONTRACT_PROVIDER",
           "A8_COORDINATED_CUTOVER"
@@ -1915,7 +1997,7 @@
       "post": {
         "tags": ["Platform", "Memberships"],
         "summary": "Resend a pending Organization invitation",
-        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, expected membership and invitation versions, and an Idempotency-Key. New invitation commands remain no-write 503 until A7 notification-provider evidence and A8 coordinated cutover are accepted; an exact previously committed idempotency replay remains replayable.",
+        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, expectedMembershipVersion and expectedInvitationVersion, and an Idempotency-Key. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. It supersedes the pending V3 invitation and queues asynchronous email delivery in the same transaction as the audit and operation records.",
         "operationId": "resendPlatformOrganizationInvitation",
         "x-platform-permission": "platform.memberships.invitation.manage",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -2003,7 +2085,7 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "503": {
-            "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no membership, invitation, operation, outbox, or audit mutation; an exact committed idempotency replay remains available.",
+            "description": "The IAM persistence or transaction dependency is unavailable; no command mutation was committed. Email-provider availability does not control this response.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -2012,7 +2094,7 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-readiness-gates": [
           "A7_NOTIFICATION_CONTRACT_PROVIDER",
           "A8_COORDINATED_CUTOVER"
@@ -2023,7 +2105,7 @@
       "post": {
         "tags": ["Platform", "Memberships"],
         "summary": "Cancel a pending Organization invitation",
-        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, expected membership and invitation versions, and an Idempotency-Key. New invitation commands remain no-write 503 until A7 notification-provider evidence and A8 coordinated cutover are accepted; an exact previously committed idempotency replay remains replayable.",
+        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, expectedMembershipVersion and expectedInvitationVersion, and an Idempotency-Key. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. It cancels the pending V3 invitation and records the audit and operation atomically; no membership is created or changed.",
         "operationId": "cancelPlatformOrganizationInvitation",
         "x-platform-permission": "platform.memberships.invitation.manage",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -2111,7 +2193,7 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "503": {
-            "description": "A7 notification-provider evidence or A8 coordinated cutover is blocked. A new command performs no membership, invitation, operation, outbox, or audit mutation; an exact committed idempotency replay remains available.",
+            "description": "The IAM persistence or transaction dependency is unavailable; no command mutation was committed. Email-provider availability does not control this response.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -2120,9 +2202,8 @@
           }
         },
         "x-contract-status": "USER_APPROVED",
-        "x-runtime-status": "BLOCKED_A7_A8",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-readiness-gates": [
-          "A7_NOTIFICATION_CONTRACT_PROVIDER",
           "A8_COORDINATED_CUTOVER"
         ]
       }
@@ -7434,7 +7515,8 @@
         "required": ["fullName", "email"],
         "properties": {
           "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
-          "email": { "type": "string", "format": "email", "maxLength": 320 }
+          "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "returnToInvitationId": { "type": "string", "minLength": 24, "maxLength": 24, "pattern": "^[a-fA-F0-9]{24}$", "description": "Non-secret invitation identifier for the post-verification sign-in continuation. The authenticated email must still match before acceptance." }
         }
       },
       "EmailRegistrationVerify": {
@@ -8083,35 +8165,42 @@
         "additionalProperties": false,
         "required": [
           "id",
-          "membershipId",
           "organizationId",
           "status",
           "version",
           "expiresAt",
           "createdAt",
-          "membershipVersion",
-          "targetUserId",
-          "email"
+          "invitedEmail"
         ],
         "properties": {
-          "id": { "$ref": "#/components/schemas/ResourceId" },
-          "membershipId": { "$ref": "#/components/schemas/ResourceId" },
-          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
-          "status": { "type": "string", "const": "PENDING" },
+          "id": {
+            "$ref": "#/components/schemas/ResourceId"
+          },
+          "organizationId": {
+            "$ref": "#/components/schemas/ResourceId"
+          },
+          "status": {
+            "type": "string",
+            "const": "PENDING"
+          },
           "version": {
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
           },
-          "expiresAt": { "type": "string", "format": "date-time" },
-          "createdAt": { "type": "string", "format": "date-time" },
-          "membershipVersion": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
           },
-          "targetUserId": { "$ref": "#/components/schemas/ResourceId" },
-          "email": { "type": "string", "format": "email" }
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "invitedEmail": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          }
         }
       },
       "C02RecipientInvitationPage": {
@@ -8132,19 +8221,21 @@
         "additionalProperties": false,
         "required": [
           "id",
-          "membershipId",
           "organizationId",
           "status",
           "version",
           "expiresAt",
           "createdAt",
-          "membershipVersion",
+          "invitedEmail",
           "organizationName"
         ],
         "properties": {
-          "id": { "$ref": "#/components/schemas/ResourceId" },
-          "membershipId": { "$ref": "#/components/schemas/ResourceId" },
-          "organizationId": { "$ref": "#/components/schemas/ResourceId" },
+          "id": {
+            "$ref": "#/components/schemas/ResourceId"
+          },
+          "organizationId": {
+            "$ref": "#/components/schemas/ResourceId"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -8160,53 +8251,74 @@
             "minimum": 1,
             "maximum": 9007199254740991
           },
-          "expiresAt": { "type": "string", "format": "date-time" },
-          "createdAt": { "type": "string", "format": "date-time" },
-          "membershipVersion": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
           },
-          "organizationName": { "type": "string" }
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "invitedEmail": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "organizationName": {
+            "type": "string"
+          }
         }
       },
       "C02RecipientInvitationDetail": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["membership", "invitation"],
+        "required": [
+          "invitation"
+        ],
         "properties": {
-          "membership": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["id", "status", "version"],
-            "properties": {
-              "id": { "$ref": "#/components/schemas/ResourceId" },
-              "status": { "$ref": "#/components/schemas/MembershipStatus" },
-              "version": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 9007199254740991
-              }
-            }
-          },
           "invitation": {
             "$ref": "#/components/schemas/C02RecipientInvitation"
           }
         }
       },
       "C02MembershipMutationAck": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["operationId", "membership"],
-        "properties": {
-          "operationId": { "$ref": "#/components/schemas/ResourceId" },
-          "membership": {
-            "$ref": "#/components/schemas/C02MembershipMutationState"
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operationId",
+              "membership"
+            ],
+            "properties": {
+              "operationId": {
+                "$ref": "#/components/schemas/ResourceId"
+              },
+              "membership": {
+                "$ref": "#/components/schemas/C02MembershipMutationState"
+              },
+              "invitation": {
+                "$ref": "#/components/schemas/C02InvitationMutationState"
+              }
+            }
           },
-          "invitation": {
-            "$ref": "#/components/schemas/C02InvitationMutationState"
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operationId",
+              "invitation"
+            ],
+            "properties": {
+              "operationId": {
+                "$ref": "#/components/schemas/ResourceId"
+              },
+              "invitation": {
+                "$ref": "#/components/schemas/C02InvitationMutationState"
+              }
+            }
           }
-        }
+        ]
       },
       "C02OrganizationRoleMutationAck": {
         "type": "object",
@@ -8301,8 +8413,9 @@
         "properties": {
           "expectedMembershipVersion": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 is the documented sentinel for an email-bound V3 invitation with no Membership row; the invitation's independent CAS is expectedInvitationVersion."
           },
           "expectedInvitationVersion": {
             "type": "integer",
@@ -8311,7 +8424,10 @@
           },
           "reasonCode": {
             "type": "string",
-            "enum": ["ACCESS_REQUEST", "ACCESS_REVIEW"]
+            "enum": [
+              "ACCESS_REQUEST",
+              "ACCESS_REVIEW"
+            ]
           }
         }
       },
@@ -8326,32 +8442,63 @@
         "properties": {
           "expectedMembershipVersion": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 is the documented sentinel for an email-bound V3 invitation with no Membership row; the invitation's independent CAS is expectedInvitationVersion."
           },
           "expectedInvitationVersion": {
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
           },
-          "reasonCode": { "type": "string", "const": "INVITATION_CANCELLED" }
+          "reasonCode": {
+            "type": "string",
+            "const": "INVITATION_CANCELLED"
+          }
+        }
+      },
+      "C02ResolveInvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["token"],
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]{43,128}$"
+          }
         }
       },
       "C02AcceptInvitationRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["expectedMembershipVersion", "expectedInvitationVersion"],
+        "required": [
+          "expectedMembershipVersion",
+          "expectedInvitationVersion"
+        ],
         "properties": {
           "expectedMembershipVersion": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 is the documented sentinel for an email-bound V3 invitation with no Membership row; the invitation's independent CAS is expectedInvitationVersion."
           },
           "expectedInvitationVersion": {
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
           }
+        }
+      },
+      "C02AcceptInvitationAck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "membership", "invitation"],
+        "properties": {
+          "operationId": { "$ref": "#/components/schemas/ResourceId" },
+          "membership": { "$ref": "#/components/schemas/C02MembershipMutationState" },
+          "invitation": { "$ref": "#/components/schemas/C02InvitationMutationState" }
         }
       },
       "C02SuspendMembershipRequest": {

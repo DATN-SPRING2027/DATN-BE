@@ -1,7 +1,5 @@
 import {
   ForbiddenException,
-  HttpException,
-  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -21,7 +19,10 @@ describe('AccountInvitationController', () => {
     Pick<AuthenticationApplicationService, 'getCurrentSessionIdentity'>
   >;
   let invitations: jest.Mocked<
-    Pick<OrganizationInvitationService, 'listMine' | 'getMine'>
+    Pick<
+      OrganizationInvitationService,
+      'listMine' | 'getMine' | 'resolveToken' | 'accept'
+    >
   >;
   let setHeader: jest.MockedFunction<Response['setHeader']>;
   let response: Response;
@@ -37,6 +38,14 @@ describe('AccountInvitationController', () => {
         pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
       }),
       getMine: jest.fn().mockResolvedValue({}),
+      resolveToken: jest.fn().mockResolvedValue({
+        invitation: { id: 'a'.repeat(24), status: 'PENDING' },
+        organization: { name: 'Test organization' },
+      }),
+      accept: jest.fn().mockResolvedValue({
+        acknowledgement: { operationId: 'b'.repeat(24) },
+        replayed: false,
+      }),
     };
     setHeader = jest.fn();
     response = { setHeader } as unknown as Response;
@@ -85,9 +94,21 @@ describe('AccountInvitationController', () => {
     expect(setHeader.mock.calls).toContainEqual(['Cache-Control', 'no-store']);
   });
 
-  it('keeps acceptance unavailable while A7 is blocked and validates its V2 request first', async () => {
+  it('resolves an invitation token without authenticating and never caches the response', async () => {
+    await controller.resolve({ token: 't'.repeat(43) }, response);
+    expect(invitations.resolveToken).toHaveBeenCalledWith('t'.repeat(43));
+    expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    await expect(
+      controller.resolve(
+        { token: 't'.repeat(43), email: 'forged@example.com' },
+        response,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('accepts with an authenticated account and both CAS versions', async () => {
     const body = {
-      expectedMembershipVersion: 1,
+      expectedMembershipVersion: 0,
       expectedInvitationVersion: 1,
     };
     await expect(
@@ -100,7 +121,14 @@ describe('AccountInvitationController', () => {
         body,
         response,
       ),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    ).resolves.toEqual({ operationId: 'b'.repeat(24) });
+    expect(invitations.accept).toHaveBeenCalledWith(
+      account,
+      'a'.repeat(24),
+      0,
+      1,
+      '0123456789abcdef',
+    );
     await expect(
       controller.accept(
         'Bearer access',
@@ -112,17 +140,6 @@ describe('AccountInvitationController', () => {
         response,
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    await expect(
-      controller.accept(
-        'Bearer access',
-        '__Host-csrf=csrf',
-        'csrf',
-        '0123456789abcdef',
-        'a'.repeat(24),
-        body,
-        response,
-      ),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
     await expect(
       controller.accept(
         'Bearer access',
@@ -145,22 +162,16 @@ describe('AccountInvitationController', () => {
         response,
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    try {
-      await controller.accept(
+    await expect(
+      controller.accept(
         'Bearer access',
         '__Host-csrf=csrf',
         'csrf',
         '0123456789abcdef',
         'a'.repeat(24),
-        body,
+        { expectedInvitationVersion: 1 },
         response,
-      );
-    } catch (error) {
-      expect(error).toBeInstanceOf(HttpException);
-      expect((error as HttpException).getStatus()).toBe(503);
-      expect((error as HttpException).getResponse()).toEqual({
-        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
-      });
-    }
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });

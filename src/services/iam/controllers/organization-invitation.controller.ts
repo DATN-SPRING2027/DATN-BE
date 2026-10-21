@@ -4,11 +4,11 @@ import {
   ForbiddenException,
   Get,
   Headers,
+  HttpCode,
   Param,
   Post,
   Query,
   Res,
-  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -51,7 +51,10 @@ function parsePageQuery(query: Record<string, unknown>): {
   return { page, pageSize };
 }
 
-function parseAcceptBody(body: unknown): void {
+function parseAcceptBody(body: unknown): {
+  expectedMembershipVersion: number;
+  expectedInvitationVersion: number;
+} {
   if (typeof body !== 'object' || body === null || Array.isArray(body))
     return validationFailed();
   const record = body as Record<string, unknown>;
@@ -63,11 +66,28 @@ function parseAcceptBody(body: unknown): void {
     Object.keys(record).length !== expectedKeys.length ||
     expectedKeys.some((key) => !Object.hasOwn(record, key)) ||
     !Number.isSafeInteger(record.expectedMembershipVersion) ||
-    Number(record.expectedMembershipVersion) < 1 ||
+    Number(record.expectedMembershipVersion) < 0 ||
     !Number.isSafeInteger(record.expectedInvitationVersion) ||
     Number(record.expectedInvitationVersion) < 1
   )
     return validationFailed();
+  return {
+    expectedMembershipVersion: Number(record.expectedMembershipVersion),
+    expectedInvitationVersion: Number(record.expectedInvitationVersion),
+  };
+}
+
+function parseResolveBody(body: unknown): string {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    return validationFailed();
+  const record = body as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 1 ||
+    !Object.hasOwn(record, 'token') ||
+    typeof record.token !== 'string'
+  )
+    return validationFailed();
+  return record.token;
 }
 
 @Controller('auth/invitations')
@@ -76,6 +96,16 @@ export class AccountInvitationController {
     private readonly auth: AuthenticationApplicationService,
     private readonly invitations: OrganizationInvitationService,
   ) {}
+
+  @Post('resolve')
+  @HttpCode(200)
+  async resolve(
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.invitations.resolveToken(parseResolveBody(body));
+  }
 
   @Get()
   async list(
@@ -109,6 +139,7 @@ export class AccountInvitationController {
   }
 
   @Post(':invitationId/accept')
+  @HttpCode(200)
   async accept(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -117,9 +148,12 @@ export class AccountInvitationController {
     @Param('invitationId') invitationId: string,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<never> {
+  ) {
     response.setHeader('Cache-Control', 'no-store');
-    await this.auth.getCurrentSessionIdentity(authorization, cookie);
+    const actor = await this.auth.getCurrentSessionIdentity(
+      authorization,
+      cookie,
+    );
     if (!validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader))
       throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
     if (
@@ -128,9 +162,15 @@ export class AccountInvitationController {
       !idempotencyPattern.test(idempotencyKey)
     )
       return validationFailed();
-    parseAcceptBody(body);
-    throw new ServiceUnavailableException({
-      code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
-    });
+    const input = parseAcceptBody(body);
+    const result = await this.invitations.accept(
+      actor,
+      invitationId,
+      input.expectedMembershipVersion,
+      input.expectedInvitationVersion,
+      idempotencyKey,
+    );
+    if (result.replayed) response.setHeader('Idempotency-Replayed', 'true');
+    return result.acknowledgement;
   }
 }

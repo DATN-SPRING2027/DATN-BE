@@ -8,7 +8,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import {
@@ -18,6 +18,7 @@ import {
 import type {
   AdminInvitationPage,
   AdminInvitationSummary,
+  InvitationMutationAcknowledgement,
   MembershipMutationAcknowledgement,
   MembershipMutationResult,
   OrganizationMembershipCommand,
@@ -25,6 +26,7 @@ import type {
   PlatformInvitationCommandInput,
   PlatformMembershipSuspendInput,
 } from '../../application/organizations/organization-membership-command.repository';
+import { OrganizationInvitationPayloadCipher } from '../email/organization-invitation-payload.cipher';
 import { IAM_PERSISTENCE } from '../persistence';
 
 const organizationMembershipManagePermission =
@@ -35,17 +37,30 @@ const invitationQuotaWindowMs = 60 * 60 * 1000;
 const platformMembershipPermission = 'platform.memberships.lifecycle.manage';
 const platformInvitationPermission = 'platform.memberships.invitation.manage';
 
-function isInvitationCommandReadinessBlocked(
-  command: OrganizationMembershipCommand,
-): boolean {
-  return (
-    command.command === 'INVITE' ||
-    command.command === 'RESEND' ||
-    command.command === 'CANCEL'
-  );
-}
 const modelName = (name: string) => `${IAM_PERSISTENCE.databaseName}_${name}`;
 const organizationLevel = { projectId: null };
+
+type InvitationCommandChange = {
+  membership?: MembershipMutationAcknowledgement['membership'];
+  invitation?: InvitationMutationAcknowledgement['invitation'];
+  role?: MembershipMutationAcknowledgement['role'];
+  audit: Omit<
+    AuditRecord,
+    | 'eventId'
+    | 'schemaVersion'
+    | 'operationId'
+    | 'organizationId'
+    | 'actorUserId'
+    | 'occurredAt'
+    | 'reasonCode'
+    | 'correlationId'
+  >;
+  outbox?: {
+    eventName: string;
+    invitationId: string;
+    payload: Record<string, unknown>;
+  };
+};
 
 interface UserDocument {
   _id: Types.ObjectId;
@@ -72,9 +87,10 @@ interface MembershipDocument {
 interface InvitationDocument {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
-  membershipId: Types.ObjectId;
-  targetUserId: Types.ObjectId;
+  membershipId?: Types.ObjectId;
+  targetUserId?: Types.ObjectId;
   email: string;
+  tokenHash?: string;
   contractVersion: number;
   version: number;
   status: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED' | 'SUPERSEDED';
@@ -83,8 +99,18 @@ interface InvitationDocument {
   createdAt: Date;
   supersedesInvitationId?: Types.ObjectId;
 }
-interface AdminInvitationRow extends InvitationDocument {
-  membershipVersion: number;
+interface LegacyInvitationDocument extends InvitationDocument {
+  membershipId: Types.ObjectId;
+  targetUserId: Types.ObjectId;
+}
+interface AdminInvitationRow {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  status: AdminInvitationSummary['status'];
+  version: number;
+  expiresAt: Date;
+  createdAt: Date;
+  email: string;
 }
 interface AdminInvitationFacet {
   data: AdminInvitationRow[];
@@ -109,14 +135,15 @@ interface OperationDocument {
   _id: Types.ObjectId;
   actorUserId: Types.ObjectId;
   organizationId: Types.ObjectId;
-  membershipId: Types.ObjectId;
-  targetUserId: Types.ObjectId;
+  membershipId?: Types.ObjectId;
+  targetUserId?: Types.ObjectId;
+  invitationId?: Types.ObjectId;
   keyHash: string;
   fingerprintHash: string;
   command: OrganizationMembershipCommand['command'];
   status: 'COMMITTED';
   httpStatus: 200 | 201;
-  resultBody: MembershipMutationAcknowledgement;
+  resultBody: MembershipMutationResult['body'];
   committedAt: Date;
   expiresAt: Date;
 }
@@ -134,8 +161,8 @@ type AuditRecord = {
   reasonCode: string;
   reason?: string;
   correlationId?: string;
-  membershipId: string;
-  targetResource?: 'ORGANIZATION_MEMBERSHIP';
+  membershipId?: string;
+  targetResource?: 'ORGANIZATION_MEMBERSHIP' | 'ORGANIZATION_INVITATION';
   targetResourceId?: string;
   invitationIds?: string[];
   before: Record<string, string | number>;
@@ -148,6 +175,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     @Optional()
     @InjectConnection(IAM_PERSISTENCE.databaseName)
     private readonly connection?: Connection,
+    @Optional()
+    private readonly invitationCipher?: OrganizationInvitationPayloadCipher,
   ) {}
 
   async hasPermission(
@@ -180,39 +209,28 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         {
           $match: {
             organizationId: scope,
-            contractVersion: 2,
+            contractVersion: 3,
             status: 'PENDING',
             expiresAt: { $gt: now },
           },
         },
-        {
-          $lookup: {
-            from: 'organization_memberships',
-            localField: 'membershipId',
-            foreignField: '_id',
-            as: 'membership',
-          },
-        },
-        { $unwind: '$membership' },
-        {
-          $match: {
-            'membership.status': 'PENDING_INVITE',
-            $expr: {
-              $and: [
-                { $eq: ['$membership.organizationId', '$organizationId'] },
-                { $eq: ['$membership.userId', '$targetUserId'] },
-              ],
-            },
-          },
-        },
-        { $addFields: { membershipVersion: '$membership.version' } },
         { $sort: { createdAt: -1, _id: -1 } },
         {
           $facet: {
             data: [
               { $skip: (page - 1) * pageSize },
               { $limit: pageSize },
-              { $project: { membership: 0 } },
+              {
+                $project: {
+                  _id: 1,
+                  organizationId: 1,
+                  status: 1,
+                  version: 1,
+                  expiresAt: 1,
+                  createdAt: 1,
+                  email: 1,
+                },
+              },
             ],
             total: [{ $count: 'count' }],
           },
@@ -221,9 +239,15 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .exec();
     const totalItems = facet?.total[0]?.count ?? 0;
     return {
-      data: (facet?.data ?? []).map((row) =>
-        this.mapInvitation(row, row.membershipVersion),
-      ),
+      data: (facet?.data ?? []).map((row) => ({
+        id: row._id.toHexString(),
+        organizationId: row.organizationId.toHexString(),
+        status: row.status,
+        version: row.version,
+        expiresAt: row.expiresAt.toISOString(),
+        createdAt: row.createdAt.toISOString(),
+        invitedEmail: row.email,
+      })),
       pagination: {
         page,
         pageSize,
@@ -239,6 +263,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     idempotencyKey: string;
     command: OrganizationMembershipCommand;
     now: Date;
+    invitationReadinessReady?: boolean;
     correlationId?: string;
   }): Promise<MembershipMutationResult> {
     const actorUserId = new Types.ObjectId(input.actorUserId);
@@ -279,6 +304,13 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           };
           return;
         }
+        if (
+          ['INVITE', 'RESEND', 'CANCEL'].includes(input.command.command) &&
+          input.invitationReadinessReady !== true
+        )
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
         if (prior)
           await this.operations()
             .deleteOne(
@@ -286,14 +318,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
               { session },
             )
             .exec();
-
-        // A new invitation command cannot be enabled until its accepted A7/A8
-        // readiness gates are verified. Keep this after exact replay lookup so
-        // a previously committed operation still returns its original result.
-        if (isInvitationCommandReadinessBlocked(input.command))
-          throw new ServiceUnavailableException({
-            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
-          });
 
         await this.acquireOrganizationAdminFence(organizationId, session);
         // Re-read the actor's current account, membership, ADMIN assignment,
@@ -330,22 +354,46 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           input.now,
           session,
         );
-        const body: MembershipMutationAcknowledgement = {
-          operationId: operationId.toHexString(),
-          membership: change.membership,
-          ...(change.invitation ? { invitation: change.invitation } : {}),
-          ...(change.role ? { role: change.role } : {}),
-        };
+        const body: MembershipMutationResult['body'] = change.membership
+          ? {
+              operationId: operationId.toHexString(),
+              membership: change.membership,
+              ...(change.invitation ? { invitation: change.invitation } : {}),
+              ...(change.role ? { role: change.role } : {}),
+            }
+          : {
+              operationId: operationId.toHexString(),
+              invitation: change.invitation!,
+            };
         const committedAt = input.now;
         const httpStatus = input.command.command === 'INVITE' ? 201 : 200;
+        const invitationCommand = ['INVITE', 'RESEND', 'CANCEL'].includes(
+          input.command.command,
+        );
+        const operationBinding = invitationCommand
+          ? {
+              contractVersion: 3,
+              ...(input.command.command === 'RESEND' ||
+              input.command.command === 'CANCEL'
+                ? {
+                    invitationId: new Types.ObjectId(
+                      input.command.invitationId,
+                    ),
+                  }
+                : {}),
+            }
+          : {
+              contractVersion: 2,
+              membershipId: new Types.ObjectId(change.membership!.id),
+              targetUserId: new Types.ObjectId(change.membership!.userId),
+            };
         await this.operations().create(
           [
             {
               _id: operationId,
               actorUserId,
               organizationId,
-              membershipId: new Types.ObjectId(body.membership.id),
-              targetUserId: new Types.ObjectId(body.membership.userId),
+              ...operationBinding,
               keyHash,
               fingerprintHash,
               command: input.command.command,
@@ -366,10 +414,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
             operationId: operationId.toHexString(),
             organizationId: input.organizationId,
             actorUserId: input.actorUserId,
-            scope:
-              input.command.command === 'SET_ORGANIZATION_ROLE'
-                ? 'ORGANIZATION'
-                : 'PLATFORM',
+            scope: 'ORGANIZATION',
             result: 'SUCCESS',
             occurredAt: input.now,
             reasonCode:
@@ -396,7 +441,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
                 eventName: change.outbox.eventName,
                 aggregateType: 'ORGANIZATION_INVITATION',
                 aggregateId: change.outbox.invitationId,
-                payload: { invitationId: change.outbox.invitationId },
+                payload: change.outbox.payload,
                 status: 'PENDING',
                 occurredAt: input.now,
               },
@@ -616,12 +661,115 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           return;
         }
 
-        // Keep the owner-approved A7 notification evidence and A8 cutover gate
-        // fail-closed. No membership, invitation, operation, outbox, or audit
-        // write is allowed until those external readiness decisions are accepted.
-        throw new ServiceUnavailableException({
-          code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
-        });
+        if (input.invitationReadinessReady !== true)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+
+        await this.acquireOrganizationAdminFence(organizationId, session);
+        if (
+          !(await this.hasPlatformPermissionAt(
+            actorUserId,
+            input.now,
+            session,
+            platformInvitationPermission,
+          ))
+        )
+          throw new ForbiddenException({
+            code: 'FORBIDDEN',
+            message: 'Insufficient authorization.',
+          });
+        if (
+          input.command.command === 'INVITE' ||
+          input.command.command === 'RESEND'
+        )
+          await this.enforceInvitationQuota(
+            organizationId,
+            actorUserId,
+            input.now,
+            session,
+          );
+        const operationId = new Types.ObjectId();
+        const change = await this.applyCommand(
+          input.organizationId,
+          actorUserId,
+          input.command,
+          input.now,
+          session,
+        );
+        const body: MembershipMutationResult['body'] = change.membership
+          ? {
+              operationId: operationId.toHexString(),
+              membership: change.membership,
+              ...(change.invitation ? { invitation: change.invitation } : {}),
+            }
+          : {
+              operationId: operationId.toHexString(),
+              invitation: change.invitation!,
+            };
+        await this.operations().create(
+          [
+            {
+              _id: operationId,
+              actorUserId,
+              organizationId,
+              contractVersion: 3,
+              ...(input.command.command !== 'INVITE'
+                ? {
+                    invitationId: new Types.ObjectId(
+                      input.command.invitationId,
+                    ),
+                  }
+                : {}),
+              keyHash,
+              fingerprintHash,
+              command: input.command.command,
+              status: 'COMMITTED',
+              httpStatus: input.command.command === 'INVITE' ? 201 : 200,
+              resultBody: body,
+              committedAt: input.now,
+              expiresAt: new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
+            },
+          ],
+          { session },
+        );
+        await this.writeAudit(
+          {
+            ...change.audit,
+            eventId: randomUUID(),
+            schemaVersion: 2,
+            operationId: operationId.toHexString(),
+            organizationId: input.organizationId,
+            actorUserId: input.actorUserId,
+            scope: 'PLATFORM',
+            result: 'SUCCESS',
+            occurredAt: input.now,
+            reasonCode: input.command.reasonCode,
+            ...(input.correlationId
+              ? { correlationId: input.correlationId }
+              : {}),
+          },
+          session,
+        );
+        if (change.outbox)
+          await this.outbox().create(
+            [
+              {
+                eventName: change.outbox.eventName,
+                aggregateType: 'ORGANIZATION_INVITATION',
+                aggregateId: change.outbox.invitationId,
+                payload: change.outbox.payload,
+                status: 'PENDING',
+                occurredAt: input.now,
+              },
+            ],
+            { session },
+          );
+        result = {
+          httpStatus: input.command.command === 'INVITE' ? 201 : 200,
+          body,
+          replayed: false,
+        };
       });
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -644,25 +792,9 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     command: OrganizationMembershipCommand,
     now: Date,
     session: ClientSession,
-  ): Promise<{
-    membership: MembershipMutationAcknowledgement['membership'];
-    invitation?: MembershipMutationAcknowledgement['invitation'];
-    role?: MembershipMutationAcknowledgement['role'];
-    audit: Omit<
-      AuditRecord,
-      | 'eventId'
-      | 'schemaVersion'
-      | 'operationId'
-      | 'organizationId'
-      | 'actorUserId'
-      | 'occurredAt'
-      | 'reasonCode'
-      | 'correlationId'
-    >;
-    outbox?: { eventName: string; invitationId: string };
-  }> {
+  ): Promise<InvitationCommandChange> {
     if (command.command === 'INVITE')
-      return this.invite(
+      return this.inviteV3(
         organizationIdText,
         actorUserId,
         command,
@@ -670,7 +802,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         session,
       );
     if (command.command === 'RESEND')
-      return this.resend(
+      return this.resendV3(
         organizationIdText,
         actorUserId,
         command,
@@ -678,7 +810,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         session,
       );
     if (command.command === 'CANCEL')
-      return this.cancel(
+      return this.cancelV3(
         organizationIdText,
         actorUserId,
         command,
@@ -693,6 +825,370 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         session,
       );
     return this.suspend(organizationIdText, actorUserId, command, now, session);
+  }
+
+  private async inviteV3(
+    organizationIdText: string,
+    actorUserId: Types.ObjectId,
+    command: Extract<OrganizationMembershipCommand, { command: 'INVITE' }>,
+    now: Date,
+    session: ClientSession,
+  ): Promise<InvitationCommandChange> {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const existingUser = await this.users()
+      .findOne({ email: command.email })
+      .session(session)
+      .lean()
+      .exec();
+    if (existingUser && existingUser.status !== 'ACTIVE')
+      throw new HttpException({ code: 'INVITATION_TARGET_NOT_ELIGIBLE' }, 422);
+    if (existingUser) {
+      const existingMembership = await this.memberships()
+        .findOne({ organizationId, userId: existingUser._id })
+        .session(session)
+        .lean()
+        .exec();
+      if (existingMembership?.status === 'ACTIVE')
+        throw new ConflictException({ code: 'TARGET_ALREADY_MEMBER' });
+      if (existingMembership?.status === 'SUSPENDED')
+        throw new ConflictException({ code: 'USE_RESUME' });
+      if (existingMembership?.status === 'REMOVED')
+        throw new ConflictException({ code: 'USE_REINVITE' });
+    }
+
+    const pending = await this.invitations()
+      .findOne({ organizationId, email: command.email, status: 'PENDING' })
+      .session(session)
+      .lean()
+      .exec();
+    if (pending && pending.expiresAt.getTime() > now.getTime())
+      throw new ConflictException({ code: 'ALREADY_PENDING' });
+    if (pending)
+      await this.invitations()
+        .updateOne(
+          { _id: pending._id, status: 'PENDING', version: pending.version },
+          { $set: { status: 'EXPIRED' }, $inc: { version: 1 } },
+          { session },
+        )
+        .exec();
+
+    const invitationId = new Types.ObjectId();
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = sha256(token);
+    const expiresAt = new Date(now.getTime() + invitationLifetimeMs);
+    const binding = {
+      invitationId: invitationId.toHexString(),
+      organizationId: organizationIdText,
+      recipientEmail: command.email,
+      tokenHash,
+    };
+    const encryptedToken = this.cipherOrThrow().encryptToken(token, binding);
+    await this.invitations().create(
+      [
+        {
+          _id: invitationId,
+          organizationId,
+          email: command.email,
+          contractVersion: 3,
+          tokenHash,
+          version: 1,
+          status: 'PENDING',
+          invitedBy: actorUserId,
+          expiresAt,
+        },
+      ],
+      { session },
+    );
+    const invitation = {
+      id: invitationId.toHexString(),
+      status: 'PENDING' as const,
+      version: 1,
+      expiresAt: expiresAt.toISOString(),
+    };
+    return {
+      invitation,
+      audit: {
+        action: 'ORGANIZATION_INVITATION_CREATED',
+        invitationIds: [invitation.id],
+        targetResource: 'ORGANIZATION_INVITATION',
+        targetResourceId: invitation.id,
+        before: { invitationStatus: 'ABSENT', invitationVersion: 0 },
+        after: {
+          invitationStatus: 'PENDING',
+          invitationVersion: 1,
+          invitationExpiresAt: expiresAt.toISOString(),
+        },
+      },
+      outbox: {
+        eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+        invitationId: invitation.id,
+        payload: {
+          invitationId: invitation.id,
+          organizationId: organizationIdText,
+          recipientEmail: command.email,
+          tokenHash,
+          encryptedToken,
+        },
+      },
+    };
+  }
+
+  private async resendV3(
+    organizationIdText: string,
+    actorUserId: Types.ObjectId,
+    command: Extract<OrganizationMembershipCommand, { command: 'RESEND' }>,
+    now: Date,
+    session: ClientSession,
+  ): Promise<InvitationCommandChange> {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const oldInvitation = await this.findInvitationV3(
+      organizationId,
+      command.invitationId,
+      session,
+    );
+    await this.assertExpectedMembershipVersion(
+      organizationId,
+      oldInvitation.email,
+      command.expectedMembershipVersion,
+      session,
+    );
+    if (oldInvitation.version !== command.expectedInvitationVersion)
+      throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
+    if (oldInvitation.status !== 'PENDING')
+      throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
+
+    const supersededStatus =
+      oldInvitation.expiresAt.getTime() <= now.getTime()
+        ? 'EXPIRED'
+        : 'SUPERSEDED';
+    const changed = await this.invitations()
+      .findOneAndUpdate(
+        {
+          _id: oldInvitation._id,
+          organizationId,
+          contractVersion: 3,
+          status: 'PENDING',
+          version: command.expectedInvitationVersion,
+        },
+        { $set: { status: supersededStatus }, $inc: { version: 1 } },
+        { new: true, session },
+      )
+      .lean()
+      .exec();
+    if (!changed)
+      throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
+    await this.cancelPendingDelivery(oldInvitation._id.toHexString(), session);
+
+    const invitationId = new Types.ObjectId();
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = sha256(token);
+    const expiresAt = new Date(now.getTime() + invitationLifetimeMs);
+    const binding = {
+      invitationId: invitationId.toHexString(),
+      organizationId: organizationIdText,
+      recipientEmail: oldInvitation.email,
+      tokenHash,
+    };
+    const encryptedToken = this.cipherOrThrow().encryptToken(token, binding);
+    await this.invitations().create(
+      [
+        {
+          _id: invitationId,
+          organizationId,
+          email: oldInvitation.email,
+          contractVersion: 3,
+          tokenHash,
+          version: 1,
+          status: 'PENDING',
+          invitedBy: actorUserId,
+          expiresAt,
+          supersedesInvitationId: oldInvitation._id,
+        },
+      ],
+      { session },
+    );
+    return {
+      invitation: {
+        id: invitationId.toHexString(),
+        status: 'PENDING',
+        version: 1,
+        expiresAt: expiresAt.toISOString(),
+      },
+      audit: {
+        action: 'ORGANIZATION_INVITATION_RESENT',
+        invitationIds: [
+          oldInvitation._id.toHexString(),
+          invitationId.toHexString(),
+        ],
+        targetResource: 'ORGANIZATION_INVITATION',
+        targetResourceId: invitationId.toHexString(),
+        before: {
+          invitationStatus: oldInvitation.status,
+          invitationVersion: oldInvitation.version,
+          priorInvitationStatus: supersededStatus,
+        },
+        after: {
+          invitationStatus: 'PENDING',
+          invitationVersion: 1,
+          invitationExpiresAt: expiresAt.toISOString(),
+        },
+      },
+      outbox: {
+        eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+        invitationId: invitationId.toHexString(),
+        payload: {
+          invitationId: invitationId.toHexString(),
+          organizationId: organizationIdText,
+          recipientEmail: oldInvitation.email,
+          tokenHash,
+          encryptedToken,
+        },
+      },
+    };
+  }
+
+  private async cancelV3(
+    organizationIdText: string,
+    _actorUserId: Types.ObjectId,
+    command: Extract<OrganizationMembershipCommand, { command: 'CANCEL' }>,
+    now: Date,
+    session: ClientSession,
+  ): Promise<InvitationCommandChange> {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const invitation = await this.findInvitationV3(
+      organizationId,
+      command.invitationId,
+      session,
+    );
+    await this.assertExpectedMembershipVersion(
+      organizationId,
+      invitation.email,
+      command.expectedMembershipVersion,
+      session,
+    );
+    if (invitation.version !== command.expectedInvitationVersion)
+      throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
+    if (invitation.status !== 'PENDING')
+      throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
+    if (invitation.expiresAt.getTime() <= now.getTime())
+      throw new HttpException({ code: 'INVITATION_EXPIRED' }, 410);
+    const updated = await this.invitations()
+      .findOneAndUpdate(
+        {
+          _id: invitation._id,
+          organizationId,
+          contractVersion: 3,
+          status: 'PENDING',
+          version: command.expectedInvitationVersion,
+          expiresAt: { $gt: now },
+        },
+        { $set: { status: 'CANCELLED' }, $inc: { version: 1 } },
+        { new: true, session },
+      )
+      .lean()
+      .exec();
+    if (!updated)
+      throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
+    await this.cancelPendingDelivery(invitation._id.toHexString(), session);
+    return {
+      invitation: {
+        id: updated._id.toHexString(),
+        status: 'CANCELLED',
+        version: updated.version,
+        expiresAt: updated.expiresAt.toISOString(),
+      },
+      audit: {
+        action: 'ORGANIZATION_INVITATION_CANCELLED',
+        invitationIds: [invitation._id.toHexString()],
+        targetResource: 'ORGANIZATION_INVITATION',
+        targetResourceId: invitation._id.toHexString(),
+        before: {
+          invitationStatus: invitation.status,
+          invitationVersion: invitation.version,
+        },
+        after: {
+          invitationStatus: 'CANCELLED',
+          invitationVersion: updated.version,
+          invitationExpiresAt: updated.expiresAt.toISOString(),
+        },
+      },
+    };
+  }
+
+  private async findInvitationV3(
+    organizationId: Types.ObjectId,
+    invitationIdText: string,
+    session: ClientSession,
+  ): Promise<InvitationDocument> {
+    const invitation = await this.invitations()
+      .findOne({
+        _id: new Types.ObjectId(invitationIdText),
+        organizationId,
+        contractVersion: 3,
+      })
+      .session(session)
+      .lean()
+      .exec();
+    if (!invitation)
+      throw new HttpException({ code: 'INVITATION_NOT_FOUND' }, 404);
+    return invitation;
+  }
+
+  private async assertExpectedMembershipVersion(
+    organizationId: Types.ObjectId,
+    email: string,
+    expectedMembershipVersion: number,
+    session: ClientSession,
+  ): Promise<void> {
+    const user = await this.users()
+      .findOne({ email: email.trim().toLowerCase() }, { _id: 1 })
+      .session(session)
+      .lean()
+      .exec();
+    const membership = user
+      ? await this.memberships()
+          .findOne(
+            { organizationId, userId: user._id },
+            { version: 1, status: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec()
+      : null;
+    const currentMembershipVersion = membership?.version ?? 0;
+    if (currentMembershipVersion !== expectedMembershipVersion)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    if (membership)
+      throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
+  }
+
+  private async cancelPendingDelivery(
+    invitationId: string,
+    session: ClientSession,
+  ): Promise<void> {
+    await this.outbox()
+      .updateMany(
+        {
+          eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+          aggregateType: 'ORGANIZATION_INVITATION',
+          aggregateId: invitationId,
+          status: 'PENDING',
+        },
+        {
+          $set: { status: 'FAILED', lastError: 'INVITATION_NO_LONGER_PENDING' },
+          $unset: { 'payload.encryptedToken': '' },
+        },
+        { session },
+      )
+      .exec();
+  }
+
+  private cipherOrThrow(): OrganizationInvitationPayloadCipher {
+    if (!this.invitationCipher)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.invitationCipher;
   }
 
   private async invite(
@@ -1226,7 +1722,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     organizationId: Types.ObjectId,
     invitationIdText: string,
     session: ClientSession,
-  ): Promise<InvitationDocument> {
+  ): Promise<LegacyInvitationDocument> {
     const invitation = await this.invitations()
       .findOne({
         _id: new Types.ObjectId(invitationIdText),
@@ -1238,7 +1734,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .exec();
     if (!invitation)
       throw new HttpException({ code: 'INVITATION_NOT_FOUND' }, 404);
-    return invitation;
+    return invitation as LegacyInvitationDocument;
   }
 
   private async findMembership(
@@ -1635,24 +2131,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       userId: row.userId.toHexString(),
       status: row.status,
       version: row.version,
-    };
-  }
-
-  private mapInvitation(
-    row: InvitationDocument,
-    membershipVersion: number,
-  ): AdminInvitationSummary {
-    return {
-      id: row._id.toHexString(),
-      membershipId: row.membershipId.toHexString(),
-      organizationId: row.organizationId.toHexString(),
-      status: row.status,
-      version: row.version,
-      expiresAt: row.expiresAt.toISOString(),
-      createdAt: row.createdAt.toISOString(),
-      membershipVersion,
-      targetUserId: row.targetUserId.toHexString(),
-      email: row.email,
     };
   }
 

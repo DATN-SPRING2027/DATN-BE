@@ -1,10 +1,12 @@
 import {
   ForbiddenException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
 import type { OrganizationMembershipCommandRepository } from './organization-membership-command.repository';
 import { OrganizationMembershipCommandService } from './organization-membership-command.service';
+import type { OrganizationInvitationReadiness } from './organization-invitation-readiness';
 
 const organizationId = '651a2b3c4d5e6f7a8b9c0d1f';
 const actor: AuthenticatedIdentity = {
@@ -17,6 +19,7 @@ const actor: AuthenticatedIdentity = {
 
 describe('OrganizationMembershipCommandService', () => {
   let repository: jest.Mocked<OrganizationMembershipCommandRepository>;
+  let readiness: jest.Mocked<OrganizationInvitationReadiness>;
   let service: OrganizationMembershipCommandService;
 
   beforeEach(() => {
@@ -59,7 +62,8 @@ describe('OrganizationMembershipCommandService', () => {
         status: 503,
       }),
     };
-    service = new OrganizationMembershipCommandService(repository);
+    readiness = { isReady: jest.fn().mockResolvedValue(true) };
+    service = new OrganizationMembershipCommandService(repository, readiness);
   });
 
   it('requires the path organization to match authenticated Organization context', async () => {
@@ -102,7 +106,37 @@ describe('OrganizationMembershipCommandService', () => {
           reasonCode: 'ACCESS_REQUEST',
         },
         correlationId: 'request-correlation-id',
+        invitationReadinessReady: true,
       }),
+    );
+    expect(readiness.isReady.mock.calls[0]?.[0]).toBe(
+      'A7_NOTIFICATION_CONTRACT_PROVIDER',
+    );
+    expect(readiness.isReady.mock.calls[1]?.[0]).toBe('A8_COORDINATED_CUTOVER');
+  });
+
+  it('checks only A8 for CANCEL and passes the fail-closed result to persistence', async () => {
+    readiness.isReady.mockImplementation((gate) =>
+      Promise.resolve(gate !== 'A8_COORDINATED_CUTOVER'),
+    );
+    repository.execute.mockRejectedValueOnce(
+      new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      }),
+    );
+    await expect(
+      service.execute(actor, organizationId, 'stable-idempotency-key', {
+        command: 'CANCEL',
+        invitationId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 2,
+        reasonCode: 'INVITATION_CANCELLED',
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(readiness.isReady.mock.calls).toHaveLength(1);
+    expect(readiness.isReady.mock.calls[0]?.[0]).toBe('A8_COORDINATED_CUTOVER');
+    expect(repository.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ invitationReadinessReady: false }),
     );
   });
 

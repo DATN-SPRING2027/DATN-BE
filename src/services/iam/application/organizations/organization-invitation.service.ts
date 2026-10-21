@@ -4,6 +4,7 @@ import {
   HttpException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type {
   AuthenticatedAccountIdentity,
   AuthenticatedIdentity,
@@ -12,10 +13,17 @@ import {
   ORGANIZATION_INVITATION_REPOSITORY,
   type OrganizationInvitationRepository,
 } from './organization-invitation.repository';
+import {
+  areInvitationReadinessGatesReady,
+  ORGANIZATION_INVITATION_READINESS,
+  type OrganizationInvitationReadiness,
+} from './organization-invitation-readiness';
 
 type AccountActor = AuthenticatedIdentity | AuthenticatedAccountIdentity;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const objectIdPattern = /^[a-f\d]{24}$/i;
+const invitationTokenPattern = /^[A-Za-z0-9_-]{43,128}$/;
+const idempotencyPattern = /^[A-Za-z0-9._:-]{16,128}$/;
 
 export function normalizeInvitationEmail(email: string): string {
   const normalized = email.trim().toLowerCase();
@@ -40,6 +48,8 @@ export class OrganizationInvitationService {
   constructor(
     @Inject(ORGANIZATION_INVITATION_REPOSITORY)
     private readonly repository: OrganizationInvitationRepository,
+    @Inject(ORGANIZATION_INVITATION_READINESS)
+    private readonly invitationReadiness: OrganizationInvitationReadiness,
   ) {}
 
   async listMine(actor: AccountActor, page = 1, pageSize = 20) {
@@ -64,5 +74,51 @@ export class OrganizationInvitationService {
     );
     if (!detail) throw new HttpException({ code: 'INVITATION_NOT_FOUND' }, 404);
     return detail;
+  }
+
+  async resolveToken(token: string) {
+    if (typeof token !== 'string' || !invitationTokenPattern.test(token))
+      throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const invitation = await this.repository.resolveByTokenHash(
+      tokenHash,
+      new Date(),
+    );
+    if (!invitation)
+      throw new HttpException({ code: 'INVITATION_NOT_FOUND' }, 404);
+    return invitation;
+  }
+
+  async accept(
+    actor: AccountActor,
+    invitationId: string,
+    expectedMembershipVersion: number,
+    expectedInvitationVersion: number,
+    idempotencyKey: string,
+  ) {
+    if (
+      !objectIdPattern.test(invitationId) ||
+      !Number.isSafeInteger(expectedMembershipVersion) ||
+      expectedMembershipVersion < 0 ||
+      !Number.isSafeInteger(expectedInvitationVersion) ||
+      expectedInvitationVersion < 1 ||
+      !idempotencyPattern.test(idempotencyKey)
+    )
+      throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+    const authenticatedEmail = normalizeInvitationEmail(actor.email);
+    const readinessReady = await areInvitationReadinessGatesReady(
+      this.invitationReadiness,
+      ['A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF', 'A8_COORDINATED_CUTOVER'],
+    );
+    return this.repository.acceptForRecipient({
+      invitationId,
+      actorUserId: actor.id,
+      authenticatedEmail,
+      expectedMembershipVersion,
+      expectedInvitationVersion,
+      readinessReady,
+      idempotencyKey,
+      now: new Date(),
+    });
   }
 }

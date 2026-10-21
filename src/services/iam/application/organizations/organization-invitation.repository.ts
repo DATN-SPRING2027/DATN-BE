@@ -7,13 +7,12 @@ export type RecipientInvitationStatus =
 
 export interface RecipientInvitation {
   id: string;
-  membershipId: string;
   organizationId: string;
   status: RecipientInvitationStatus;
   version: number;
   expiresAt: string;
   createdAt: string;
-  membershipVersion: number;
+  invitedEmail: string;
   organizationName: string;
 }
 
@@ -28,12 +27,31 @@ export interface RecipientInvitationPage {
 }
 
 export interface RecipientInvitationDetail {
+  invitation: RecipientInvitation;
+}
+
+export type InvitationResolution = RecipientInvitationDetail;
+
+export interface AcceptInvitationAcknowledgement {
+  operationId: string;
   membership: {
     id: string;
-    status: 'PENDING_INVITE' | 'ACTIVE' | 'SUSPENDED' | 'REMOVED';
+    organizationId: string;
+    userId: string;
+    status: 'ACTIVE';
     version: number;
   };
-  invitation: RecipientInvitation;
+  invitation: {
+    id: string;
+    status: 'ACCEPTED';
+    version: number;
+    expiresAt: string;
+  };
+}
+
+export interface AcceptInvitationResult {
+  acknowledgement: AcceptInvitationAcknowledgement;
+  replayed: boolean;
 }
 
 export interface OrganizationInvitationRepository {
@@ -52,4 +70,22 @@ export interface OrganizationInvitationRepository {
     email: string,
     now: Date,
   ): Promise<RecipientInvitationDetail | null>;
+  resolveByTokenHash(
+    this: void,
+    tokenHash: string,
+    now: Date,
+  ): Promise<InvitationResolution | null>;
+  acceptForRecipient(
+    this: void,
+    input: {
+      invitationId: string;
+      actorUserId: string;
+      authenticatedEmail: string;
+      expectedMembershipVersion: number;
+      expectedInvitationVersion: number;
+      readinessReady: boolean;
+      idempotencyKey: string;
+      now: Date;
+    },
+  ): Promise<AcceptInvitationResult>;
 }
