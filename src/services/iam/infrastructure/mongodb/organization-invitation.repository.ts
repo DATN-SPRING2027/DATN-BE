@@ -188,7 +188,9 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
     invitationId: string;
     actorUserId: string;
     authenticatedEmail: string;
+    expectedMembershipVersion: number;
     expectedInvitationVersion: number;
+    readinessReady: boolean;
     idempotencyKey: string;
     now: Date;
   }): Promise<AcceptInvitationResult> {
@@ -199,6 +201,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
       JSON.stringify({
         command: 'ACCEPT',
         invitationId: input.invitationId,
+        expectedMembershipVersion: input.expectedMembershipVersion,
         expectedInvitationVersion: input.expectedInvitationVersion,
       }),
     );
@@ -249,6 +252,10 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
           result = { acknowledgement: prior.resultBody, replayed: true };
           return;
         }
+        if (!input.readinessReady)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
         if (prior)
           await this.model<OperationDocument>('membership_operations')
             .deleteOne(
@@ -283,6 +290,10 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
           .session(session)
           .lean()
           .exec();
+        if (
+          (existingMembership?.version ?? 0) !== input.expectedMembershipVersion
+        )
+          throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
         if (existingMembership)
           throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
 

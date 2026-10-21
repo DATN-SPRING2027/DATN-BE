@@ -98,6 +98,10 @@ import { OrganizationMembershipCommandService } from './application/organization
 import { ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY } from './application/organizations/organization-membership-command.repository';
 import { MongoOrganizationMembershipCommandRepository } from './infrastructure/mongodb/organization-membership-command.repository';
 import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
+import {
+  ORGANIZATION_INVITATION_READINESS,
+  UnconfiguredOrganizationInvitationReadiness,
+} from './application/organizations/organization-invitation-readiness';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
 
@@ -204,6 +208,10 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     {
       provide: ORGANIZATION_INVITATION_REPOSITORY,
       useClass: MongoOrganizationInvitationRepository,
+    },
+    {
+      provide: ORGANIZATION_INVITATION_READINESS,
+      useClass: UnconfiguredOrganizationInvitationReadiness,
     },
     {
       provide: ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,

@@ -106,8 +106,11 @@ describe('AccountInvitationController', () => {
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 
-  it('accepts with an authenticated account and only the invitation version', async () => {
-    const body = { expectedInvitationVersion: 1 };
+  it('accepts with an authenticated account and both CAS versions', async () => {
+    const body = {
+      expectedMembershipVersion: 0,
+      expectedInvitationVersion: 1,
+    };
     await expect(
       controller.accept(
         'Bearer access',
@@ -122,6 +125,7 @@ describe('AccountInvitationController', () => {
     expect(invitations.accept).toHaveBeenCalledWith(
       account,
       'a'.repeat(24),
+      0,
       1,
       '0123456789abcdef',
     );
@@ -155,6 +159,17 @@ describe('AccountInvitationController', () => {
         '0123456789abcdef',
         'a'.repeat(24),
         { ...body, unexpected: true },
+        response,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      controller.accept(
+        'Bearer access',
+        '__Host-csrf=csrf',
+        'csrf',
+        '0123456789abcdef',
+        'a'.repeat(24),
+        { expectedInvitationVersion: 1 },
         response,
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);

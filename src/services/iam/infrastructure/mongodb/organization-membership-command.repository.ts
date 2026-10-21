@@ -263,6 +263,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     idempotencyKey: string;
     command: OrganizationMembershipCommand;
     now: Date;
+    invitationReadinessReady?: boolean;
     correlationId?: string;
   }): Promise<MembershipMutationResult> {
     const actorUserId = new Types.ObjectId(input.actorUserId);
@@ -303,6 +304,13 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           };
           return;
         }
+        if (
+          ['INVITE', 'RESEND', 'CANCEL'].includes(input.command.command) &&
+          input.invitationReadinessReady !== true
+        )
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
         if (prior)
           await this.operations()
             .deleteOne(
@@ -653,6 +661,11 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           return;
         }
 
+        if (input.invitationReadinessReady !== true)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+
         await this.acquireOrganizationAdminFence(organizationId, session);
         if (
           !(await this.hasPlatformPermissionAt(
@@ -933,6 +946,12 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       command.invitationId,
       session,
     );
+    await this.assertExpectedMembershipVersion(
+      organizationId,
+      oldInvitation.email,
+      command.expectedMembershipVersion,
+      session,
+    );
     if (oldInvitation.version !== command.expectedInvitationVersion)
       throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
     if (oldInvitation.status !== 'PENDING')
@@ -1041,6 +1060,12 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       command.invitationId,
       session,
     );
+    await this.assertExpectedMembershipVersion(
+      organizationId,
+      invitation.email,
+      command.expectedMembershipVersion,
+      session,
+    );
     if (invitation.version !== command.expectedInvitationVersion)
       throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
     if (invitation.status !== 'PENDING')
@@ -1107,6 +1132,34 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     if (!invitation)
       throw new HttpException({ code: 'INVITATION_NOT_FOUND' }, 404);
     return invitation;
+  }
+
+  private async assertExpectedMembershipVersion(
+    organizationId: Types.ObjectId,
+    email: string,
+    expectedMembershipVersion: number,
+    session: ClientSession,
+  ): Promise<void> {
+    const user = await this.users()
+      .findOne({ email: email.trim().toLowerCase() }, { _id: 1 })
+      .session(session)
+      .lean()
+      .exec();
+    const membership = user
+      ? await this.memberships()
+          .findOne(
+            { organizationId, userId: user._id },
+            { version: 1, status: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec()
+      : null;
+    const currentMembershipVersion = membership?.version ?? 0;
+    if (currentMembershipVersion !== expectedMembershipVersion)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    if (membership)
+      throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
   }
 
   private async cancelPendingDelivery(
@@ -1257,7 +1310,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     this.assertPendingVersions(
       membership,
       invitation,
-      command.expectedMembershipVersion!,
+      command.expectedMembershipVersion,
       command.expectedInvitationVersion,
     );
     const previousInvitationStatus =
@@ -1381,7 +1434,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     this.assertPendingVersions(
       membership,
       invitation,
-      command.expectedMembershipVersion!,
+      command.expectedMembershipVersion,
       command.expectedInvitationVersion,
     );
     const expired = invitation.expiresAt.getTime() <= now.getTime();

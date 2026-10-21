@@ -87,6 +87,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     idempotencyKey = `command-${randomUUID()}`,
     scope = organizationId,
     correlationId?: string,
+    invitationReadinessReady = true,
   ) {
     return repository.execute({
       actorUserId: actorUserId.toHexString(),
@@ -94,6 +95,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       idempotencyKey,
       command,
       now: new Date('2026-10-14T03:00:00.000Z'),
+      invitationReadinessReady,
       ...(correlationId ? { correlationId } : {}),
     });
   }
@@ -101,6 +103,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   async function invokePlatformInvitation(
     command: PlatformInvitationCommand,
     idempotencyKey = `platform-invite-${randomUUID()}`,
+    invitationReadinessReady = true,
   ) {
     return repository.executePlatformInvitationCommand({
       actorUserId: actorId.toHexString(),
@@ -108,6 +111,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       idempotencyKey,
       command,
       now: new Date('2026-10-14T03:00:00.000Z'),
+      invitationReadinessReady,
     });
   }
 
@@ -363,6 +367,32 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     ).toBe(1);
   });
 
+  it('fails closed for CREATE when A7/A8 readiness is false without writing invitation state', async () => {
+    await expect(
+      invoke(
+        actorId,
+        {
+          command: 'INVITE',
+          email: 'blocked@example.test',
+          reasonCode: 'ACCESS_REQUEST',
+        },
+        `blocked-create-${randomUUID()}`,
+        organizationId,
+        undefined,
+        false,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(0);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+  });
+
   it('resends by superseding the prior token and queuing another delivery event', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
@@ -375,6 +405,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     const result = await invoke(actorId, {
       command: 'RESEND',
       invitationId: oldId,
+      expectedMembershipVersion: 0,
       expectedInvitationVersion: 1,
       reasonCode: 'ACCESS_REVIEW',
     });
@@ -405,6 +436,108 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     ).toBe(1);
   });
 
+  it('rejects stale membership or invitation versions for RESEND without mutation', async () => {
+    const created = await invoke(actorId, {
+      command: 'INVITE',
+      email: 'stale-resend@example.test',
+      reasonCode: 'ACCESS_REQUEST',
+    });
+    if (!('invitation' in created.body) || !created.body.invitation)
+      throw new Error('Expected invitation ack');
+    const invitationId = created.body.invitation.id;
+
+    await expect(
+      invoke(actorId, {
+        command: 'RESEND',
+        invitationId,
+        expectedMembershipVersion: 1,
+        expectedInvitationVersion: 1,
+        reasonCode: 'ACCESS_REVIEW',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'MEMBERSHIP_VERSION_CONFLICT' },
+    });
+    await expect(
+      invoke(actorId, {
+        command: 'RESEND',
+        invitationId,
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 2,
+        reasonCode: 'ACCESS_REVIEW',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'INVITATION_VERSION_CONFLICT' },
+    });
+    expect(
+      await connection!.collection('organization_invitations').findOne({
+        _id: new Types.ObjectId(invitationId),
+      }),
+    ).toMatchObject({ status: 'PENDING', version: 1 });
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      1,
+    );
+  });
+
+  it('fails closed for RESEND and CANCEL when readiness is false', async () => {
+    const created = await invoke(actorId, {
+      command: 'INVITE',
+      email: 'blocked-lifecycle@example.test',
+      reasonCode: 'ACCESS_REQUEST',
+    });
+    if (!('invitation' in created.body) || !created.body.invitation)
+      throw new Error('Expected invitation ack');
+    const invitationId = created.body.invitation.id;
+    const beforeOperations = await connection!
+      .collection('membership_operations')
+      .countDocuments();
+
+    await expect(
+      invoke(
+        actorId,
+        {
+          command: 'RESEND',
+          invitationId,
+          expectedMembershipVersion: 0,
+          expectedInvitationVersion: 1,
+          reasonCode: 'ACCESS_REVIEW',
+        },
+        `blocked-resend-${randomUUID()}`,
+        organizationId,
+        undefined,
+        false,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+    await expect(
+      invoke(
+        actorId,
+        {
+          command: 'CANCEL',
+          invitationId,
+          expectedMembershipVersion: 0,
+          expectedInvitationVersion: 1,
+          reasonCode: 'INVITATION_CANCELLED',
+        },
+        `blocked-cancel-${randomUUID()}`,
+        organizationId,
+        undefined,
+        false,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(
+      await connection!.collection('organization_invitations').findOne({
+        _id: new Types.ObjectId(invitationId),
+      }),
+    ).toMatchObject({ status: 'PENDING', version: 1 });
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      1,
+    );
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(beforeOperations);
+  });
+
   it('cancels an invitation without changing membership and revokes queued token delivery', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
@@ -417,6 +550,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     const result = await invoke(actorId, {
       command: 'CANCEL',
       invitationId,
+      expectedMembershipVersion: 0,
       expectedInvitationVersion: 1,
       reasonCode: 'INVITATION_CANCELLED',
     });
@@ -438,6 +572,37 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     });
   });
 
+  it('rejects CANCEL with a stale invitation version without changing its state', async () => {
+    const created = await invoke(actorId, {
+      command: 'INVITE',
+      email: 'stale-cancel@example.test',
+      reasonCode: 'ACCESS_REQUEST',
+    });
+    if (!('invitation' in created.body) || !created.body.invitation)
+      throw new Error('Expected invitation ack');
+    const invitationId = created.body.invitation.id;
+    await expect(
+      invoke(actorId, {
+        command: 'CANCEL',
+        invitationId,
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 2,
+        reasonCode: 'INVITATION_CANCELLED',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'INVITATION_VERSION_CONFLICT' },
+    });
+    expect(
+      await connection!.collection('organization_invitations').findOne({
+        _id: new Types.ObjectId(invitationId),
+      }),
+    ).toMatchObject({ status: 'PENDING', version: 1 });
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      1,
+    );
+  });
+
   it('checks fresh Platform invitation authority and commits business state before delivery', async () => {
     await connection!.collection('platform_authority_assignments').insertOne({
       subjectUserId: actorId,
@@ -452,11 +617,25 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       provenanceOperationId: `test-${randomUUID()}`,
     });
 
-    const result = await invokePlatformInvitation({
+    const command: PlatformInvitationCommand = {
       command: 'INVITE',
       email: 'platform-invite@example.test',
       reasonCode: 'ACCESS_REQUEST',
-    });
+    };
+    const idempotencyKey = `platform-invite-${randomUUID()}`;
+    await expect(
+      invokePlatformInvitation(command, idempotencyKey, false),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
+    const result = await invokePlatformInvitation(command, idempotencyKey);
     expect(result.httpStatus).toBe(201);
     expect('invitation' in result.body).toBe(true);
     expect(
@@ -483,10 +662,37 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         permission: 'PLATFORM_OPERATOR_LIFECYCLE',
         scope: 'PLATFORM',
       }),
-    ).toMatchObject({ version: 1 });
+    ).toMatchObject({ version: 2 });
+
+    const replay = await invokePlatformInvitation(
+      command,
+      idempotencyKey,
+      false,
+    );
+    expect(replay).toMatchObject({ replayed: true, body: result.body });
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(1);
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(1);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      1,
+    );
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+      }),
+    ).toBe(1);
+    expect(
+      await connection!.collection('platform_authority_change_locks').findOne({
+        permission: 'PLATFORM_OPERATOR_LIFECYCLE',
+        scope: 'PLATFORM',
+      }),
+    ).toMatchObject({ version: 3 });
   });
 
-  it('accepts an email-bound V3 invitation atomically without delivery readiness and replays idempotently', async () => {
+  it('accepts an email-bound V3 invitation atomically with explicitly ready gates and replays idempotently', async () => {
     const acceptedInvitationId = new Types.ObjectId();
     const tokenHash = createHash('sha256')
       .update(randomBytes(32).toString('base64url'))
@@ -509,7 +715,9 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       invitationId: acceptedInvitationId.toHexString(),
       actorUserId: recipientId.toHexString(),
       authenticatedEmail: 'invitee@example.test',
+      expectedMembershipVersion: 0,
       expectedInvitationVersion: 1,
+      readinessReady: true,
       idempotencyKey: `accept-${randomUUID()}`,
       now,
     };
@@ -556,6 +764,166 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     });
   });
 
+  it('rejects stale ACCEPT membership or invitation versions without mutation', async () => {
+    const invitationId = new Types.ObjectId();
+    const now = new Date('2026-10-14T03:00:00.000Z');
+    await connection!.collection('organization_invitations').insertOne({
+      _id: invitationId,
+      organizationId,
+      email: 'invitee@example.test',
+      contractVersion: 3,
+      tokenHash: createHash('sha256')
+        .update(randomBytes(32).toString('base64url'))
+        .digest('hex'),
+      status: 'PENDING',
+      version: 1,
+      invitedBy: actorId,
+      expiresAt: new Date('2026-10-21T03:00:00.000Z'),
+      createdAt: now,
+      updatedAt: now,
+    });
+    const input = {
+      invitationId: invitationId.toHexString(),
+      actorUserId: recipientId.toHexString(),
+      authenticatedEmail: 'invitee@example.test',
+      expectedMembershipVersion: 0,
+      expectedInvitationVersion: 1,
+      readinessReady: true,
+      now,
+    };
+
+    await expect(
+      invitationRepository.acceptForRecipient({
+        ...input,
+        expectedMembershipVersion: 1,
+        idempotencyKey: `stale-membership-${randomUUID()}`,
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'MEMBERSHIP_VERSION_CONFLICT' },
+    });
+    await expect(
+      invitationRepository.acceptForRecipient({
+        ...input,
+        expectedInvitationVersion: 2,
+        idempotencyKey: `stale-invitation-${randomUUID()}`,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(
+      await connection!.collection('organization_invitations').findOne({
+        _id: invitationId,
+      }),
+    ).toMatchObject({ status: 'PENDING', version: 1 });
+    expect(
+      await connection!.collection('organization_memberships').findOne({
+        organizationId,
+        userId: recipientId,
+      }),
+    ).toBeNull();
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+      }),
+    ).toBe(0);
+  });
+
+  it('serializes concurrent CANCEL and ACCEPT against both expected versions', async () => {
+    const created = await invoke(actorId, {
+      command: 'INVITE',
+      email: 'invitee@example.test',
+      reasonCode: 'ACCESS_REQUEST',
+    });
+    if (!('invitation' in created.body) || !created.body.invitation)
+      throw new Error('Expected invitation ack');
+    const invitationId = created.body.invitation.id;
+    const now = new Date('2026-10-14T03:00:00.000Z');
+    const outcomes = await Promise.allSettled([
+      invoke(actorId, {
+        command: 'CANCEL',
+        invitationId,
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        reasonCode: 'INVITATION_CANCELLED',
+      }),
+      invitationRepository.acceptForRecipient({
+        invitationId,
+        actorUserId: recipientId.toHexString(),
+        authenticatedEmail: 'invitee@example.test',
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        readinessReady: true,
+        idempotencyKey: `race-accept-${randomUUID()}`,
+        now,
+      }),
+    ]);
+    const succeeded = outcomes.filter(
+      (outcome) => outcome.status === 'fulfilled',
+    );
+    const failed = outcomes.filter((outcome) => outcome.status === 'rejected');
+    expect(succeeded).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    const invitation = await connection!
+      .collection('organization_invitations')
+      .findOne({ _id: new Types.ObjectId(invitationId) });
+    const membership = await connection!
+      .collection('organization_memberships')
+      .findOne({ organizationId, userId: recipientId });
+    if (invitation?.status === 'CANCELLED') {
+      expect(invitation.version).toBe(2);
+      expect(membership).toBeNull();
+    } else {
+      expect(invitation).toMatchObject({ status: 'ACCEPTED', version: 2 });
+      expect(membership).toMatchObject({ status: 'ACTIVE', version: 1 });
+    }
+  });
+
+  it('fails closed for ACCEPT when A7/A8 readiness is false without activating membership', async () => {
+    const invitationId = new Types.ObjectId();
+    const now = new Date('2026-10-14T03:00:00.000Z');
+    await connection!.collection('organization_invitations').insertOne({
+      _id: invitationId,
+      organizationId,
+      email: 'invitee@example.test',
+      contractVersion: 3,
+      tokenHash: createHash('sha256')
+        .update(randomBytes(32).toString('base64url'))
+        .digest('hex'),
+      status: 'PENDING',
+      version: 1,
+      invitedBy: actorId,
+      expiresAt: new Date('2026-10-21T03:00:00.000Z'),
+      createdAt: now,
+      updatedAt: now,
+    });
+    await expect(
+      invitationRepository.acceptForRecipient({
+        invitationId: invitationId.toHexString(),
+        actorUserId: recipientId.toHexString(),
+        authenticatedEmail: 'invitee@example.test',
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        readinessReady: false,
+        idempotencyKey: `blocked-accept-${randomUUID()}`,
+        now,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(
+      await connection!.collection('organization_memberships').countDocuments({
+        organizationId,
+        userId: recipientId,
+      }),
+    ).toBe(0);
+    expect(
+      await connection!.collection('organization_invitations').findOne({
+        _id: invitationId,
+      }),
+    ).toMatchObject({ status: 'PENDING', version: 1 });
+  });
+
   it('rejects a recipient whose authenticated email differs without creating membership', async () => {
     const wrongEmailInvitationId = new Types.ObjectId();
     const now = new Date('2026-10-14T03:00:00.000Z');
@@ -580,7 +948,9 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         invitationId: wrongEmailInvitationId.toHexString(),
         actorUserId: recipientId.toHexString(),
         authenticatedEmail: 'invitee@example.test',
+        expectedMembershipVersion: 0,
         expectedInvitationVersion: 1,
+        readinessReady: true,
         idempotencyKey: `wrong-email-${randomUUID()}`,
         now,
       }),

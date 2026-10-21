@@ -13,6 +13,11 @@ import {
   ORGANIZATION_INVITATION_REPOSITORY,
   type OrganizationInvitationRepository,
 } from './organization-invitation.repository';
+import {
+  areInvitationReadinessGatesReady,
+  ORGANIZATION_INVITATION_READINESS,
+  type OrganizationInvitationReadiness,
+} from './organization-invitation-readiness';
 
 type AccountActor = AuthenticatedIdentity | AuthenticatedAccountIdentity;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -43,6 +48,8 @@ export class OrganizationInvitationService {
   constructor(
     @Inject(ORGANIZATION_INVITATION_REPOSITORY)
     private readonly repository: OrganizationInvitationRepository,
+    @Inject(ORGANIZATION_INVITATION_READINESS)
+    private readonly invitationReadiness: OrganizationInvitationReadiness,
   ) {}
 
   async listMine(actor: AccountActor, page = 1, pageSize = 20) {
@@ -85,22 +92,31 @@ export class OrganizationInvitationService {
   async accept(
     actor: AccountActor,
     invitationId: string,
+    expectedMembershipVersion: number,
     expectedInvitationVersion: number,
     idempotencyKey: string,
   ) {
     if (
       !objectIdPattern.test(invitationId) ||
+      !Number.isSafeInteger(expectedMembershipVersion) ||
+      expectedMembershipVersion < 0 ||
       !Number.isSafeInteger(expectedInvitationVersion) ||
       expectedInvitationVersion < 1 ||
       !idempotencyPattern.test(idempotencyKey)
     )
       throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
     const authenticatedEmail = normalizeInvitationEmail(actor.email);
+    const readinessReady = await areInvitationReadinessGatesReady(
+      this.invitationReadiness,
+      ['A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF', 'A8_COORDINATED_CUTOVER'],
+    );
     return this.repository.acceptForRecipient({
       invitationId,
       actorUserId: actor.id,
       authenticatedEmail,
+      expectedMembershipVersion,
       expectedInvitationVersion,
+      readinessReady,
       idempotencyKey,
       now: new Date(),
     });

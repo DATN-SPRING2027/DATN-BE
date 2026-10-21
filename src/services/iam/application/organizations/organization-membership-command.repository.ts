@@ -17,14 +17,14 @@ export type OrganizationMembershipCommand =
   | {
       command: 'RESEND';
       invitationId: string;
-      expectedMembershipVersion?: number;
+      expectedMembershipVersion: number;
       expectedInvitationVersion: number;
       reasonCode: 'ACCESS_REQUEST' | 'ACCESS_REVIEW';
     }
   | {
       command: 'CANCEL';
       invitationId: string;
-      expectedMembershipVersion?: number;
+      expectedMembershipVersion: number;
       expectedInvitationVersion: number;
       reasonCode: 'INVITATION_CANCELLED';
     }
@@ -82,6 +82,7 @@ export interface PlatformInvitationCommandInput {
   idempotencyKey: string;
   command: PlatformInvitationCommand;
   now: Date;
+  invitationReadinessReady: boolean;
   correlationId?: string;
 }
 
@@ -145,6 +146,7 @@ export interface OrganizationMembershipCommandRepository {
       idempotencyKey: string;
       command: OrganizationMembershipCommand;
       now: Date;
+      invitationReadinessReady?: boolean;
       correlationId?: string;
     },
   ): Promise<MembershipMutationResult>;

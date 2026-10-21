@@ -56,6 +56,12 @@ function parseVersion(value: unknown): number {
   return Number(value);
 }
 
+function parseExpectedMembershipVersion(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0)
+    return validationFailed();
+  return Number(value);
+}
+
 function parseReason(value: unknown): string {
   if (typeof value !== 'string' || !reasonCodes.has(value))
     return validationFailed();
@@ -86,8 +92,15 @@ function parseInvitationAction(
 ): OrganizationMembershipCommand {
   if (!objectIdPattern.test(invitationId)) return validationFailed();
   const record = parseObject(body);
-  const expectedKeys = ['expectedInvitationVersion', 'reasonCode'];
+  const expectedKeys = [
+    'expectedMembershipVersion',
+    'expectedInvitationVersion',
+    'reasonCode',
+  ];
   if (!exactKeys(record, expectedKeys)) return validationFailed();
+  const membershipVersion = parseExpectedMembershipVersion(
+    record.expectedMembershipVersion,
+  );
   const invitationVersion = parseVersion(record.expectedInvitationVersion);
   const reasonCode = parseReason(record.reasonCode);
   if (command === 'RESEND') {
@@ -96,6 +109,7 @@ function parseInvitationAction(
     return {
       command,
       invitationId,
+      expectedMembershipVersion: membershipVersion,
       expectedInvitationVersion: invitationVersion,
       reasonCode: reasonCode as 'ACCESS_REQUEST' | 'ACCESS_REVIEW',
     };
@@ -104,6 +118,7 @@ function parseInvitationAction(
   return {
     command,
     invitationId,
+    expectedMembershipVersion: membershipVersion,
     expectedInvitationVersion: invitationVersion,
     reasonCode,
   };

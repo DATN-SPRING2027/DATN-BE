@@ -763,7 +763,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Accept a current bound Organization invitation",
-        "description": "V3 acceptance requires the authenticated account email to match the invitation email, the expected invitation version, an Idempotency-Key and the CSRF cookie/header pair. Membership creation, invitation acceptance, audit and idempotency record commit atomically. It never grants a Role or mints an Organization session. Email delivery readiness is not a prerequisite.",
+        "description": "V3 acceptance requires the authenticated account email to match the invitation email, expectedMembershipVersion and expectedInvitationVersion, an Idempotency-Key and the CSRF cookie/header pair. For this email-bound V3 flow no Membership exists before acceptance, so expectedMembershipVersion must be 0; expectedInvitationVersion independently compares the invitation CAS version. Membership creation, invitation acceptance, audit and idempotency record commit atomically. It never grants a Role or mints an Organization session. Acceptance fails closed with 503 until A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF and A8_COORDINATED_CUTOVER are ready.",
         "operationId": "acceptOrganizationInvitationV3",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -858,7 +858,10 @@
         },
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF",
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/auth/select-organization": {
@@ -954,7 +957,7 @@
       "post": {
         "tags": ["Users"],
         "summary": "Invite an account to an Organization",
-        "description": "V3 invite command. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. It creates a PENDING email-bound invitation, committed operation, allowlisted audit record, and encrypted delivery outbox intent atomically without creating a membership. The seven-day expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
+        "description": "V3 invite command. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. It creates a PENDING email-bound invitation, committed operation, allowlisted audit record, and encrypted delivery outbox intent atomically without creating a membership. The seven-day expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
         "operationId": "createOrganizationInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1048,14 +1051,17 @@
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-permission": "organization.memberships.manage",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A7_NOTIFICATION_CONTRACT_PROVIDER",
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}/resend": {
       "post": {
         "tags": ["Organization Memberships"],
         "summary": "Resend a pending invitation",
-        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Supersedes the current V3 pending invitation and creates its successor using the expected invitation version. Invite/resend quota, idempotency, audit, and encrypted outbox intent are transactional. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
+        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Supersedes the current V3 pending invitation and creates its successor using expectedMembershipVersion and expectedInvitationVersion. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. Invite/resend quota, idempotency, audit, and encrypted outbox intent are transactional. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
         "operationId": "resendOrganizationMembershipInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1145,14 +1151,17 @@
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-permission": "organization.memberships.manage",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A7_NOTIFICATION_CONTRACT_PROVIDER",
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/organizations/{organizationId}/invitations/{invitationId}/cancel": {
       "post": {
         "tags": ["Organization Memberships"],
         "summary": "Cancel a pending invitation",
-        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Uses the expected invitation version to cancel the pending invitation and atomically record the operation and audit. No membership is created or changed. Email delivery readiness is not a prerequisite.",
+        "description": "Requires current Organization membership manage authority and matching CSRF cookie/header. Uses expectedMembershipVersion and expectedInvitationVersion to cancel the pending invitation and atomically record the operation and audit. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503, including when email delivery is not involved.",
         "operationId": "cancelOrganizationMembershipInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1241,7 +1250,9 @@
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
         "x-permission": "organization.memberships.manage",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/suspend": {
@@ -1884,7 +1895,7 @@
       "post": {
         "tags": ["Platform", "Memberships"],
         "summary": "Invite an eligible account to an Organization",
-        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, an eligible email, strict reasonCode, and an Idempotency-Key. A new invitation transaction commits its V3 invitation, operation, encrypted outbox event, and audit together, then returns 201 even when email delivery is unavailable. No membership is created until acceptance.",
+        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, an eligible email, strict reasonCode, and an Idempotency-Key. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. A new invitation transaction commits its V3 invitation, operation, encrypted outbox event, and audit together. Email delivery remains asynchronous after the readiness gate passes; no membership is created until acceptance.",
         "operationId": "createPlatformOrganizationInvitation",
         "x-platform-permission": "platform.memberships.invitation.manage",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -1976,14 +1987,17 @@
         },
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A7_NOTIFICATION_CONTRACT_PROVIDER",
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/platform/organizations/{organizationId}/invitations/{invitationId}/resend": {
       "post": {
         "tags": ["Platform", "Memberships"],
         "summary": "Resend a pending Organization invitation",
-        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, the expected invitation version, and an Idempotency-Key. It supersedes the pending V3 invitation and queues asynchronous email delivery in the same transaction as the audit and operation records.",
+        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, expectedMembershipVersion and expectedInvitationVersion, and an Idempotency-Key. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. It supersedes the pending V3 invitation and queues asynchronous email delivery in the same transaction as the audit and operation records.",
         "operationId": "resendPlatformOrganizationInvitation",
         "x-platform-permission": "platform.memberships.invitation.manage",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -2081,14 +2095,17 @@
         },
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A7_NOTIFICATION_CONTRACT_PROVIDER",
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/platform/organizations/{organizationId}/invitations/{invitationId}/cancel": {
       "post": {
         "tags": ["Platform", "Memberships"],
         "summary": "Cancel a pending Organization invitation",
-        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, the expected invitation version, and an Idempotency-Key. It cancels the pending V3 invitation and records the audit and operation atomically; no membership is created or changed.",
+        "description": "Requires platform.memberships.invitation.manage at PLATFORM scope, matching CSRF cookie/header, expectedMembershipVersion and expectedInvitationVersion, and an Idempotency-Key. Since V3 invitations do not create a Membership, expectedMembershipVersion is 0; it is checked independently from the invitation version. A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. It cancels the pending V3 invitation and records the audit and operation atomically; no membership is created or changed.",
         "operationId": "cancelPlatformOrganizationInvitation",
         "x-platform-permission": "platform.memberships.invitation.manage",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -2186,7 +2203,9 @@
         },
         "x-contract-status": "USER_APPROVED",
         "x-runtime-status": "IMPLEMENTED_BACKEND",
-        "x-readiness-gates": []
+        "x-readiness-gates": [
+          "A8_COORDINATED_CUTOVER"
+        ]
       }
     },
     "/api/v1/iam/platform/memberships": {
@@ -8387,10 +8406,17 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "expectedMembershipVersion",
           "expectedInvitationVersion",
           "reasonCode"
         ],
         "properties": {
+          "expectedMembershipVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 is the documented sentinel for an email-bound V3 invitation with no Membership row; the invitation's independent CAS is expectedInvitationVersion."
+          },
           "expectedInvitationVersion": {
             "type": "integer",
             "minimum": 1,
@@ -8409,10 +8435,17 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "expectedMembershipVersion",
           "expectedInvitationVersion",
           "reasonCode"
         ],
         "properties": {
+          "expectedMembershipVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 is the documented sentinel for an email-bound V3 invitation with no Membership row; the invitation's independent CAS is expectedInvitationVersion."
+          },
           "expectedInvitationVersion": {
             "type": "integer",
             "minimum": 1,
@@ -8441,9 +8474,16 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "expectedMembershipVersion",
           "expectedInvitationVersion"
         ],
         "properties": {
+          "expectedMembershipVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 is the documented sentinel for an email-bound V3 invitation with no Membership row; the invitation's independent CAS is expectedInvitationVersion."
+          },
           "expectedInvitationVersion": {
             "type": "integer",
             "minimum": 1,

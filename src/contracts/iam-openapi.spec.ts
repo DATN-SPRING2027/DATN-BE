@@ -361,7 +361,6 @@ describe('IAM OpenAPI contract', () => {
         'x-platform-permission': 'platform.memberships.invitation.manage',
         'x-contract-status': 'USER_APPROVED',
         'x-runtime-status': 'IMPLEMENTED_BACKEND',
-        'x-readiness-gates': [],
       });
       expect(operation?.parameters?.map((parameter) => parameter.name)).toEqual(
         expect.arrayContaining([
@@ -372,6 +371,15 @@ describe('IAM OpenAPI contract', () => {
       );
       expect(operation?.responses['503']).toBeDefined();
     }
+    expect(invite?.['x-readiness-gates']).toEqual([
+      'A7_NOTIFICATION_CONTRACT_PROVIDER',
+      'A8_COORDINATED_CUTOVER',
+    ]);
+    expect(resend?.['x-readiness-gates']).toEqual([
+      'A7_NOTIFICATION_CONTRACT_PROVIDER',
+      'A8_COORDINATED_CUTOVER',
+    ]);
+    expect(cancel?.['x-readiness-gates']).toEqual(['A8_COORDINATED_CUTOVER']);
     expect(invite?.requestBody).toMatchObject({
       content: {
         'application/json': {
@@ -380,7 +388,7 @@ describe('IAM OpenAPI contract', () => {
       },
     });
     expect(invite?.description).toContain(
-      'even when email delivery is unavailable',
+      'Email delivery remains asynchronous',
     );
     expect(resend?.requestBody).toMatchObject({
       content: {
@@ -1171,6 +1179,10 @@ describe('IAM OpenAPI contract', () => {
     expect(accept.description).toContain('authenticated account email');
     expect(accept.description).toContain('commit atomically');
     expect(accept.responses['503']).toBeDefined();
+    expect(accept['x-readiness-gates']).toEqual([
+      'A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF',
+      'A8_COORDINATED_CUTOVER',
+    ]);
     expect(accept.responses['410']).toBeDefined();
     expect(accept.responses['200']).toHaveProperty(
       'content.application/json.schema.$ref',
@@ -1218,7 +1230,10 @@ describe('IAM OpenAPI contract', () => {
       'x-contract-status': 'USER_APPROVED',
       'x-runtime-status': 'IMPLEMENTED_BACKEND',
       'x-permission': 'organization.memberships.manage',
-      'x-readiness-gates': [],
+      'x-readiness-gates': [
+        'A7_NOTIFICATION_CONTRACT_PROVIDER',
+        'A8_COORDINATED_CUTOVER',
+      ],
     });
     expect(orgPath.post?.requestBody).toMatchObject({
       content: {
@@ -1237,11 +1252,14 @@ describe('IAM OpenAPI contract', () => {
     expect(suspend.operationId).toBe('suspendOrganizationMembership');
     expect(resend).toMatchObject({
       'x-runtime-status': 'IMPLEMENTED_BACKEND',
-      'x-readiness-gates': [],
+      'x-readiness-gates': [
+        'A7_NOTIFICATION_CONTRACT_PROVIDER',
+        'A8_COORDINATED_CUTOVER',
+      ],
     });
     expect(cancel).toMatchObject({
       'x-runtime-status': 'IMPLEMENTED_BACKEND',
-      'x-readiness-gates': [],
+      'x-readiness-gates': ['A8_COORDINATED_CUTOVER'],
     });
     expect(suspend).toMatchObject({
       'x-runtime-status': 'IMPLEMENTED_BACKEND',
@@ -1254,16 +1272,45 @@ describe('IAM OpenAPI contract', () => {
     expect(cancel.parameters?.map((parameter) => parameter.name)).toContain(
       'Idempotency-Key',
     );
-    for (const request of [
-      orgPath.post?.requestBody,
-      resend.requestBody,
-      cancel.requestBody,
-      accept.requestBody,
-    ]) {
-      expect(JSON.stringify(request)).not.toContain(
+    expect(
+      contract.components.schemas.C02AcceptInvitationRequest,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: ['expectedMembershipVersion', 'expectedInvitationVersion'],
+      properties: {
+        expectedMembershipVersion: { type: 'integer', minimum: 0 },
+        expectedInvitationVersion: { type: 'integer', minimum: 1 },
+      },
+    });
+    expect(
+      contract.components.schemas.C02ResendInvitationRequest,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: [
         'expectedMembershipVersion',
-      );
-    }
+        'expectedInvitationVersion',
+        'reasonCode',
+      ],
+      properties: {
+        expectedMembershipVersion: { type: 'integer', minimum: 0 },
+      },
+    });
+    expect(
+      contract.components.schemas.C02CancelInvitationRequest,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: [
+        'expectedMembershipVersion',
+        'expectedInvitationVersion',
+        'reasonCode',
+      ],
+      properties: {
+        expectedMembershipVersion: { type: 'integer', minimum: 0 },
+      },
+    });
+    expect(
+      JSON.stringify(contract.components.schemas.C02AcceptInvitationRequest),
+    ).toContain('0 is the documented sentinel');
     expect(contract.components.schemas.C02MembershipMutationAck).toHaveProperty(
       'oneOf',
     );

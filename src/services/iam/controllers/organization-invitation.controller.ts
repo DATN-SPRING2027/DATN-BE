@@ -51,18 +51,30 @@ function parsePageQuery(query: Record<string, unknown>): {
   return { page, pageSize };
 }
 
-function parseAcceptBody(body: unknown): void {
+function parseAcceptBody(body: unknown): {
+  expectedMembershipVersion: number;
+  expectedInvitationVersion: number;
+} {
   if (typeof body !== 'object' || body === null || Array.isArray(body))
     return validationFailed();
   const record = body as Record<string, unknown>;
-  const expectedKeys = ['expectedInvitationVersion'];
+  const expectedKeys = [
+    'expectedMembershipVersion',
+    'expectedInvitationVersion',
+  ];
   if (
     Object.keys(record).length !== expectedKeys.length ||
     expectedKeys.some((key) => !Object.hasOwn(record, key)) ||
+    !Number.isSafeInteger(record.expectedMembershipVersion) ||
+    Number(record.expectedMembershipVersion) < 0 ||
     !Number.isSafeInteger(record.expectedInvitationVersion) ||
     Number(record.expectedInvitationVersion) < 1
   )
     return validationFailed();
+  return {
+    expectedMembershipVersion: Number(record.expectedMembershipVersion),
+    expectedInvitationVersion: Number(record.expectedInvitationVersion),
+  };
 }
 
 function parseResolveBody(body: unknown): string {
@@ -150,11 +162,12 @@ export class AccountInvitationController {
       !idempotencyPattern.test(idempotencyKey)
     )
       return validationFailed();
-    parseAcceptBody(body);
+    const input = parseAcceptBody(body);
     const result = await this.invitations.accept(
       actor,
       invitationId,
-      Number((body as Record<string, unknown>).expectedInvitationVersion),
+      input.expectedMembershipVersion,
+      input.expectedInvitationVersion,
       idempotencyKey,
     );
     if (result.replayed) response.setHeader('Idempotency-Replayed', 'true');

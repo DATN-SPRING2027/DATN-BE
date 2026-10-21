@@ -81,7 +81,9 @@ export interface OrganizationInvitationRepository {
       invitationId: string;
       actorUserId: string;
       authenticatedEmail: string;
+      expectedMembershipVersion: number;
       expectedInvitationVersion: number;
+      readinessReady: boolean;
       idempotencyKey: string;
       now: Date;
     },

@@ -72,6 +72,58 @@ describe('OrganizationMembershipCommandController', () => {
     expect(result).toEqual({ operationId: '851a2b3c4d5e6f7a8b9c0d1f' });
   });
 
+  it.each([
+    ['resend', 'ACCESS_REVIEW'],
+    ['cancel', 'INVITATION_CANCELLED'],
+  ] as const)(
+    'requires both CAS versions for invitation %s',
+    async (action, reasonCode) => {
+      const body = {
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 2,
+        reasonCode,
+      };
+      await controller[action](
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'stable-idempotency-key',
+        undefined,
+        organizationId,
+        'a51a2b3c4d5e6f7a8b9c0d1f',
+        body,
+        response as never,
+      );
+      expect(commands.execute).toHaveBeenCalledWith(
+        actor,
+        organizationId,
+        'stable-idempotency-key',
+        {
+          command: action.toUpperCase(),
+          invitationId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+          expectedMembershipVersion: 0,
+          expectedInvitationVersion: 2,
+          reasonCode,
+        },
+        undefined,
+      );
+
+      await expect(
+        controller[action](
+          'Bearer token',
+          '__Host-csrf=csrf-token',
+          'csrf-token',
+          'stable-idempotency-key',
+          undefined,
+          organizationId,
+          'a51a2b3c4d5e6f7a8b9c0d1f',
+          { expectedInvitationVersion: 2, reasonCode },
+          response as never,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    },
+  );
+
   it('rejects the legacy roleCode payload and any unknown field', async () => {
     await expect(
       controller.invite(
