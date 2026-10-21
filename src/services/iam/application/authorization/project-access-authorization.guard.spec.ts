@@ -214,4 +214,23 @@ describe('ProjectAccessAuthorizationGuard', () => {
       ForbiddenException,
     );
   });
+
+  it('allows an active Project Leader with project.members.list to read listLeaders while denying leader mutations', async () => {
+    const facts = evidence('project.members.list');
+    const listLeaders = () => undefined;
+    Reflect.defineMetadata(
+      PROJECT_ACCESS_PERMISSION,
+      'project.leader.manage',
+      listLeaders,
+    );
+    const { guard, context } = fixture('project.leader.manage', facts);
+    const listLeadersContext = {
+      ...context,
+      getHandler: () => listLeaders,
+    } as unknown as ExecutionContext;
+    await expect(guard.canActivate(listLeadersContext)).resolves.toBe(true);
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
 });

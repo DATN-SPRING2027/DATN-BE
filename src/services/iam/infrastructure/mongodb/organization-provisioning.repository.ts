@@ -158,16 +158,19 @@ export class MongoOrganizationProvisioningRepository implements OrganizationProv
           { session },
         );
 
+        const isSelfService =
+          actorUserId.toLowerCase() === input.firstAdminUserId.toLowerCase();
         await this.connection!.useDb(this.auditDatabaseName, { useCache: true })
           .collection(IAM_AUDIT_COLLECTION_NAME)
           .insertOne(
             {
               eventId: randomUUID(),
               actorUserId,
+              organizationId: String(organizationId),
               action: 'organization.create',
               targetResource: 'ORGANIZATION',
               targetResourceId: String(organizationId),
-              scope: 'PLATFORM',
+              scope: isSelfService ? 'ORGANIZATION' : 'PLATFORM',
               result: 'SUCCESS',
               metadata: {
                 bootstrap: {

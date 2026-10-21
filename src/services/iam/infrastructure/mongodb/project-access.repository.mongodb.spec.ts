@@ -849,6 +849,15 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
         firstLeader,
         nextLeader,
       );
+      await expect(
+        repository.revokeLeader(organization, admin, project, nextLeader),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: {
+          code: 'LAST_PROJECT_LEADER_REQUIRED',
+        },
+      });
+      await repository.assignLeader(organization, admin, project, firstLeader);
       await repository.revokeLeader(organization, admin, project, nextLeader);
 
       expect(
@@ -856,7 +865,7 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
           organizationId,
           projectId,
           userId: new Types.ObjectId(firstLeader),
-          roleCode: 'MEMBER',
+          roleCode: 'TEAM_LEADER',
         }),
       ).not.toBeNull();
       expect(
@@ -878,14 +887,14 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
         ['PROJECT_VISIBILITY_CHANGED', 3],
         ['PROJECT_SETTINGS_UPDATED', 2],
         ['PROJECT_MEMBER_ADDED', 1],
-        ['PROJECT_LEADER_ASSIGNED', 1],
+        ['PROJECT_LEADER_ASSIGNED', 2],
         ['PROJECT_LEADER_CHANGED', 2],
         ['PROJECT_LEADER_REVOKED', 1],
         ['PROJECT_MEMBER_REMOVED', 1],
       ] as const) {
         expect(await audit.countDocuments({ action })).toBe(count);
       }
-      expect(await audit.countDocuments()).toBe(11);
+      expect(await audit.countDocuments()).toBe(12);
     } finally {
       if (
         createdDatabase &&

@@ -70,18 +70,33 @@ export class ProjectAccessAuthorizationGuard implements CanActivate {
         code: 'PROJECT_NOT_FOUND',
         message: 'Project not found.',
       });
-    const decision = this.policy.evaluateProjectAccess({
-      permission,
+    const baseInput = {
       subject: {
         userId: identity.id,
         organizationId: identity.organizationId,
-        status: 'ACTIVE',
+        status: 'ACTIVE' as const,
       },
       requestedOrganizationId: identity.organizationId,
       requestedProjectId: projectId,
       ...facts,
+    };
+    const decision = this.policy.evaluateProjectAccess({
+      permission,
+      ...baseInput,
     });
-    if (!decision.allowed) throw new ForbiddenException();
+    if (!decision.allowed) {
+      const isLeaderListRead =
+        permission === 'project.leader.manage' &&
+        context.getHandler()?.name === 'listLeaders';
+      if (isLeaderListRead) {
+        const fallbackDecision = this.policy.evaluateProjectAccess({
+          permission: 'project.members.list',
+          ...baseInput,
+        });
+        if (fallbackDecision.allowed) return true;
+      }
+      throw new ForbiddenException();
+    }
     return true;
   }
 }

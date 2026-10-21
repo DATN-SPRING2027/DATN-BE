@@ -497,8 +497,14 @@ export class AuthenticationApplicationService {
     if (linkedAccount) return linkedAccount;
 
     const emailAccount = await this.repository.findAccountByEmail(email);
-    if (emailAccount)
+    if (emailAccount) {
+      const eligibility = this.eligibilityPolicy.evaluate({
+        userStatus: emailAccount.status,
+      });
+      if (eligibility.outcome !== 'ELIGIBLE' || emailAccount.twoFactorEnabled)
+        return emailAccount;
       return this.linkGoogleIdentity(emailAccount, googleSubject, requestId);
+    }
 
     logGoogleOAuthStage({
       requestId,
@@ -533,12 +539,21 @@ export class AuthenticationApplicationService {
         await this.repository.findAccountByGoogleSubject(googleSubject);
       if (accountBySubject) return accountBySubject;
       const accountByEmail = await this.repository.findAccountByEmail(email);
-      if (accountByEmail)
+      if (accountByEmail) {
+        const eligibility = this.eligibilityPolicy.evaluate({
+          userStatus: accountByEmail.status,
+        });
+        if (
+          eligibility.outcome !== 'ELIGIBLE' ||
+          accountByEmail.twoFactorEnabled
+        )
+          return accountByEmail;
         return this.linkGoogleIdentity(
           accountByEmail,
           googleSubject,
           requestId,
         );
+      }
       throw error;
     }
   }
