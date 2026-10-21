@@ -27,7 +27,6 @@ const ids = {
   orgAssignment: id('000000000000000000000009'),
   projectAssignment: id('00000000000000000000000a'),
 };
-const fixedNow = Date.parse('2026-10-21T10:00:00.000Z');
 let replicaSet;
 let connection;
 let readerConnection;
@@ -467,9 +466,7 @@ test('reads only the synthetic MongoDB 7 replica-set fixture and leaves its reco
     .sort({ _id: 1 })
     .toArray();
 
-  const result = await reconcileDatabase(db, fixtureManifest(), {
-    now: fixedNow,
-  });
+  const result = await reconcileDatabase(db, liveFixtureManifest());
 
   const afterAssignments = await db
     .collection('role_assignments')

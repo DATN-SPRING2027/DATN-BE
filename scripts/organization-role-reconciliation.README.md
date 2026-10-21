@@ -43,6 +43,11 @@ create collections or indexes, or read invitation, audit, Project content,
 email, credential, or token fields. For Projects, it selects only _id,
 organizationId and status.
 
+Every inventory/find query is checked against the execution deadline before
+it starts. Its server-side maxTimeMS is capped at the smaller of 30 seconds
+and the remaining authorized time; a completed read is followed by deadline
+checks before further work or a successful result.
+
 ## Manifest fields
 
 The JSON manifest must follow schemaVersion 1 and include:

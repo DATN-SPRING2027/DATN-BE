@@ -773,12 +773,12 @@ function orFilter(items, fields) {
   };
 }
 
-async function findRows(db, collectionName, filter, projection) {
+async function findRows(db, collectionName, filter, projection, maxTimeMS) {
   try {
     const rows = await db
       .collection(collectionName)
       .find(filter, { projection })
-      .maxTimeMS(QUERY_MAX_TIME_MS)
+      .maxTimeMS(maxTimeMS)
       .limit(MAX_RELATED_ROWS + 1)
       .toArray();
     if (rows.length > MAX_RELATED_ROWS) {
@@ -804,6 +804,11 @@ function assertNotPastDeadline(window, startedAt) {
   ) {
     throw new Error('EXECUTION_BOUND_EXCEEDED');
   }
+  return Math.min(
+    QUERY_MAX_TIME_MS,
+    window.executionWindowEnd - now,
+    window.maxExecutionMs - (now - startedAt),
+  );
 }
 
 export async function reconcileDatabase(db, manifest, options = {}) {
@@ -815,16 +820,18 @@ export async function reconcileDatabase(db, manifest, options = {}) {
   const startedAt = options.startedAt ?? now;
   const deadlineCheck = () => assertNotPastDeadline(validated, startedAt);
   let names;
+  const inventoryMaxTimeMS = deadlineCheck();
   try {
     names = await db
       .listCollections(
         { name: { $in: REQUIRED_COLLECTIONS } },
-        { nameOnly: true },
+        { nameOnly: true, maxTimeMS: inventoryMaxTimeMS },
       )
       .toArray();
   } catch {
     throw new Error('MONGO_READ_FAILED: COLLECTION_INVENTORY');
   }
+  deadlineCheck();
   const available = new Set(names.map((item) => item.name));
   const missing = REQUIRED_COLLECTIONS.filter((name) => !available.has(name));
   if (missing.length > 0) throw new Error('TARGET_COLLECTIONS_INCOMPLETE');
@@ -842,12 +849,13 @@ export async function reconcileDatabase(db, manifest, options = {}) {
     updatedAt: 1,
   };
   let assignments;
+  const assignmentsMaxTimeMS = deadlineCheck();
   try {
     assignments = await db
       .collection('role_assignments')
       .find({}, { projection: assignmentProjection })
       .sort({ _id: 1 })
-      .maxTimeMS(QUERY_MAX_TIME_MS)
+      .maxTimeMS(assignmentsMaxTimeMS)
       .limit(MAX_ASSIGNMENTS + 1)
       .toArray();
   } catch {
@@ -891,6 +899,7 @@ export async function reconcileDatabase(db, manifest, options = {}) {
             permissions: 1,
             isSystem: 1,
           },
+          deadlineCheck(),
         )
       : [];
     const users = userIds.length
@@ -902,6 +911,7 @@ export async function reconcileDatabase(db, manifest, options = {}) {
             _id: 1,
             status: 1,
           },
+          deadlineCheck(),
         )
       : [];
     const organizations = organizationIds.length
@@ -912,6 +922,7 @@ export async function reconcileDatabase(db, manifest, options = {}) {
           {
             _id: 1,
           },
+          deadlineCheck(),
         )
       : [];
     const organizationMemberships = pairs.length
@@ -925,6 +936,7 @@ export async function reconcileDatabase(db, manifest, options = {}) {
             userId: 1,
             status: 1,
           },
+          deadlineCheck(),
         )
       : [];
     const projects = projectIds.length
@@ -937,6 +949,7 @@ export async function reconcileDatabase(db, manifest, options = {}) {
             organizationId: 1,
             status: 1,
           },
+          deadlineCheck(),
         )
       : [];
     const projectMemberships = triples.length
@@ -951,6 +964,7 @@ export async function reconcileDatabase(db, manifest, options = {}) {
             userId: 1,
             status: 1,
           },
+          deadlineCheck(),
         )
       : [];
 

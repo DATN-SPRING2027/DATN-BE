@@ -435,7 +435,8 @@ test('reports duplicate assignments and duplicate scope links as aggregate count
   assert.equal(counts.byClassification.DUPLICATE_SCOPE_LINK, 2);
 });
 
-test('runs fixture reconciliation through read operations only and projects no PII or private Project content', async () => {
+test('runs fixture reconciliation through read operations only and projects no PII or private Project content', async (context) => {
+  context.mock.method(Date, 'now', () => now);
   const calls = [];
   const collections = {
     role_assignments: [
@@ -616,7 +617,8 @@ test('runs fixture reconciliation through read operations only and projects no P
   );
 });
 
-test('stops with a bounded-result error when a related collection exceeds its cap', async () => {
+test('stops with a bounded-result error when a related collection exceeds its cap', async (context) => {
+  context.mock.method(Date, 'now', () => now);
   function cursor(rows) {
     return {
       sort() {
@@ -661,6 +663,72 @@ test('stops with a bounded-result error when a related collection exceeds its ca
     reconcileDatabase(db, manifest(), { now }),
     /RELATED_RECORD_LIMIT_EXCEEDED/,
   );
+});
+
+test('stops before assignment reads when collection inventory crosses the execution deadline', async (context) => {
+  let currentTime = now;
+  context.mock.method(Date, 'now', () => currentTime);
+  const db = {
+    listCollections() {
+      return {
+        async toArray() {
+          currentTime = now + 16 * 60_000;
+          return REQUIRED_COLLECTIONS.map((name) => ({ name }));
+        },
+      };
+    },
+    collection() {
+      assert.fail('Assignment reads must not start after the deadline');
+    },
+  };
+  await assert.rejects(
+    reconcileDatabase(db, manifest(), { now }),
+    /EXECUTION_BOUND_EXCEEDED/,
+  );
+});
+
+test('bounds each query by the time remaining in the authorized execution window', async (context) => {
+  const approved = manifest();
+  const end = Date.parse(approved.executionWindow.endAt);
+  let currentTime = end - 100;
+  const limits = [];
+  context.mock.method(Date, 'now', () => currentTime);
+  const cursor = {
+    sort() {
+      return this;
+    },
+    maxTimeMS(value) {
+      limits.push(value);
+      return this;
+    },
+    limit() {
+      return this;
+    },
+    async toArray() {
+      return [];
+    },
+  };
+  const db = {
+    listCollections(_filter, options) {
+      limits.push(options.maxTimeMS);
+      return {
+        async toArray() {
+          currentTime = end - 50;
+          return REQUIRED_COLLECTIONS.map((name) => ({ name }));
+        },
+      };
+    },
+    collection() {
+      return {
+        find() {
+          return cursor;
+        },
+      };
+    },
+  };
+  const result = await reconcileDatabase(db, approved, { now: end - 100 });
+  assert.equal(result.assignments, 0);
+  assert.deepEqual(limits, [100, 50]);
 });
 
 test('runner source contains no database write or migration APIs', async () => {
