@@ -210,40 +210,69 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       );
       return this.find(organizationId, userId);
     }
-    await this.users()
-      .updateOne({ _id: new Types.ObjectId(userId) }, { $set: changes })
-      .exec();
-    if (typeof this.connection?.useDb === 'function') {
-      await this.connection
-        .useDb(AUDIT_DATABASE_NAME, { useCache: true })
-        .collection(IAM_AUDIT_COLLECTION_NAME)
-        .insertOne({
-          eventId: randomUUID(),
-          schemaVersion: 2,
-          operationId: new Types.ObjectId().toHexString(),
-          organizationId,
-          actorUserId: actorId,
-          action: 'ORGANIZATION_USER_PROFILE_UPDATED',
-          scope: 'ORGANIZATION',
-          result: 'SUCCESS',
-          occurredAt: new Date(),
-          reasonCode: 'ORGANIZATION_USER_PROFILE_UPDATED',
-          targetResource: 'USER',
-          targetResourceId: userId,
-          before: {
-            fullName: before.fullName,
-            avatarUrl: before.avatarUrl ?? '',
-          },
-          after: {
-            fullName: changes.fullName ?? before.fullName,
-            avatarUrl:
-              changes.avatarUrl !== undefined
-                ? (changes.avatarUrl ?? '')
-                : (before.avatarUrl ?? ''),
-          },
-        });
-    }
+    await this.updateProfileAtomically(
+      organizationId,
+      userId,
+      actorId,
+      before,
+      changes,
+    );
     return this.find(organizationId, userId);
+  }
+
+  private async updateProfileAtomically(
+    organizationId: string,
+    userId: string,
+    actorId: string,
+    before: UserRecord,
+    changes: UserUpdate,
+  ): Promise<void> {
+    if (!this.connection)
+      throw new Error('User directory persistence unavailable');
+    const session = await this.connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.users()
+          .updateOne(
+            { _id: new Types.ObjectId(userId) },
+            { $set: changes },
+            { session },
+          )
+          .exec();
+        await this.connection!.useDb(AUDIT_DATABASE_NAME, { useCache: true })
+          .collection(IAM_AUDIT_COLLECTION_NAME)
+          .insertOne(
+            {
+              eventId: randomUUID(),
+              schemaVersion: 2,
+              operationId: new Types.ObjectId().toHexString(),
+              organizationId,
+              actorUserId: actorId,
+              action: 'ORGANIZATION_USER_PROFILE_UPDATED',
+              scope: 'ORGANIZATION',
+              result: 'SUCCESS',
+              occurredAt: new Date(),
+              reasonCode: 'ORGANIZATION_USER_PROFILE_UPDATED',
+              targetResource: 'USER',
+              targetResourceId: userId,
+              before: {
+                fullName: before.fullName,
+                avatarUrl: before.avatarUrl ?? '',
+              },
+              after: {
+                fullName: changes.fullName ?? before.fullName,
+                avatarUrl:
+                  changes.avatarUrl !== undefined
+                    ? (changes.avatarUrl ?? '')
+                    : (before.avatarUrl ?? ''),
+              },
+            },
+            { session },
+          );
+      });
+    } finally {
+      await session.endSession();
+    }
   }
 
   private async updateStatusAtomically(

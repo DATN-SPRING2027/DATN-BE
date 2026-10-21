@@ -33,6 +33,7 @@ interface RecipientInvitationRow {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
   email: string;
+  roleCode?: 'ADMIN' | 'MEMBER';
   status: RecipientInvitationStatus;
   version: number;
   invitedBy: Types.ObjectId;
@@ -315,12 +316,14 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
         if (existingMembership)
           throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
 
-        const memberRole = await this.model<RoleDocument>('roles')
-          .findOne({ code: 'MEMBER', isSystem: true })
+        const targetRoleCode: 'ADMIN' | 'MEMBER' =
+          invitation.roleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
+        const targetRole = await this.model<RoleDocument>('roles')
+          .findOne({ code: targetRoleCode, isSystem: true })
           .session(session)
           .lean()
           .exec();
-        if (!memberRole)
+        if (!targetRole)
           throw new ServiceUnavailableException({
             code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
           });
@@ -340,7 +343,10 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
             code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
           });
         const existingAssignment = existingAssignments[0];
-        if (existingAssignment && existingAssignment.roleCode !== 'MEMBER')
+        if (
+          existingAssignment &&
+          existingAssignment.roleCode !== targetRoleCode
+        )
           throw new ServiceUnavailableException({
             code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
           });
@@ -366,8 +372,8 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
                 organizationId: invitation.organizationId,
                 projectId: null,
                 userId: actorUserId,
-                roleId: memberRole._id,
-                roleCode: 'MEMBER',
+                roleId: targetRole._id,
+                roleCode: targetRoleCode,
                 assignedBy: invitation.invitedBy ?? actorUserId,
                 mutationFence: 1,
               },

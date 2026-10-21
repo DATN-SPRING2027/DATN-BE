@@ -75,6 +75,7 @@ interface OrganizationDocument {
   _id: Types.ObjectId;
   name: string;
   slug: string;
+  plan?: 'FREE' | 'ENTERPRISE';
   status?: 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED';
   settings?: Record<string, unknown>;
   createdAt?: Date;
@@ -121,6 +122,7 @@ interface InvitationDocument {
   membershipId?: Types.ObjectId;
   targetUserId?: Types.ObjectId;
   email: string;
+  roleCode?: 'ADMIN' | 'MEMBER';
   tokenHash?: string;
   contractVersion: number;
   version: number;
@@ -469,8 +471,14 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       typeof organization.settings?.description === 'string'
         ? organization.settings.description
         : null;
+    const rawPlan =
+      typeof organization.plan === 'string'
+        ? organization.plan
+        : typeof organization.settings?.plan === 'string'
+          ? organization.settings.plan
+          : 'FREE';
     const plan: 'FREE' | 'ENTERPRISE' =
-      organization.settings?.plan === 'ENTERPRISE' ? 'ENTERPRISE' : 'FREE';
+      rawPlan === 'ENTERPRISE' ? 'ENTERPRISE' : 'FREE';
     const status = 'ACTIVE' as const;
 
     return {
@@ -517,8 +525,14 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       typeof organization.settings?.description === 'string'
         ? organization.settings.description
         : null;
+    const rawPlan =
+      typeof organization.plan === 'string'
+        ? organization.plan
+        : typeof organization.settings?.plan === 'string'
+          ? organization.settings.plan
+          : 'FREE';
     const plan: 'FREE' | 'ENTERPRISE' =
-      organization.settings?.plan === 'ENTERPRISE' ? 'ENTERPRISE' : 'FREE';
+      rawPlan === 'ENTERPRISE' ? 'ENTERPRISE' : 'FREE';
     const status = 'ACTIVE' as const;
     return {
       organization: {
@@ -1311,12 +1325,15 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       tokenHash,
     };
     const encryptedToken = this.cipherOrThrow().encryptToken(token, binding);
+    const requestedRoleCode: 'ADMIN' | 'MEMBER' =
+      command.roleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
     await this.invitations().create(
       [
         {
           _id: invitationId,
           organizationId,
           email: command.email,
+          roleCode: requestedRoleCode,
           contractVersion: 3,
           tokenHash,
           version: 1,
@@ -1430,12 +1447,15 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       tokenHash,
     };
     const encryptedToken = this.cipherOrThrow().encryptToken(token, binding);
+    const requestedRoleCode: 'ADMIN' | 'MEMBER' =
+      oldInvitation.roleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
     await this.invitations().create(
       [
         {
           _id: invitationId,
           organizationId,
           email: oldInvitation.email,
+          roleCode: requestedRoleCode,
           contractVersion: 3,
           tokenHash,
           version: 1,
@@ -2210,6 +2230,46 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .exec();
     if (!updated)
       throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+
+    const existingAssignments = await this.assignments()
+      .find({
+        organizationId,
+        userId: membership.userId,
+        ...organizationLevel,
+      })
+      .session(session)
+      .lean()
+      .exec();
+    if (existingAssignments.length > 1)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    if (existingAssignments.length === 0) {
+      const memberRole = await this.roles()
+        .findOne({ code: 'MEMBER', isSystem: true })
+        .session(session)
+        .lean()
+        .exec();
+      if (!memberRole)
+        throw new ServiceUnavailableException({
+          code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+        });
+      await this.assignments().create(
+        [
+          {
+            organizationId,
+            projectId: null,
+            userId: membership.userId,
+            roleId: memberRole._id,
+            roleCode: 'MEMBER',
+            assignedBy: actorUserId,
+            mutationFence: 1,
+          },
+        ],
+        { session },
+      );
+    }
+
     const mappedMembership = this.mapMembership(organizationIdText, updated);
     return {
       membership: mappedMembership,
