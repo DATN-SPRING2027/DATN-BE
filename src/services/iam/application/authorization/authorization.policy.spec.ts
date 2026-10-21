@@ -416,29 +416,58 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
   });
 
   it.each([
+    'project.visibility.manage',
+    'project.members.list',
+    'project.members.add',
+    'project.members.remove',
+  ] as const)(
+    'allows %s for an organization ADMIN with the exact permission without requiring ProjectMembership',
+    (permission) => {
+      const facts = projectAccessBase(permission);
+      facts.projectMembership = null;
+      facts.assignments = [
+        projectAssignment(null, 'ADMIN', 'ADMIN', [permission]),
+      ];
+      expect(policy.evaluateProjectAccess(facts).allowed).toBe(true);
+    },
+  );
+
+  it('allows project.members.list for an active Project MEMBER with the exact permission', () => {
+    const facts = projectAccessBase('project.members.list');
+    facts.assignments = [
+      projectAssignment(projectId, 'MEMBER', 'MEMBER', [
+        'project.members.list',
+      ]),
+    ];
+    expect(policy.evaluateProjectAccess(facts).allowed).toBe(true);
+    facts.projectMembership!.status = 'INACTIVE';
+    expect(policy.evaluateProjectAccess(facts).allowed).toBe(false);
+  });
+
+  it.each([
     [
-      'organization ADMIN alone cannot list project members',
+      'organization ADMIN without project.members.list cannot list project members',
       'project.members.list',
+      null,
+      'ADMIN',
+      'ADMIN',
+      ['project.visibility.manage'],
+    ],
+    [
+      'organization ADMIN without project.members.add cannot add project members',
+      'project.members.add',
       null,
       'ADMIN',
       'ADMIN',
       ['project.members.list'],
     ],
     [
-      'organization ADMIN alone cannot add project members',
-      'project.members.add',
-      null,
-      'ADMIN',
-      'ADMIN',
-      ['project.members.add'],
-    ],
-    [
-      'organization ADMIN alone cannot remove project members',
+      'organization ADMIN without project.members.remove cannot remove project members',
       'project.members.remove',
       null,
       'ADMIN',
       'ADMIN',
-      ['project.members.remove'],
+      ['project.members.list'],
     ],
     [
       'organization ADMIN without project.leader.manage cannot manage leaders',

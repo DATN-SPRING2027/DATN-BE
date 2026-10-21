@@ -352,17 +352,24 @@ export class AuthorizationPolicy {
       input.projectMembership.status === 'ACTIVE',
     );
     const allowedScopes =
-      permission === 'project.visibility.manage'
+      permission === 'project.visibility.manage' ||
+      permission === 'project.members.add' ||
+      permission === 'project.members.remove'
         ? [
             { roleCode: 'ADMIN', projectId: null },
             { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
           ]
-        : permission === 'project.leader.manage'
-          ? [{ roleCode: 'ADMIN', projectId: null }]
-          : [{ roleCode: 'TEAM_LEADER', projectId: requestedProjectId }];
+        : permission === 'project.members.list'
+          ? [
+              { roleCode: 'ADMIN', projectId: null },
+              { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
+              { roleCode: 'MEMBER', projectId: requestedProjectId },
+            ]
+          : permission === 'project.leader.manage'
+            ? [{ roleCode: 'ADMIN', projectId: null }]
+            : [{ roleCode: 'TEAM_LEADER', projectId: requestedProjectId }];
     const allowed = allowedScopes.some((scope) => {
-      if (scope.roleCode === 'TEAM_LEADER' && !hasProjectMembership)
-        return false;
+      if (scope.projectId !== null && !hasProjectMembership) return false;
       return input.assignments.some(
         (assignment) =>
           sameObjectId(assignment.userId, subject.userId) &&

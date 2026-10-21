@@ -295,6 +295,9 @@ test('creates only fresh deterministic synthetic IAM data and reruns without ove
     'organization.memberships.manage',
     'project.visibility.manage',
     'project.leader.manage',
+    'project.members.list',
+    'project.members.add',
+    'project.members.remove',
   ]);
   assert.ok(
     iam
