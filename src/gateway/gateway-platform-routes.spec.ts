@@ -1,6 +1,7 @@
 import { RequestMethod } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { PlatformController } from '../services/iam/controllers/platform.controller';
+import { AuthenticationController } from '../services/iam/controllers/authentication.controller';
 import { GatewayIamController } from './gateway-iam.controller';
 
 type Route = { method: RequestMethod; path: string };
@@ -38,6 +39,17 @@ function routes(controller: { prototype: object }, prefix = ''): Route[] {
 }
 
 describe('Gateway Platform route forwarding', () => {
+  it('forwards every implemented Authentication route, including Platform session probes and login', () => {
+    const upstreamRoutes = routes(AuthenticationController, 'auth');
+    const forwarded = new Set(
+      routes(GatewayIamController).map(
+        ({ method, path }) => `${method}:${path}`,
+      ),
+    );
+    for (const route of upstreamRoutes) {
+      expect(forwarded).toContain(`${route.method}:${route.path}`);
+    }
+  });
   it('forwards every Platform IAM handler through the public gateway', () => {
     const iamPlatformRoutes = routes(
       PlatformController,

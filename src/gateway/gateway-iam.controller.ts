@@ -69,6 +69,30 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('auth/platform/login')
+  loginPlatform(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('auth/refresh')
+  refreshSession(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('auth/platform/me')
+  getPlatformSession(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Post('auth/registrations')
   requestEmailRegistration(
     @Req() request: Request,
@@ -798,7 +822,7 @@ export class GatewayIamController {
       if (typeof value === 'string') headers[name] = value;
     }
     if (
-      /^\/api\/v1\/auth\/(?:login|password-reset\/(?:request|confirm)|registrations(?:\/verify)?)$/.test(
+      /^\/api\/v1\/auth\/(?:(?:platform\/)?login|password-reset\/(?:request|confirm)|registrations(?:\/verify)?)$/.test(
         request.path,
       )
     ) {
