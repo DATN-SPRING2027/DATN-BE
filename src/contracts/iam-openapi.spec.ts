@@ -76,8 +76,10 @@ function resolveLocalReference(
 describe('IAM OpenAPI contract', () => {
   const contract = loadContract();
 
-  it('keeps Organization provisioning on the PLATFORM_OPERATOR API boundary', () => {
-    expect(contract.paths['/api/v1/iam/organizations']).toBeUndefined();
+  it('supports both self-service account Organization bootstrap and PLATFORM_OPERATOR Organization provisioning', () => {
+    expect(contract.paths['/api/v1/iam/organizations']?.post?.operationId).toBe(
+      'createOwnOrganization',
+    );
     expect(
       contract.paths['/api/v1/iam/platform/organizations'].post?.[
         'x-platform-permission'

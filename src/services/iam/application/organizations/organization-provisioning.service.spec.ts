@@ -2,6 +2,7 @@ import { ConflictException } from '@nestjs/common';
 import type { AuthenticatedPlatformSubject } from '../authentication/authentication.application.service';
 import type { OrganizationProvisioningRepository } from './organization-provisioning.repository';
 import { OrganizationProvisioningService } from './organization-provisioning.service';
+import type { AuthSecurityStore } from '../authentication/auth-security.store';
 
 const actor: AuthenticatedPlatformSubject = {
   id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
@@ -13,7 +14,10 @@ describe('OrganizationProvisioningService', () => {
   const repository: jest.Mocked<OrganizationProvisioningRepository> = {
     create: jest.fn(),
   };
-  const service = new OrganizationProvisioningService(repository);
+  const security = {
+    consumeRateLimit: jest.fn().mockResolvedValue(true),
+  } as unknown as jest.Mocked<AuthSecurityStore>;
+  const service = new OrganizationProvisioningService(repository, security);
 
   beforeEach(() => jest.clearAllMocks());
 
@@ -51,5 +55,23 @@ describe('OrganizationProvisioningService', () => {
     await service.create(actor, input);
 
     expect(repository.create.mock.calls).toEqual([[actor.id, input]]);
+  });
+
+  it('allows an authenticated account to bootstrap only itself on the FREE plan', async () => {
+    await service.createSelfService(actor, {
+      name: 'My Organization',
+      slug: 'my-organization',
+    });
+    expect(repository.create).toHaveBeenCalledWith(actor.id, {
+      name: 'My Organization',
+      slug: 'my-organization',
+      plan: 'FREE',
+      firstAdminUserId: actor.id,
+    });
+    expect(security.consumeRateLimit).toHaveBeenCalledWith(
+      `organization:create:${actor.id}`,
+      3,
+      3600,
+    );
   });
 });
