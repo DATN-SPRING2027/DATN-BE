@@ -858,14 +858,71 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
         },
       });
       await repository.assignLeader(organization, admin, project, firstLeader);
-      await repository.revokeLeader(organization, admin, project, nextLeader);
+      const concurrentRevokes = await Promise.allSettled([
+        repository.revokeLeader(organization, admin, project, nextLeader),
+        repository.revokeLeader(organization, admin, project, firstLeader),
+      ]);
+      expect(
+        concurrentRevokes.filter((item) => item.status === 'fulfilled'),
+      ).toHaveLength(1);
+      const rejectedRevoke = concurrentRevokes.find(
+        (item): item is PromiseRejectedResult => item.status === 'rejected',
+      );
+      expect(rejectedRevoke?.reason).toMatchObject({
+        status: 409,
+        response: {
+          code: 'LAST_PROJECT_LEADER_REQUIRED',
+        },
+      });
+
+      const remainingLeaderDoc = await db
+        .collection('role_assignments')
+        .findOne({
+          organizationId,
+          projectId,
+          roleCode: 'TEAM_LEADER',
+        });
+      expect(remainingLeaderDoc).not.toBeNull();
+      const survivingLeaderId = remainingLeaderDoc!.userId as Types.ObjectId;
+      const survivingLeader = survivingLeaderId.toHexString();
+
+      await db
+        .collection('users')
+        .updateOne(
+          { _id: survivingLeaderId },
+          { $set: { status: 'SUSPENDED' } },
+        );
+      await repository.assignLeader(organization, admin, project, addedMember);
+      expect(
+        await db.collection('project_memberships').findOne({
+          _id: memberRecord._id,
+          status: 'ACTIVE',
+        }),
+      ).not.toBeNull();
+      expect(
+        await db.collection('role_assignments').findOne({
+          organizationId,
+          projectId,
+          userId: addedMemberId,
+          roleCode: 'TEAM_LEADER',
+        }),
+      ).not.toBeNull();
+      await repository.revokeLeader(
+        organization,
+        admin,
+        project,
+        survivingLeader,
+      );
+      await db
+        .collection('users')
+        .updateOne({ _id: survivingLeaderId }, { $set: { status: 'ACTIVE' } });
 
       expect(
         await db.collection('role_assignments').findOne({
           organizationId,
           projectId,
           userId: new Types.ObjectId(firstLeader),
-          roleCode: 'TEAM_LEADER',
+          roleCode: 'MEMBER',
         }),
       ).not.toBeNull();
       expect(
@@ -876,25 +933,19 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
           roleCode: 'MEMBER',
         }),
       ).not.toBeNull();
-      expect(
-        await db.collection('project_memberships').findOne({
-          _id: memberRecord._id,
-          status: 'INACTIVE',
-        }),
-      ).not.toBeNull();
       const audit = auditDb.collection('audit_logs_iam');
       for (const [action, count] of [
         ['PROJECT_VISIBILITY_CHANGED', 3],
         ['PROJECT_SETTINGS_UPDATED', 2],
         ['PROJECT_MEMBER_ADDED', 1],
-        ['PROJECT_LEADER_ASSIGNED', 2],
+        ['PROJECT_LEADER_ASSIGNED', 3],
         ['PROJECT_LEADER_CHANGED', 2],
-        ['PROJECT_LEADER_REVOKED', 1],
+        ['PROJECT_LEADER_REVOKED', 2],
         ['PROJECT_MEMBER_REMOVED', 1],
       ] as const) {
         expect(await audit.countDocuments({ action })).toBe(count);
       }
-      expect(await audit.countDocuments()).toBe(12);
+      expect(await audit.countDocuments()).toBe(14);
     } finally {
       if (
         createdDatabase &&
