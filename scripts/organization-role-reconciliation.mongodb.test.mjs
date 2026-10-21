@@ -1,4 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, before, test } from 'node:test';
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
@@ -24,6 +30,88 @@ const ids = {
 const fixedNow = Date.parse('2026-10-21T10:00:00.000Z');
 let replicaSet;
 let connection;
+let readerConnection;
+const rootPassword = randomBytes(24).toString('hex');
+const readerPassword = randomBytes(24).toString('hex');
+const readerName = 'org08-synthetic-reader';
+const broadReaderName = 'org08-synthetic-broad-reader';
+
+function authenticatedUri(user, password) {
+  const uri = new URL(replicaSet.getUri(DATABASE_NAME));
+  uri.username = user;
+  uri.password = password;
+  uri.searchParams.set('authSource', 'admin');
+  return uri.toString();
+}
+
+async function runFixtureCli(manifest, uri) {
+  const directory = await mkdtemp(join(tmpdir(), 'org08-auth-fixture-'));
+  const manifestPath = join(directory, 'synthetic-manifest.json');
+  try {
+    await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+    return await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(
+            new URL('./organization-role-reconciliation.mjs', import.meta.url),
+          ),
+          '--manifest',
+          manifestPath,
+        ],
+        {
+          env: { ORG08_RECONCILIATION_MONGODB_URI: uri },
+          windowsHide: true,
+          timeout: 20_000,
+        },
+      );
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk;
+      });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+  } finally {
+    await unlink(manifestPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await rmdir(directory);
+  }
+}
+
+function liveFixtureManifest() {
+  const manifest = fixtureManifest();
+  const now = Date.now();
+  const iso = (offset) => new Date(now + offset).toISOString();
+  manifest.snapshot.createdAt = iso(-60_000);
+  manifest.snapshot.retentionExpiresAt = iso(3_600_000);
+  manifest.restore.restoredAt = iso(-45_000);
+  manifest.restore.target.hosts = [new URL(replicaSet.getUri()).host];
+  manifest.database.accountName = readerName;
+  for (const evidence of [
+    manifest.snapshot.integrity,
+    manifest.restore.integrity,
+    manifest.restore.networkIsolation,
+    manifest.database.effectivePrivileges,
+    manifest.database.writeDenial,
+    manifest.authorization.projectLead,
+    manifest.executionWindow.confirmation,
+  ]) {
+    evidence.verifiedAt = iso(-30_000);
+  }
+  manifest.database.effectivePrivileges.accountName = readerName;
+  manifest.database.writeDenial.accountName = readerName;
+  manifest.authorization.projectLead.authorizedAt = iso(-25_000);
+  manifest.executionWindow.confirmedAt = iso(-10_000);
+  manifest.executionWindow.startAt = iso(-1_000);
+  manifest.executionWindow.endAt = iso(120_000);
+  return manifest;
+}
 
 function verified(reference, extra = {}) {
   return {
@@ -118,6 +206,12 @@ before(async () => {
   replicaSet = await MongoMemoryReplSet.create({
     binary: { version: '7.0.14' },
     replSet: {
+      auth: {
+        enable: true,
+        customRootName: 'org08-synthetic-root',
+        customRootPwd: rootPassword,
+        keyfileContent: randomBytes(48).toString('base64'),
+      },
       name: 'org08-local-fixture',
       count: 1,
       storageEngine: 'wiredTiger',
@@ -125,7 +219,7 @@ before(async () => {
     instanceOpts: [{ ip: '127.0.0.1' }],
   });
   connection = await mongoose
-    .createConnection(replicaSet.getUri(DATABASE_NAME), {
+    .createConnection(authenticatedUri('org08-synthetic-root', rootPassword), {
       serverSelectionTimeoutMS: 5000,
     })
     .asPromise();
@@ -139,6 +233,26 @@ before(async () => {
   for (const collection of REQUIRED_COLLECTIONS) {
     await db.createCollection(collection);
   }
+  await db.command({
+    createRole: 'org08SyntheticReader',
+    privileges: fixtureManifest().database.effectivePrivileges.privileges,
+    roles: [],
+  });
+  await db.admin().command({
+    createUser: readerName,
+    pwd: readerPassword,
+    roles: [{ role: 'org08SyntheticReader', db: DATABASE_NAME }],
+  });
+  await db.admin().command({
+    createUser: broadReaderName,
+    pwd: readerPassword,
+    roles: [{ role: 'read', db: DATABASE_NAME }],
+  });
+  readerConnection = await mongoose
+    .createConnection(authenticatedUri(readerName, readerPassword), {
+      serverSelectionTimeoutMS: 5000,
+    })
+    .asPromise();
   await db.collection('roles').insertMany([
     {
       _id: ids.adminRole,
@@ -226,8 +340,118 @@ before(async () => {
 });
 
 after(async () => {
+  await readerConnection?.close();
   await connection?.close();
   await replicaSet?.stop();
+});
+
+test('MongoDB enforces the exact read-only role and denies a nonmatching update without changing records', async () => {
+  const auth = await readerConnection.db
+    .admin()
+    .command({ connectionStatus: 1, showPrivileges: true });
+  assert.equal(auth.authInfo.authenticatedUsers[0].user, readerName);
+  const before = await connection.db
+    .collection('role_assignments')
+    .find({})
+    .sort({ _id: 1 })
+    .toArray();
+  await assert.rejects(
+    readerConnection.db
+      .collection('role_assignments')
+      .updateOne(
+        { _id: id('ffffffffffffffffffffffff') },
+        { $set: { syntheticProbe: true } },
+        { upsert: false },
+      ),
+    (error) => error.code === 13 && error.codeName === 'Unauthorized',
+  );
+  assert.deepEqual(
+    await connection.db
+      .collection('role_assignments')
+      .find({})
+      .sort({ _id: 1 })
+      .toArray(),
+    before,
+  );
+});
+
+test('CLI verifies live MongoDB identity and privileges before completing with the least-privileged account', async () => {
+  const result = await runFixtureCli(
+    liveFixtureManifest(),
+    authenticatedUri(readerName, readerPassword),
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.result, 'COMPLETED_READ_ONLY');
+  assert.equal(output.target.accountName, readerName);
+  assert.equal(output.target.replicaSetName, 'org08-local-fixture');
+  assert.equal(output.counts.assignments, 2);
+  assert.equal(output.counts.byClassification.VALID, 2);
+  assert.equal(output.scope.writesPerformed, 0);
+  assert.match(output.scriptSha256, /^[a-f0-9]{64}$/);
+  for (const privateValue of [
+    readerPassword,
+    rootPassword,
+    'private-fixture@example.test',
+    'Private project content',
+  ]) {
+    assert.equal(result.stdout.includes(privateValue), false);
+    assert.equal(result.stderr.includes(privateValue), false);
+  }
+});
+
+test('CLI rejects a live account with broader read privileges than the approved collection scope', async () => {
+  const manifest = liveFixtureManifest();
+  manifest.database.accountName = broadReaderName;
+  manifest.database.effectivePrivileges.accountName = broadReaderName;
+  manifest.database.writeDenial.accountName = broadReaderName;
+  const result = await runFixtureCli(
+    manifest,
+    authenticatedUri(broadReaderName, readerPassword),
+  );
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(
+    result.stderr,
+    'ORG08 reconciliation stopped: DATABASE_PRIVILEGES_NOT_READ_ONLY\n',
+  );
+});
+
+test('CLI rejects a manifest whose account differs from the live authenticated account', async () => {
+  const manifest = liveFixtureManifest();
+  manifest.database.accountName = 'different-synthetic-account';
+  manifest.database.effectivePrivileges.accountName =
+    'different-synthetic-account';
+  manifest.database.writeDenial.accountName = 'different-synthetic-account';
+  const result = await runFixtureCli(
+    manifest,
+    authenticatedUri(readerName, readerPassword),
+  );
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(
+    result.stderr,
+    'ORG08 reconciliation stopped: DATABASE_ACCOUNT_MISMATCH\n',
+  );
+});
+
+test('CLI rejects a live administrator account with write privileges', async () => {
+  const manifest = liveFixtureManifest();
+  manifest.database.accountName = 'org08-synthetic-root';
+  manifest.database.effectivePrivileges.accountName = 'org08-synthetic-root';
+  manifest.database.writeDenial.accountName = 'org08-synthetic-root';
+  const result = await runFixtureCli(
+    manifest,
+    authenticatedUri('org08-synthetic-root', rootPassword),
+  );
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(
+    result.stderr,
+    'ORG08 reconciliation stopped: DATABASE_PRIVILEGES_NOT_READ_ONLY\n',
+  );
+  assert.equal(result.stderr.includes(rootPassword), false);
 });
 
 test('reads only the synthetic MongoDB 7 replica-set fixture and leaves its records unchanged', async () => {

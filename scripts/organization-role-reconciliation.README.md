@@ -90,6 +90,15 @@ IDs; no names, emails, private Project content, credentials, tokens, or raw
 documents. Counts do not establish deployment or policy approval. A human
 reviewer must assess and disposition findings before A7 can pass.
 
-The automated fixture tests prove runner logic and projected read-only query
-shape only. They are not evidence about a Staging snapshot or database
-population.
+The automated MongoDB 7.0.14 fixture enables authentication and creates an
+ephemeral, collection-scoped read-only account. It verifies that the server
+rejects a nonmatching update with Unauthorized (code 13), runs the full CLI
+through live target/account/privilege checks, and rejects mismatched accounts,
+broader read privileges, and administrator write privileges. Credentials are
+generated per run, passed to the child CLI only through its environment, and
+never written into the manifest or test output. The fixture also checks scope
+separation, redacted output, and unchanged assignment/membership records.
+
+These are implementation tests on synthetic local records. Their manifests
+contain explicitly synthetic evidence references; they are not evidence about
+a Staging snapshot, restore, network isolation, or database population.
