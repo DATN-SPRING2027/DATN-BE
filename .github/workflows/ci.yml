@@ -41,6 +41,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: npm run test:organization-role-reconciliation
       - run: npm test -- --runInBand
       - run: npm run test:dev-db-smoke-safety
 
@@ -137,6 +138,8 @@ jobs:
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-87-membership-reads-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn90-team-foundation-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-95-task-data-foundation-mongo7-disposable"})'
+      - name: Run ORG-08 reconciliation runner MongoDB 7 fixture
+        run: npm run test:organization-role-reconciliation:mongodb
       - name: Run Project Access permission provisioning migration integration
         run: npm run test:project-access-permissions:integration
       - name: Run DATN-87 membership lifecycle migration integration
