@@ -5,9 +5,8 @@ import { type EmailRegistrationOutboxStore } from './email-registration.store';
 import { EmailRegistrationService } from './email-registration.service';
 import { PasswordCredentialService } from '../credentials/password-credential.service';
 
-describe('EmailRegistrationService invitation continuation', () => {
-  it('carries only the non-secret invitation ID through the verification email URL', async () => {
-    const invitationId = '3123456789abcdef01234567';
+describe('EmailRegistrationService', () => {
+  it('keeps generic account verification links independent from Organization invitations', async () => {
     type SaveInput = Parameters<
       EmailRegistrationOutboxStore['saveEmailRegistrationRequest']
     >[0];
@@ -36,12 +35,14 @@ describe('EmailRegistrationService invitation continuation', () => {
       fullName: 'Invitee',
       email: 'invitee@example.test',
       sourceIp: '127.0.0.1',
-      returnToInvitationId: invitationId,
     });
 
     const savedInput = saveEmailRegistrationRequest.mock.calls[0]?.[0];
-    expect(savedInput?.payload?.verificationUrl).toContain(
-      `returnToInvitationId=${invitationId}`,
+    const verificationUrl = new URL(savedInput?.payload?.verificationUrl ?? '');
+    expect(verificationUrl.pathname).toBe('/verify-email');
+    expect(verificationUrl.searchParams.has('returnToInvitationId')).toBe(
+      false,
     );
+    expect(verificationUrl.hash).toMatch(/^#token=[A-Za-z0-9_-]{43}$/);
   });
 });

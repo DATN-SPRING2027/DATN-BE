@@ -112,7 +112,7 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Request email/password registration",
-        "description": "Accepts a name and email, plus an optional non-secret invitation ID used only to return a verified registration flow to that pending invitation. No User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
+        "description": "Accepts a name and email for public account registration, independent from Organization invitation flows. Invitation acceptance requires a separately existing eligible account whose normalized email matches the invitation and always uses the invitation acceptance operation. No User or password is created before email verification. Every syntactically valid request gets the same 202 response whether the address is new, already has a password account, is ineligible, or SMTP later accepts/rejects delivery. An eligible address receives a single-use verification link with a 30-minute lifetime. The recipient chooses a password after opening the same-origin FE link. No Organization, membership, role or Platform authority is created.",
         "operationId": "requestEmailRegistration",
         "security": [],
         "requestBody": {
@@ -956,8 +956,8 @@
       },
       "post": {
         "tags": ["Users"],
-        "summary": "Invite an account to an Organization",
-        "description": "V3 invite command. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. It creates a PENDING email-bound invitation, committed operation, allowlisted audit record, and encrypted delivery outbox intent atomically without creating a membership. The seven-day expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
+        "summary": "Invite an existing eligible account to an Organization",
+        "description": "V3 invite command. The invited email must match an existing ACTIVE eligible account; unknown and inactive accounts receive the same generic 422 code INVITATION_TARGET_NOT_ELIGIBLE. Invitation acceptance never creates an account. Requires the matching trusted Organization context, current ACTIVE actor membership, current ADMIN Role with organization.memberships.manage, matching CSRF cookie/header, a strict {email, reasonCode} body, and an Idempotency-Key. It creates a PENDING email-bound invitation, committed operation, allowlisted audit record, and encrypted delivery outbox intent atomically without creating a membership. The seven-day expiry and shared 30 committed invite/resend operations per Organization/actor rolling hour are enforced server-side. A7_NOTIFICATION_CONTRACT_PROVIDER and A8_COORDINATED_CUTOVER must be ready or the command fails closed with 503. The API returns after commit; asynchronous email delivery can remain pending or retry if the provider is unavailable.",
         "operationId": "createOrganizationInvitation",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1026,7 +1026,8 @@
           "404": { "$ref": "#/components/responses/C02MembershipNotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "422": {
-            "$ref": "#/components/responses/C02MembershipValidationFailed"
+            "description": "The request is invalid, or the target email does not belong to an existing ACTIVE eligible account; target ineligibility uses the generic code INVITATION_TARGET_NOT_ELIGIBLE.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           },
           "429": {
             "description": "The committed invitation quota was reached. Retry-After is seconds until the oldest counted operation leaves the rolling window.",
@@ -7515,8 +7516,7 @@
         "required": ["fullName", "email"],
         "properties": {
           "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
-          "email": { "type": "string", "format": "email", "maxLength": 320 },
-          "returnToInvitationId": { "type": "string", "minLength": 24, "maxLength": 24, "pattern": "^[a-fA-F0-9]{24}$", "description": "Non-secret invitation identifier for the post-verification sign-in continuation. The authenticated email must still match before acceptance." }
+          "email": { "type": "string", "format": "email", "maxLength": 320 }
         }
       },
       "EmailRegistrationVerify": {
