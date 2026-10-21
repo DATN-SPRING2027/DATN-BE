@@ -136,13 +136,92 @@ export class OrganizationMembershipCommandService {
   ): OrganizationMembershipCommand {
     if (!command || typeof command !== 'object') validationFailed();
     if (command.command === 'INVITE') {
+      const allowedKeys = new Set([
+        'command',
+        'email',
+        'reasonCode',
+        'roleCode',
+        'accessScope',
+        'projectIds',
+        'message',
+        'expiresInDays',
+        'requireApproval',
+      ]);
+      const keys = Object.keys(command);
       if (
-        Object.keys(command).length !== 3 ||
+        keys.length < 3 ||
+        keys.some((key) => !allowedKeys.has(key)) ||
         !allowedReasons.has(command.reasonCode) ||
         !['ACCESS_REQUEST', 'ACCESS_REVIEW'].includes(command.reasonCode)
       )
         validationFailed();
-      return { ...command, email: normalizeMembershipEmail(command.email) };
+      if (
+        command.roleCode !== undefined &&
+        command.roleCode !== 'ADMIN' &&
+        command.roleCode !== 'MEMBER'
+      )
+        validationFailed();
+      if (
+        command.accessScope !== undefined &&
+        command.accessScope !== 'ORGANIZATION' &&
+        command.accessScope !== 'SPECIFIC_PROJECTS'
+      )
+        validationFailed();
+      let normalizedProjectIds: string[] | undefined;
+      if (command.projectIds !== undefined) {
+        if (
+          !Array.isArray(command.projectIds) ||
+          command.projectIds.length === 0 ||
+          command.projectIds.length > 50 ||
+          !command.projectIds.every(
+            (id): id is string =>
+              typeof id === 'string' && resourceIdPattern.test(id),
+          )
+        )
+          validationFailed();
+        normalizedProjectIds = [
+          ...new Set(command.projectIds.map((id) => id.toLowerCase())),
+        ];
+      }
+      if (
+        command.accessScope === 'SPECIFIC_PROJECTS' &&
+        (!normalizedProjectIds || normalizedProjectIds.length === 0)
+      )
+        validationFailed();
+      let normalizedMessage: string | undefined;
+      if (command.message !== undefined) {
+        if (typeof command.message !== 'string' || command.message.length > 500)
+          validationFailed();
+        const trimmed = command.message.trim();
+        if (trimmed.length > 0) normalizedMessage = trimmed;
+      }
+      if (
+        command.expiresInDays !== undefined &&
+        command.expiresInDays !== 7 &&
+        command.expiresInDays !== 14 &&
+        command.expiresInDays !== 30
+      )
+        validationFailed();
+      if (
+        command.requireApproval !== undefined &&
+        typeof command.requireApproval !== 'boolean'
+      )
+        validationFailed();
+      return {
+        command: 'INVITE',
+        email: normalizeMembershipEmail(command.email),
+        reasonCode: command.reasonCode,
+        ...(command.roleCode ? { roleCode: command.roleCode } : {}),
+        ...(command.accessScope ? { accessScope: command.accessScope } : {}),
+        ...(normalizedProjectIds ? { projectIds: normalizedProjectIds } : {}),
+        ...(normalizedMessage ? { message: normalizedMessage } : {}),
+        ...(command.expiresInDays
+          ? { expiresInDays: command.expiresInDays }
+          : {}),
+        ...(command.requireApproval !== undefined
+          ? { requireApproval: command.requireApproval }
+          : {}),
+      };
     }
     if (command.command === 'RESEND' || command.command === 'CANCEL') {
       if (

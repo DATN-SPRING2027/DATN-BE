@@ -74,6 +74,8 @@ export class SmtpEmailRegistrationMailer
     organizationName: string;
     invitationUrl: string;
     expiresAt: Date;
+    message?: string;
+    roleCode?: 'ADMIN' | 'MEMBER';
   }): Promise<OrganizationInvitationDeliveryResult> {
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     const port = Number(this.config.get<string>('SMTP_PORT'));
@@ -111,6 +113,8 @@ export class SmtpEmailRegistrationMailer
         .trim() || 'your organization';
     const safeUrl = escapeHtml(input.invitationUrl);
     const expiry = input.expiresAt.toISOString();
+    const trimmedMessage = input.message?.trim();
+    const safeMessage = trimmedMessage ? escapeHtml(trimmedMessage) : '';
     try {
       transporter = nodemailer.createTransport({
         host,
@@ -129,12 +133,20 @@ export class SmtpEmailRegistrationMailer
         subject: `Invitation to join ${subjectOrganizationName} on Continuum AI`,
         text: [
           `You have been invited to join ${subjectOrganizationName} on Continuum AI.`,
+          ...(trimmedMessage
+            ? [`Message from sender:\n"${trimmedMessage}"`]
+            : []),
           `Review and accept this email-bound invitation before ${expiry}: ${input.invitationUrl}`,
           'Sign in with the existing eligible account that matches the invited email address to accept it.',
           'If you were not expecting this invitation, you can ignore this email.',
         ].join('\n\n'),
         html: [
           `<p>You have been invited to join <strong>${safeOrganizationName}</strong> on Continuum AI.</p>`,
+          ...(safeMessage
+            ? [
+                `<blockquote style="margin:12px 0;padding:10px 14px;border-left:3px solid #2563eb;background:#f8fafc;color:#334155;">${safeMessage}</blockquote>`,
+              ]
+            : []),
           `<p><a href="${safeUrl}">Review invitation</a></p>`,
           `<p>This invitation expires at ${escapeHtml(expiry)}. Sign in with the existing eligible account that matches the invited email address to accept it.</p>`,
           '<p>If you were not expecting this invitation, you can ignore this email.</p>',

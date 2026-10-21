@@ -41,6 +41,8 @@ export interface OrganizationInvitationMailer {
       organizationName: string;
       invitationUrl: string;
       expiresAt: Date;
+      message?: string;
+      roleCode?: 'ADMIN' | 'MEMBER';
     },
   ): Promise<OrganizationInvitationDeliveryResult>;
 }

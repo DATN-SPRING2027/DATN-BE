@@ -33,6 +33,8 @@ interface InvitationDeliveryPayload {
   recipientEmail: string;
   tokenHash: string;
   encryptedToken: string;
+  message?: string;
+  roleCode?: 'ADMIN' | 'MEMBER';
   delivery?: {
     attemptCount?: number;
     leaseId?: string;
@@ -171,6 +173,12 @@ export class OrganizationInvitationOutboxWorker
         organizationName: organization.name,
         invitationUrl,
         expiresAt: invitation.expiresAt,
+        ...(typeof payload.message === 'string' && payload.message.trim()
+          ? { message: payload.message.trim() }
+          : {}),
+        ...(payload.roleCode === 'ADMIN' || payload.roleCode === 'MEMBER'
+          ? { roleCode: payload.roleCode }
+          : {}),
       });
     } catch {
       await this.scheduleRetry(
@@ -324,7 +332,11 @@ export class OrganizationInvitationOutboxWorker
   }
 
   private createInvitationUrl(token: string): string {
-    const configured = this.config.get<string>('WEB_APP_URL')?.trim();
+    const configured =
+      this.config.get<string>('WEB_APP_URL')?.trim() ||
+      (this.config.get<string>('NODE_ENV') === 'production'
+        ? ''
+        : 'http://localhost:3000');
     if (!configured) throw new Error('WEB_APP_URL_UNAVAILABLE');
     const url = new URL('/organization/invitations', configured);
     if (

@@ -8,11 +8,22 @@ export type MembershipReasonCode =
   | 'INVITATION_CANCELLED'
   | 'SECURITY_INCIDENT';
 
+export type OrganizationInvitationAccessScope =
+  'ORGANIZATION' | 'SPECIFIC_PROJECTS';
+
+export type OrganizationInvitationExpiryDays = 7 | 14 | 30;
+
 export type OrganizationMembershipCommand =
   | {
       command: 'INVITE';
       email: string;
       reasonCode: 'ACCESS_REQUEST' | 'ACCESS_REVIEW';
+      roleCode?: 'ADMIN' | 'MEMBER';
+      accessScope?: OrganizationInvitationAccessScope;
+      projectIds?: readonly string[];
+      message?: string;
+      expiresInDays?: OrganizationInvitationExpiryDays;
+      requireApproval?: boolean;
     }
   | {
       command: 'RESEND';
