@@ -39,6 +39,9 @@
     "test:dev-db-init": "node --test scripts/dev/initialize-service-owned-databases.test.mjs",
     "test:dev-db-smoke-safety": "node --test scripts/dev/smoke-service-owned-runtime.test.mjs",
     "test:platform-authority-adoption-safety": "node --test scripts/dev/platform-authority-test-adoption-policy.test.mjs",
+    "reconcile:organization-roles": "node scripts/organization-role-reconciliation.mjs",
+    "test:organization-role-reconciliation": "node --test scripts/organization-role-reconciliation.test.mjs",
+    "test:organization-role-reconciliation:mongodb": "node --test scripts/organization-role-reconciliation.mongodb.test.mjs",
     "test:migrations:plan": "node --test scripts/migrations/*.plan.test.mjs",
     "test:project-access-permissions:integration": "node --test scripts/migrations/20261012-project-access-permission-provisioning.mongodb.test.mjs",
     "test:platform-incidents:migration-plan": "node --test scripts/migrations/platform-incidents.plan.test.mjs",
@@ -64,7 +67,7 @@
     "migrate:project-creator-leader": "node --env-file=.env scripts/migrations/20261019-project-creator-leader.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",
-    "check": "npm run lint && npm run typecheck && npm run test:dev-db-smoke-safety && npm test -- --runInBand && npm run test:e2e -- --runInBand && npm run build"
+    "check": "npm run lint && npm run typecheck && npm run test:organization-role-reconciliation && npm run test:dev-db-smoke-safety && npm test -- --runInBand && npm run test:e2e -- --runInBand && npm run build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1136.0",
