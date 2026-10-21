@@ -68,20 +68,109 @@ function parseReason(value: unknown): string {
   return value;
 }
 
+const allowedInviteKeys = new Set([
+  'email',
+  'reasonCode',
+  'roleCode',
+  'accessScope',
+  'projectIds',
+  'message',
+  'expiresInDays',
+  'requireApproval',
+]);
+const allowedInviteRoleCodes = new Set(['ADMIN', 'MEMBER']);
+const allowedInviteAccessScopes = new Set([
+  'ORGANIZATION',
+  'SPECIFIC_PROJECTS',
+]);
+const allowedInviteExpiryDays = new Set([7, 14, 30]);
+
 function parseInvite(body: unknown): OrganizationMembershipCommand {
   const record = parseObject(body);
+  const keys = Object.keys(record);
   if (
-    !exactKeys(record, ['email', 'reasonCode']) ||
+    keys.length < 2 ||
+    keys.some((key) => !allowedInviteKeys.has(key)) ||
     typeof record.email !== 'string' ||
     !['ACCESS_REQUEST', 'ACCESS_REVIEW'].includes(
       parseReason(record.reasonCode),
     )
   )
     return validationFailed();
+
+  let roleCode: 'ADMIN' | 'MEMBER' | undefined;
+  if (record.roleCode !== undefined) {
+    if (
+      typeof record.roleCode !== 'string' ||
+      !allowedInviteRoleCodes.has(record.roleCode)
+    )
+      return validationFailed();
+    roleCode = record.roleCode as 'ADMIN' | 'MEMBER';
+  }
+
+  let accessScope: 'ORGANIZATION' | 'SPECIFIC_PROJECTS' | undefined;
+  if (record.accessScope !== undefined) {
+    if (
+      typeof record.accessScope !== 'string' ||
+      !allowedInviteAccessScopes.has(record.accessScope)
+    )
+      return validationFailed();
+    accessScope = record.accessScope as 'ORGANIZATION' | 'SPECIFIC_PROJECTS';
+  }
+
+  let projectIds: string[] | undefined;
+  if (record.projectIds !== undefined) {
+    if (
+      !Array.isArray(record.projectIds) ||
+      record.projectIds.length === 0 ||
+      record.projectIds.length > 50 ||
+      record.projectIds.some(
+        (id) => typeof id !== 'string' || !objectIdPattern.test(id),
+      )
+    )
+      return validationFailed();
+    projectIds = [...new Set(record.projectIds as string[])];
+  }
+  if (
+    accessScope === 'SPECIFIC_PROJECTS' &&
+    (!projectIds || projectIds.length === 0)
+  )
+    return validationFailed();
+
+  let message: string | undefined;
+  if (record.message !== undefined) {
+    if (typeof record.message !== 'string' || record.message.length > 500)
+      return validationFailed();
+    const trimmed = record.message.trim();
+    if (trimmed.length > 0) message = trimmed;
+  }
+
+  let expiresInDays: 7 | 14 | 30 | undefined;
+  if (record.expiresInDays !== undefined) {
+    if (
+      typeof record.expiresInDays !== 'number' ||
+      !allowedInviteExpiryDays.has(record.expiresInDays)
+    )
+      return validationFailed();
+    expiresInDays = record.expiresInDays as 7 | 14 | 30;
+  }
+
+  let requireApproval: boolean | undefined;
+  if (record.requireApproval !== undefined) {
+    if (typeof record.requireApproval !== 'boolean') return validationFailed();
+    requireApproval = record.requireApproval;
+  }
+
   return {
     command: 'INVITE',
     email: record.email,
     reasonCode: record.reasonCode as 'ACCESS_REQUEST' | 'ACCESS_REVIEW',
+    ...(roleCode ? { roleCode } : {}),
+    ...(accessScope ? { accessScope } : {}),
+    ...(projectIds ? { projectIds } : {}),
+    ...(message ? { message } : {}),
+    ...(expiresInDays ? { expiresInDays } : {}),
+    ...(requireApproval !== undefined ? { requireApproval } : {}),
   };
 }
 

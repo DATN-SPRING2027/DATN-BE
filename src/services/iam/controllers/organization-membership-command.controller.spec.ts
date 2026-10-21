@@ -124,7 +124,7 @@ describe('OrganizationMembershipCommandController', () => {
     },
   );
 
-  it('rejects the legacy roleCode payload and any unknown field', async () => {
+  it('rejects missing reasonCode, invalid roleCode, and any unknown field', async () => {
     await expect(
       controller.invite(
         'Bearer token',
@@ -148,12 +148,68 @@ describe('OrganizationMembershipCommandController', () => {
         {
           email: 'member@example.test',
           reasonCode: 'ACCESS_REQUEST',
-          roleCode: 'ADMIN',
+          roleCode: 'TEAM_LEADER',
+        },
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      controller.invite(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'stable-idempotency-key',
+        undefined,
+        organizationId,
+        {
+          email: 'member@example.test',
+          reasonCode: 'ACCESS_REQUEST',
+          unknownField: true,
         },
         response as never,
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(commands.execute).not.toHaveBeenCalled();
+  });
+
+  it('accepts optional invitation configuration fields when valid', async () => {
+    const projectId = 'a51a2b3c4d5e6f7a8b9c0d1f';
+    await controller.invite(
+      'Bearer token',
+      '__Host-csrf=csrf-token',
+      'csrf-token',
+      'stable-idempotency-key',
+      'request-id',
+      organizationId,
+      {
+        email: 'member@example.test',
+        reasonCode: 'ACCESS_REQUEST',
+        roleCode: 'MEMBER',
+        accessScope: 'SPECIFIC_PROJECTS',
+        projectIds: [projectId],
+        message: 'Welcome to our organization',
+        expiresInDays: 14,
+        requireApproval: true,
+      },
+      response as never,
+    );
+    expect(commands.execute).toHaveBeenCalledWith(
+      actor,
+      organizationId,
+      'stable-idempotency-key',
+      {
+        command: 'INVITE',
+        email: 'member@example.test',
+        reasonCode: 'ACCESS_REQUEST',
+        roleCode: 'MEMBER',
+        accessScope: 'SPECIFIC_PROJECTS',
+        projectIds: [projectId],
+        message: 'Welcome to our organization',
+        expiresInDays: 14,
+        requireApproval: true,
+      },
+      'request-id',
+    );
   });
 
   it('requires matching CSRF cookie and header before sending a command', async () => {

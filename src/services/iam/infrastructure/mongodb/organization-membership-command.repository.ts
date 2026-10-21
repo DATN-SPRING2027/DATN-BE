@@ -873,7 +873,11 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     const invitationId = new Types.ObjectId();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = sha256(token);
-    const expiresAt = new Date(now.getTime() + invitationLifetimeMs);
+    const lifetimeMs =
+      command.expiresInDays !== undefined
+        ? command.expiresInDays * 24 * 60 * 60 * 1000
+        : invitationLifetimeMs;
+    const expiresAt = new Date(now.getTime() + lifetimeMs);
     const binding = {
       invitationId: invitationId.toHexString(),
       organizationId: organizationIdText,
@@ -915,6 +919,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           invitationStatus: 'PENDING',
           invitationVersion: 1,
           invitationExpiresAt: expiresAt.toISOString(),
+          ...(command.roleCode ? { requestedRoleCode: command.roleCode } : {}),
+          ...(command.accessScope ? { accessScope: command.accessScope } : {}),
         },
       },
       outbox: {
@@ -926,6 +932,16 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           recipientEmail: command.email,
           tokenHash,
           encryptedToken,
+          ...(command.roleCode ? { roleCode: command.roleCode } : {}),
+          ...(command.accessScope ? { accessScope: command.accessScope } : {}),
+          ...(command.projectIds ? { projectIds: command.projectIds } : {}),
+          ...(command.message ? { message: command.message } : {}),
+          ...(command.expiresInDays
+            ? { expiresInDays: command.expiresInDays }
+            : {}),
+          ...(command.requireApproval !== undefined
+            ? { requireApproval: command.requireApproval }
+            : {}),
         },
       },
     };
