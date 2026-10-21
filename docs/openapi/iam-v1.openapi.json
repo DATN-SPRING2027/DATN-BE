@@ -4816,7 +4816,7 @@
           "Project Memberships"
         ],
         "summary": "Search project member candidates",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them; eligibility filters are applied before the cap. A missing or blank email/search query returns an empty list without enumerating candidates. Responses are not cacheable.",
+        "description": "Requires ACTIVE OrganizationMembership and either an organization-scoped ADMIN RoleAssignment or an ACTIVE ProjectMembership with a matching project-scoped TEAM_LEADER RoleAssignment, with project.members.add in the resolved Role.permissions. Searches active Users with ACTIVE OrganizationMembership in the Project's Organization by a case-insensitive literal email substring. The optional search query is an alias for email. Returns at most 50 candidates and flags active Project members instead of omitting them; eligibility filters are applied before the cap. A missing or blank email/search query returns an empty list without enumerating candidates. Responses are not cacheable.",
         "operationId": "listProjectMemberCandidates",
         "parameters": [
           {
@@ -4874,7 +4874,7 @@
       "get": {
         "tags": ["Project Memberships"],
         "summary": "List project memberships",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.list in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize member listing. Returns membership identifiers, status, and join time, with an optional user profile projection when the linked User exists. It does not conflate membership with role assignment.",
+        "description": "Requires ACTIVE OrganizationMembership and either an organization-scoped ADMIN RoleAssignment or an ACTIVE ProjectMembership with a matching project-scoped TEAM_LEADER or MEMBER RoleAssignment, with project.members.list in the resolved Role.permissions. Returns membership identifiers, status, and join time, with an optional user profile projection when the linked User exists. It does not conflate membership with role assignment.",
         "operationId": "listProjectMemberships",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
@@ -4907,7 +4907,7 @@
       "post": {
         "tags": ["Project Memberships"],
         "summary": "Add a project member",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.add in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize adding members. The target must be an active User with ACTIVE OrganizationMembership in the Project's Organization. Creates ACTIVE ProjectMembership with the current MEMBER RoleAssignment; no leader or owner privilege is added.",
+        "description": "Requires ACTIVE OrganizationMembership and either an organization-scoped ADMIN RoleAssignment or an ACTIVE ProjectMembership with a matching project-scoped TEAM_LEADER RoleAssignment, with project.members.add in the resolved Role.permissions. The target must be an active User with ACTIVE OrganizationMembership in the Project's Organization. Creates ACTIVE ProjectMembership with the current MEMBER RoleAssignment; no leader or owner privilege is added.",
         "operationId": "createProjectMembership",
         "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
         "requestBody": {
@@ -4978,7 +4978,7 @@
       "delete": {
         "tags": ["Project Memberships"],
         "summary": "Remove a project membership",
-        "description": "Requires ACTIVE OrganizationMembership, ACTIVE ProjectMembership, a matching project-scoped TEAM_LEADER RoleAssignment, and project.members.remove in the resolved Role.permissions. An organization-scoped ADMIN assignment alone does not authorize removing members. Changes an ACTIVE ProjectMembership to INACTIVE without deleting ProjectMembership or RoleAssignment history. Idempotent: an already-INACTIVE membership or repeated DELETE returns 204 without another state transition or audit event. An ACTIVE to INACTIVE change is audited in continuum_audit.audit_logs_iam.",
+        "description": "Requires ACTIVE OrganizationMembership and either an organization-scoped ADMIN RoleAssignment or an ACTIVE ProjectMembership with a matching project-scoped TEAM_LEADER RoleAssignment, with project.members.remove in the resolved Role.permissions. Changes an ACTIVE ProjectMembership to INACTIVE without deleting ProjectMembership or RoleAssignment history. Idempotent: an already-INACTIVE membership or repeated DELETE returns 204 without another state transition or audit event. An ACTIVE to INACTIVE change is audited in continuum_audit.audit_logs_iam.",
         "operationId": "deleteProjectMembership",
         "parameters": [
           { "$ref": "#/components/parameters/ProjectId" },
