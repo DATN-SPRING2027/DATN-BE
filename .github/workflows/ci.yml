@@ -131,12 +131,12 @@ jobs:
             echo 'MongoDB replica set did not elect a primary.' >&2
             exit 1
           fi
+          docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-291-membership-command-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-project-access-permission-provisioning-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-87-membership-lifecycle-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-87-membership-reads-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn90-team-foundation-mongo7-disposable"})'
           docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-95-task-data-foundation-mongo7-disposable"})'
-          docker exec datn-mongo-rs mongosh --quiet --eval 'db.getSiblingDB("admin").getCollection("datn_migration_test_fixture").insertOne({_id:"datn-291-membership-command-mongo7-disposable"})'
       - name: Run Project Access permission provisioning migration integration
         run: npm run test:project-access-permissions:integration
       - name: Run DATN-87 membership lifecycle migration integration
