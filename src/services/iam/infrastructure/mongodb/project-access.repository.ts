@@ -1519,7 +1519,9 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       roleCode: 'ADMIN' | 'TEAM_LEADER';
       projectId: string | null;
     }[] =
-      permission === 'project.visibility.manage'
+      permission === 'project.visibility.manage' ||
+      permission === 'project.members.add' ||
+      permission === 'project.members.remove'
         ? [
             { roleCode: 'ADMIN', projectId: null },
             { roleCode: 'TEAM_LEADER', projectId: projectIdValue },

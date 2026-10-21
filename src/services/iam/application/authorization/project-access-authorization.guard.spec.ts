@@ -146,7 +146,7 @@ describe('ProjectAccessAuthorizationGuard', () => {
     );
   });
 
-  it('denies membership administration to an organization ADMIN without an active Project Leader assignment', async () => {
+  it('allows membership administration to an organization ADMIN with the exact permission without an active ProjectMembership', async () => {
     const facts = evidence('project.members.add');
     facts.projectMembership = null;
     facts.assignments = [
@@ -157,6 +157,23 @@ describe('ProjectAccessAuthorizationGuard', () => {
         roleCode: 'ADMIN',
         resolvedRoleCode: 'ADMIN',
         permissions: ['project.members.add'],
+      },
+    ];
+    const { guard, context } = fixture('project.members.add', facts);
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('denies membership administration to an organization ADMIN without the required permission', async () => {
+    const facts = evidence('project.members.add');
+    facts.projectMembership = null;
+    facts.assignments = [
+      {
+        userId,
+        organizationId,
+        projectId: null,
+        roleCode: 'ADMIN',
+        resolvedRoleCode: 'ADMIN',
+        permissions: ['project.members.list'],
       },
     ];
     const { guard, context } = fixture('project.members.add', facts);
