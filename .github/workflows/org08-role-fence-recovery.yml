@@ -1,0 +1,26 @@
+name: ORG-08 MongoDB 8 recovery validation
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/migrations/*organization-role-fence-recovery*'
+      - '.github/workflows/org08-role-fence-recovery.yml'
+      - 'package-lock.json'
+permissions:
+  contents: read
+jobs:
+  disposable-mongo8-recovery:
+    name: DB / ORG-08 disposable MongoDB 8 recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Unit and actual authenticated MongoDB 8 transaction tests
+        run: |
+          node --test scripts/migrations/organization-role-fence-recovery.plan.test.mjs
+          node --test scripts/migrations/20261021-organization-role-fence-recovery.mongodb.test.mjs
