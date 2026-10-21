@@ -45,7 +45,7 @@ describe('SmtpEmailRegistrationMailer organization invitations', () => {
     });
 
     const mailCalls = sendMail.mock.calls as unknown as Array<
-      [{ subject: string; text: string }]
+      [{ subject: string; text: string; html: string }]
     >;
     const message = mailCalls[0]?.[0];
     expect(message.subject).toBe(
@@ -68,6 +68,13 @@ describe('SmtpEmailRegistrationMailer organization invitations', () => {
     expect(message.text).not.toContain(
       'attacker@example.test\nNewsletter on Continuum AI',
     );
+    expect(message.text).toContain(
+      'Sign in with the existing eligible account that matches the invited email address',
+    );
+    expect(message.html).toContain(
+      'Sign in with the existing eligible account that matches the invited email address',
+    );
+    expect(message.html).not.toMatch(/register|create an account/i);
     expect(result).toMatchObject({
       accepted: true,
       provider: 'SMTP',

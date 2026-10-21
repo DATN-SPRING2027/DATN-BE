@@ -158,6 +158,40 @@ describe('IAM OpenAPI contract', () => {
     expect(JSON.stringify(confirmSchema)).toContain('72 UTF-8 bytes');
   });
 
+  it('keeps public email registration independent from Organization invitations', () => {
+    const registration = contract.paths['/api/v1/auth/registrations'].post;
+    const registrationSchema =
+      contract.components.schemas.EmailRegistrationRequest;
+    const properties = registrationSchema.properties as JsonObject;
+
+    expect(registration?.operationId).toBe('requestEmailRegistration');
+    expect(registration?.description).toContain(
+      'independent from Organization invitation flows',
+    );
+    expect(registration?.description).toContain(
+      'separately existing eligible account',
+    );
+    expect(registrationSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['fullName', 'email'],
+    });
+    expect(Object.keys(properties).sort()).toEqual(['email', 'fullName']);
+  });
+
+  it('documents that Organization invitations target existing eligible accounts', () => {
+    const invite =
+      contract.paths['/api/v1/iam/organizations/{organizationId}/invitations']
+        .post;
+    const response = invite?.responses['422'];
+
+    expect(invite?.operationId).toBe('createOrganizationInvitation');
+    expect(invite?.summary).toContain('existing eligible account');
+    expect(invite?.description).toContain(
+      'unknown and inactive accounts receive the same generic 422 code INVITATION_TARGET_NOT_ELIGIBLE',
+    );
+    expect(response?.description).toContain('INVITATION_TARGET_NOT_ELIGIBLE');
+  });
+
   it('preserves A-04 semantics and documents the separately versioned V2 permission registry', () => {
     const organization =
       contract.paths['/api/v1/iam/platform/organizations'].post;

@@ -1,12 +1,5 @@
 import { Transform } from 'class-transformer';
-import {
-  IsEmail,
-  IsString,
-  Length,
-  Matches,
-  MaxLength,
-  ValidateIf,
-} from 'class-validator';
+import { IsEmail, IsString, Length, Matches, MaxLength } from 'class-validator';
 
 export class EmailRegistrationRequestDto {
   @Transform(({ value }: { value: unknown }) =>
@@ -22,11 +15,6 @@ export class EmailRegistrationRequestDto {
   @IsEmail()
   @MaxLength(320)
   email!: string;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsString()
-  @Matches(/^[a-f\d]{24}$/i)
-  returnToInvitationId?: string;
 }
 
 export class EmailRegistrationVerifyDto {

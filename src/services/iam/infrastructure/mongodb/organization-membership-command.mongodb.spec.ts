@@ -309,10 +309,10 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     });
   });
 
-  it('creates an email-bound invitation and encrypted outbox event without creating a membership', async () => {
+  it('creates an invitation for an existing eligible account without creating a membership', async () => {
     const result = await invoke(actorId, {
       command: 'INVITE',
-      email: 'new.person@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     });
     expect(result.httpStatus).toBe(201);
@@ -330,7 +330,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
       });
     expect(invitation).toMatchObject({
       contractVersion: 3,
-      email: 'new.person@example.test',
+      email: 'invitee@example.test',
       status: 'PENDING',
     });
     expect(invitation?.tokenHash).toMatch(/^[a-f\d]{64}$/);
@@ -354,7 +354,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
     expect(event?.payload).toMatchObject({
       invitationId: result.body.invitation.id,
       organizationId: organizationId.toHexString(),
-      recipientEmail: 'new.person@example.test',
+      recipientEmail: 'invitee@example.test',
       tokenHash: invitation?.tokenHash,
     });
     expect(event?.payload).toHaveProperty('encryptedToken');
@@ -365,6 +365,62 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         action: 'ORGANIZATION_INVITATION_CREATED',
       }),
     ).toBe(1);
+  });
+
+  it('rejects an unregistered invitation target without writing invitation state', async () => {
+    await expect(
+      invoke(actorId, {
+        command: 'INVITE',
+        email: 'unregistered@example.test',
+        reasonCode: 'ACCESS_REQUEST',
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      response: { code: 'INVITATION_TARGET_NOT_ELIGIBLE' },
+    });
+
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(0);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
+    expect(
+      await auditCollection().countDocuments({
+        organizationId: organizationId.toHexString(),
+        action: 'ORGANIZATION_INVITATION_CREATED',
+      }),
+    ).toBe(0);
+  });
+
+  it('rejects an inactive invitation target with the same generic eligibility error', async () => {
+    await connection!
+      .collection('users')
+      .updateOne({ _id: recipientId }, { $set: { status: 'SUSPENDED' } });
+
+    await expect(
+      invoke(actorId, {
+        command: 'INVITE',
+        email: 'invitee@example.test',
+        reasonCode: 'ACCESS_REQUEST',
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      response: { code: 'INVITATION_TARGET_NOT_ELIGIBLE' },
+    });
+
+    expect(
+      await connection!.collection('organization_invitations').countDocuments(),
+    ).toBe(0);
+    expect(await connection!.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
+    expect(
+      await connection!.collection('membership_operations').countDocuments(),
+    ).toBe(0);
   });
 
   it('fails closed for CREATE when A7/A8 readiness is false without writing invitation state', async () => {
@@ -396,7 +452,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   it('resends by superseding the prior token and queuing another delivery event', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
-      email: 'resend@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     });
     if (!('invitation' in created.body) || !created.body.invitation)
@@ -439,7 +495,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   it('rejects stale membership or invitation versions for RESEND without mutation', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
-      email: 'stale-resend@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     });
     if (!('invitation' in created.body) || !created.body.invitation)
@@ -483,7 +539,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   it('fails closed for RESEND and CANCEL when readiness is false', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
-      email: 'blocked-lifecycle@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     });
     if (!('invitation' in created.body) || !created.body.invitation)
@@ -541,7 +597,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   it('cancels an invitation without changing membership and revokes queued token delivery', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
-      email: 'cancel@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     });
     if (!('invitation' in created.body) || !created.body.invitation)
@@ -575,7 +631,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
   it('rejects CANCEL with a stale invitation version without changing its state', async () => {
     const created = await invoke(actorId, {
       command: 'INVITE',
-      email: 'stale-cancel@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     });
     if (!('invitation' in created.body) || !created.body.invitation)
@@ -619,13 +675,19 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
 
     const command: PlatformInvitationCommand = {
       command: 'INVITE',
-      email: 'platform-invite@example.test',
+      email: 'invitee@example.test',
       reasonCode: 'ACCESS_REQUEST',
     };
     const idempotencyKey = `platform-invite-${randomUUID()}`;
     await expect(
       invokePlatformInvitation(command, idempotencyKey, false),
     ).rejects.toMatchObject({ status: 503 });
+    expect(
+      await connection!.collection('platform_authority_change_locks').findOne({
+        permission: 'PLATFORM_OPERATOR_LIFECYCLE',
+        scope: 'PLATFORM',
+      }),
+    ).toMatchObject({ version: 0 });
     expect(
       await connection!.collection('organization_invitations').countDocuments(),
     ).toBe(0);
@@ -662,7 +724,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         permission: 'PLATFORM_OPERATOR_LIFECYCLE',
         scope: 'PLATFORM',
       }),
-    ).toMatchObject({ version: 2 });
+    ).toMatchObject({ version: 1 });
 
     const replay = await invokePlatformInvitation(
       command,
@@ -689,7 +751,7 @@ integration('C-02 membership commands on disposable MongoDB 7', () => {
         permission: 'PLATFORM_OPERATOR_LIFECYCLE',
         scope: 'PLATFORM',
       }),
-    ).toMatchObject({ version: 3 });
+    ).toMatchObject({ version: 2 });
   });
 
   it('accepts an email-bound V3 invitation atomically with explicitly ready gates and replays idempotently', async () => {

@@ -130,12 +130,13 @@ export class SmtpEmailRegistrationMailer
         text: [
           `You have been invited to join ${subjectOrganizationName} on Continuum AI.`,
           `Review and accept this email-bound invitation before ${expiry}: ${input.invitationUrl}`,
+          'Sign in with the existing eligible account that matches the invited email address to accept it.',
           'If you were not expecting this invitation, you can ignore this email.',
         ].join('\n\n'),
         html: [
           `<p>You have been invited to join <strong>${safeOrganizationName}</strong> on Continuum AI.</p>`,
           `<p><a href="${safeUrl}">Review invitation</a></p>`,
-          `<p>This invitation expires at ${escapeHtml(expiry)}. Sign in or register with the invited email address to accept it.</p>`,
+          `<p>This invitation expires at ${escapeHtml(expiry)}. Sign in with the existing eligible account that matches the invited email address to accept it.</p>`,
           '<p>If you were not expecting this invitation, you can ignore this email.</p>',
         ].join(''),
       });

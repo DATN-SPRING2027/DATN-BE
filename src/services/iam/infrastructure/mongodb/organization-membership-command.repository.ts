@@ -840,21 +840,19 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .session(session)
       .lean()
       .exec();
-    if (existingUser && existingUser.status !== 'ACTIVE')
+    if (!existingUser || existingUser.status !== 'ACTIVE')
       throw new HttpException({ code: 'INVITATION_TARGET_NOT_ELIGIBLE' }, 422);
-    if (existingUser) {
-      const existingMembership = await this.memberships()
-        .findOne({ organizationId, userId: existingUser._id })
-        .session(session)
-        .lean()
-        .exec();
-      if (existingMembership?.status === 'ACTIVE')
-        throw new ConflictException({ code: 'TARGET_ALREADY_MEMBER' });
-      if (existingMembership?.status === 'SUSPENDED')
-        throw new ConflictException({ code: 'USE_RESUME' });
-      if (existingMembership?.status === 'REMOVED')
-        throw new ConflictException({ code: 'USE_REINVITE' });
-    }
+    const existingMembership = await this.memberships()
+      .findOne({ organizationId, userId: existingUser._id })
+      .session(session)
+      .lean()
+      .exec();
+    if (existingMembership?.status === 'ACTIVE')
+      throw new ConflictException({ code: 'TARGET_ALREADY_MEMBER' });
+    if (existingMembership?.status === 'SUSPENDED')
+      throw new ConflictException({ code: 'USE_RESUME' });
+    if (existingMembership?.status === 'REMOVED')
+      throw new ConflictException({ code: 'USE_REINVITE' });
 
     const pending = await this.invitations()
       .findOne({ organizationId, email: command.email, status: 'PENDING' })

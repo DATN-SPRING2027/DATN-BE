@@ -70,9 +70,6 @@ export class EmailRegistrationController {
         fullName: dto.fullName,
         email: dto.email,
         sourceIp,
-        ...(dto.returnToInvitationId
-          ? { returnToInvitationId: dto.returnToInvitationId }
-          : {}),
       });
     } catch (error) {
       if (error instanceof EmailRegistrationRateLimitError) {
