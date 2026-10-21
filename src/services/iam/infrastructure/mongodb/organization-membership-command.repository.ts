@@ -23,6 +23,9 @@ import type {
   MembershipMutationResult,
   OrganizationMembershipCommand,
   OrganizationMembershipCommandRepository as OrganizationMembershipCommandRepositoryPort,
+  OrganizationOverviewSummary,
+  OrganizationSettingsSummary,
+  OrganizationSettingsUpdateInput,
   PlatformInvitationCommandInput,
   PlatformMembershipSuspendInput,
 } from '../../application/organizations/organization-membership-command.repository';
@@ -65,7 +68,35 @@ type InvitationCommandChange = {
 interface UserDocument {
   _id: Types.ObjectId;
   email: string;
+  fullName?: string;
   status: string;
+}
+interface OrganizationDocument {
+  _id: Types.ObjectId;
+  name: string;
+  slug: string;
+  status?: 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED';
+  settings?: Record<string, unknown>;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+interface ProjectDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  name: string;
+  code: string;
+  visibility?: 'PUBLIC' | 'PRIVATE';
+  status: 'ACTIVE' | 'ARCHIVED' | 'DELETED';
+  deletedAt?: Date | null;
+  updatedAt?: Date;
+  createdAt?: Date;
+}
+interface ProjectMembershipDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  userId: Types.ObjectId;
+  status: 'ACTIVE' | 'INACTIVE';
 }
 interface PlatformAuthorityAssignmentDocument {
   subjectUserId: Types.ObjectId;
@@ -162,7 +193,8 @@ type AuditRecord = {
   reason?: string;
   correlationId?: string;
   membershipId?: string;
-  targetResource?: 'ORGANIZATION_MEMBERSHIP' | 'ORGANIZATION_INVITATION';
+  targetResource?:
+    'ORGANIZATION_MEMBERSHIP' | 'ORGANIZATION_INVITATION' | 'ORGANIZATION';
   targetResourceId?: string;
   invitationIds?: string[];
   before: Record<string, string | number>;
@@ -255,6 +287,364 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         totalPages: Math.ceil(totalItems / pageSize),
       },
     };
+  }
+
+  async getOrganizationOverview(
+    organizationIdText: string,
+    now: Date,
+  ): Promise<OrganizationOverviewSummary> {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const organization = await this.organizations()
+      .findOne({ _id: organizationId })
+      .lean()
+      .exec();
+    if (!organization)
+      throw new HttpException({ code: 'ORGANIZATION_NOT_FOUND' }, 404);
+
+    const [
+      membershipRows,
+      pendingInvitations,
+      managers,
+      projectsModel,
+      projectMembershipsModel,
+    ] = await Promise.all([
+      this.memberships()
+        .find({ organizationId }, { userId: 1, status: 1 })
+        .lean<MembershipDocument[]>()
+        .exec(),
+      this.invitations()
+        .countDocuments({
+          organizationId,
+          contractVersion: 3,
+          status: 'PENDING',
+          expiresAt: { $gt: now },
+        })
+        .exec(),
+      this.resolveActiveManagers(organizationId),
+      Promise.resolve(this.optionalModel<ProjectDocument>('projects')),
+      Promise.resolve(
+        this.optionalModel<ProjectMembershipDocument>('project_memberships'),
+      ),
+    ]);
+
+    const activeMembers = membershipRows.filter(
+      (row: MembershipDocument) => row.status === 'ACTIVE',
+    ).length;
+    const suspendedMembers = membershipRows.filter(
+      (row: MembershipDocument) => row.status === 'SUSPENDED',
+    ).length;
+
+    let activeProjects = 0;
+    let archivedProjects = 0;
+    const leaderlessProjects: OrganizationOverviewSummary['leaderlessProjects'] =
+      [];
+
+    if (projectsModel) {
+      const projects = await projectsModel
+        .find({ organizationId, deletedAt: null })
+        .sort({ updatedAt: -1, _id: -1 })
+        .lean<ProjectDocument[]>()
+        .exec();
+
+      activeProjects = projects.filter(
+        (project: ProjectDocument) => project.status === 'ACTIVE',
+      ).length;
+      archivedProjects = projects.filter(
+        (project: ProjectDocument) => project.status === 'ARCHIVED',
+      ).length;
+
+      const activeProjectList = projects.filter(
+        (project: ProjectDocument) => project.status === 'ACTIVE',
+      );
+      if (activeProjectList.length > 0) {
+        const activeProjectIds = activeProjectList.map(
+          (project: ProjectDocument) => project._id,
+        );
+        const activeOrgMemberIds = new Set<string>(
+          membershipRows
+            .filter((row: MembershipDocument) => row.status === 'ACTIVE')
+            .map((row: MembershipDocument) => row.userId.toHexString()),
+        );
+        const activeUsers =
+          activeOrgMemberIds.size > 0
+            ? await this.users()
+                .find(
+                  {
+                    _id: {
+                      $in: [...activeOrgMemberIds].map(
+                        (id: string) => new Types.ObjectId(id),
+                      ),
+                    },
+                    status: 'ACTIVE',
+                  },
+                  { _id: 1 },
+                )
+                .lean<UserDocument[]>()
+                .exec()
+            : [];
+        const activeUserIdSet = new Set<string>(
+          activeUsers.map((user: UserDocument) => user._id.toHexString()),
+        );
+
+        const [projectMemberships, leaderAssignments] = await Promise.all([
+          projectMembershipsModel
+            ? projectMembershipsModel
+                .find(
+                  {
+                    organizationId,
+                    projectId: { $in: activeProjectIds },
+                    status: 'ACTIVE',
+                  },
+                  { projectId: 1, userId: 1 },
+                )
+                .lean<ProjectMembershipDocument[]>()
+                .exec()
+            : Promise.resolve([] as ProjectMembershipDocument[]),
+          this.assignments()
+            .find(
+              {
+                organizationId,
+                projectId: { $in: activeProjectIds },
+                roleCode: 'TEAM_LEADER',
+              },
+              { projectId: 1, userId: 1 },
+            )
+            .lean<RoleAssignmentDocument[]>()
+            .exec(),
+        ]);
+
+        const activeProjectMemberSetByProject = new Map<string, Set<string>>();
+        for (const pm of projectMemberships) {
+          const userIdHex = pm.userId.toHexString();
+          if (!activeUserIdSet.has(userIdHex)) continue;
+          const projectIdHex = pm.projectId.toHexString();
+          const set =
+            activeProjectMemberSetByProject.get(projectIdHex) ??
+            new Set<string>();
+          set.add(userIdHex);
+          activeProjectMemberSetByProject.set(projectIdHex, set);
+        }
+
+        const effectiveLeaderCountByProject = new Map<string, number>();
+        for (const assignment of leaderAssignments) {
+          if (!assignment.projectId) continue;
+          const projectIdHex = assignment.projectId.toHexString();
+          const userIdHex = assignment.userId.toHexString();
+          const activeMembersInProject =
+            activeProjectMemberSetByProject.get(projectIdHex);
+          if (activeMembersInProject?.has(userIdHex)) {
+            effectiveLeaderCountByProject.set(
+              projectIdHex,
+              (effectiveLeaderCountByProject.get(projectIdHex) ?? 0) + 1,
+            );
+          }
+        }
+
+        for (const project of activeProjectList) {
+          const projectIdHex = project._id.toHexString();
+          const effectiveLeaders =
+            effectiveLeaderCountByProject.get(projectIdHex) ?? 0;
+          if (effectiveLeaders === 0) {
+            leaderlessProjects.push({
+              id: projectIdHex,
+              code: project.code,
+              name: project.name,
+              visibility: project.visibility ?? 'PRIVATE',
+              status: 'ACTIVE',
+              activeMemberCount:
+                activeProjectMemberSetByProject.get(projectIdHex)?.size ?? 0,
+              effectiveLeaderCount: 0,
+              updatedAt: (
+                project.updatedAt ??
+                project.createdAt ??
+                now
+              ).toISOString(),
+            });
+          }
+        }
+      }
+    }
+
+    const description =
+      typeof organization.settings?.description === 'string'
+        ? organization.settings.description
+        : null;
+
+    return {
+      organization: {
+        id: organization._id.toHexString(),
+        name: organization.name,
+        slug: organization.slug,
+        description,
+        plan: 'FREE',
+        status: 'ACTIVE',
+        createdAt: (organization.createdAt ?? new Date(0)).toISOString(),
+        updatedAt: (
+          organization.updatedAt ??
+          organization.createdAt ??
+          new Date(0)
+        ).toISOString(),
+      },
+      metrics: {
+        activeMembers,
+        suspendedMembers,
+        pendingInvitations,
+        totalProjects: activeProjects + archivedProjects,
+        activeProjects,
+        archivedProjects,
+        leaderlessProjectsCount: leaderlessProjects.length,
+      },
+      leaderlessProjects,
+      managers,
+    };
+  }
+
+  async getOrganizationSettings(
+    organizationIdText: string,
+  ): Promise<OrganizationSettingsSummary> {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const [organization, managers, adminRole] = await Promise.all([
+      this.organizations().findOne({ _id: organizationId }).lean().exec(),
+      this.resolveActiveManagers(organizationId),
+      this.roles().findOne({ code: 'ADMIN' }).lean().exec(),
+    ]);
+    if (!organization)
+      throw new HttpException({ code: 'ORGANIZATION_NOT_FOUND' }, 404);
+    const description =
+      typeof organization.settings?.description === 'string'
+        ? organization.settings.description
+        : null;
+    return {
+      organization: {
+        id: organization._id.toHexString(),
+        name: organization.name,
+        slug: organization.slug,
+        description,
+        plan: 'FREE',
+        status: 'ACTIVE',
+        createdAt: (organization.createdAt ?? new Date(0)).toISOString(),
+        updatedAt: (
+          organization.updatedAt ??
+          organization.createdAt ??
+          new Date(0)
+        ).toISOString(),
+      },
+      editableFields: ['name', 'description'],
+      managers,
+      availablePermissions: adminRole?.permissions ?? [
+        'organization.memberships.read',
+        'organization.memberships.manage',
+      ],
+    };
+  }
+
+  async updateOrganizationSettings(
+    input: OrganizationSettingsUpdateInput,
+  ): Promise<OrganizationSettingsSummary> {
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    const organizationId = new Types.ObjectId(input.organizationId);
+    const session = await this.connectionOrThrow().startSession();
+    try {
+      await session.withTransaction(async () => {
+        if (
+          !(await this.hasPermissionAt(
+            organizationId,
+            actorUserId,
+            organizationMembershipManagePermission,
+            session,
+          ))
+        )
+          throw new ForbiddenException({
+            code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+          });
+
+        const current = await this.organizations()
+          .findOne({ _id: organizationId })
+          .session(session)
+          .lean()
+          .exec();
+        if (!current)
+          throw new HttpException({ code: 'ORGANIZATION_NOT_FOUND' }, 404);
+
+        const currentUpdatedAt = current.updatedAt ?? current.createdAt;
+        if (input.expectedUpdatedAt && currentUpdatedAt) {
+          const expectedMs = input.expectedUpdatedAt.getTime();
+          if (
+            !Number.isFinite(expectedMs) ||
+            currentUpdatedAt.getTime() !== expectedMs
+          ) {
+            throw new ConflictException({
+              code: 'ORGANIZATION_SETTINGS_VERSION_CONFLICT',
+            });
+          }
+        }
+
+        const nextName =
+          input.name !== undefined ? input.name.trim() : current.name;
+        const currentDescription =
+          typeof current.settings?.description === 'string'
+            ? current.settings.description
+            : '';
+        const nextDescription =
+          input.description !== undefined
+            ? (input.description ?? '')
+            : currentDescription;
+
+        const nextSettings = {
+          ...(current.settings ?? {}),
+          description: nextDescription || null,
+        };
+
+        await this.organizations()
+          .updateOne(
+            { _id: organizationId },
+            {
+              $set: {
+                name: nextName,
+                settings: nextSettings,
+                updatedAt: input.now,
+              },
+              $inc: { membershipAdminRevision: 1 },
+            },
+            { session },
+          )
+          .exec();
+
+        const operationId = new Types.ObjectId().toHexString();
+        await this.writeAudit(
+          {
+            eventId: randomUUID(),
+            schemaVersion: 2,
+            operationId,
+            organizationId: input.organizationId,
+            actorUserId: input.actorUserId,
+            action: 'ORGANIZATION_SETTINGS_UPDATED',
+            scope: 'ORGANIZATION',
+            result: 'SUCCESS',
+            occurredAt: input.now,
+            reasonCode: 'ORGANIZATION_SETTINGS_UPDATED',
+            targetResource: 'ORGANIZATION',
+            targetResourceId: input.organizationId,
+            ...(input.correlationId
+              ? { correlationId: input.correlationId }
+              : {}),
+            before: {
+              name: current.name,
+              description: currentDescription,
+            },
+            after: {
+              name: nextName,
+              description: nextDescription,
+            },
+          },
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    return this.getOrganizationSettings(input.organizationId);
   }
 
   async execute(input: {
@@ -822,6 +1212,22 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         organizationIdText,
         actorUserId,
         command,
+        session,
+      );
+    if (command.command === 'RESUME')
+      return this.resume(
+        organizationIdText,
+        actorUserId,
+        command,
+        now,
+        session,
+      );
+    if (command.command === 'REMOVE')
+      return this.remove(
+        organizationIdText,
+        actorUserId,
+        command,
+        now,
         session,
       );
     return this.suspend(organizationIdText, actorUserId, command, now, session);
@@ -1732,6 +2138,293 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     };
   }
 
+  private async resume(
+    organizationIdText: string,
+    actorUserId: Types.ObjectId,
+    command: Extract<OrganizationMembershipCommand, { command: 'RESUME' }>,
+    _now: Date,
+    session: ClientSession,
+  ) {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const membership = await this.findMembership(
+      organizationId,
+      new Types.ObjectId(command.membershipId),
+      session,
+    );
+    if (membership.userId.equals(actorUserId))
+      throw new ForbiddenException({
+        code: 'MEMBERSHIP_SELF_ACTION_FORBIDDEN',
+      });
+    if (membership.version !== command.expectedMembershipVersion)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    if (membership.status !== 'SUSPENDED')
+      throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
+
+    const targetUser = await this.users()
+      .findOne({ _id: membership.userId }, { status: 1 })
+      .session(session)
+      .lean()
+      .exec();
+    if (!targetUser || targetUser.status !== 'ACTIVE')
+      throw new HttpException(
+        { code: 'MEMBERSHIP_TARGET_USER_NOT_ACTIVE' },
+        422,
+      );
+
+    const updated = await this.memberships()
+      .findOneAndUpdate(
+        {
+          _id: membership._id,
+          organizationId,
+          status: 'SUSPENDED',
+          version: command.expectedMembershipVersion,
+        },
+        {
+          $set: { status: 'ACTIVE' },
+          $inc: { version: 1, mutationFence: 1 },
+          $currentDate: { updatedAt: true },
+        },
+        { new: true, session },
+      )
+      .lean()
+      .exec();
+    if (!updated)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    const mappedMembership = this.mapMembership(organizationIdText, updated);
+    return {
+      membership: mappedMembership,
+      audit: {
+        action: 'ORGANIZATION_MEMBERSHIP_RESUMED',
+        membershipId: membership._id.toHexString(),
+        targetResource: 'ORGANIZATION_MEMBERSHIP' as const,
+        targetResourceId: membership._id.toHexString(),
+        before: {
+          membershipStatus: 'SUSPENDED',
+          membershipVersion: membership.version,
+        },
+        after: {
+          membershipStatus: 'ACTIVE',
+          membershipVersion: updated.version,
+        },
+      },
+    };
+  }
+
+  private async remove(
+    organizationIdText: string,
+    actorUserId: Types.ObjectId,
+    command: Extract<OrganizationMembershipCommand, { command: 'REMOVE' }>,
+    _now: Date,
+    session: ClientSession,
+  ) {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const membership = await this.findMembership(
+      organizationId,
+      new Types.ObjectId(command.membershipId),
+      session,
+    );
+    if (membership.userId.equals(actorUserId))
+      throw new ForbiddenException({
+        code: 'MEMBERSHIP_SELF_ACTION_FORBIDDEN',
+      });
+    if (membership.version !== command.expectedMembershipVersion)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    if (membership.status !== 'ACTIVE' && membership.status !== 'SUSPENDED')
+      throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
+
+    const [eligibleAdminIds, targetAdminAssignment] = await Promise.all([
+      this.eligibleAdminIds(organizationId, session),
+      this.assignments()
+        .exists({
+          organizationId,
+          userId: membership.userId,
+          roleCode: 'ADMIN',
+          ...organizationLevel,
+        })
+        .session(session),
+    ]);
+    if (
+      targetAdminAssignment &&
+      eligibleAdminIds.filter((id) => !id.equals(membership.userId)).length ===
+        0
+    ) {
+      throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
+    }
+
+    const projectLeaderAssignments = await this.assignments()
+      .find(
+        {
+          organizationId,
+          userId: membership.userId,
+          roleCode: 'TEAM_LEADER',
+          projectId: { $ne: null },
+        },
+        { projectId: 1 },
+      )
+      .session(session)
+      .lean()
+      .exec();
+
+    if (projectLeaderAssignments.length > 0) {
+      const projectIds = projectLeaderAssignments
+        .map((assignment) => assignment.projectId)
+        .filter((id): id is Types.ObjectId => id instanceof Types.ObjectId);
+      const projectsModel = this.optionalModel<ProjectDocument>('projects');
+      const activeLeaderProjects = projectsModel
+        ? await projectsModel
+            .find(
+              {
+                _id: { $in: projectIds },
+                organizationId,
+                status: 'ACTIVE',
+                deletedAt: null,
+              },
+              { _id: 1, code: 1, name: 1 },
+            )
+            .session(session)
+            .lean()
+            .exec()
+        : projectIds.map((id) => ({ _id: id, code: '', name: '' }));
+
+      if (activeLeaderProjects.length > 0) {
+        throw new ConflictException({
+          code: 'MEMBER_HAS_ACTIVE_PROJECT_LEADERSHIP',
+          message:
+            'Member holds Project Leader responsibility in active projects. Transfer or revoke Project Leader role before removing from the organization.',
+          details: {
+            projectIds: activeLeaderProjects.map((project) =>
+              project._id.toHexString(),
+            ),
+          },
+        });
+      }
+    }
+
+    const updated = await this.memberships()
+      .findOneAndUpdate(
+        {
+          _id: membership._id,
+          organizationId,
+          status: membership.status,
+          version: command.expectedMembershipVersion,
+        },
+        {
+          $set: { status: 'REMOVED' },
+          $inc: { version: 1, mutationFence: 1 },
+          $currentDate: { updatedAt: true },
+        },
+        { new: true, session },
+      )
+      .lean()
+      .exec();
+    if (!updated)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+
+    await this.assignments()
+      .deleteMany(
+        {
+          organizationId,
+          userId: membership.userId,
+          ...organizationLevel,
+        },
+        { session },
+      )
+      .exec();
+
+    const projectMembershipsModel =
+      this.optionalModel<ProjectMembershipDocument>('project_memberships');
+    if (projectMembershipsModel) {
+      await projectMembershipsModel
+        .updateMany(
+          {
+            organizationId,
+            userId: membership.userId,
+            status: 'ACTIVE',
+          },
+          {
+            $set: { status: 'INACTIVE' },
+            $currentDate: { updatedAt: true },
+          },
+          { session },
+        )
+        .exec();
+    }
+
+    const mappedMembership = this.mapMembership(organizationIdText, updated);
+    return {
+      membership: mappedMembership,
+      audit: {
+        action: 'ORGANIZATION_MEMBERSHIP_REMOVED',
+        membershipId: membership._id.toHexString(),
+        targetResource: 'ORGANIZATION_MEMBERSHIP' as const,
+        targetResourceId: membership._id.toHexString(),
+        before: {
+          membershipStatus: membership.status,
+          membershipVersion: membership.version,
+        },
+        after: {
+          membershipStatus: 'REMOVED',
+          membershipVersion: updated.version,
+        },
+      },
+    };
+  }
+
+  private async resolveActiveManagers(
+    organizationId: Types.ObjectId,
+  ): Promise<OrganizationOverviewSummary['managers']> {
+    const assignments = await this.assignments()
+      .find(
+        { organizationId, roleCode: 'ADMIN', ...organizationLevel },
+        { userId: 1 },
+      )
+      .lean()
+      .exec();
+    if (assignments.length === 0) return [];
+    const userIds = [
+      ...new Map(
+        assignments.map((assignment) => [
+          assignment.userId.toHexString(),
+          assignment.userId,
+        ]),
+      ).values(),
+    ];
+    const [activeMemberships, activeUsers] = await Promise.all([
+      this.memberships()
+        .find(
+          {
+            organizationId,
+            userId: { $in: userIds },
+            status: 'ACTIVE',
+          },
+          { userId: 1, status: 1 },
+        )
+        .lean()
+        .exec(),
+      this.users()
+        .find(
+          {
+            _id: { $in: userIds },
+            status: 'ACTIVE',
+          },
+          { _id: 1, email: 1, fullName: 1, status: 1 },
+        )
+        .lean()
+        .exec(),
+    ]);
+    const activeMembershipSet = new Set(
+      activeMemberships.map((row) => row.userId.toHexString()),
+    );
+    return activeUsers
+      .filter((user) => activeMembershipSet.has(user._id.toHexString()))
+      .map((user) => ({
+        userId: user._id.toHexString(),
+        fullName: user.fullName ?? user.email,
+        email: user.email,
+        accountStatus: user.status ?? 'ACTIVE',
+      }));
+  }
+
   private async findInvitation(
     organizationId: Types.ObjectId,
     invitationIdText: string,
@@ -2166,11 +2859,16 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
   private operations(): Model<OperationDocument> {
     return this.model<OperationDocument>('membership_operations');
   }
-  private organizations(): Model<{ _id: Types.ObjectId }> {
-    return this.model<{ _id: Types.ObjectId }>('organizations');
+  private organizations(): Model<OrganizationDocument> {
+    return this.model<OrganizationDocument>('organizations');
   }
   private outbox(): Model<Record<string, unknown>> {
     return this.model<Record<string, unknown>>('outbox_events');
+  }
+
+  private optionalModel<T>(name: string): Model<T> | undefined {
+    return this.connectionOrThrow().models[modelName(name)] as
+      Model<T> | undefined;
   }
 
   private model<T>(name: string): Model<T> {

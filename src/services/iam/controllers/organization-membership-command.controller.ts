@@ -7,6 +7,7 @@ import {
   HttpException,
   HttpCode,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -213,9 +214,10 @@ function parseInvitationAction(
   };
 }
 
-function parseSuspend(
+function parseLifecycleAction(
   body: unknown,
   membershipId: string,
+  command: 'SUSPEND' | 'RESUME' | 'REMOVE',
 ): OrganizationMembershipCommand {
   if (!objectIdPattern.test(membershipId)) return validationFailed();
   const record = parseObject(body);
@@ -227,10 +229,59 @@ function parseSuspend(
   )
     return validationFailed();
   return {
-    command: 'SUSPEND',
+    command,
     membershipId,
     expectedMembershipVersion: parseVersion(record.expectedMembershipVersion),
     reasonCode: record.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+  };
+}
+
+function parseOrganizationSettingsUpdate(body: unknown): {
+  expectedUpdatedAt: Date;
+  name?: string;
+  description?: string | null;
+} {
+  const record = parseObject(body);
+  const keys = Object.keys(record);
+  if (
+    keys.length < 2 ||
+    keys.some(
+      (key) => !['expectedUpdatedAt', 'name', 'description'].includes(key),
+    ) ||
+    !('expectedUpdatedAt' in record) ||
+    (!('name' in record) && !('description' in record)) ||
+    typeof record.expectedUpdatedAt !== 'string'
+  )
+    return validationFailed();
+  const expectedUpdatedAt = new Date(record.expectedUpdatedAt);
+  if (
+    !Number.isFinite(expectedUpdatedAt.getTime()) ||
+    expectedUpdatedAt.toISOString() !== record.expectedUpdatedAt
+  )
+    return validationFailed();
+  let name: string | undefined;
+  if ('name' in record) {
+    if (typeof record.name !== 'string') return validationFailed();
+    const trimmed = record.name.trim();
+    if (trimmed.length < 1 || trimmed.length > 200) return validationFailed();
+    name = trimmed;
+  }
+  let description: string | null | undefined;
+  if ('description' in record) {
+    if (record.description === null) {
+      description = null;
+    } else if (typeof record.description === 'string') {
+      if (record.description.length > 1000) return validationFailed();
+      const trimmed = record.description.trim();
+      description = trimmed.length === 0 ? null : trimmed;
+    } else {
+      return validationFailed();
+    }
+  }
+  return {
+    expectedUpdatedAt,
+    ...(name !== undefined ? { name } : {}),
+    ...(description !== undefined ? { description } : {}),
   };
 }
 
@@ -303,6 +354,52 @@ export class OrganizationMembershipCommandController {
     private readonly auth: AuthenticationApplicationService,
     private readonly commands: OrganizationMembershipCommandService,
   ) {}
+
+  @Get('overview')
+  async getOverview(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    return this.commands.getOverview(actor, organizationId);
+  }
+
+  @Get('settings')
+  async getSettings(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    return this.commands.getSettings(actor, organizationId);
+  }
+
+  @Patch('settings')
+  async updateSettings(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Body() body: unknown,
+    @Req() request: (Request & { requestId?: string }) | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    this.requireCsrf(cookie, csrfHeader);
+    return this.commands.updateSettings(actor, organizationId, {
+      ...parseOrganizationSettingsUpdate(body),
+      ...((request?.requestId ?? correlationId)
+        ? { correlationId: request?.requestId ?? correlationId }
+        : {}),
+    });
+  }
 
   @Get('invitations')
   async listInvitations(
@@ -413,7 +510,57 @@ export class OrganizationMembershipCommandController {
       idempotencyKey,
       correlationId,
       organizationId,
-      () => parseSuspend(body, membershipId),
+      () => parseLifecycleAction(body, membershipId, 'SUSPEND'),
+      response,
+    );
+  }
+
+  @Post('memberships/:membershipId/resume')
+  @HttpCode(200)
+  async resume(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Param('membershipId') membershipId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.executeAction(
+      authorization,
+      cookie,
+      csrfHeader,
+      idempotencyKey,
+      correlationId,
+      organizationId,
+      () => parseLifecycleAction(body, membershipId, 'RESUME'),
+      response,
+    );
+  }
+
+  @Post('memberships/:membershipId/remove')
+  @HttpCode(200)
+  async remove(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('organizationId') organizationId: string,
+    @Param('membershipId') membershipId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.executeAction(
+      authorization,
+      cookie,
+      csrfHeader,
+      idempotencyKey,
+      correlationId,
+      organizationId,
+      () => parseLifecycleAction(body, membershipId, 'REMOVE'),
       response,
     );
   }

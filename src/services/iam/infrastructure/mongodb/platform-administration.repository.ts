@@ -1308,8 +1308,17 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           });
         if (user.status === input.status) return;
 
-        if (user.status === 'ACTIVE' && input.status === 'SUSPENDED')
-          await this.protectLastOrganizationAdmin(userId, session);
+        let leaderlessOrganizationIds: string[] = [];
+        if (user.status === 'ACTIVE' && input.status === 'SUSPENDED') {
+          const allowEmergencyBypass =
+            input.emergencyBypassLastAdmin === true &&
+            input.reasonCode === 'SECURITY_INCIDENT';
+          leaderlessOrganizationIds = await this.protectLastOrganizationAdmin(
+            userId,
+            session,
+            allowEmergencyBypass,
+          );
+        }
 
         const update = await this.platformUsers()
           .updateOne(
@@ -1342,7 +1351,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
             )
             .exec();
         }
-        await this.writePlatformUserStatusAudit(input, user.status, session);
+        await this.writePlatformUserStatusAudit(
+          input,
+          user.status,
+          session,
+          leaderlessOrganizationIds,
+        );
       });
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -1493,8 +1507,17 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           throw new ConflictException({ code: 'USER_ALREADY_ARCHIVED' });
         if (!['ACTIVE', 'SUSPENDED'].includes(user.status))
           throw new ConflictException({ code: 'USER_ARCHIVE_STATE_INVALID' });
-        if (user.status === 'ACTIVE')
-          await this.protectLastOrganizationAdmin(userId, session);
+        let leaderlessOrganizationIds: string[] = [];
+        if (user.status === 'ACTIVE') {
+          const allowEmergencyBypass =
+            input.emergencyBypassLastAdmin === true &&
+            input.reasonCode === 'SECURITY_INCIDENT';
+          leaderlessOrganizationIds = await this.protectLastOrganizationAdmin(
+            userId,
+            session,
+            allowEmergencyBypass,
+          );
+        }
 
         const update = await this.platformUsers()
           .updateOne(
@@ -1527,7 +1550,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
             { session },
           )
           .exec();
-        await this.writePlatformUserArchiveAudit(input, user.status, session);
+        await this.writePlatformUserArchiveAudit(
+          input,
+          user.status,
+          session,
+          leaderlessOrganizationIds,
+        );
       });
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -1905,7 +1933,8 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
   private async protectLastOrganizationAdmin(
     userId: Types.ObjectId,
     session: ClientSession,
-  ): Promise<void> {
+    allowEmergencyBypass = false,
+  ): Promise<string[]> {
     const memberships = await this.memberships()
       .find({ userId, status: 'ACTIVE' }, { organizationId: 1 })
       .session(session)
@@ -1921,6 +1950,7 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     ].sort((left, right) =>
       left.toHexString().localeCompare(right.toHexString()),
     );
+    const leaderlessOrganizationIds: string[] = [];
     for (const organizationId of organizationIds) {
       const adminsBeforeFence = await this.eligibleOrganizationAdminIds(
         organizationId,
@@ -1947,12 +1977,18 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       if (
         admins.some((adminId) => adminId.equals(userId)) &&
         admins.length <= 1
-      )
-        throw new ConflictException({
-          code: 'LAST_ELIGIBLE_ADMIN',
-          message: 'The last eligible Organization ADMIN cannot be suspended.',
-        });
+      ) {
+        if (!allowEmergencyBypass) {
+          throw new ConflictException({
+            code: 'LAST_ELIGIBLE_ADMIN',
+            message:
+              'The last eligible Organization ADMIN cannot be suspended.',
+          });
+        }
+        leaderlessOrganizationIds.push(organizationId.toHexString());
+      }
     }
+    return leaderlessOrganizationIds;
   }
 
   private async writePlatformUserProfileAudit(
@@ -1986,6 +2022,7 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     input: PlatformUserArchiveInput,
     previousStatus: string,
     session: ClientSession,
+    leaderlessOrganizationIds: readonly string[] = [],
   ): Promise<void> {
     const connection = this.connection;
     if (!connection) unavailable();
@@ -2004,6 +2041,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           reasonCode: input.reasonCode,
           previousStatus,
           newStatus: 'SUSPENDED',
+          ...(input.emergencyBypassLastAdmin === true
+            ? {
+                emergencyBypassLastAdmin: true,
+                leaderlessOrganizationIds: [...leaderlessOrganizationIds],
+              }
+            : {}),
           ...(input.correlationId ? { requestId: input.correlationId } : {}),
           occurredAt: input.now,
         },
@@ -2043,6 +2086,7 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     input: PlatformUserStatusChangeInput,
     previousStatus: string,
     session: ClientSession,
+    leaderlessOrganizationIds: readonly string[] = [],
   ): Promise<void> {
     const connection = this.connection;
     if (!connection) unavailable();
@@ -2061,6 +2105,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           reasonCode: input.reasonCode,
           previousStatus,
           newStatus: input.status,
+          ...(input.emergencyBypassLastAdmin === true
+            ? {
+                emergencyBypassLastAdmin: true,
+                leaderlessOrganizationIds: [...leaderlessOrganizationIds],
+              }
+            : {}),
           ...(input.correlationId ? { requestId: input.correlationId } : {}),
           occurredAt: input.now,
         },

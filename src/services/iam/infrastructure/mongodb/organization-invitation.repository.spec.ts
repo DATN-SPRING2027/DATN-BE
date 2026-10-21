@@ -127,4 +127,148 @@ describe('MongoOrganizationInvitationRepository', () => {
     expect(result).not.toHaveProperty('invitation.email');
     expect(result).not.toHaveProperty('invitation.roleCode');
   });
+
+  it('atomically creates ACTIVE organization membership and default MEMBER role assignment on acceptForRecipient (F-07)', async () => {
+    const memberRoleId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d1f');
+    const session = {
+      withTransaction: jest.fn(async (cb: () => Promise<void>) => cb()),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const queryChain = <T>(val: T) => ({
+      session: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(val),
+    });
+    const operations = {
+      findOne: jest.fn().mockReturnValue(queryChain(null)),
+      create: jest.fn().mockResolvedValue([]),
+      deleteOne: jest.fn().mockReturnValue({ exec: jest.fn() }),
+    };
+    const invitations = {
+      findOne: jest.fn().mockReturnValue(
+        queryChain({
+          _id: invitationId,
+          organizationId,
+          email: 'invitee@example.test',
+          contractVersion: 3,
+          version: 1,
+          status: 'PENDING',
+          expiresAt: new Date('2026-10-21T00:00:00.000Z'),
+        }),
+      ),
+      findOneAndUpdate: jest.fn().mockReturnValue(
+        queryChain({
+          _id: invitationId,
+          organizationId,
+          email: 'invitee@example.test',
+          contractVersion: 3,
+          version: 2,
+          status: 'ACCEPTED',
+          expiresAt: new Date('2026-10-21T00:00:00.000Z'),
+        }),
+      ),
+    };
+    const users = {
+      findOne: jest.fn().mockReturnValue(
+        queryChain({
+          _id: userId,
+          email: 'invitee@example.test',
+          status: 'ACTIVE',
+        }),
+      ),
+    };
+    const memberships = {
+      findOne: jest.fn().mockReturnValue(queryChain(null)),
+      create: jest.fn().mockResolvedValue([]),
+    };
+    const roles = {
+      findOne: jest.fn().mockReturnValue(
+        queryChain({
+          _id: memberRoleId,
+          code: 'MEMBER',
+          isSystem: true,
+        }),
+      ),
+    };
+    const assignments = {
+      find: jest.fn().mockReturnValue(queryChain([])),
+      create: jest.fn().mockResolvedValue([]),
+    };
+    const organizations = {
+      findById: jest.fn().mockReturnValue(
+        queryChain({
+          _id: organizationId,
+          status: 'ACTIVE',
+        }),
+      ),
+      findOne: jest.fn().mockReturnValue(
+        queryChain({
+          _id: organizationId,
+          status: 'ACTIVE',
+        }),
+      ),
+    };
+    const outbox = {
+      updateMany: jest.fn().mockReturnValue({ exec: jest.fn() }),
+    };
+    const auditInsertOne = jest.fn().mockResolvedValue({});
+    const connection = {
+      startSession: jest.fn().mockResolvedValue(session),
+      useDb: jest.fn().mockReturnValue({
+        collection: jest.fn().mockReturnValue({ insertOne: auditInsertOne }),
+      }),
+      models: {
+        [`${IAM_PERSISTENCE.databaseName}_membership_operations`]: operations,
+        [`${IAM_PERSISTENCE.databaseName}_organization_invitations`]:
+          invitations,
+        [`${IAM_PERSISTENCE.databaseName}_users`]: users,
+        [`${IAM_PERSISTENCE.databaseName}_organization_memberships`]:
+          memberships,
+        [`${IAM_PERSISTENCE.databaseName}_roles`]: roles,
+        [`${IAM_PERSISTENCE.databaseName}_role_assignments`]: assignments,
+        [`${IAM_PERSISTENCE.databaseName}_organizations`]: organizations,
+        [`${IAM_PERSISTENCE.databaseName}_outbox_events`]: outbox,
+      },
+    };
+
+    const repository = new MongoOrganizationInvitationRepository(
+      connection as never,
+    );
+    const result = await repository.acceptForRecipient({
+      actorUserId: userId.toHexString(),
+      authenticatedEmail: 'invitee@example.test',
+      invitationId: invitationId.toHexString(),
+      expectedMembershipVersion: 0,
+      expectedInvitationVersion: 1,
+      readinessReady: true,
+      idempotencyKey: 'accept-idempotency-key-1234',
+      now,
+    });
+
+    expect(result.acknowledgement.membership.status).toBe('ACTIVE');
+    expect(memberships.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          organizationId,
+          userId,
+          status: 'ACTIVE',
+          version: 1,
+        }),
+      ],
+      { session },
+    );
+    expect(assignments.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          organizationId,
+          userId,
+          projectId: null,
+          roleId: memberRoleId,
+          roleCode: 'MEMBER',
+          mutationFence: 1,
+        }),
+      ],
+      { session },
+    );
+  });
 });

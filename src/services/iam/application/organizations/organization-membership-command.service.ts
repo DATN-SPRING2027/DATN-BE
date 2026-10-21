@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
@@ -17,6 +18,8 @@ import {
   type MembershipMutationResult,
   type OrganizationMembershipCommand,
   type OrganizationMembershipCommandRepository,
+  type OrganizationOverviewSummary,
+  type OrganizationSettingsSummary,
 } from './organization-membership-command.repository';
 
 const resourceIdPattern = /^[a-f\d]{24}$/i;
@@ -47,6 +50,88 @@ export class OrganizationMembershipCommandService {
     @Inject(ORGANIZATION_INVITATION_READINESS)
     private readonly invitationReadiness: OrganizationInvitationReadiness,
   ) {}
+
+  async getOverview(
+    actor: AuthenticatedIdentity,
+    organizationId: string,
+  ): Promise<OrganizationOverviewSummary> {
+    this.requireOrganizationContext(actor, organizationId);
+    if (
+      !(await this.repository.hasPermission(
+        organizationId,
+        actor.id,
+        'organization.memberships.read',
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    if (!this.repository.getOrganizationOverview)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.repository.getOrganizationOverview(organizationId, new Date());
+  }
+
+  async getSettings(
+    actor: AuthenticatedIdentity,
+    organizationId: string,
+  ): Promise<OrganizationSettingsSummary> {
+    this.requireOrganizationContext(actor, organizationId);
+    if (
+      !(await this.repository.hasPermission(
+        organizationId,
+        actor.id,
+        'organization.memberships.read',
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    if (!this.repository.getOrganizationSettings)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.repository.getOrganizationSettings(organizationId);
+  }
+
+  async updateSettings(
+    actor: AuthenticatedIdentity,
+    organizationId: string,
+    input: {
+      expectedUpdatedAt: Date;
+      name?: string;
+      description?: string | null;
+      correlationId?: string;
+    },
+  ): Promise<OrganizationSettingsSummary> {
+    this.requireOrganizationContext(actor, organizationId);
+    if (
+      !(await this.repository.hasPermission(
+        organizationId,
+        actor.id,
+        'organization.memberships.manage',
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    if (!this.repository.updateOrganizationSettings)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.repository.updateOrganizationSettings({
+      actorUserId: actor.id,
+      organizationId,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.description !== undefined
+        ? { description: input.description }
+        : {}),
+      ...(input.correlationId ? { correlationId: input.correlationId } : {}),
+      now: new Date(),
+    });
+  }
 
   async listInvitations(
     actor: AuthenticatedIdentity,
@@ -245,7 +330,11 @@ export class OrganizationMembershipCommandService {
         validationFailed();
       return command;
     }
-    if (command.command === 'SUSPEND') {
+    if (
+      command.command === 'SUSPEND' ||
+      command.command === 'RESUME' ||
+      command.command === 'REMOVE'
+    ) {
       if (
         Object.keys(command).length !== 4 ||
         !resourceIdPattern.test(command.membershipId) ||

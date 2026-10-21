@@ -35,9 +35,27 @@ interface RecipientInvitationRow {
   email: string;
   status: RecipientInvitationStatus;
   version: number;
+  invitedBy: Types.ObjectId;
   expiresAt: Date;
   createdAt: Date;
   organizationName: string;
+}
+
+interface RoleDocument {
+  _id: Types.ObjectId;
+  code: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER';
+  isSystem: boolean;
+}
+
+interface RoleAssignmentDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  projectId?: Types.ObjectId | null;
+  userId: Types.ObjectId;
+  roleId: Types.ObjectId;
+  roleCode: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER';
+  assignedBy: Types.ObjectId;
+  mutationFence: number;
 }
 
 interface RecipientInvitationListRow {
@@ -297,6 +315,36 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
         if (existingMembership)
           throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
 
+        const memberRole = await this.model<RoleDocument>('roles')
+          .findOne({ code: 'MEMBER', isSystem: true })
+          .session(session)
+          .lean()
+          .exec();
+        if (!memberRole)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+        const existingAssignments = await this.model<RoleAssignmentDocument>(
+          'role_assignments',
+        )
+          .find({
+            organizationId: invitation.organizationId,
+            userId: actorUserId,
+            $or: [{ projectId: { $exists: false } }, { projectId: null }],
+          })
+          .session(session)
+          .lean()
+          .exec();
+        if (existingAssignments.length > 1)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+        const existingAssignment = existingAssignments[0];
+        if (existingAssignment && existingAssignment.roleCode !== 'MEMBER')
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+
         const membershipId = new Types.ObjectId();
         await this.model<MembershipDocument>('organization_memberships').create(
           [
@@ -311,6 +359,22 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
           ],
           { session },
         );
+        if (!existingAssignment) {
+          await this.model<RoleAssignmentDocument>('role_assignments').create(
+            [
+              {
+                organizationId: invitation.organizationId,
+                projectId: null,
+                userId: actorUserId,
+                roleId: memberRole._id,
+                roleCode: 'MEMBER',
+                assignedBy: invitation.invitedBy ?? actorUserId,
+                mutationFence: 1,
+              },
+            ],
+            { session },
+          );
+        }
         const accepted = await this.invitations()
           .findOneAndUpdate(
             {

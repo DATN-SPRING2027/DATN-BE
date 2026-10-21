@@ -57,6 +57,16 @@ interface RoleDocument {
   code: string;
   permissions: string[];
 }
+interface UserSummaryDocument {
+  _id: Types.ObjectId;
+  email: string;
+  fullName?: string;
+  status: string;
+}
+interface OrgMembershipSummaryDocument {
+  userId: Types.ObjectId;
+  status: string;
+}
 
 const name = (collection: string) =>
   `${IAM_PERSISTENCE.databaseName}_${collection}`;
@@ -234,7 +244,149 @@ export class MongoProjectRepository implements ProjectRepository {
         .exec(),
       projects.countDocuments(filter).exec(),
     ]);
-    return { data: rows.map((row) => this.record(row)), totalItems };
+    const baseRecords = rows.map((row) => this.record(row));
+    const usersModel = this.connection?.models[name('users')] as
+      Model<UserSummaryDocument> | undefined;
+    if (!usersModel || rows.length === 0) {
+      return { data: baseRecords, totalItems };
+    }
+    const enriched = await this.enrichProjectGovernanceSummaries(
+      new Types.ObjectId(organizationId),
+      rows,
+      baseRecords,
+      usersModel,
+    );
+    return { data: enriched, totalItems };
+  }
+
+  private async enrichProjectGovernanceSummaries(
+    organizationId: Types.ObjectId,
+    rows: ProjectDocument[],
+    baseRecords: ProjectRecord[],
+    usersModel: Model<UserSummaryDocument>,
+  ): Promise<ProjectRecord[]> {
+    const projectIds = rows.map((row) => row._id);
+    const [projectMemberships, leaderAssignments] = await Promise.all([
+      this.model<MembershipDocument>('project_memberships')
+        .find(
+          {
+            organizationId,
+            projectId: { $in: projectIds },
+            status: 'ACTIVE',
+          },
+          { projectId: 1, userId: 1 },
+        )
+        .lean()
+        .exec(),
+      this.model<RoleAssignmentDocument>('role_assignments')
+        .find(
+          {
+            organizationId,
+            projectId: { $in: projectIds },
+            roleCode: 'TEAM_LEADER',
+          },
+          { projectId: 1, userId: 1 },
+        )
+        .lean()
+        .exec(),
+    ]);
+
+    const candidateUserIds = [
+      ...new Map(
+        [...projectMemberships, ...leaderAssignments].map((row) => [
+          row.userId.toHexString(),
+          row.userId,
+        ]),
+      ).values(),
+    ];
+
+    const [activeOrgMemberships, activeUsers] =
+      candidateUserIds.length > 0
+        ? await Promise.all([
+            this.model<OrgMembershipSummaryDocument>('organization_memberships')
+              .find(
+                {
+                  organizationId,
+                  userId: { $in: candidateUserIds },
+                  status: 'ACTIVE',
+                },
+                { userId: 1 },
+              )
+              .lean()
+              .exec(),
+            usersModel
+              .find(
+                {
+                  _id: { $in: candidateUserIds },
+                  status: 'ACTIVE',
+                },
+                { _id: 1, email: 1, fullName: 1 },
+              )
+              .lean()
+              .exec(),
+          ])
+        : [[], []];
+
+    const activeOrgUserSet = new Set(
+      activeOrgMemberships.map((row) => row.userId.toHexString()),
+    );
+    const activeUserMap = new Map(
+      activeUsers
+        .filter((user) => activeOrgUserSet.has(user._id.toHexString()))
+        .map((user) => [
+          user._id.toHexString(),
+          {
+            userId: user._id.toHexString(),
+            fullName: user.fullName ?? user.email,
+            email: user.email,
+          },
+        ]),
+    );
+
+    const activeProjectMembersByProject = new Map<string, Set<string>>();
+    for (const membership of projectMemberships) {
+      const userHex = membership.userId.toHexString();
+      if (!activeUserMap.has(userHex)) continue;
+      const projectHex = membership.projectId.toHexString();
+      const set =
+        activeProjectMembersByProject.get(projectHex) ?? new Set<string>();
+      set.add(userHex);
+      activeProjectMembersByProject.set(projectHex, set);
+    }
+
+    const effectiveLeadersByProject = new Map<
+      string,
+      Array<{ userId: string; fullName: string; email: string }>
+    >();
+    for (const assignment of leaderAssignments) {
+      if (!assignment.projectId) continue;
+      const projectHex = assignment.projectId.toHexString();
+      const userHex = assignment.userId.toHexString();
+      const activeMembers = activeProjectMembersByProject.get(projectHex);
+      const userSummary = activeUserMap.get(userHex);
+      if (activeMembers?.has(userHex) && userSummary) {
+        const list = effectiveLeadersByProject.get(projectHex) ?? [];
+        if (!list.some((item) => item.userId === userHex)) {
+          list.push(userSummary);
+          effectiveLeadersByProject.set(projectHex, list);
+        }
+      }
+    }
+
+    return baseRecords.map((record) => {
+      const activeMemberCount =
+        activeProjectMembersByProject.get(record.id)?.size ?? 0;
+      const leaders = effectiveLeadersByProject.get(record.id) ?? [];
+      const effectiveLeaderCount = leaders.length;
+      return {
+        ...record,
+        activeMemberCount,
+        effectiveLeaderCount,
+        leaders,
+        requiresLeaderRecovery:
+          record.status === 'ACTIVE' && effectiveLeaderCount === 0,
+      };
+    });
   }
 
   async findVisible(organizationId: string, userId: string, projectId: string) {

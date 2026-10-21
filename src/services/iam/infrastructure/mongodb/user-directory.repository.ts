@@ -5,8 +5,13 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
+import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model, PipelineStage } from 'mongoose';
+import {
+  AUDIT_DATABASE_NAME,
+  IAM_AUDIT_COLLECTION_NAME,
+} from '../../../../common/mongodb/database-names';
 import type {
   UserDirectoryRepository as UserDirectoryRepositoryPort,
   UserListQuery,
@@ -194,7 +199,8 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     changes: UserUpdate,
     actorId: string,
   ): Promise<UserRecord | null> {
-    if (!(await this.find(organizationId, userId))) return null;
+    const before = await this.find(organizationId, userId);
+    if (!before) return null;
     if (changes.status !== undefined) {
       await this.updateStatusAtomically(
         organizationId,
@@ -207,6 +213,36 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     await this.users()
       .updateOne({ _id: new Types.ObjectId(userId) }, { $set: changes })
       .exec();
+    if (typeof this.connection?.useDb === 'function') {
+      await this.connection
+        .useDb(AUDIT_DATABASE_NAME, { useCache: true })
+        .collection(IAM_AUDIT_COLLECTION_NAME)
+        .insertOne({
+          eventId: randomUUID(),
+          schemaVersion: 2,
+          operationId: new Types.ObjectId().toHexString(),
+          organizationId,
+          actorUserId: actorId,
+          action: 'ORGANIZATION_USER_PROFILE_UPDATED',
+          scope: 'ORGANIZATION',
+          result: 'SUCCESS',
+          occurredAt: new Date(),
+          reasonCode: 'ORGANIZATION_USER_PROFILE_UPDATED',
+          targetResource: 'USER',
+          targetResourceId: userId,
+          before: {
+            fullName: before.fullName,
+            avatarUrl: before.avatarUrl ?? '',
+          },
+          after: {
+            fullName: changes.fullName ?? before.fullName,
+            avatarUrl:
+              changes.avatarUrl !== undefined
+                ? (changes.avatarUrl ?? '')
+                : (before.avatarUrl ?? ''),
+          },
+        });
+    }
     return this.find(organizationId, userId);
   }
 
@@ -298,6 +334,30 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
             { session },
           )
           .exec();
+        if (typeof this.connection?.useDb === 'function') {
+          await this.connection
+            .useDb(AUDIT_DATABASE_NAME, { useCache: true })
+            .collection(IAM_AUDIT_COLLECTION_NAME)
+            .insertOne(
+              {
+                eventId: randomUUID(),
+                schemaVersion: 2,
+                operationId: new Types.ObjectId().toHexString(),
+                organizationId,
+                actorUserId: actorId,
+                action: 'ORGANIZATION_USER_STATUS_UPDATED',
+                scope: 'ORGANIZATION',
+                result: 'SUCCESS',
+                occurredAt: new Date(),
+                reasonCode: 'ORGANIZATION_USER_STATUS_UPDATED',
+                targetResource: 'USER',
+                targetResourceId: userId,
+                before: { status: existing.status },
+                after: { status: changes.status ?? existing.status },
+              },
+              { session },
+            );
+        }
       });
     } finally {
       await session.endSession();
