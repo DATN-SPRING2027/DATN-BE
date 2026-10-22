@@ -15,21 +15,24 @@ import {
 import {
   TASK_WORKSPACE_REPOSITORY,
   type ListTasksFilter,
+  type WorkspaceIdempotencyCommitSpec,
 } from './task-workspace.repository';
 import { TaskWorkspaceService } from './task-workspace.service';
-import type {
-  WorkspaceChecklistStep,
-  WorkspaceIdempotencyRecord,
-  WorkspaceProjectSprintDocument,
-  WorkspaceSprintStatus,
-  WorkspaceSubtaskCounts,
-  WorkspaceTaskCommentDocument,
-  WorkspaceTaskDocument,
-  WorkspaceTaskEventRecord,
-  WorkspaceTaskPriority,
-  WorkspaceTaskStatus,
-  WorkspaceTaskType,
-  WorkspaceTaskWorklogDocument,
+import {
+  WORKSPACE_COLLECTION_VALIDATORS,
+  WORKSPACE_INDEX_CATALOGUE,
+  type WorkspaceChecklistStep,
+  type WorkspaceIdempotencyRecord,
+  type WorkspaceProjectSprintDocument,
+  type WorkspaceSprintStatus,
+  type WorkspaceSubtaskCounts,
+  type WorkspaceTaskCommentDocument,
+  type WorkspaceTaskDocument,
+  type WorkspaceTaskEventRecord,
+  type WorkspaceTaskPriority,
+  type WorkspaceTaskStatus,
+  type WorkspaceTaskType,
+  type WorkspaceTaskWorklogDocument,
 } from './task-workspace.types';
 
 class InMemoryTaskWorkspaceRepository {
@@ -49,6 +52,64 @@ class InMemoryTaskWorkspaceRepository {
     return (
       this.idempotency.get(`${actorId}:${projectId}:${operationId}`) ?? null
     );
+  }
+
+  async claimIdempotency(input: {
+    actorId: string;
+    projectId: string;
+    operationId: string;
+    fingerprint: string;
+  }): Promise<
+    | { kind: 'CLAIMED' }
+    | { kind: 'REPLAY'; record: WorkspaceIdempotencyRecord }
+    | { kind: 'IN_PROGRESS' }
+    | { kind: 'CONFLICT_FINGERPRINT' }
+  > {
+    const key = `${input.actorId}:${input.projectId}:${input.operationId}`;
+    const now = new Date();
+    const existing = this.idempotency.get(key);
+    if (existing) {
+      const expired =
+        existing.expiresAt <= now ||
+        (existing.state === 'IN_PROGRESS' && existing.leaseUntil <= now);
+      if (!expired) {
+        if (existing.fingerprint !== input.fingerprint) {
+          return { kind: 'CONFLICT_FINGERPRINT' };
+        }
+        if (existing.state === 'COMMITTED' && existing.httpResponse) {
+          return { kind: 'REPLAY', record: existing };
+        }
+        return { kind: 'IN_PROGRESS' };
+      }
+      this.idempotency.delete(key);
+    }
+
+    this.idempotency.set(key, {
+      _id: new Types.ObjectId(),
+      actorId: new Types.ObjectId(input.actorId),
+      projectId: new Types.ObjectId(input.projectId),
+      operationId: input.operationId,
+      fingerprint: input.fingerprint,
+      state: 'IN_PROGRESS',
+      taskId: new Types.ObjectId('000000000000000000000000'),
+      createdAt: now,
+      updatedAt: now,
+      leaseUntil: new Date(now.getTime() + 30_000),
+      expiresAt: new Date(now.getTime() + 86_400_000),
+    });
+    return { kind: 'CLAIMED' };
+  }
+
+  async releaseIdempotency(
+    actorId: string,
+    projectId: string,
+    operationId: string,
+  ): Promise<void> {
+    const key = `${actorId}:${projectId}:${operationId}`;
+    const existing = this.idempotency.get(key);
+    if (existing?.state === 'IN_PROGRESS') {
+      this.idempotency.delete(key);
+    }
   }
 
   async saveIdempotency(record: {
@@ -85,6 +146,39 @@ class InMemoryTaskWorkspaceRepository {
         },
       },
     );
+  }
+
+  private async commitIdempotencySpec<T>(
+    spec:
+      | {
+          actorId: string;
+          projectId: string;
+          operationId: string;
+          fingerprint: string;
+          getEntityId: (entity: T) => Types.ObjectId;
+          buildResponse: (entity: T) => {
+            statusCode: number;
+            body: unknown;
+            etag?: string;
+            location?: string;
+          };
+        }
+      | undefined,
+    entity: T,
+  ): Promise<void> {
+    if (!spec) return;
+    const res = spec.buildResponse(entity);
+    await this.saveIdempotency({
+      actorId: spec.actorId,
+      projectId: spec.projectId,
+      operationId: spec.operationId,
+      fingerprint: spec.fingerprint,
+      taskId: spec.getEntityId(entity),
+      statusCode: res.statusCode,
+      body: res.body,
+      etag: res.etag,
+      location: res.location,
+    });
   }
 
   async listTasks(
@@ -234,7 +328,14 @@ class InMemoryTaskWorkspaceRepository {
     steps: WorkspaceChecklistStep[];
     dueDate: Date | null;
     startDate: Date | null;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceTaskDocument>;
   }): Promise<WorkspaceTaskDocument> {
+    if (input.parentId) {
+      const parent = await this.getTaskById(input.projectId, input.parentId);
+      if (parent && parent.status === 'CANCELLED') {
+        throw new Error('PARENT_TASK_CANCELLED');
+      }
+    }
     const seq = (this.counters.get(input.projectId) ?? 0) + 1;
     this.counters.set(input.projectId, seq);
     const now = new Date();
@@ -290,6 +391,7 @@ class InMemoryTaskWorkspaceRepository {
       operationId: input.operationId,
       correlationId: input.correlationId,
     });
+    await this.commitIdempotencySpec(input.idempotency, doc);
     return doc;
   }
 
@@ -358,6 +460,10 @@ class InMemoryTaskWorkspaceRepository {
     reason?: string;
     operationId: string;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<{
+      task: WorkspaceTaskDocument;
+      subtaskCounts?: { total: number; done: number };
+    }>;
   }) {
     const existing = await this.getTaskById(input.projectId, input.taskId);
     if (!existing) return { kind: 'NOT_FOUND' as const };
@@ -402,7 +508,19 @@ class InMemoryTaskWorkspaceRepository {
         reason: input.reason,
       },
     });
-    return { kind: 'UPDATED' as const, task: updated };
+    const countsMap = await this.getSubtaskCountsMap(
+      [new Types.ObjectId(input.projectId)],
+      [updated._id],
+    );
+    const subtaskCounts = countsMap.get(updated._id.toHexString()) ?? {
+      total: 0,
+      done: 0,
+    };
+    await this.commitIdempotencySpec(input.idempotency, {
+      task: updated,
+      subtaskCounts,
+    });
+    return { kind: 'UPDATED' as const, task: updated, subtaskCounts };
   }
 
   async listTaskHistory(
@@ -454,6 +572,7 @@ class InMemoryTaskWorkspaceRepository {
     body: string;
     operationId: string;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceTaskCommentDocument>;
   }) {
     const now = new Date();
     const comment: WorkspaceTaskCommentDocument = {
@@ -482,6 +601,7 @@ class InMemoryTaskWorkspaceRepository {
       version: input.taskVersion,
       delta: { type: 'COMMENT_ADDED', commentId: comment._id },
     });
+    await this.commitIdempotencySpec(input.idempotency, comment);
     return comment;
   }
 
@@ -520,6 +640,7 @@ class InMemoryTaskWorkspaceRepository {
     loggedAt: Date;
     operationId: string;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceTaskWorklogDocument>;
   }) {
     const now = new Date();
     const worklog: WorkspaceTaskWorklogDocument = {
@@ -554,6 +675,7 @@ class InMemoryTaskWorkspaceRepository {
         minutes: input.minutes,
       },
     });
+    await this.commitIdempotencySpec(input.idempotency, worklog);
     return worklog;
   }
 
@@ -596,6 +718,7 @@ class InMemoryTaskWorkspaceRepository {
     goal: string | null;
     startDate: Date | null;
     endDate: Date | null;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceProjectSprintDocument>;
   }) {
     const id = new Types.ObjectId();
     const sprint: WorkspaceProjectSprintDocument = {
@@ -613,6 +736,7 @@ class InMemoryTaskWorkspaceRepository {
       version: 1,
     };
     this.sprints.set(id.toHexString(), sprint);
+    await this.commitIdempotencySpec(input.idempotency, sprint);
     return sprint;
   }
 
@@ -664,6 +788,15 @@ class InMemoryTaskWorkspaceRepository {
     expectedVersion: number;
     moveIncompleteToSprintId: string | null;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<{
+      sprint: WorkspaceProjectSprintDocument;
+      counts: {
+        totalTasks: number;
+        doneTasks: number;
+        inProgressTasks: number;
+        todoTasks: number;
+      };
+    }>;
   }) {
     const existing = await this.getSprintById(input.projectId, input.sprintId);
     if (!existing) return { kind: 'NOT_FOUND' as const };
@@ -736,7 +869,25 @@ class InMemoryTaskWorkspaceRepository {
       }
     }
 
-    return { kind: 'COMPLETED' as const, sprint: completedSprint };
+    const sprintTasks = [...this.tasks.values()].filter(
+      (t) =>
+        t.projectId.toHexString() === input.projectId &&
+        t.sprintId?.toHexString() === input.sprintId,
+    );
+    const counts = {
+      totalTasks: sprintTasks.length,
+      doneTasks: sprintTasks.filter((t) => t.status === 'DONE').length,
+      inProgressTasks: sprintTasks.filter((t) =>
+        ['IN_PROGRESS', 'IN_REVIEW', 'BLOCKED'].includes(t.status),
+      ).length,
+      todoTasks: sprintTasks.filter((t) => t.status === 'TODO').length,
+    };
+    await this.commitIdempotencySpec(input.idempotency, {
+      sprint: completedSprint,
+      counts,
+    });
+
+    return { kind: 'COMPLETED' as const, sprint: completedSprint, counts };
   }
 
   async getProjectTaskSummary(
@@ -781,9 +932,15 @@ class InMemoryTaskWorkspaceRepository {
     };
   }
 
-  async getOrganizationTaskAggregates(organizationId: string, asOf: Date) {
+  async getOrganizationTaskAggregates(
+    organizationId: string,
+    asOf: Date,
+    pinSnapshot = false,
+  ) {
     const orgTasks = [...this.tasks.values()].filter(
-      (t) => t.organizationId.toHexString() === organizationId,
+      (t) =>
+        t.organizationId.toHexString() === organizationId &&
+        (!pinSnapshot || t.createdAt <= asOf),
     );
     const statusBuckets: Array<{
       _id: { p: Types.ObjectId; s: WorkspaceTaskStatus };
@@ -1380,5 +1537,181 @@ describe('TaskWorkspaceController (17 Workspace Task API endpoints)', () => {
       .send({ toStatus: 'IN_PROGRESS' })
       .expect(200);
     expect(transitioned.body.status).toBe('IN_PROGRESS');
+  });
+
+  it('guards concurrent idempotent writes with IN_PROGRESS claim, releases claim on validation failure, rejects subtasks under CANCELLED parent, and pins organization summary pagination', async () => {
+    // 1. Fire two concurrent POST requests with the same Idempotency-Key and payload while createTaskWithEvent is in flight
+    const inFlightKey = 'idem-concurrent-flight-001';
+    const origCreate = repo.createTaskWithEvent.bind(repo);
+    const createSpy = jest
+      .spyOn(repo, 'createTaskWithEvent')
+      .mockImplementationOnce(async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return origCreate(input);
+      });
+
+    const [firstRes, secondRes] = await Promise.all([
+      request(httpServer)
+        .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+        .set('Authorization', 'Bearer memberA')
+        .set('Cookie', csrfCookie)
+        .set('X-CSRF-Token', csrfToken)
+        .set('Idempotency-Key', inFlightKey)
+        .send({ title: 'Concurrent Task' }),
+      new Promise<request.Response>((resolve) =>
+        setTimeout(() => {
+          void request(httpServer)
+            .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+            .set('Authorization', 'Bearer memberA')
+            .set('Cookie', csrfCookie)
+            .set('X-CSRF-Token', csrfToken)
+            .set('Idempotency-Key', inFlightKey)
+            .send({ title: 'Concurrent Task' })
+            .then(resolve);
+        }, 10),
+      ),
+    ]);
+    createSpy.mockRestore();
+
+    const statuses = [firstRes.status, secondRes.status].sort();
+    expect(statuses).toEqual([201, 409]);
+    const conflictRes = firstRes.status === 409 ? firstRes : secondRes;
+    const createdRes = firstRes.status === 201 ? firstRes : secondRes;
+    expect(conflictRes.body.code).toBe('IDEMPOTENCY_IN_PROGRESS');
+
+    // Subsequent retry after completion replays the 201 response with the same task id
+    const replayedRes = await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', inFlightKey)
+      .send({ title: 'Concurrent Task' })
+      .expect(201);
+    expect(replayedRes.body.id).toBe(createdRes.body.id);
+
+    // 2. When a request fails precheck (e.g. non-existent parentId), the IN_PROGRESS claim is released so retry with corrected payload succeeds
+    const retryAfterFailKey = 'idem-release-on-fail-001';
+    await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', retryAfterFailKey)
+      .send({
+        title: 'Task with bad parent',
+        parentId: '65f999999999999999999999',
+      })
+      .expect(404);
+
+    const retryOk = await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', retryAfterFailKey)
+      .send({ title: 'Parent Task Will Be Cancelled' })
+      .expect(201);
+
+    // 3. Transition parent task to CANCELLED (Leader/Manager required for CANCELLED)
+    const cancelledParent = await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${retryOk.body.id}/transitions`,
+      )
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', retryOk.headers.etag)
+      .set('Idempotency-Key', 'idem-cancel-parent-001')
+      .send({ toStatus: 'CANCELLED', reason: 'Scope dropped' })
+      .expect(200);
+    expect(cancelledParent.body.status).toBe('CANCELLED');
+
+    // 4. Reject creating a subtask under a CANCELLED parent -> 422 PARENT_TASK_CANCELLED
+    const subUnderCancelled = await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-sub-cancelled-parent-001')
+      .send({
+        title: 'Subtask under cancelled parent',
+        type: 'TASK',
+        parentId: retryOk.body.id,
+      })
+      .expect(422);
+    expect(subUnderCancelled.body.code).toBe('PARENT_TASK_CANCELLED');
+
+    // 5. Reject moving an existing task under a CANCELLED parent via PATCH -> 422 PARENT_TASK_CANCELLED
+    const standaloneTask = await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-standalone-for-reparent-001')
+      .send({ title: 'Standalone Task' })
+      .expect(201);
+
+    const patchCancelledParent = await request(httpServer)
+      .patch(
+        `/api/v1/tasks/projects/${projectId}/tasks/${standaloneTask.body.id}`,
+      )
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', standaloneTask.headers.etag)
+      .send({ parentId: retryOk.body.id })
+      .expect(422);
+    expect(patchCancelledParent.body.code).toBe('PARENT_TASK_CANCELLED');
+
+    // 6. Organization task-summary cursor pagination pins snapshot and prevents duplicate/skipped projects
+    const page1 = await request(httpServer)
+      .get('/api/v1/tasks/organization/task-summary?limit=1')
+      .set('Authorization', 'Bearer admin')
+      .expect(200);
+    expect(page1.body.projects).toHaveLength(1);
+    expect(page1.body.nextCursor).toEqual(expect.any(String));
+
+    const firstPageProjectId = page1.body.projects[0].projectId;
+
+    // Mutate task counts after page 1 is fetched
+    await request(httpServer)
+      .post(`/api/v1/tasks/projects/${privateProjectId}/tasks`)
+      .set('Authorization', 'Bearer admin')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-mutate-between-pages-001')
+      .send({ title: 'New task created after page 1 snapshot' })
+      .expect(201);
+
+    const page2 = await request(httpServer)
+      .get(
+        `/api/v1/tasks/organization/task-summary?limit=1&cursor=${encodeURIComponent(String(page1.body.nextCursor))}`,
+      )
+      .set('Authorization', 'Bearer admin')
+      .expect(200);
+    expect(page2.body.projects).toHaveLength(1);
+    expect(page2.body.projects[0].projectId).not.toBe(firstPageProjectId);
+    expect(page2.body.asOf).toBe(page1.body.asOf);
+
+    // 7. Verify canonical index catalogue and collection validators cover all 7 workspace collections
+    expect(Object.keys(WORKSPACE_INDEX_CATALOGUE).sort()).toEqual([
+      'project_sprint_events',
+      'project_sprints',
+      'task_comments',
+      'task_events',
+      'task_operations',
+      'task_worklogs',
+      'tasks',
+    ]);
+    expect(Object.keys(WORKSPACE_COLLECTION_VALIDATORS).sort()).toEqual([
+      'project_sprint_events',
+      'project_sprints',
+      'task_comments',
+      'task_events',
+      'task_operations',
+      'task_worklogs',
+      'tasks',
+    ]);
   });
 });

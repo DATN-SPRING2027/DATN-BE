@@ -12,6 +12,11 @@ import {
   cleanupScratchDatabase as cleanupOrgDb,
   createUniqueScratchDbName as createOrgDbName,
 } from './workspace-org-queries.mjs';
+import {
+  WORKSPACE_COLLECTION_VALIDATORS,
+  WORKSPACE_INDEX_CATALOGUE,
+  syncCollectionIndexes,
+} from '../migrations/20261022-task-workspace-fields.mjs';
 
 const scripts = [
   './workspace-query-plans.mjs',
@@ -312,4 +317,52 @@ test('04-api-inventory.yaml schemas accept valid TaskDetail, OrganizationTask, P
     historySample,
     'TaskHistoryEntry',
   );
+});
+
+test('20261022-task-workspace-fields migration defines strict $jsonSchema validators and synchronizes conflicting indexes', async () => {
+  const expectedCollections = [
+    'project_sprint_events',
+    'project_sprints',
+    'task_comments',
+    'task_events',
+    'task_operations',
+    'task_worklogs',
+    'tasks',
+  ];
+  assert.deepEqual(
+    Object.keys(WORKSPACE_COLLECTION_VALIDATORS).sort(),
+    expectedCollections,
+  );
+  assert.deepEqual(
+    Object.keys(WORKSPACE_INDEX_CATALOGUE).sort(),
+    expectedCollections,
+  );
+
+  for (const name of expectedCollections) {
+    const validator = WORKSPACE_COLLECTION_VALIDATORS[name];
+    assert.ok(validator.$jsonSchema, `Missing $jsonSchema on ${name}`);
+    assert.equal(validator.$jsonSchema.additionalProperties, false);
+  }
+
+  const droppedNames = [];
+  const createdNames = [];
+  const fakeCollection = {
+    listIndexes: () => ({
+      toArray: async () => [
+        { name: '_id_', key: { _id: 1 } },
+        // Legacy conflicting index name for the same key
+        { name: 'tasks_project_id_cursor', key: { projectId: 1, _id: 1 } },
+      ],
+    }),
+    dropIndex: async (name) => {
+      droppedNames.push(name);
+    },
+    createIndex: async (_key, options) => {
+      createdNames.push(options.name);
+    },
+  };
+
+  await syncCollectionIndexes(fakeCollection, WORKSPACE_INDEX_CATALOGUE.tasks);
+  assert.deepEqual(droppedNames, ['tasks_project_id_cursor']);
+  assert.ok(createdNames.includes('task_project_cursor'));
 });

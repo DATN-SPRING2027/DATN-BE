@@ -1,14 +1,18 @@
 import {
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleInit,
   Optional,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import mongoose, { Types, type Connection } from 'mongoose';
 import { IAM_PERSISTENCE } from '../../iam/infrastructure/persistence';
 import {
+  WORKSPACE_COLLECTION_VALIDATORS,
+  WORKSPACE_INDEX_CATALOGUE,
   WORKSPACE_PROJECT_SPRINTS_COLLECTION,
   WORKSPACE_PROJECT_SPRINT_EVENTS_COLLECTION,
   WORKSPACE_TASKS_COLLECTION,
@@ -21,6 +25,7 @@ import {
   escapeLiteralRegex,
   type WorkspaceChecklistStep,
   type WorkspaceIdempotencyRecord,
+  type WorkspaceIndexSpec,
   type WorkspaceProjectSprintDocument,
   type WorkspaceProjectSprintEventDocument,
   type WorkspaceSprintStatus,
@@ -33,6 +38,20 @@ import {
   type WorkspaceTaskType,
   type WorkspaceTaskWorklogDocument,
 } from './task-workspace.types';
+
+export interface WorkspaceIdempotencyCommitSpec<T> {
+  actorId: string;
+  projectId: string;
+  operationId: string;
+  fingerprint: string;
+  getEntityId: (entity: T) => Types.ObjectId;
+  buildResponse: (entity: T) => {
+    statusCode: number;
+    body: unknown;
+    etag?: string;
+    location?: string;
+  };
+}
 
 export const TASK_WORKSPACE_REPOSITORY = Symbol('TASK_WORKSPACE_REPOSITORY');
 
@@ -104,169 +123,91 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     }
   }
 
+  private async syncCollectionIndexes(
+    collection: mongoose.mongo.Collection,
+    specs: WorkspaceIndexSpec[],
+  ): Promise<void> {
+    const existing = (await collection
+      .listIndexes()
+      .toArray()
+      .catch(() => [])) as Array<{
+      name?: string;
+      key?: Record<string, 1 | -1>;
+      unique?: boolean;
+      expireAfterSeconds?: number;
+      partialFilterExpression?: Record<string, unknown>;
+    }>;
+
+    for (const spec of specs) {
+      const targetKeyJson = JSON.stringify(spec.key);
+      for (const idx of existing) {
+        if (!idx.name || idx.name === '_id_') continue;
+        const sameName = idx.name === spec.name;
+        const sameKey = JSON.stringify(idx.key) === targetKeyJson;
+        if (!sameName && !sameKey) continue;
+
+        const sameUnique = Boolean(idx.unique) === Boolean(spec.unique);
+        const sameTtl =
+          (idx.expireAfterSeconds ?? undefined) ===
+          (spec.expireAfterSeconds ?? undefined);
+        const samePartial =
+          JSON.stringify(idx.partialFilterExpression ?? null) ===
+          JSON.stringify(spec.partialFilterExpression ?? null);
+
+        if (!sameName || !sameKey || !sameUnique || !sameTtl || !samePartial) {
+          await collection.dropIndex(idx.name).catch(() => undefined);
+        }
+      }
+
+      await collection.createIndex(spec.key, {
+        name: spec.name,
+        ...(spec.unique ? { unique: true } : {}),
+        ...(spec.expireAfterSeconds !== undefined
+          ? { expireAfterSeconds: spec.expireAfterSeconds }
+          : {}),
+        ...(spec.partialFilterExpression
+          ? { partialFilterExpression: spec.partialFilterExpression }
+          : {}),
+      });
+    }
+  }
+
   async ensureIndexes(): Promise<void> {
     if (this.indexesEnsured) return;
     const database = this.db;
 
-    // If a legacy D-03 strict validator exists on tasks/task_events/task_operations,
-    // upgrade validationAction/validator so workspace fields & events are permitted.
-    for (const collName of [
-      WORKSPACE_TASKS_COLLECTION,
-      WORKSPACE_TASK_EVENTS_COLLECTION,
-      WORKSPACE_TASK_OPERATIONS_COLLECTION,
-    ]) {
-      await database
-        .command({
-          collMod: collName,
-          validator: {},
-          validationLevel: 'off',
-        })
-        .catch(() => undefined);
+    const existingCollections = await database
+      .listCollections({}, { nameOnly: true })
+      .toArray()
+      .catch(() => []);
+    const existingNames = new Set(existingCollections.map((c) => c.name));
+
+    for (const [collName, validator] of Object.entries(
+      WORKSPACE_COLLECTION_VALIDATORS,
+    )) {
+      if (!existingNames.has(collName)) {
+        await database
+          .createCollection(collName, {
+            validator,
+            validationLevel: 'strict',
+            validationAction: 'error',
+          })
+          .catch(() => undefined);
+      } else {
+        await database
+          .command({
+            collMod: collName,
+            validator,
+            validationLevel: 'strict',
+            validationAction: 'error',
+          })
+          .catch(() => undefined);
+      }
     }
 
-    const tasks = database.collection<WorkspaceTaskDocument>(
-      WORKSPACE_TASKS_COLLECTION,
-    );
-    await tasks.createIndexes([
-      { key: { projectId: 1, _id: 1 }, name: 'task_project_cursor' },
-      {
-        key: { projectId: 1, status: 1, _id: 1 },
-        name: 'project_status_cursor',
-      },
-      {
-        key: { projectId: 1, assigneeId: 1, _id: 1, status: 1 },
-        name: 'project_assignee_cursor_status',
-      },
-      {
-        key: { projectId: 1, sprintId: 1, _id: 1, status: 1 },
-        name: 'project_sprint_cursor_status',
-      },
-      { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
-      {
-        key: { projectId: 1, parentId: 1, _id: 1 },
-        name: 'project_parent_cursor',
-      },
-      {
-        key: { projectId: 1, key: 1 },
-        name: 'project_key_unique',
-        unique: true,
-        partialFilterExpression: { key: { $type: 'string' } },
-      },
-      { key: { organizationId: 1, _id: 1 }, name: 'org_cursor' },
-      {
-        key: { organizationId: 1, status: 1, _id: 1 },
-        name: 'org_status_cursor',
-      },
-      {
-        key: { organizationId: 1, projectId: 1, _id: 1 },
-        name: 'org_project_cursor',
-      },
-      {
-        key: { organizationId: 1, assigneeId: 1, _id: 1, status: 1 },
-        name: 'org_assignee_cursor_status',
-      },
-      {
-        key: { organizationId: 1, dueDate: 1, _id: 1 },
-        name: 'org_due_cursor',
-      },
-      {
-        key: { organizationId: 1, projectId: 1, status: 1, dueDate: 1 },
-        name: 'org_project_status_due',
-      },
-    ]);
-
-    await database
-      .collection<WorkspaceTaskCommentDocument>(
-        WORKSPACE_TASK_COMMENTS_COLLECTION,
-      )
-      .createIndexes([
-        {
-          key: { projectId: 1, taskId: 1, _id: 1 },
-          name: 'task_comments_cursor',
-        },
-      ]);
-
-    const taskEventsColl = database.collection<WorkspaceTaskEventRecord>(
-      WORKSPACE_TASK_EVENTS_COLLECTION,
-    );
-    await taskEventsColl
-      .dropIndex('task_event_task_mutation_version_unique')
-      .catch(() => undefined);
-    await taskEventsColl.createIndexes([
-      {
-        key: { projectId: 1, taskId: 1, _id: -1 },
-        name: 'task_events_project_task_cursor',
-      },
-      {
-        key: { taskId: 1, version: 1 },
-        name: 'task_event_task_mutation_version_unique',
-        unique: true,
-        partialFilterExpression: {
-          eventType: { $in: ['TASK_STATUS_TRANSITIONED', 'TASK_UPDATED'] },
-        },
-      },
-    ]);
-
-    await database
-      .collection<WorkspaceTaskWorklogDocument>(
-        WORKSPACE_TASK_WORKLOGS_COLLECTION,
-      )
-      .createIndexes([
-        {
-          key: { projectId: 1, taskId: 1, _id: -1 },
-          name: 'task_worklogs_cursor',
-        },
-      ]);
-
-    await database
-      .collection<WorkspaceProjectSprintDocument>(
-        WORKSPACE_PROJECT_SPRINTS_COLLECTION,
-      )
-      .createIndexes([
-        {
-          key: { projectId: 1, createdAt: -1, _id: -1 },
-          name: 'project_sprints_created_desc',
-        },
-        {
-          key: { projectId: 1 },
-          name: 'project_one_active_sprint_unique',
-          unique: true,
-          partialFilterExpression: { status: 'ACTIVE' },
-        },
-      ]);
-
-    await database
-      .collection<WorkspaceProjectSprintEventDocument>(
-        WORKSPACE_PROJECT_SPRINT_EVENTS_COLLECTION,
-      )
-      .createIndexes([
-        {
-          key: { sprintId: 1, version: 1 },
-          name: 'sprint_event_version_unique',
-          unique: true,
-        },
-        {
-          key: { projectId: 1, sprintId: 1, occurredAt: -1, _id: -1 },
-          name: 'project_sprint_events_cursor',
-        },
-      ]);
-
-    await database
-      .collection<WorkspaceIdempotencyRecord>(
-        WORKSPACE_TASK_OPERATIONS_COLLECTION,
-      )
-      .createIndexes([
-        {
-          key: { actorId: 1, projectId: 1, operationId: 1 },
-          name: 'task_operation_actor_project_idempotency_unique',
-          unique: true,
-        },
-        {
-          key: { expiresAt: 1 },
-          name: 'task_operation_expires_ttl',
-          expireAfterSeconds: 0,
-        },
-      ]);
+    for (const [collName, specs] of Object.entries(WORKSPACE_INDEX_CATALOGUE)) {
+      await this.syncCollectionIndexes(database.collection(collName), specs);
+    }
 
     this.indexesEnsured = true;
   }
@@ -326,17 +267,108 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       });
   }
 
-  async saveIdempotency(record: {
+  async claimIdempotency(input: {
     actorId: string;
     projectId: string;
     operationId: string;
     fingerprint: string;
-    taskId: Types.ObjectId;
-    statusCode: number;
-    body: unknown;
-    etag?: string;
-    location?: string;
-  }): Promise<void> {
+  }): Promise<
+    | { kind: 'CLAIMED' }
+    | { kind: 'REPLAY'; record: WorkspaceIdempotencyRecord }
+    | { kind: 'IN_PROGRESS' }
+    | { kind: 'CONFLICT_FINGERPRINT' }
+  > {
+    const now = new Date();
+    const leaseUntil = new Date(now.getTime() + 30_000);
+    const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const actorObjId = new Types.ObjectId(input.actorId);
+    const projectObjId = new Types.ObjectId(input.projectId);
+    const col = this.db.collection<WorkspaceIdempotencyRecord>(
+      WORKSPACE_TASK_OPERATIONS_COLLECTION,
+    );
+
+    // Reclaim any expired record or stale IN_PROGRESS lease before atomic insert
+    await col.deleteOne({
+      actorId: actorObjId,
+      projectId: projectObjId,
+      operationId: input.operationId,
+      $or: [
+        { expiresAt: { $lte: now } },
+        { state: 'IN_PROGRESS', leaseUntil: { $lte: now } },
+      ],
+    });
+
+    try {
+      await col.insertOne({
+        _id: new Types.ObjectId(),
+        actorId: actorObjId,
+        projectId: projectObjId,
+        operationId: input.operationId,
+        fingerprint: input.fingerprint,
+        state: 'IN_PROGRESS',
+        taskId: new Types.ObjectId('000000000000000000000000'),
+        createdAt: now,
+        updatedAt: now,
+        leaseUntil,
+        expiresAt,
+      });
+      return { kind: 'CLAIMED' };
+    } catch (error) {
+      if (!(
+        error instanceof mongoose.mongo.MongoServerError && error.code === 11000
+      )) {
+        throw error;
+      }
+      const existing = await col.findOne({
+        actorId: actorObjId,
+        projectId: projectObjId,
+        operationId: input.operationId,
+      });
+      if (!existing) {
+        return { kind: 'IN_PROGRESS' };
+      }
+      if (existing.fingerprint !== input.fingerprint) {
+        return { kind: 'CONFLICT_FINGERPRINT' };
+      }
+      if (existing.state === 'COMMITTED' && existing.httpResponse) {
+        return { kind: 'REPLAY', record: existing };
+      }
+      return { kind: 'IN_PROGRESS' };
+    }
+  }
+
+  async releaseIdempotency(
+    actorId: string,
+    projectId: string,
+    operationId: string,
+  ): Promise<void> {
+    await this.db
+      .collection<WorkspaceIdempotencyRecord>(
+        WORKSPACE_TASK_OPERATIONS_COLLECTION,
+      )
+      .deleteOne({
+        actorId: new Types.ObjectId(actorId),
+        projectId: new Types.ObjectId(projectId),
+        operationId,
+        state: 'IN_PROGRESS',
+      })
+      .catch(() => undefined);
+  }
+
+  async saveIdempotency(
+    record: {
+      actorId: string;
+      projectId: string;
+      operationId: string;
+      fingerprint: string;
+      taskId: Types.ObjectId;
+      statusCode: number;
+      body: unknown;
+      etag?: string;
+      location?: string;
+    },
+    session?: mongoose.mongo.ClientSession,
+  ): Promise<void> {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     await this.db
@@ -369,7 +401,10 @@ export class TaskWorkspaceRepository implements OnModuleInit {
             createdAt: now,
           },
         },
-        { upsert: true },
+        {
+          upsert: true,
+          ...(session ? { session } : {}),
+        },
       );
   }
 
@@ -570,6 +605,63 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       });
   }
 
+  private async verifyParentTaskInSession(
+    projectObjectId: Types.ObjectId,
+    parentObjectId: Types.ObjectId,
+    session?: mongoose.mongo.ClientSession,
+  ): Promise<void> {
+    const parentTask = await this.db
+      .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
+      .findOne(
+        {
+          _id: parentObjectId,
+          projectId: projectObjectId,
+        },
+        session ? { session } : {},
+      );
+    if (!parentTask) {
+      throw new NotFoundException({
+        code: 'TASK_NOT_FOUND',
+        message: 'Parent task not found in this project.',
+      });
+    }
+    if (parentTask.parentId !== null) {
+      throw new UnprocessableEntityException({
+        code: 'TASK_SUBTASK_DEPTH_EXCEEDED',
+        message: 'Subtasks cannot be nested more than one level deep.',
+      });
+    }
+    if (parentTask.status === 'CANCELLED') {
+      throw new UnprocessableEntityException({
+        code: 'PARENT_TASK_CANCELLED',
+        message: 'Cannot attach a subtask to a cancelled parent task.',
+      });
+    }
+  }
+
+  private async commitIdempotencySpec<T>(
+    spec: WorkspaceIdempotencyCommitSpec<T> | undefined,
+    entity: T,
+    session?: mongoose.mongo.ClientSession,
+  ): Promise<void> {
+    if (!spec) return;
+    const res = spec.buildResponse(entity);
+    await this.saveIdempotency(
+      {
+        actorId: spec.actorId,
+        projectId: spec.projectId,
+        operationId: spec.operationId,
+        fingerprint: spec.fingerprint,
+        taskId: spec.getEntityId(entity),
+        statusCode: res.statusCode,
+        body: res.body,
+        etag: res.etag,
+        location: res.location,
+      },
+      session,
+    );
+  }
+
   async createTaskWithEvent(input: {
     organizationId: string;
     projectId: string;
@@ -588,8 +680,21 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     steps: WorkspaceChecklistStep[];
     dueDate: Date | null;
     startDate: Date | null;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceTaskDocument>;
   }): Promise<WorkspaceTaskDocument> {
     return this.runInTransaction(async (session) => {
+      const orgObjectId = new Types.ObjectId(input.organizationId);
+      const projectObjectId = new Types.ObjectId(input.projectId);
+      const actorObjectId = new Types.ObjectId(input.actorId);
+
+      if (input.parentId) {
+        await this.verifyParentTaskInSession(
+          projectObjectId,
+          new Types.ObjectId(input.parentId),
+          session,
+        );
+      }
+
       const key = await this.allocateNextTaskKey(
         input.projectId,
         input.projectCode,
@@ -597,9 +702,6 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       );
       const now = new Date();
       const taskId = new Types.ObjectId();
-      const orgObjectId = new Types.ObjectId(input.organizationId);
-      const projectObjectId = new Types.ObjectId(input.projectId);
-      const actorObjectId = new Types.ObjectId(input.actorId);
 
       const task: WorkspaceTaskDocument = {
         _id: taskId,
@@ -659,6 +761,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       await this.db
         .collection<WorkspaceTaskEventRecord>(WORKSPACE_TASK_EVENTS_COLLECTION)
         .insertOne(event, session ? { session } : {});
+      await this.commitIdempotencySpec(input.idempotency, task, session);
 
       return task;
     });
@@ -705,6 +808,28 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       const orgObjectId = new Types.ObjectId(input.organizationId);
       const now = new Date();
       const nextVersion = input.expectedVersion + 1;
+
+      if (input.updates.parentId) {
+        const childCount = await tasks.countDocuments(
+          {
+            projectId: projectObjectId,
+            parentId: taskObjectId,
+          },
+          session ? { session } : {},
+        );
+        if (childCount > 0) {
+          throw new UnprocessableEntityException({
+            code: 'TASK_SUBTASK_DEPTH_EXCEEDED',
+            message:
+              'A task that already has subtasks cannot become a subtask.',
+          });
+        }
+        await this.verifyParentTaskInSession(
+          projectObjectId,
+          input.updates.parentId,
+          session,
+        );
+      }
 
       const updated = await tasks.findOneAndUpdate(
         {
@@ -785,8 +910,16 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     reason?: string;
     operationId: string;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<{
+      task: WorkspaceTaskDocument;
+      subtaskCounts: WorkspaceSubtaskCounts;
+    }>;
   }): Promise<
-    | { kind: 'UPDATED'; task: WorkspaceTaskDocument }
+    | {
+        kind: 'UPDATED';
+        task: WorkspaceTaskDocument;
+        subtaskCounts: WorkspaceSubtaskCounts;
+      }
     | { kind: 'NOT_FOUND' }
     | {
         kind: 'CONFLICT';
@@ -867,7 +1000,43 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         .collection<WorkspaceTaskEventRecord>(WORKSPACE_TASK_EVENTS_COLLECTION)
         .insertOne(event, session ? { session } : {});
 
-      return { kind: 'UPDATED', task: updated };
+      let subtaskCounts: WorkspaceSubtaskCounts = { total: 0, done: 0 };
+      if (updated.parentId === null) {
+        const rows = await tasks
+          .aggregate<{ total: number; done: number }>(
+            [
+              {
+                $match: {
+                  projectId: projectObjectId,
+                  parentId: taskObjectId,
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  total: { $sum: 1 },
+                  done: {
+                    $sum: { $cond: [{ $eq: ['$status', 'DONE'] }, 1, 0] },
+                  },
+                },
+              },
+            ],
+            session ? { session } : {},
+          )
+          .toArray();
+        if (rows[0]) {
+          subtaskCounts = { total: rows[0].total, done: rows[0].done };
+        }
+      }
+
+      const resultPayload = { task: updated, subtaskCounts };
+      await this.commitIdempotencySpec(
+        input.idempotency,
+        resultPayload,
+        session,
+      );
+
+      return { kind: 'UPDATED', task: updated, subtaskCounts };
     });
   }
 
@@ -929,6 +1098,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     body: string;
     operationId: string;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceTaskCommentDocument>;
   }): Promise<WorkspaceTaskCommentDocument> {
     return this.runInTransaction(async (session) => {
       const now = new Date();
@@ -976,6 +1146,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       await this.db
         .collection<WorkspaceTaskEventRecord>(WORKSPACE_TASK_EVENTS_COLLECTION)
         .insertOne(event, session ? { session } : {});
+      await this.commitIdempotencySpec(input.idempotency, comment, session);
 
       return comment;
     });
@@ -1027,6 +1198,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     loggedAt: Date;
     operationId: string;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceTaskWorklogDocument>;
   }): Promise<WorkspaceTaskWorklogDocument> {
     return this.runInTransaction(async (session) => {
       const now = new Date();
@@ -1077,6 +1249,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       await this.db
         .collection<WorkspaceTaskEventRecord>(WORKSPACE_TASK_EVENTS_COLLECTION)
         .insertOne(event, session ? { session } : {});
+      await this.commitIdempotencySpec(input.idempotency, worklog, session);
 
       return worklog;
     });
@@ -1194,6 +1367,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     goal: string | null;
     startDate: Date | null;
     endDate: Date | null;
+    idempotency?: WorkspaceIdempotencyCommitSpec<WorkspaceProjectSprintDocument>;
   }): Promise<WorkspaceProjectSprintDocument> {
     return this.runInTransaction(async (session) => {
       const now = new Date();
@@ -1240,6 +1414,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           WORKSPACE_PROJECT_SPRINT_EVENTS_COLLECTION,
         )
         .insertOne(sprintEvent, session ? { session } : {});
+      await this.commitIdempotencySpec(input.idempotency, sprint, session);
 
       return sprint;
     });
@@ -1356,8 +1531,26 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     expectedVersion: number;
     moveIncompleteToSprintId: string | null;
     correlationId: string;
+    idempotency?: WorkspaceIdempotencyCommitSpec<{
+      sprint: WorkspaceProjectSprintDocument;
+      counts: {
+        totalTasks: number;
+        doneTasks: number;
+        inProgressTasks: number;
+        todoTasks: number;
+      };
+    }>;
   }): Promise<
-    | { kind: 'COMPLETED'; sprint: WorkspaceProjectSprintDocument }
+    | {
+        kind: 'COMPLETED';
+        sprint: WorkspaceProjectSprintDocument;
+        counts: {
+          totalTasks: number;
+          doneTasks: number;
+          inProgressTasks: number;
+          todoTasks: number;
+        };
+      }
     | { kind: 'NOT_FOUND' }
     | { kind: 'VERSION_CONFLICT'; currentVersion: number }
     | { kind: 'NOT_ACTIVE' }
@@ -1537,7 +1730,53 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           session ? { session } : {},
         );
 
-        return { kind: 'COMPLETED', sprint: updatedSprint };
+        const remainingBuckets = await tasks
+          .aggregate<{ _id: WorkspaceTaskStatus; n: number }>(
+            [
+              {
+                $match: {
+                  projectId: projectObjectId,
+                  sprintId: sprintObjectId,
+                },
+              },
+              {
+                $group: {
+                  _id: '$status',
+                  n: { $sum: 1 },
+                },
+              },
+            ],
+            session ? { session } : {},
+          )
+          .toArray();
+
+        const counts = {
+          totalTasks: 0,
+          doneTasks: 0,
+          inProgressTasks: 0,
+          todoTasks: 0,
+        };
+        for (const b of remainingBuckets) {
+          counts.totalTasks += b.n;
+          if (b._id === 'DONE') counts.doneTasks += b.n;
+          else if (
+            b._id === 'IN_PROGRESS' ||
+            b._id === 'IN_REVIEW' ||
+            b._id === 'BLOCKED'
+          ) {
+            counts.inProgressTasks += b.n;
+          } else if (b._id === 'TODO') {
+            counts.todoTasks += b.n;
+          }
+        }
+
+        await this.commitIdempotencySpec(
+          input.idempotency,
+          { sprint: updatedSprint, counts },
+          session,
+        );
+
+        return { kind: 'COMPLETED', sprint: updatedSprint, counts };
       });
     } catch (error) {
       if (error instanceof SprintRolloverConflictError) {
@@ -1672,7 +1911,11 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     };
   }
 
-  async getOrganizationTaskAggregates(organizationId: string, asOf: Date) {
+  async getOrganizationTaskAggregates(
+    organizationId: string,
+    asOf: Date,
+    pinSnapshot = false,
+  ) {
     const tasks = this.db.collection<WorkspaceTaskDocument>(
       WORKSPACE_TASKS_COLLECTION,
     );
@@ -1683,6 +1926,10 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       'IN_REVIEW',
       'BLOCKED',
     ];
+    const baseMatch: Record<string, unknown> = {
+      organizationId: orgObjectId,
+      ...(pinSnapshot ? { createdAt: { $lte: asOf } } : {}),
+    };
 
     const [statusBuckets, overdueBuckets] = await Promise.all([
       tasks
@@ -1690,7 +1937,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           _id: { p: Types.ObjectId; s: WorkspaceTaskStatus };
           n: number;
         }>([
-          { $match: { organizationId: orgObjectId } },
+          { $match: baseMatch },
           {
             $group: {
               _id: { p: '$projectId', s: '$status' },
@@ -1703,7 +1950,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         .aggregate<{ _id: Types.ObjectId; n: number }>([
           {
             $match: {
-              organizationId: orgObjectId,
+              ...baseMatch,
               status: { $in: openStatuses },
               dueDate: { $lt: asOf },
             },

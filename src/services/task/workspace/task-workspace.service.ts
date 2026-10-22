@@ -143,6 +143,45 @@ export class TaskWorkspaceService {
     return createHash('sha256').update(canonical).digest('hex');
   }
 
+  private async claimOrReplayIdempotency(
+    actorId: string,
+    projectId: string,
+    operationId: string,
+    fingerprint: string,
+    reuseMessage: string,
+  ): Promise<WorkspaceHttpResult | null> {
+    const claim = await this.repository.claimIdempotency({
+      actorId,
+      projectId,
+      operationId,
+      fingerprint,
+    });
+    if (claim.kind === 'CONFLICT_FINGERPRINT') {
+      throw new ConflictException({
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        message: reuseMessage,
+      });
+    }
+    if (claim.kind === 'IN_PROGRESS') {
+      throw new ConflictException({
+        code: 'IDEMPOTENCY_IN_PROGRESS',
+        message:
+          'A request with this Idempotency-Key is currently in progress.',
+      });
+    }
+    if (claim.kind === 'REPLAY') {
+      const httpResponse = claim.record.httpResponse!;
+      return {
+        statusCode: httpResponse.statusCode,
+        body: httpResponse.body,
+        ...(httpResponse.etag ? { etag: httpResponse.etag } : {}),
+        ...(httpResponse.location ? { location: httpResponse.location } : {}),
+        replayed: true,
+      };
+    }
+    return null;
+  }
+
   private parseOptionalDate(value: unknown, fieldName: string): Date | null {
     if (value === null) return null;
     if (typeof value !== 'string' || value.trim().length === 0) {
@@ -901,127 +940,128 @@ export class TaskWorkspaceService {
       normalizedPayload,
     );
 
-    const existingOp = await this.repository.findIdempotency(
+    const replayed = await this.claimOrReplayIdempotency(
       ctx.actorId,
       ctx.projectId,
       operationId,
-    );
-    if (existingOp) {
-      if (existingOp.fingerprint !== fingerprint) {
-        throw new ConflictException({
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message:
-            'Idempotency-Key was already used with a different request payload.',
-        });
-      }
-      if (existingOp.httpResponse) {
-        return {
-          statusCode: existingOp.httpResponse.statusCode,
-          body: existingOp.httpResponse.body,
-          etag: existingOp.httpResponse.etag,
-          location: existingOp.httpResponse.location,
-          replayed: true,
-        };
-      }
-    }
-
-    if (assigneeId) {
-      const isMember = await this.iamBridge.isActiveProjectMember(
-        ctx.organizationId,
-        ctx.projectId,
-        assigneeId,
-      );
-      if (!isMember) {
-        throw new UnprocessableEntityException({
-          code: 'ASSIGNEE_NOT_IN_PROJECT',
-          message: 'assigneeId must be an active member of the project.',
-        });
-      }
-    }
-
-    if (parentId) {
-      const parentTask = await this.repository.getTaskById(
-        ctx.projectId,
-        parentId,
-      );
-      if (!parentTask) {
-        throw new NotFoundException({
-          code: 'TASK_NOT_FOUND',
-          message: 'Parent task not found in this project.',
-        });
-      }
-      if (parentTask.parentId !== null) {
-        throw new UnprocessableEntityException({
-          code: 'TASK_SUBTASK_DEPTH_EXCEEDED',
-          message: 'Subtasks cannot be nested more than one level deep.',
-        });
-      }
-    }
-
-    if (sprintId) {
-      const sprint = await this.repository.getSprintById(
-        ctx.projectId,
-        sprintId,
-      );
-      if (!sprint) {
-        throw new NotFoundException({
-          code: 'SPRINT_NOT_FOUND',
-          message: 'Sprint not found in this project.',
-        });
-      }
-      if (sprint.status === 'COMPLETED') {
-        throw new UnprocessableEntityException({
-          code: 'SPRINT_COMPLETED_IMMUTABLE',
-          message: 'Cannot assign tasks to a completed sprint.',
-        });
-      }
-    }
-
-    const created = await this.repository.createTaskWithEvent({
-      organizationId: ctx.organizationId,
-      projectId: ctx.projectId,
-      projectCode: ctx.projectCode,
-      actorId: ctx.actorId,
-      operationId,
-      correlationId: params.correlationId ?? randomUUID(),
-      title,
-      description,
-      type,
-      priority,
-      assigneeId,
-      parentId,
-      sprintId,
-      labels,
-      steps,
-      dueDate,
-      startDate,
-    });
-
-    const responseBody = this.serializeTaskDetail(created, {
-      total: 0,
-      done: 0,
-    });
-    const etag = formatTaskETag(created._id.toHexString(), created.version);
-    const location = `/api/v1/tasks/projects/${ctx.projectId}/tasks/${created._id.toHexString()}`;
-
-    await this.repository.saveIdempotency({
-      actorId: ctx.actorId,
-      projectId: ctx.projectId,
-      operationId,
       fingerprint,
-      taskId: created._id,
-      statusCode: 201,
-      body: responseBody,
-      etag,
-      location,
-    });
+      'Idempotency-Key was already used with a different request payload.',
+    );
+    if (replayed) return replayed;
 
-    return {
-      statusCode: 201,
-      body: responseBody,
-      etag,
-      location,
-    };
+    try {
+      if (assigneeId) {
+        const isMember = await this.iamBridge.isActiveProjectMember(
+          ctx.organizationId,
+          ctx.projectId,
+          assigneeId,
+        );
+        if (!isMember) {
+          throw new UnprocessableEntityException({
+            code: 'ASSIGNEE_NOT_IN_PROJECT',
+            message: 'assigneeId must be an active member of the project.',
+          });
+        }
+      }
+
+      if (parentId) {
+        const parentTask = await this.repository.getTaskById(
+          ctx.projectId,
+          parentId,
+        );
+        if (!parentTask) {
+          throw new NotFoundException({
+            code: 'TASK_NOT_FOUND',
+            message: 'Parent task not found in this project.',
+          });
+        }
+        if (parentTask.parentId !== null) {
+          throw new UnprocessableEntityException({
+            code: 'TASK_SUBTASK_DEPTH_EXCEEDED',
+            message: 'Subtasks cannot be nested more than one level deep.',
+          });
+        }
+        if (parentTask.status === 'CANCELLED') {
+          throw new UnprocessableEntityException({
+            code: 'PARENT_TASK_CANCELLED',
+            message: 'Cannot attach a subtask to a cancelled parent task.',
+          });
+        }
+      }
+
+      if (sprintId) {
+        const sprint = await this.repository.getSprintById(
+          ctx.projectId,
+          sprintId,
+        );
+        if (!sprint) {
+          throw new NotFoundException({
+            code: 'SPRINT_NOT_FOUND',
+            message: 'Sprint not found in this project.',
+          });
+        }
+        if (sprint.status === 'COMPLETED') {
+          throw new UnprocessableEntityException({
+            code: 'SPRINT_COMPLETED_IMMUTABLE',
+            message: 'Cannot assign tasks to a completed sprint.',
+          });
+        }
+      }
+
+      const created = await this.repository.createTaskWithEvent({
+        organizationId: ctx.organizationId,
+        projectId: ctx.projectId,
+        projectCode: ctx.projectCode,
+        actorId: ctx.actorId,
+        operationId,
+        correlationId: params.correlationId ?? randomUUID(),
+        title,
+        description,
+        type,
+        priority,
+        assigneeId,
+        parentId,
+        sprintId,
+        labels,
+        steps,
+        dueDate,
+        startDate,
+        idempotency: {
+          actorId: ctx.actorId,
+          projectId: ctx.projectId,
+          operationId,
+          fingerprint,
+          getEntityId: (doc) => doc._id,
+          buildResponse: (doc) => ({
+            statusCode: 201,
+            body: this.serializeTaskDetail(doc, { total: 0, done: 0 }),
+            etag: formatTaskETag(doc._id.toHexString(), doc.version),
+            location: `/api/v1/tasks/projects/${ctx.projectId}/tasks/${doc._id.toHexString()}`,
+          }),
+        },
+      });
+
+      const responseBody = this.serializeTaskDetail(created, {
+        total: 0,
+        done: 0,
+      });
+      const etag = formatTaskETag(created._id.toHexString(), created.version);
+      const location = `/api/v1/tasks/projects/${ctx.projectId}/tasks/${created._id.toHexString()}`;
+
+      return {
+        statusCode: 201,
+        body: responseBody,
+        etag,
+        location,
+      };
+    } catch (error) {
+      await this.repository.releaseIdempotency(
+        ctx.actorId,
+        ctx.projectId,
+        operationId,
+      );
+      throw error;
+    }
   }
 
   async updateProjectTask(params: {
@@ -1219,6 +1259,12 @@ export class TaskWorkspaceService {
           throw new UnprocessableEntityException({
             code: 'TASK_SUBTASK_DEPTH_EXCEEDED',
             message: 'Subtasks cannot be nested more than one level deep.',
+          });
+        }
+        if (parentTask.status === 'CANCELLED') {
+          throw new UnprocessableEntityException({
+            code: 'PARENT_TASK_CANCELLED',
+            message: 'Cannot attach a subtask to a cancelled parent task.',
           });
         }
         updates.parentId = new Types.ObjectId(parentId);
@@ -1429,148 +1475,133 @@ export class TaskWorkspaceService {
       },
     );
 
-    const existingOp = await this.repository.findIdempotency(
+    const replayed = await this.claimOrReplayIdempotency(
       ctx.actorId,
       ctx.projectId,
       operationId,
+      fingerprint,
+      'Idempotency-Key was already used with a different transition payload.',
     );
-    if (existingOp) {
-      if (existingOp.fingerprint !== fingerprint) {
-        throw new ConflictException({
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message:
-            'Idempotency-Key was already used with a different transition payload.',
+    if (replayed) return replayed;
+
+    try {
+      const existing = await this.repository.getTaskById(ctx.projectId, taskId);
+      if (!existing) {
+        throw new NotFoundException({
+          code: 'TASK_NOT_FOUND',
+          message: 'Task not found.',
         });
       }
-      if (existingOp.httpResponse) {
-        return {
-          statusCode: existingOp.httpResponse.statusCode,
-          body: existingOp.httpResponse.body,
-          etag: existingOp.httpResponse.etag,
-          replayed: true,
-        };
+
+      this.assertCanModifyTask(ctx.actorRole, ctx.actorId, existing);
+
+      if (existing.version !== expectedVersion) {
+        throw new ConflictException({
+          code: 'TASK_VERSION_CONFLICT',
+          message: 'Task version does not match If-Match header.',
+          details: {
+            expectedVersion,
+            currentVersion: existing.version,
+            currentStatus: existing.status,
+          },
+        });
       }
-    }
 
-    const existing = await this.repository.getTaskById(ctx.projectId, taskId);
-    if (!existing) {
-      throw new NotFoundException({
-        code: 'TASK_NOT_FOUND',
-        message: 'Task not found.',
-      });
-    }
+      const fromStatus = requestedFromStatus ?? existing.status;
+      if (existing.status !== fromStatus) {
+        throw new ConflictException({
+          code: 'TASK_STATUS_CONFLICT',
+          message: 'Task current status does not match fromStatus.',
+          details: {
+            expectedFromStatus: fromStatus,
+            actualStatus: existing.status,
+            currentVersion: existing.version,
+            currentStatus: existing.status,
+          },
+        });
+      }
 
-    this.assertCanModifyTask(ctx.actorRole, ctx.actorId, existing);
+      if (!ALLOWED_WORKSPACE_TRANSITIONS.has(`${fromStatus}:${toStatus}`)) {
+        throw new UnprocessableEntityException({
+          code: 'TASK_TRANSITION_NOT_ALLOWED',
+          message: `Transition from ${fromStatus} to ${toStatus} is not allowed.`,
+        });
+      }
 
-    if (existing.version !== expectedVersion) {
-      throw new ConflictException({
-        code: 'TASK_VERSION_CONFLICT',
-        message: 'Task version does not match If-Match header.',
-        details: {
-          expectedVersion,
-          currentVersion: existing.version,
-          currentStatus: existing.status,
+      if (
+        requiresTransitionReason(fromStatus, toStatus) &&
+        (!reason || reason.length < 5)
+      ) {
+        throw new UnprocessableEntityException({
+          code: 'TASK_TRANSITION_REASON_REQUIRED',
+          message: `Transition from ${fromStatus} to ${toStatus} requires a reason of at least 5 characters.`,
+        });
+      }
+
+      const outcome = await this.repository.transitionTaskStatus({
+        organizationId: ctx.organizationId,
+        projectId: ctx.projectId,
+        taskId,
+        actorId: ctx.actorId,
+        expectedVersion,
+        fromStatus,
+        toStatus,
+        reason,
+        operationId,
+        correlationId: params.correlationId ?? randomUUID(),
+        idempotency: {
+          actorId: ctx.actorId,
+          projectId: ctx.projectId,
+          operationId,
+          fingerprint,
+          getEntityId: (res) => res.task._id,
+          buildResponse: (res) => ({
+            statusCode: 200,
+            body: this.serializeTaskDetail(res.task, res.subtaskCounts),
+            etag: formatTaskETag(res.task._id.toHexString(), res.task.version),
+          }),
         },
       });
+
+      if (outcome.kind === 'NOT_FOUND') {
+        throw new NotFoundException({
+          code: 'TASK_NOT_FOUND',
+          message: 'Task not found.',
+        });
+      }
+      if (outcome.kind === 'CONFLICT') {
+        throw new ConflictException({
+          code: 'TASK_VERSION_CONFLICT',
+          message: 'Task was modified concurrently.',
+          details: {
+            expectedVersion,
+            currentVersion: outcome.currentVersion,
+          },
+        });
+      }
+
+      const body = this.serializeTaskDetail(
+        outcome.task,
+        outcome.subtaskCounts,
+      );
+      const etag = formatTaskETag(
+        outcome.task._id.toHexString(),
+        outcome.task.version,
+      );
+
+      return {
+        statusCode: 200,
+        etag,
+        body,
+      };
+    } catch (error) {
+      await this.repository.releaseIdempotency(
+        ctx.actorId,
+        ctx.projectId,
+        operationId,
+      );
+      throw error;
     }
-
-    const fromStatus = requestedFromStatus ?? existing.status;
-    if (existing.status !== fromStatus) {
-      throw new ConflictException({
-        code: 'TASK_STATUS_CONFLICT',
-        message: 'Task current status does not match fromStatus.',
-        details: {
-          expectedFromStatus: fromStatus,
-          actualStatus: existing.status,
-          currentVersion: existing.version,
-          currentStatus: existing.status,
-        },
-      });
-    }
-
-    if (!ALLOWED_WORKSPACE_TRANSITIONS.has(`${fromStatus}:${toStatus}`)) {
-      throw new UnprocessableEntityException({
-        code: 'TASK_TRANSITION_NOT_ALLOWED',
-        message: `Transition from ${fromStatus} to ${toStatus} is not allowed.`,
-      });
-    }
-
-    if (
-      requiresTransitionReason(fromStatus, toStatus) &&
-      (!reason || reason.length < 5)
-    ) {
-      throw new UnprocessableEntityException({
-        code: 'TASK_TRANSITION_REASON_REQUIRED',
-        message: `Transition from ${fromStatus} to ${toStatus} requires a reason of at least 5 characters.`,
-      });
-    }
-
-    const outcome = await this.repository.transitionTaskStatus({
-      organizationId: ctx.organizationId,
-      projectId: ctx.projectId,
-      taskId,
-      actorId: ctx.actorId,
-      expectedVersion,
-      fromStatus,
-      toStatus,
-      reason,
-      operationId,
-      correlationId: params.correlationId ?? randomUUID(),
-    });
-
-    if (outcome.kind === 'NOT_FOUND') {
-      throw new NotFoundException({
-        code: 'TASK_NOT_FOUND',
-        message: 'Task not found.',
-      });
-    }
-    if (outcome.kind === 'CONFLICT') {
-      throw new ConflictException({
-        code: 'TASK_VERSION_CONFLICT',
-        message: 'Task was modified concurrently.',
-        details: {
-          expectedVersion,
-          currentVersion: outcome.currentVersion,
-        },
-      });
-    }
-
-    const subtaskCountsMap =
-      outcome.task.parentId === null
-        ? await this.repository.getSubtaskCountsMap(
-            [new Types.ObjectId(ctx.projectId)],
-            [outcome.task._id],
-          )
-        : new Map<string, WorkspaceSubtaskCounts>();
-
-    const body = this.serializeTaskDetail(
-      outcome.task,
-      subtaskCountsMap.get(outcome.task._id.toHexString()) ?? {
-        total: 0,
-        done: 0,
-      },
-    );
-    const etag = formatTaskETag(
-      outcome.task._id.toHexString(),
-      outcome.task.version,
-    );
-
-    await this.repository.saveIdempotency({
-      actorId: ctx.actorId,
-      projectId: ctx.projectId,
-      operationId,
-      fingerprint,
-      taskId: outcome.task._id,
-      statusCode: 200,
-      body,
-      etag,
-    });
-
-    return {
-      statusCode: 200,
-      etag,
-      body,
-    };
   }
 
   async listTaskHistory(params: {
@@ -1833,62 +1864,58 @@ export class TaskWorkspaceService {
       { body: bodyText },
     );
 
-    const existingOp = await this.repository.findIdempotency(
+    const replayed = await this.claimOrReplayIdempotency(
       ctx.actorId,
       ctx.projectId,
       operationId,
+      fingerprint,
+      'Idempotency-Key was already used with a different comment payload.',
     );
-    if (existingOp) {
-      if (existingOp.fingerprint !== fingerprint) {
-        throw new ConflictException({
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message:
-            'Idempotency-Key was already used with a different comment payload.',
+    if (replayed) return replayed;
+
+    try {
+      const task = await this.repository.getTaskById(ctx.projectId, taskId);
+      if (!task) {
+        throw new NotFoundException({
+          code: 'TASK_NOT_FOUND',
+          message: 'Task not found.',
         });
       }
-      if (existingOp.httpResponse) {
-        return {
-          statusCode: existingOp.httpResponse.statusCode,
-          body: existingOp.httpResponse.body,
-          replayed: true,
-        };
-      }
-    }
 
-    const task = await this.repository.getTaskById(ctx.projectId, taskId);
-    if (!task) {
-      throw new NotFoundException({
-        code: 'TASK_NOT_FOUND',
-        message: 'Task not found.',
+      const comment = await this.repository.createTaskComment({
+        organizationId: ctx.organizationId,
+        projectId: ctx.projectId,
+        taskId,
+        taskVersion: task.version,
+        authorId: ctx.actorId,
+        body: bodyText,
+        operationId,
+        correlationId: params.correlationId ?? randomUUID(),
+        idempotency: {
+          actorId: ctx.actorId,
+          projectId: ctx.projectId,
+          operationId,
+          fingerprint,
+          getEntityId: () => task._id,
+          buildResponse: (doc) => ({
+            statusCode: 201,
+            body: this.serializeComment(doc),
+          }),
+        },
       });
+
+      return {
+        statusCode: 201,
+        body: this.serializeComment(comment),
+      };
+    } catch (error) {
+      await this.repository.releaseIdempotency(
+        ctx.actorId,
+        ctx.projectId,
+        operationId,
+      );
+      throw error;
     }
-
-    const comment = await this.repository.createTaskComment({
-      organizationId: ctx.organizationId,
-      projectId: ctx.projectId,
-      taskId,
-      taskVersion: task.version,
-      authorId: ctx.actorId,
-      body: bodyText,
-      operationId,
-      correlationId: params.correlationId ?? randomUUID(),
-    });
-
-    const responseBody = this.serializeComment(comment);
-    await this.repository.saveIdempotency({
-      actorId: ctx.actorId,
-      projectId: ctx.projectId,
-      operationId,
-      fingerprint,
-      taskId: task._id,
-      statusCode: 201,
-      body: responseBody,
-    });
-
-    return {
-      statusCode: 201,
-      body: responseBody,
-    };
   }
 
   async listTaskWorklogs(params: {
@@ -2040,64 +2067,60 @@ export class TaskWorkspaceService {
       },
     );
 
-    const existingOp = await this.repository.findIdempotency(
+    const replayed = await this.claimOrReplayIdempotency(
       ctx.actorId,
       ctx.projectId,
       operationId,
+      fingerprint,
+      'Idempotency-Key was already used with a different worklog payload.',
     );
-    if (existingOp) {
-      if (existingOp.fingerprint !== fingerprint) {
-        throw new ConflictException({
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message:
-            'Idempotency-Key was already used with a different worklog payload.',
+    if (replayed) return replayed;
+
+    try {
+      const task = await this.repository.getTaskById(ctx.projectId, taskId);
+      if (!task) {
+        throw new NotFoundException({
+          code: 'TASK_NOT_FOUND',
+          message: 'Task not found.',
         });
       }
-      if (existingOp.httpResponse) {
-        return {
-          statusCode: existingOp.httpResponse.statusCode,
-          body: existingOp.httpResponse.body,
-          replayed: true,
-        };
-      }
-    }
 
-    const task = await this.repository.getTaskById(ctx.projectId, taskId);
-    if (!task) {
-      throw new NotFoundException({
-        code: 'TASK_NOT_FOUND',
-        message: 'Task not found.',
+      const worklog = await this.repository.createTaskWorklog({
+        organizationId: ctx.organizationId,
+        projectId: ctx.projectId,
+        taskId,
+        taskVersion: task.version,
+        authorId: ctx.actorId,
+        minutes,
+        note,
+        loggedAt,
+        operationId,
+        correlationId: params.correlationId ?? randomUUID(),
+        idempotency: {
+          actorId: ctx.actorId,
+          projectId: ctx.projectId,
+          operationId,
+          fingerprint,
+          getEntityId: () => task._id,
+          buildResponse: (doc) => ({
+            statusCode: 201,
+            body: this.serializeWorklog(doc),
+          }),
+        },
       });
+
+      return {
+        statusCode: 201,
+        body: this.serializeWorklog(worklog),
+      };
+    } catch (error) {
+      await this.repository.releaseIdempotency(
+        ctx.actorId,
+        ctx.projectId,
+        operationId,
+      );
+      throw error;
     }
-
-    const worklog = await this.repository.createTaskWorklog({
-      organizationId: ctx.organizationId,
-      projectId: ctx.projectId,
-      taskId,
-      taskVersion: task.version,
-      authorId: ctx.actorId,
-      minutes,
-      note,
-      loggedAt,
-      operationId,
-      correlationId: params.correlationId ?? randomUUID(),
-    });
-
-    const responseBody = this.serializeWorklog(worklog);
-    await this.repository.saveIdempotency({
-      actorId: ctx.actorId,
-      projectId: ctx.projectId,
-      operationId,
-      fingerprint,
-      taskId: task._id,
-      statusCode: 201,
-      body: responseBody,
-    });
-
-    return {
-      statusCode: 201,
-      body: responseBody,
-    };
   }
 
   async listProjectSprints(params: {
@@ -2236,58 +2259,54 @@ export class TaskWorkspaceService {
       },
     );
 
-    const existingOp = await this.repository.findIdempotency(
+    const replayed = await this.claimOrReplayIdempotency(
       ctx.actorId,
       ctx.projectId,
       operationId,
-    );
-    if (existingOp) {
-      if (existingOp.fingerprint !== fingerprint) {
-        throw new ConflictException({
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message:
-            'Idempotency-Key was already used with a different sprint payload.',
-        });
-      }
-      if (existingOp.httpResponse) {
-        return {
-          statusCode: existingOp.httpResponse.statusCode,
-          body: existingOp.httpResponse.body,
-          etag: existingOp.httpResponse.etag,
-          replayed: true,
-        };
-      }
-    }
-
-    const sprint = await this.repository.createProjectSprint({
-      organizationId: ctx.organizationId,
-      projectId: ctx.projectId,
-      actorId: ctx.actorId,
-      name,
-      goal,
-      startDate,
-      endDate,
-    });
-
-    const responseBody = this.serializeSprint(sprint);
-    const etag = formatSprintETag(sprint._id.toHexString(), sprint.version);
-
-    await this.repository.saveIdempotency({
-      actorId: ctx.actorId,
-      projectId: ctx.projectId,
-      operationId,
       fingerprint,
-      taskId: sprint._id,
-      statusCode: 201,
-      body: responseBody,
-      etag,
-    });
+      'Idempotency-Key was already used with a different sprint payload.',
+    );
+    if (replayed) return replayed;
 
-    return {
-      statusCode: 201,
-      etag,
-      body: responseBody,
-    };
+    try {
+      const sprint = await this.repository.createProjectSprint({
+        organizationId: ctx.organizationId,
+        projectId: ctx.projectId,
+        actorId: ctx.actorId,
+        name,
+        goal,
+        startDate,
+        endDate,
+        idempotency: {
+          actorId: ctx.actorId,
+          projectId: ctx.projectId,
+          operationId,
+          fingerprint,
+          getEntityId: (doc) => doc._id,
+          buildResponse: (doc) => ({
+            statusCode: 201,
+            body: this.serializeSprint(doc),
+            etag: formatSprintETag(doc._id.toHexString(), doc.version),
+          }),
+        },
+      });
+
+      const responseBody = this.serializeSprint(sprint);
+      const etag = formatSprintETag(sprint._id.toHexString(), sprint.version);
+
+      return {
+        statusCode: 201,
+        etag,
+        body: responseBody,
+      };
+    } catch (error) {
+      await this.repository.releaseIdempotency(
+        ctx.actorId,
+        ctx.projectId,
+        operationId,
+      );
+      throw error;
+    }
   }
 
   async updateProjectSprint(params: {
@@ -2540,95 +2559,90 @@ export class TaskWorkspaceService {
       { moveIncompleteToSprintId },
     );
 
-    const existingOp = await this.repository.findIdempotency(
+    const replayed = await this.claimOrReplayIdempotency(
       ctx.actorId,
       ctx.projectId,
       operationId,
+      fingerprint,
+      'Idempotency-Key was already used with a different completeSprint payload.',
     );
-    if (existingOp) {
-      if (existingOp.fingerprint !== fingerprint) {
-        throw new ConflictException({
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message:
-            'Idempotency-Key was already used with a different completeSprint payload.',
-        });
-      }
-      if (existingOp.httpResponse) {
-        return {
-          statusCode: existingOp.httpResponse.statusCode,
-          body: existingOp.httpResponse.body,
-          etag: existingOp.httpResponse.etag,
-          replayed: true,
-        };
-      }
-    }
+    if (replayed) return replayed;
 
-    const outcome = await this.repository.completeProjectSprint({
-      organizationId: ctx.organizationId,
-      projectId: ctx.projectId,
-      sprintId,
-      actorId: ctx.actorId,
-      expectedVersion,
-      moveIncompleteToSprintId,
-      correlationId: params.correlationId ?? randomUUID(),
-    });
-
-    if (outcome.kind === 'NOT_FOUND') {
-      throw new NotFoundException({
-        code: 'SPRINT_NOT_FOUND',
-        message: 'Sprint not found.',
-      });
-    }
-    if (outcome.kind === 'VERSION_CONFLICT') {
-      throw new ConflictException({
-        code: 'SPRINT_VERSION_CONFLICT',
-        message: 'Sprint or its tasks were modified concurrently.',
-        details: {
-          expectedVersion,
-          currentVersion: outcome.currentVersion,
+    try {
+      const outcome = await this.repository.completeProjectSprint({
+        organizationId: ctx.organizationId,
+        projectId: ctx.projectId,
+        sprintId,
+        actorId: ctx.actorId,
+        expectedVersion,
+        moveIncompleteToSprintId,
+        correlationId: params.correlationId ?? randomUUID(),
+        idempotency: {
+          actorId: ctx.actorId,
+          projectId: ctx.projectId,
+          operationId,
+          fingerprint,
+          getEntityId: (res) => res.sprint._id,
+          buildResponse: (res) => ({
+            statusCode: 200,
+            body: this.serializeSprint(res.sprint, res.counts),
+            etag: formatSprintETag(
+              res.sprint._id.toHexString(),
+              res.sprint.version,
+            ),
+          }),
         },
       });
-    }
-    if (outcome.kind === 'NOT_ACTIVE') {
-      throw new UnprocessableEntityException({
-        code: 'SPRINT_NOT_ACTIVE',
-        message: 'Only an ACTIVE sprint can be completed.',
-      });
-    }
-    if (outcome.kind === 'TARGET_SPRINT_INVALID') {
-      throw new UnprocessableEntityException({
-        code: 'TARGET_SPRINT_INVALID',
-        message:
-          'moveIncompleteToSprintId must reference a PLANNED sprint in the same project.',
-      });
-    }
 
-    const allSprints = await this.repository.listProjectSprints(ctx.projectId);
-    const matching = allSprints.find(
-      (s) => s.sprint._id.toHexString() === sprintId,
-    );
-    const responseBody = this.serializeSprint(outcome.sprint, matching?.counts);
-    const etag = formatSprintETag(
-      outcome.sprint._id.toHexString(),
-      outcome.sprint.version,
-    );
+      if (outcome.kind === 'NOT_FOUND') {
+        throw new NotFoundException({
+          code: 'SPRINT_NOT_FOUND',
+          message: 'Sprint not found.',
+        });
+      }
+      if (outcome.kind === 'VERSION_CONFLICT') {
+        throw new ConflictException({
+          code: 'SPRINT_VERSION_CONFLICT',
+          message: 'Sprint or its tasks were modified concurrently.',
+          details: {
+            expectedVersion,
+            currentVersion: outcome.currentVersion,
+          },
+        });
+      }
+      if (outcome.kind === 'NOT_ACTIVE') {
+        throw new UnprocessableEntityException({
+          code: 'SPRINT_NOT_ACTIVE',
+          message: 'Only an ACTIVE sprint can be completed.',
+        });
+      }
+      if (outcome.kind === 'TARGET_SPRINT_INVALID') {
+        throw new UnprocessableEntityException({
+          code: 'TARGET_SPRINT_INVALID',
+          message:
+            'moveIncompleteToSprintId must reference a PLANNED sprint in the same project.',
+        });
+      }
 
-    await this.repository.saveIdempotency({
-      actorId: ctx.actorId,
-      projectId: ctx.projectId,
-      operationId,
-      fingerprint,
-      taskId: outcome.sprint._id,
-      statusCode: 200,
-      body: responseBody,
-      etag,
-    });
+      const responseBody = this.serializeSprint(outcome.sprint, outcome.counts);
+      const etag = formatSprintETag(
+        outcome.sprint._id.toHexString(),
+        outcome.sprint.version,
+      );
 
-    return {
-      statusCode: 200,
-      etag,
-      body: responseBody,
-    };
+      return {
+        statusCode: 200,
+        etag,
+        body: responseBody,
+      };
+    } catch (error) {
+      await this.repository.releaseIdempotency(
+        ctx.actorId,
+        ctx.projectId,
+        operationId,
+      );
+      throw error;
+    }
   }
 
   async getProjectTaskSummary(params: {
@@ -2773,7 +2787,14 @@ export class TaskWorkspaceService {
     }
 
     let cursorTuple:
-      { overdue: number; total: number; projectId: string } | undefined;
+      | {
+          overdue: number;
+          total: number;
+          projectId: string;
+          asOf?: Date;
+          seen?: string[];
+        }
+      | undefined;
     if (
       typeof params.query.cursor === 'string' &&
       params.query.cursor.trim().length > 0
@@ -2788,12 +2809,13 @@ export class TaskWorkspaceService {
       cursorTuple = decoded;
     }
 
-    const asOf = new Date();
+    const asOf = cursorTuple?.asOf ?? new Date();
     const [projects, { statusBuckets, overdueBuckets }] = await Promise.all([
       this.iamBridge.listOrganizationProjects(adminCtx.organizationId),
       this.repository.getOrganizationTaskAggregates(
         adminCtx.organizationId,
         asOf,
+        Boolean(cursorTuple?.asOf),
       ),
     ]);
 
@@ -2869,28 +2891,41 @@ export class TaskWorkspaceService {
       return a.projectId.localeCompare(b.projectId);
     });
 
+    const seenSet = cursorTuple?.seen ? new Set(cursorTuple.seen) : null;
     const filteredProjects = cursorTuple
-      ? sortedProjects.filter((item) => {
-          if (item.overdue !== cursorTuple.overdue) {
-            return item.overdue < cursorTuple.overdue;
-          }
-          if (item.total !== cursorTuple.total) {
-            return item.total < cursorTuple.total;
-          }
-          return item.projectId > cursorTuple.projectId;
-        })
+      ? seenSet
+        ? sortedProjects.filter(
+            (item) => !seenSet.has(item.projectId.toLowerCase()),
+          )
+        : sortedProjects.filter((item) => {
+            if (item.overdue !== cursorTuple.overdue) {
+              return item.overdue < cursorTuple.overdue;
+            }
+            if (item.total !== cursorTuple.total) {
+              return item.total < cursorTuple.total;
+            }
+            return item.projectId > cursorTuple.projectId;
+          })
       : sortedProjects;
 
     const hasMore = filteredProjects.length > limit;
     const pageProjects = hasMore
       ? filteredProjects.slice(0, limit)
       : filteredProjects;
+    const nextSeen = [
+      ...(cursorTuple?.seen ?? []),
+      ...pageProjects.map((p) => p.projectId.toLowerCase()),
+    ].slice(0, 500);
     const nextCursor =
       hasMore && pageProjects.length > 0
         ? encodeOrgSummaryCursor(
             pageProjects[pageProjects.length - 1].overdue,
             pageProjects[pageProjects.length - 1].total,
             pageProjects[pageProjects.length - 1].projectId,
+            {
+              asOf: asOf.toISOString(),
+              seen: nextSeen,
+            },
           )
         : null;
 
