@@ -72,14 +72,21 @@ export class RedisService implements OnModuleDestroy {
     onMessage: (value: string) => void,
   ): Promise<() => void> {
     const subscriber = createRedisConnection(this.config);
-    if (subscriber.status === 'wait') await subscriber.connect();
-    subscriber.on('message', (receivedChannel, value) => {
-      if (receivedChannel === channel && typeof value === 'string') {
-        onMessage(value);
+    try {
+      if (subscriber.status === 'wait') await subscriber.connect();
+      subscriber.on('message', (receivedChannel, value) => {
+        if (receivedChannel === channel && typeof value === 'string') {
+          onMessage(value);
+        }
+      });
+      await subscriber.subscribe(channel);
+      return () => subscriber.disconnect();
+    } catch (error) {
+      if (subscriber.status !== 'end') {
+        subscriber.disconnect();
       }
-    });
-    await subscriber.subscribe(channel);
-    return () => subscriber.disconnect();
+      throw error;
+    }
   }
 
   async touchPresenceSession(

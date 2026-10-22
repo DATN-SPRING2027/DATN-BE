@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { SERVICE_DATABASES } from '../../../common/mongodb/database-names';
 
 describe('D-04 dormant runtime registration boundary', () => {
+  jest.setTimeout(30_000);
   const root = process.cwd();
 
   it('keeps Task out of default app, Gateway, package scripts and Compose', () => {

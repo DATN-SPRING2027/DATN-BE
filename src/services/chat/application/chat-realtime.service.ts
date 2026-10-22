@@ -60,19 +60,25 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly redis: RedisService,
     private readonly iam: ChatIamClient,
-    config: ConfigService,
+    private readonly config: ConfigService,
   ) {
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
     this.eventChannel = `${this.redisPrefix}:events:v1`;
   }
 
   async onModuleInit(): Promise<void> {
-    this.stopSubscriber = await this.redis.subscribe(
-      this.eventChannel,
-      (value) => {
-        this.receive(value);
-      },
-    );
+    if (this.config.get<string>('INFRA_ENABLED') !== 'false') {
+      try {
+        this.stopSubscriber = await this.redis.subscribe(
+          this.eventChannel,
+          (value) => {
+            this.receive(value);
+          },
+        );
+      } catch {
+        // Realtime pub/sub degrades gracefully when Redis is unavailable at startup.
+      }
+    }
     this.heartbeat = setInterval(() => {
       void this.pingAndExpireSessions();
     }, heartbeatMs);
