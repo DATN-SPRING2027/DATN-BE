@@ -24,7 +24,12 @@ info:
     - Cross-project or non-member access returns 404 (no existence oracle), as in the slice.
   x-approval-status: PROPOSED_NOT_APPROVED
   x-consumer: DATN-FE@80a324ffac9cbb1e1b45e0a34d44c9c6ef508046
-  x-blocking-gates: [G1, G2, G3, G4, G5, G6, G7]
+  x-blocking-gates: [G1, G2, G3, G4, G5, G6, G7, G10]
+  x-operating-model: |
+    Each Project is its own task workspace. The Project's Leader(s) operate it. A Manager (ADMIN)
+    sees every task of every Project in the Organization (including PRIVATE Projects) and can edit
+    any task; Members create tasks and edit tasks they created or were assigned. Confirmed by the
+    product owner (Thang) on 2026-10-22; pending a decision record (G4).
   license:
     name: UNLICENSED
     identifier: UNLICENSED
@@ -330,6 +335,90 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/RetryLater' }
+  /api/v1/tasks/organization/tasks:
+    get:
+      tags: [TaskViews]
+      operationId: listOrganizationTasks
+      summary: Manager screen — tasks across all Projects of the caller's Organization
+      description: |
+        ADMIN (Manager) only; every other role receives 404 so the route does not reveal itself.
+        The Organization is taken from the authenticated session, never from the client.
+        Uses the same keyset pagination and filter allowlist as listProjectTasks, plus an optional
+        `projectId` filter (the Manager drill-down into one Project).
+        Includes PRIVATE Projects the Manager is not a member of (decision recorded 2026-10-22).
+        Each item additionally carries `projectName` and `projectCode` for display.
+      x-status: PROPOSED
+      x-requires-gate: G10 (organizationId on tasks vs caller-supplied projectIds, see 07 §12)
+      x-consumers:
+        - DATN_FE Manager task overview screen (does not exist yet; PR #69 only has per-Project workspaces)
+      x-required-indexes:
+        - '{organizationId:1,_id:1}'
+        - '{organizationId:1,status:1,_id:1}'
+        - '{organizationId:1,projectId:1,_id:1}'
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: afterId
+          in: query
+          schema: { $ref: '#/components/schemas/ObjectIdString' }
+        - name: projectId
+          in: query
+          description: Restrict to one Project of the Organization. A Project outside the Organization yields an empty page, not an error.
+          schema: { $ref: '#/components/schemas/ObjectIdString' }
+        - name: status
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 5
+            uniqueItems: true
+            items: { $ref: '#/components/schemas/TaskStatus' }
+        - name: assigneeId
+          in: query
+          schema: { type: string, pattern: '^([0-9a-f]{24}|none)$' }
+        - name: dueFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: dueTo
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: One page of tasks across the Organization.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrganizationTaskPage' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+  /api/v1/tasks/organization/task-summary:
+    get:
+      tags: [TaskViews]
+      operationId: getOrganizationTaskSummary
+      summary: Manager screen — one summary row per Project (total, in progress, overdue)
+      description: |
+        ADMIN (Manager) only; other roles receive 404. Computed on demand with indexed aggregation
+        (about 80-100 ms p50/p95 for 100k tasks in 40 Projects, see 07 §12).
+        `projects` is bounded to 200 rows ordered by `overdue` descending then `total` descending;
+        `truncated` is true when the Organization has more Projects than the bound.
+      x-status: PROPOSED
+      x-requires-gate: G10
+      responses:
+        '200':
+          description: Per-Project summary.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrganizationTaskSummary' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/RetryLater' }
 components:
   securitySchemes:
     sessionCookie:
@@ -620,6 +709,62 @@ components:
         dueNext7Days: { type: integer, minimum: 0 }
         completedLast7Days: { type: integer, minimum: 0 }
         createdLast7Days: { type: integer, minimum: 0 }
+    OrganizationTask:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+        - type: object
+          required: [projectName, projectCode]
+          properties:
+            projectName: { type: string }
+            projectCode: { type: string }
+    OrganizationTaskPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfterId]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OrganizationTask' }
+        nextAfterId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+    ProjectTaskSummaryRow:
+      type: object
+      additionalProperties: false
+      required: [projectId, projectName, projectCode, total, inProgress, overdue, byStatus]
+      properties:
+        projectId: { $ref: '#/components/schemas/ObjectIdString' }
+        projectName: { type: string }
+        projectCode: { type: string }
+        total: { type: integer, minimum: 0 }
+        inProgress: { type: integer, minimum: 0 }
+        overdue:
+          type: integer
+          minimum: 0
+          description: Tasks with a due date before `asOf` whose status is TODO, IN_PROGRESS or BLOCKED.
+        byStatus:
+          type: array
+          items: { $ref: '#/components/schemas/CountBucket' }
+    OrganizationTaskSummary:
+      type: object
+      additionalProperties: false
+      required: [asOf, totals, projects, truncated]
+      properties:
+        asOf: { type: string, format: date-time }
+        totals:
+          type: object
+          additionalProperties: false
+          required: [total, inProgress, overdue]
+          properties:
+            total: { type: integer, minimum: 0 }
+            inProgress: { type: integer, minimum: 0 }
+            overdue: { type: integer, minimum: 0 }
+        projects:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/ProjectTaskSummaryRow' }
+        truncated: { type: boolean }
     ErrorResponse:
       type: object
       additionalProperties: false

@@ -26,6 +26,8 @@ flowchart TD
   B1 --> B5["BE-5: PATCH field + TASK_UPDATED event"]
   B1 --> B6["BE-6: history route (adapter D-09)"]
   B1 --> B7["BE-7: task-summary"]
+  B7 --> B8["BE-8: Manager overview /tasks/organization/*"]
+  B8 --> F5["FE-5: màn hình Manager toàn org"]
   F1["FE-1: queries/tasks (TanStack) + List/Board/Detail đọc thật + assignee C4"] --> F2["FE-2: mutations (create/transition/patch) + optimistic có rollback"]
   B3 --> F2
   B4 --> F2
@@ -46,7 +48,9 @@ flowchart TD
 | BE-4 | `feat/Thang-task-transition-be-api` | HTTP adapter cho `TaskLifecycleCommandService` | tái dùng test policy D-08 + HTTP | 1 ngày |
 | BE-5 | `feat/Thang-task-update-be-api` | PATCH + `task-field-policy` + event `TASK_UPDATED` | CAS 2 writer | 1.5 ngày |
 | BE-6 | `feat/Thang-task-history-route-be-api` | route history | | 0.5 ngày |
-| BE-7 | `feat/Thang-task-summary-be-api` | `$facet` aggregation | đối chiếu count | 1 ngày |
+| BE-7 | `feat/Thang-task-summary-be-api` | `$facet`/`$group` aggregation | đối chiếu count | 1 ngày |
+| BE-8 | `feat/Thang-task-manager-overview-be-api` | 2 route `/api/v1/tasks/organization/*` chỉ ADMIN, ràng buộc `organizationId`; 4 index tiền tố `organizationId` (phụ thuộc G10) | negative: Leader/Member nhận 404; org khác không thấy dữ liệu; project PRIVATE hiển thị cho ADMIN | 1.5–2 ngày |
+| FE-5 | `feat/Thang-manager-task-overview-fe-ui` | Màn hình Manager mới: bảng task toàn org, thẻ tổng hợp theo project, drill-down vào project. Cần Rule 06 đầy đủ (4 viewport, 8 trạng thái) | vitest + Visual QA | 2–3 ngày |
 | FE-1 | `feat/Thang-workspace-tasks-read-fe-ui` | `src/lib/queries/tasks/**`, thay `INITIAL_PREVIEW_WORK_ITEMS`; loading/error/empty/403 | vitest + Visual QA Rule 06 | 2 ngày |
 | FE-2 | `feat/Thang-workspace-tasks-mutations-fe-ui` | create/transition/patch, ETag/If-Match, Idempotency-Key, rollback | vitest | 2 ngày |
 | FE-3 | `feat/Thang-workspace-views-fe-ui` | Overview/Reports từ summary; Calendar/Timeline từ range query | vitest + Visual QA | 1.5–2 ngày |

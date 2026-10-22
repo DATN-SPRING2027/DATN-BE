@@ -55,6 +55,14 @@ Các dòng log `ERROR [TaskCreateService] … INVALID_TRUSTED_CONTEXT` và `WARN
 
 Không có regression: src không bị thay đổi, nên đây là kết quả kỳ vọng.
 
+**Bổ sung sau yêu cầu Manager (2026-10-22):** sau khi chạy `npm run check` ở trên, tôi thêm `scripts/perf/workspace-org-queries.mjs`, cập nhật các tài liệu và mở rộng test an toàn. `npm run check` **không chạy lại**, vì các thay đổi này chỉ nằm trong `docs/workspace/**` và `scripts/perf/**`, nằm ngoài phạm vi lint của check (`eslint "{src,test}/**/*.ts"`) và không import vào `src`. Các kiểm tra liên quan đã chạy riêng:
+
+| Lệnh | Kết quả |
+|---|---|
+| `node --test scripts/perf/workspace-query-plans.test.mjs` (4 test: 2 script × 2 trường hợp từ chối URI) | **4 pass / 0 fail**. Kiểm tra `listDatabases`: không còn database `datn_workspace*` nào |
+| `npx @redocly/cli@1 lint docs/workspace/04-api-inventory.yaml --skip-rule no-empty-servers` (9 operation) | valid, 0 error / 0 warning |
+| `node scripts/perf/workspace-org-queries.mjs --iterations 20` | exit 0, kết quả ở [07 §12](07-performance-analysis.md); DB scratch tự drop |
+
 ## 4. Những gì CHƯA được kiểm chứng (và lý do)
 
 | Hạng mục Phase 9 | Trạng thái | Lý do |

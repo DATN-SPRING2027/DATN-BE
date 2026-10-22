@@ -20,7 +20,7 @@
 
 ## 2. Bề mặt API tối thiểu
 
-Chỉ có **7 operation trên 5 resource**. Không có endpoint riêng cho Board, Calendar hay Timeline vì cả ba đều là **projection của list** với filter khác nhau. Cách này tránh nhân bản authorization và logic query.
+Chỉ có **9 operation**: 7 theo project (bảng dưới) và 2 cho màn hình Manager toàn org (mục 2.6). Không có endpoint riêng cho Board, Calendar hay Timeline vì cả ba đều là **projection của list** với filter khác nhau. Cách này tránh nhân bản authorization và logic query.
 
 | # | Method | Path (public) | Consumer FE | Trạng thái | Ghi chú |
 |---|---|---|---|---|---|
@@ -65,16 +65,38 @@ Nếu cho `PATCH {status}` thì sẽ có hai đường ghi status, dễ bỏ só
 - FE hiển thị key (`work-types.ts:72-97`). Đề xuất cấp phát atomic bằng `findOneAndUpdate({_id: projectId}, {$inc: {seq: 1}})` trên collection counter của Task service, kèm unique index `{projectId, key}`.
 - Project code đã có ở IAM (`POST iam/projects` body `{name, code}`). Task service **không** gọi sang IAM ở mỗi request; code được đưa vào qua scope evidence (G4) hoặc snapshot lúc tạo task.
 
-### 2.5 Phân quyền đề xuất (chờ G4)
+### 2.5 Phân quyền (đã được Thang xác nhận ngày 2026-10-22, chờ ghi vào decision record G4)
 
-| Op | ADMIN | TEAM_LEADER (project) | MEMBER (project) | Nguồn |
+Mô hình vận hành: **mỗi Project là một workspace task riêng**; **Leader của project là người vận hành chính**; **Manager (ADMIN) có màn hình tổng hợp task của mọi project và xem/sửa từng task của từng project**.
+
+| Op | ADMIN (Manager) | TEAM_LEADER (của project đó) | MEMBER (của project đó) | Nguồn / ghi chú |
 |---|---|---|---|---|
-| list, detail, history, summary | ✓ | ✓ | ✓ | khớp `project.members.list` |
-| create | ✓ | ✓ | ✓ | `03_DAILY` cho Member tạo task trong project của mình (đề xuất) |
-| update field | ✓ | ✓ | chỉ task mình tạo hoặc được giao (đề xuất) | **cần Product chốt** |
-| transition | theo policy D-08 | theo policy D-08 | theo policy D-08 | `task-lifecycle-policy.ts:168-189` |
+| list, detail, history, summary theo project | ✓ mọi project trong org, **kể cả project PRIVATE mà Manager không là thành viên** | ✓ | ✓ | Thang xác nhận. `ProjectAccessAuthorizationGuard` hiện đã cho ADMIN phạm vi org (`authorization.policy.ts:245-301`) |
+| list, summary **toàn org** (màn hình Manager) | ✓ | ✗ | ✗ | mục 2.6 |
+| create | **chưa chốt** (xem câu hỏi mở bên dưới) | ✓ | ✓ (Thang xác nhận: Member được tự tạo) | |
+| update field (title, description, priority, due, labels, parent) | ✓ mọi task mọi project | ✓ mọi task của project | chỉ task **mình tạo hoặc được giao** | Thang xác nhận |
+| assign / đổi `assigneeId` | ✓ | ✓ | theo quyền update của Member ở trên, và assignee phải là ACTIVE project member | |
+| transition | theo D-08: ADMIN được chuyển mọi task | theo D-08: được chuyển mọi task | theo D-08: chỉ task được giao cho mình; cancel/reopen chỉ creator | `task-lifecycle-policy.ts:168-189`. **Không cần sửa D-08**: luật ADMIN hiện có khớp quyết định này |
 
-Quyền phải được đánh giá ở server từ evidence (ACTIVE org + project membership + RoleAssignment). **Không bao giờ tin** `organizationId`, `userId` hay role do FE gửi lên.
+**Câu hỏi mở:** Manager có được **tạo** task trong project mà mình không phải thành viên không? Câu trả lời của Thang nói "xem và sửa", chưa nói "tạo". Mặc định an toàn là chưa cho cho tới khi Thang xác nhận.
+
+**Lưu ý về nguyên tắc BA:** tài liệu BA nêu "Manager quản trị Organization nhưng không mặc nhiên có quyền quản lý nội dung của mọi Project". Quyết định mới cho Manager **sửa** task mọi project là một ngoại lệ có chủ đích so với nguyên tắc đó. Để giữ khả năng truy vết, mọi thay đổi do ADMIN thực hiện phải ghi `actor` và `actorType` vào `task_events` (D-08 đã có sẵn các field này: `task-database-schema.ts:48-79`), và History tab phải hiển thị được. Nên ghi rõ ngoại lệ này trong decision record.
+
+Quyền phải được đánh giá ở server từ evidence (ACTIVE org + project membership + RoleAssignment). **Không bao giờ tin** `organizationId`, `userId` hay role do FE gửi lên. Một project có thể có **nhiều Leader**; các Leader của cùng project có quyền ngang nhau.
+
+### 2.6 Màn hình Manager: task toàn Organization
+
+Thang xác nhận nội dung màn hình: **bảng task toàn org có lọc theo project, trạng thái, người được giao, hạn; cộng thẻ tổng hợp theo project (tổng, trễ hạn, đang làm)**; bấm vào một project để xem task riêng của project đó (dùng lại list theo project ở mục 2).
+
+| # | Method | Path (public) | Mục đích |
+|---|---|---|---|
+| 8 | GET | `/api/v1/tasks/organization/tasks` | Bảng task toàn org (keyset, cùng filter với list theo project, thêm `projectId` tùy chọn) |
+| 9 | GET | `/api/v1/tasks/organization/task-summary` | Thẻ tổng hợp: mỗi project một dòng `{projectId, total, byStatus, overdue, inProgress}` |
+
+- **Organization không nằm trong path.** Org lấy từ session đã xác thực (`AGENTS.md:25`); client không bao giờ truyền org. Nếu client gửi `X-Organization-Id` khác với session thì trả 404, giống `ProjectAccessAuthorizationGuard`.
+- Chỉ ADMIN truy cập được. Các role khác nhận **404** (không tiết lộ sự tồn tại).
+- Cách truy vấn "mọi project của org" là quyết định **G10**, xem [07 §12](07-performance-analysis.md) và [09 §3](09-final-audit.md).
+- Màn hình này **chưa tồn tại ở FE** (PR #69 chỉ có workspace theo từng project). Cần thiết kế UI riêng, theo Rule 06.
 
 ## 3. Ánh xạ field FE ↔ contract
 

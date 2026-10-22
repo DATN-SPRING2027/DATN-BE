@@ -86,6 +86,7 @@ flowchart TB
 
 | Field | Kiểu | Bắt buộc | Ghi chú |
 |---|---|---|---|
+| `organizationId` | ObjectId | ✓ (task mới) | **Bất biến**, lấy từ trusted context lúc tạo, không bao giờ nhận từ body. Phục vụ màn hình Manager toàn org và cách ly tenant ở tầng dữ liệu (G10, [07 §12](07-performance-analysis.md)). Cần xác nhận `organizationId` của project bất biến |
 | `key` | string | ✓ (task mới) | unique `{projectId, key}` |
 | `type` | enum TASK/BUG/STORY | ✓, default TASK | |
 | `priority` | enum LOW/MEDIUM/HIGH | ✓, default MEDIUM | |
@@ -100,6 +101,7 @@ Thêm collection `task_counters {_id: projectId, seq}` để cấp key.
 - Tạo script mới `scripts/migrations/<date>-task-workspace-fields.mjs` (cấm sửa migration cũ). Theo pattern của `20261019-task-lifecycle-contract.mjs`: dry-run report + `--expected-report-sha256` + `--task-writes-paused`.
 - Backfill 7-field task cũ:
   - `type=TASK`, `priority=MEDIUM`
+  - `organizationId`: Task chưa được kích hoạt nên hiện **chưa có dữ liệu cần backfill**. Nếu đã có task thì phải tra project→org từ IAM trong script migration (đọc chéo database, cần runtime owner phê duyệt)
   - `labels=[]`, các field nullable = `null`
   - `key` cấp theo thứ tự `_id`
 - **Rollback:** validator cũ không chấp nhận field mới. Phương án rollback là khôi phục validator mới, hoặc `$unset` các field mới sau khi pause writes. Phải ghi trong decision record.
@@ -121,6 +123,8 @@ Thêm collection `task_counters {_id: projectId, seq}` để cấp key.
 - Object-level authorization ở **mọi** op: query luôn có `projectId` lấy từ path **và** đã được xác thực membership. Lấy task theo `{_id, projectId}` (chống IDOR chéo project).
 - `assigneeId` mới phải là ACTIVE project member. Nguồn evidence lấy theo DR-8.
 - `assigneeId=me` được resolve ở server.
+- **Manager (ADMIN):** hai route `/api/v1/tasks/organization/*` chỉ ADMIN truy cập; role khác nhận 404. Org lấy từ session, và mọi truy vấn của Manager đều ràng buộc `organizationId` từ trusted context. Với route theo project, ADMIN được truy cập mọi project trong org (kể cả PRIVATE), dùng cùng quy tắc phạm vi org của `evaluateProjectReadScope` (`authorization.policy.ts:245-301`).
+- Mọi thay đổi do ADMIN thực hiện ghi `actor`/`actorType` vào `task_events` để truy vết (ngoại lệ có chủ đích so với nguyên tắc BA "Manager không mặc nhiên quản lý nội dung project", xem [03 §2.5](03-api-contract-design.md)).
 - Không có trường nào nhận `organizationId` hay `role` từ client.
 - `q` phải được escape regex và giới hạn độ dài 2–100 để chống ReDoS và full scan. Repo **chưa có** helper escape dùng chung: hàm escape đang bị lặp private ở `platform-administration.repository.ts:243-244`, `project-access.repository.ts:101-102,336`.
   - Khi implement, nên chuyển một bản duy nhất vào `src/common/search/` (cạnh `literal-search.ts`), thay vì viết bản thứ tư.

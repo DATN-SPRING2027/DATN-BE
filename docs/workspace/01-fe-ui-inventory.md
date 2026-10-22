@@ -21,6 +21,7 @@
 3. UI đã tự gắn nhãn "Preview data" (`src/components/work/WorkPageHeader.tsx:404-406`, `WW:846-848`, `WN:251-253`). Như vậy UI **không tuyên bố** dữ liệu là thật. Tuy vậy đây vẫn là màn hình chức năng chưa có backend.
 4. **Không có role gating** trong `src/components/work/**`: mọi user đều thấy create/edit/delete/bulk. Work Notes có gating nhưng dựa trên **role cấp Organization**, không phải role cấp Project (`src/components/work-notes/work-notes-types.ts:14-21`).
 5. API project-members đã có sẵn ở FE nhưng **không được dùng** trong Work: `src/lib/queries/projects/useProjectMembers.ts:43,90`. Mọi assignee picker đều dùng `PREVIEW_PEOPLE` (`PD:30-36`).
+6. **Không có màn hình Manager tổng hợp task toàn Organization.** PR #69 chỉ có workspace theo từng project (`/workspace`, `/projects/[projectId]/work`). Yêu cầu nghiệp vụ ngày 2026-10-22 (Manager xem và sửa task mọi project, có màn hình tổng hợp) vì vậy là một màn hình FE hoàn toàn mới; xem [02 §1.6](02-fe-be-api-matrix.md).
 
 ## 1. Route map
 

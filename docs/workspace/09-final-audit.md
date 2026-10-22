@@ -18,6 +18,8 @@ UI Workspace của PR #69 là **giao diện hoàn chỉnh nhưng chưa có backe
 | View chức năng | 11 view: 10 tab + Issue Detail. Tất cả hiển thị dữ liệu mock |
 | API thật FE đang dùng trong Work | 3: `GET /auth/me`, `GET /iam/projects`, `GET /iam/projects/{id}` |
 | Capability có FE consumer | 40: 4 MATCHED · 4 PARTIAL · 3 INCOMPATIBLE · 8 BLOCKED_DECISION · 21 MISSING ([02](02-fe-be-api-matrix.md) §2) |
+| Màn hình Manager (yêu cầu nghiệp vụ 2026-10-22) | 6 chức năng M1–M6, **không** nằm trong mẫu số 40 vì FE chưa có màn hình này ([02](02-fe-be-api-matrix.md) §1.6) |
+| Mô hình vận hành | Mỗi Project là một workspace task; Leader vận hành; Manager (ADMIN) xem và sửa mọi project; Member sửa task mình tạo hoặc được giao |
 | Task backend | Đã có schema 9 field, 5 index, repository, lifecycle policy (D-08), history (D-09) và 3 controller **dormant** (loopback, DenyAll) |
 | Source of truth | **Native Continuum Task** (ADR-009). Jira module chỉ có scaffold, không có OAuth/webhook/sync |
 | Work Notes, Knowledge, Docs, Handover, Notification | Module chỉ có endpoint health và schema scaffold; không có business route |
@@ -27,7 +29,7 @@ UI Workspace của PR #69 là **giao diện hoàn chỉnh nhưng chưa có backe
 | Gate | Câu hỏi | Phương án A (khuyến nghị) | Phương án B | Hệ quả nếu không quyết |
 |---|---|---|---|---|
 | **G1** Runtime owner | Ai sở hữu vận hành `continuum_task` và workflow migration/seed? | Chỉ định một người (ví dụ Danh, người viết D-04/D-05) làm runtime owner. Dùng pattern migration có sẵn (`20261019-task-lifecycle-contract.mjs`) | Tạm chạy Task trong monolith (`AppModule`). **Trái** ADR-010 và AGENTS.md | Không thể activate Task |
-| **G2** Approve contract | Approve [04-api-inventory.yaml](04-api-inventory.yaml)? | Approve 7 op tối thiểu, mỗi op một decision record | Chỉ approve read (list/detail mở rộng + summary) trước, mutation sau | Không được implement (`AGENTS.md:22`) |
+| **G2** Approve contract | Approve [04-api-inventory.yaml](04-api-inventory.yaml)? | Approve 9 op tối thiểu (7 theo project, 2 cho Manager toàn org), mỗi op một decision record | Chỉ approve read (list/detail mở rộng + summary + 2 route Manager) trước, mutation sau | Không được implement (`AGENTS.md:22`) |
 | **G3** DR-3 trust | Gateway→Task tin context như thế nào? | Giai đoạn đầu: Task chạy cùng network nội bộ, Gateway ký context bằng EdDSA (đã có prototype ở `runtime/prototypes/**`), Task verify + chống replay | mTLS đầy đủ | DenyAll giữ nguyên |
 | **G4** DR-8 scope evidence | Task lấy ACTIVE org/project membership từ đâu? | Gateway gửi kèm evidence đã ký; Task không truy vấn chéo DB IAM | Task gọi IAM `/internal` mỗi request: thêm latency và phụ thuộc | DenyAll giữ nguyên |
 | **G5** DR-7(c)(d) | Điều kiện create | Theo slice proposal hiện có | – | Không có create |
@@ -35,6 +37,11 @@ UI Workspace của PR #69 là **giao diện hoàn chỉnh nhưng chưa có backe
 | **G7** Status enum | FE `IN_REVIEW` khác BE `BLOCKED`/`CANCELLED`; delete? | Giữ enum BE (đã approve D-08); FE đổi cột "In Review" thành "Blocked"; delete = `CANCELLED` có reason | Thêm `IN_REVIEW` vào BE: phải sửa policy D-08 + migration + decision record mới | Board không map được |
 | **G8** Phạm vi MVP | comments, worklog, checklist, sprint, labels | MVP gồm labels; comments/worklog/checklist/sprint để P2 | Đưa comments vào MVP (collection riêng) | FE phải ẩn tính năng |
 | **G9** Work Notes | Contract capture khác FE và thiếu `taskId` | Viết contract Work Notes mới theo ADR-009 §3 (`taskId`), thống nhất `kind/body/blocker/nextStep` | Giữ schema capture hiện tại và đổi FE theo | Work Notes vẫn mock |
+| **G10** Truy vấn toàn org cho Manager | Task chỉ có `projectId`. Lấy "mọi task của org" thế nào? | Thêm `organizationId` bất biến vào task + 4 index tiền tố org (cách ly tenant ở tầng dữ liệu; chưa có dữ liệu nên chưa cần backfill) | Giữ schema; Gateway gửi danh sách `projectId` đã ký và Task dùng `$in`. Đo được độ trễ ngang A ở 40 project ([07](07-performance-analysis.md) §12) | Không làm được màn hình Manager |
+
+**Về G1.** G1 hỏi *ai chịu trách nhiệm kỹ thuật* cho `continuum_task` (database, migration, deploy). Điều này khác với *vai trò nghiệp vụ* vận hành task (Leader và Manager), vốn đã được Thang xác nhận ngày 2026-10-22. G1 vẫn còn mở.
+
+**Về G4.** Đã có đầu vào nghiệp vụ: Manager xem và sửa task mọi project (kể cả PRIVATE); Leader vận hành project của mình; Member tạo và sửa task mình tạo hoặc được giao ([03 §2.5](03-api-contract-design.md)). Còn cần ghi thành decision record, chọn nguồn scope evidence, và ghi rõ ngoại lệ so với nguyên tắc BA "Manager không mặc nhiên quản lý nội dung project".
 
 ## 4. Phát hiện ngoài phạm vi (cần task riêng)
 

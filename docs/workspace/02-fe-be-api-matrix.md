@@ -102,9 +102,26 @@ Quy ước:
 | `jira` platform integrations (`jira.controller.ts:69-112`) | **UNUSED** trong Work | Chỉ phục vụ Platform operator |
 | Chat (~40 route) | **UNUSED** trong Work | Có màn `/chat` riêng |
 
+### 1.6 Màn hình Manager (yêu cầu nghiệp vụ mới, xác nhận 2026-10-22)
+
+Các dòng này đến từ yêu cầu nghiệp vụ của Thang, **không** đến từ FE PR #69. FE hiện **không có** màn hình này, nên chúng **không nằm trong mẫu số 40** ở §2. Chúng được liệt kê riêng để không bị bỏ sót.
+
+Mô hình vận hành: mỗi Project là một workspace task; Leader của project vận hành; Manager (ADMIN) xem toàn bộ task mọi project (kể cả PRIVATE) và sửa được task mọi project.
+
+| # | Chức năng | BE hiện có | Status | Đề xuất | Gate |
+|---|---|---|---|---|---|
+| M1 | Bảng task toàn Organization (lọc theo project, trạng thái, người được giao, hạn) | không có; Task chỉ có `projectId`, **không có `organizationId`** (`task-database-schema.ts:127-141`) | **MISSING + BLOCKED** | `GET /api/v1/tasks/organization/tasks` ([04](04-api-inventory.yaml)) | G1–G4, G6, **G10** |
+| M2 | Thẻ tổng hợp theo project (tổng, đang làm, trễ hạn) | không có | **MISSING + BLOCKED** | `GET /api/v1/tasks/organization/task-summary` | như M1 |
+| M3 | Xem task của từng project (drill-down) | `listByProject` dormant (W1) | **BLOCKED**, tái dùng W1 với quyền ADMIN toàn org | không thêm endpoint | như W1 |
+| M4 | Manager sửa task mọi project | policy D-08 **đã cho** ADMIN chuyển status mọi task (`task-lifecycle-policy.ts:181-182`); chưa có field update | **PARTIAL + BLOCKED** | tái dùng W4/W5 với actor ADMIN; ghi `actor` vào `task_events` | G4 |
+| M5 | Manager thấy project PRIVATE không phải thành viên | `ProjectAccessAuthorizationGuard` đã cho ADMIN phạm vi org (`authorization.policy.ts:245-301`) với API project của IAM | **MATCHED** ở tầng IAM; Task chưa có | Task authorization phải dùng cùng quy tắc | G4 |
+| M6 | Màn hình FE cho Manager | – | **MISSING (FE)** | thiết kế UI mới theo Rule 06 | – |
+
+Tổng: 6 chức năng. **Cần xác nhận thêm:** Manager có được *tạo* task ở project mình không là thành viên không ([03 §2.5](03-api-contract-design.md)).
+
 ## 2. Tổng hợp
 
-Mẫu số được đếm từ ma trận này. Mỗi capability chỉ đếm một lần, kể cả khi nhiều view dùng chung.
+Mẫu số được đếm từ ma trận của §1.1–1.5 (không gồm §1.6). Mỗi capability chỉ đếm một lần, kể cả khi nhiều view dùng chung.
 
 | Chỉ số | Giá trị | Ghi chú |
 |---|---|---|
@@ -135,5 +152,8 @@ Mẫu số được đếm từ ma trận này. Mỗi capability chỉ đếm m�
 | **G7** | Enum status/transition: giữ BE (`BLOCKED`, `CANCELLED`) hay thêm `IN_REVIEW`; delete = `CANCELLED`? | Product | `task-contract.ts:10-16`; FE `work-types.ts:1-8` |
 | **G8** | Phạm vi MVP cho comments, worklog, checklist, sprint, labels | Product | `03_DAILY_WORKFLOW_AND_JIRA_SYNC.md:30` |
 | **G9** | Contract Work Notes / Knowledge / Weekly report (đồng bộ ADR-009 `taskId`) | Product + Architecture | ADR-009 §3; schema capture |
+| **G10** | Màn hình Manager cần truy vấn "mọi task của org": thêm `organizationId` (bất biến) vào task, hay Gateway cung cấp danh sách `projectId`? Kèm xác nhận `organizationId` của project bất biến. Kết quả đo ở [07 §12](07-performance-analysis.md): hai phương án ngang nhau về độ trễ ở 40 project | Architecture + Security | 07 §12 |
+
+Ghi chú: gate **G4** nay đã có đầu vào nghiệp vụ từ Thang ([03 §2.5](03-api-contract-design.md)): Manager xem và sửa mọi project, Leader vận hành project của mình, Member sửa task mình tạo hoặc được giao. Gate vẫn mở vì cần ghi thành decision record và chọn nguồn scope evidence.
 
 Phương án cho từng gate được trình bày ở [09-final-audit.md](09-final-audit.md) §BLOCKED_DECISION.

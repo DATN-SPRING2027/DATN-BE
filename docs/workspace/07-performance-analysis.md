@@ -157,3 +157,43 @@ Các budget này là **đề xuất** dựa trên số đo tầng DB ở trên. 
 | `maxTimeMS` | MongoDB Manual: *cursor.maxTimeMS()* | Chặn search quá rộng (§7) |
 | Hủy query cũ | TanStack Query v5: *Query Cancellation* (`signal` trong `queryFn`) | FE debounce và abort (06 §3) |
 | Object-level authorization | OWASP API Security Top 10 2023: API1 BOLA | Luôn query theo `{_id, projectId}` sau khi xác thực membership |
+
+## 12. Màn hình Manager: truy vấn task toàn Organization (gate G10)
+
+Bổ sung ngày 2026-10-22 sau khi Thang xác nhận mô hình vận hành (Leader vận hành từng project; Manager xem và sửa mọi project, có màn hình tổng hợp toàn org). Câu hỏi thiết kế: Task chỉ lưu `projectId`, vậy "mọi task của org" lấy bằng cách nào.
+
+| Phương án | Mô tả |
+|---|---|
+| **A** | Thêm `organizationId` vào mỗi task (bất biến, lấy từ trusted context lúc tạo) và các index tiền tố `organizationId` |
+| **B** | Không đổi schema; Gateway cung cấp danh sách `projectId` của org, Task service truy vấn `projectId: {$in: [...]}` trên các index hiện có |
+
+**Điều kiện đo:**
+- Script [`scripts/perf/workspace-org-queries.mjs`](../../scripts/perf/workspace-org-queries.mjs), cùng cách bảo vệ loopback và DB scratch (`datn_workspace_perf_org_scratch`, tự drop).
+- 400.000 task, gồm 4 org × 40 project × 2.500 task; org đích có 100.000 task. 20 lần đo, p50/p95.
+- MongoDB 8.2.3 standalone (cùng hạn chế như §1).
+- Phase 1 chỉ có index theo `projectId`. Phase 2 thêm 4 index tiền tố `organizationId`.
+- Bốn dòng đầu của "A" ở Phase 1 không có ý nghĩa vì chưa có index org; chỉ so sánh trong Phase 2.
+
+| Truy vấn (org 100k task, 40 project) | A (Phase 2) p50 / p95 · keys | B p50 / p95 · keys | Nhận xét |
+|---|---|---|---|
+| Bảng toàn org, trang đầu, limit 50 | 1.27 / 1.86 ms · 50 | 1.28 / 2.38 ms · 89 | **Ngang nhau.** B dùng `SORT_MERGE` trên 40 `IXSCAN` |
+| Lọc `status=IN_PROGRESS`, limit 50 | 1.27 / 1.48 ms · 50 | 2.15 / 3.23 ms · 89 | Ngang nhau |
+| Lọc một project trong màn hình Manager | 1.27 / 2.06 ms · 50 | 1.11 / 1.76 ms · 50 | Ngang nhau (cùng là truy vấn theo project) |
+| Thẻ tổng hợp: đếm theo (project, status) | 84.79 / 97.30 ms · 100.000 (covered) | 79.73 / 97.64 ms · 100.000 (covered) | **Ngang nhau.** Cả hai đọc 100.000 key |
+| Trễ hạn theo project | **14.62 / 19.73 ms** · 17.933 (covered) | 88.53 / 104.66 ms · 32.114 (+32.114 doc) | A nhanh hơn ~6 lần, **nhưng do index covered** `{organizationId,projectId,status,dueDate}`, không phải do `organizationId` |
+
+**Đọc kết quả cho đúng:**
+1. Ở quy mô 40 project, **A và B không khác nhau đáng kể về độ trễ** cho bảng task và các bộ lọc. Phương án B không tạo ra vấn đề hiệu năng.
+2. Lợi thế 6 lần của A ở truy vấn trễ hạn là do thiết kế index covered. Index tương đương `{projectId,status,dueDate}` cho B có thể cho kết quả tương tự, nhưng **chưa được đo**. Không nên coi đó là bằng chứng cho A.
+3. Thẻ tổng hợp tốn khoảng 80–100 ms cho 100.000 task ở cả hai phương án vì phải duyệt toàn bộ key. Đây là phần đắt nhất của màn hình Manager. Với org lớn hơn thì mốc này tăng tuyến tính. Ngưỡng cân nhắc cache theo generation (§6) được xác định bằng p95 summary của org lớn nhất, và sẽ cần đo lại khi có số liệu production.
+4. **Chưa đo** trường hợp org có hàng trăm hoặc hàng nghìn project. Khi đó `$in` của B dài hơn và `SORT_MERGE` có nhiều nhánh hơn. Đây là giới hạn của phép đo.
+
+**Chi phí của A:** 4 index mới (mỗi cái 3,6–4,5 MB ở 400k doc, tương đương index theo `projectId`) và một field dư. Chi phí ghi thêm của các index này **chưa đo**.
+
+**Khuyến nghị: A**, vì lý do không nằm ở hiệu năng:
+- **Cách ly tenant ở tầng dữ liệu.** Mọi truy vấn đều có thể ràng buộc thêm `organizationId` từ trusted context (`TaskAuthorizationBoundary` đã mang `organizationId`, `task-authorization-boundary.ts:32,114`). Một lỗi kiểm tra `projectId` không còn đủ để lộ dữ liệu chéo org (OWASP API1 BOLA).
+- **Không phải chuyển danh sách project qua ranh giới tin cậy.** B buộc Gateway gửi (và ký) toàn bộ `projectId` của org ở mỗi request của Manager, và Task service phải tin danh sách đó.
+- **Chi phí migration gần như bằng 0 ngay lúc này.** Task chưa được kích hoạt nên chưa có dữ liệu cần backfill. Đây là thời điểm rẻ nhất để thêm field. Sau khi có dữ liệu, backfill sẽ phải đọc chéo database IAM.
+- Giả định cần xác nhận: `organizationId` của project **bất biến**. Tôi không tìm thấy code IAM nào thay đổi field này, nhưng chưa có tài liệu nào khẳng định.
+
+Nếu Product/Architecture thích giữ schema 7 field tối giản, B vẫn là phương án chấp nhận được về hiệu năng ở quy mô hiện tại.
