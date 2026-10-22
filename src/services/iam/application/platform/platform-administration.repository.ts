@@ -123,6 +123,7 @@ export interface PlatformUserStatusChangeInput {
   status: 'ACTIVE' | 'SUSPENDED';
   expectedUpdatedAt: Date;
   reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+  emergencyBypassLastAdmin?: boolean;
   correlationId?: string;
   now: Date;
 }
@@ -142,6 +143,7 @@ export interface PlatformUserArchiveInput {
   userId: string;
   expectedUpdatedAt: Date;
   reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+  emergencyBypassLastAdmin?: boolean;
   correlationId?: string;
   now: Date;
 }

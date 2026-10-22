@@ -1403,6 +1403,298 @@
         "x-readiness-gates": []
       }
     },
+    "/api/v1/iam/organizations/{organizationId}/overview": {
+      "get": {
+        "tags": ["Organizations"],
+        "summary": "Get Organization governance overview metrics and leaderless project alerts",
+        "description": "Requires an authenticated ACTIVE User and OrganizationMembership in the matching Organization context plus organization.memberships.read permission (Manager/ADMIN). Returns real organization metadata, member lifecycle counts, pending invitation count, active manager roster, project counts, and leaderless active projects requiring leader recovery.",
+        "operationId": "getOrganizationOverview",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Organization governance overview.",
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.read"
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/settings": {
+      "get": {
+        "tags": ["Organizations"],
+        "summary": "Get Organization settings and active Manager roster",
+        "description": "Requires an authenticated ACTIVE User and OrganizationMembership in the matching Organization context plus organization.memberships.read permission.",
+        "operationId": "getOrganizationSettings",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Organization settings read model.",
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.read"
+      },
+      "patch": {
+        "tags": ["Organizations"],
+        "summary": "Update allowlisted Organization settings (name, description)",
+        "description": "Requires an authenticated ACTIVE Organization ADMIN with organization.memberships.manage permission and matching CSRF cookie/header. Enforces strict field allowlist (name, description, expectedUpdatedAt) and writes an atomic audit event.",
+        "operationId": "updateOrganizationSettings",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "__Host-csrf",
+            "in": "cookie",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["expectedUpdatedAt"],
+                "minProperties": 2,
+                "properties": {
+                  "name": { "type": "string", "minLength": 2, "maxLength": 100 },
+                  "description": { "type": ["string", "null"], "maxLength": 500 },
+                  "expectedUpdatedAt": { "type": "string", "format": "date-time" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated Organization settings.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.manage"
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/resume": {
+      "post": {
+        "tags": ["Organization Memberships"],
+        "summary": "Resume (reactivate) a suspended Organization Membership",
+        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-action, verifies SUSPENDED status and expectedMembershipVersion, ensures the underlying User account is ACTIVE, and commits the ACTIVE transition, operation record, and audit event atomically.",
+        "operationId": "resumeOrganizationMembership",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "__Host-csrf",
+            "in": "cookie",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/C02LifecycleMembershipRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Membership reactivation committed or replayed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/C02MembershipMutationAck"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.manage"
+      }
+    },
+    "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/remove": {
+      "post": {
+        "tags": ["Organization Memberships"],
+        "summary": "Remove an active or suspended Organization Membership",
+        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-removal, protects the last eligible ADMIN (LAST_ELIGIBLE_ADMIN), blocks removal if the member holds active Project Leadership (MEMBER_HAS_ACTIVE_PROJECT_LEADERSHIP), deactivates non-leader project memberships, removes organization-scoped role assignments, and transitions the membership to REMOVED atomically with audit.",
+        "operationId": "removeOrganizationMembership",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "__Host-csrf",
+            "in": "cookie",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/C02LifecycleMembershipRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Membership removal committed or replayed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/C02MembershipMutationAck"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        },
+        "x-contract-status": "USER_APPROVED",
+        "x-runtime-status": "IMPLEMENTED_BACKEND",
+        "x-permission": "organization.memberships.manage"
+      }
+    },
     "/api/v1/iam/organizations/{organizationId}/memberships/{membershipId}/role": {
       "post": {
         "tags": ["Organization Memberships"],
@@ -8565,6 +8857,22 @@
           "reasonCode": {
             "type": "string",
             "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW"]
+          }
+        }
+      },
+      "C02LifecycleMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "reasonCode"],
+        "properties": {
+          "expectedMembershipVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "reasonCode": {
+            "type": "string",
+            "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW", "ACCESS_REQUEST"]
           }
         }
       },

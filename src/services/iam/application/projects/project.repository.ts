@@ -3,6 +3,12 @@ export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 export type ProjectStatus = 'ACTIVE' | 'ARCHIVED';
 export type ProjectVisibility = 'PRIVATE' | 'PUBLIC';
 
+export interface ProjectLeaderSummary {
+  userId: string;
+  fullName: string;
+  email: string;
+}
+
 export interface ProjectRecord {
   id: string;
   organizationId: string;
@@ -14,6 +20,10 @@ export interface ProjectRecord {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  activeMemberCount?: number;
+  effectiveLeaderCount?: number;
+  leaders?: ProjectLeaderSummary[];
+  requiresLeaderRecovery?: boolean;
 }
 
 export interface ProjectListQuery {

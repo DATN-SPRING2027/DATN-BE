@@ -33,11 +33,30 @@ interface RecipientInvitationRow {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
   email: string;
+  roleCode?: 'ADMIN' | 'MEMBER';
   status: RecipientInvitationStatus;
   version: number;
+  invitedBy: Types.ObjectId;
   expiresAt: Date;
   createdAt: Date;
   organizationName: string;
+}
+
+interface RoleDocument {
+  _id: Types.ObjectId;
+  code: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER';
+  isSystem: boolean;
+}
+
+interface RoleAssignmentDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  projectId?: Types.ObjectId | null;
+  userId: Types.ObjectId;
+  roleId: Types.ObjectId;
+  roleCode: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER';
+  assignedBy: Types.ObjectId;
+  mutationFence: number;
 }
 
 interface RecipientInvitationListRow {
@@ -297,6 +316,65 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
         if (existingMembership)
           throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
 
+        let invitedRoleCode: 'ADMIN' | 'MEMBER' | undefined =
+          invitation.roleCode === 'ADMIN' || invitation.roleCode === 'MEMBER'
+            ? invitation.roleCode
+            : undefined;
+        if (!invitedRoleCode) {
+          const outboxModel = this.optionalModel<{
+            payload?: { roleCode?: string };
+          }>('outbox_events');
+          if (typeof outboxModel?.findOne === 'function') {
+            const outboxEvent = await outboxModel
+              .findOne({
+                eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+                aggregateType: 'ORGANIZATION_INVITATION',
+                aggregateId: invitation._id.toHexString(),
+              })
+              .session(session)
+              .lean()
+              .exec();
+            const outboxRoleCode = outboxEvent?.payload?.roleCode;
+            if (outboxRoleCode === 'ADMIN' || outboxRoleCode === 'MEMBER') {
+              invitedRoleCode = outboxRoleCode;
+            }
+          }
+        }
+        const targetRoleCode: 'ADMIN' | 'MEMBER' =
+          invitedRoleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
+        const targetRole = await this.model<RoleDocument>('roles')
+          .findOne({ code: targetRoleCode, isSystem: true })
+          .session(session)
+          .lean()
+          .exec();
+        if (!targetRole)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+        const existingAssignments = await this.model<RoleAssignmentDocument>(
+          'role_assignments',
+        )
+          .find({
+            organizationId: invitation.organizationId,
+            userId: actorUserId,
+            $or: [{ projectId: { $exists: false } }, { projectId: null }],
+          })
+          .session(session)
+          .lean()
+          .exec();
+        if (existingAssignments.length > 1)
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+        const existingAssignment = existingAssignments[0];
+        if (
+          existingAssignment &&
+          existingAssignment.roleCode !== targetRoleCode
+        )
+          throw new ServiceUnavailableException({
+            code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+          });
+
         const membershipId = new Types.ObjectId();
         await this.model<MembershipDocument>('organization_memberships').create(
           [
@@ -311,6 +389,22 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
           ],
           { session },
         );
+        if (!existingAssignment) {
+          await this.model<RoleAssignmentDocument>('role_assignments').create(
+            [
+              {
+                organizationId: invitation.organizationId,
+                projectId: null,
+                userId: actorUserId,
+                roleId: targetRole._id,
+                roleCode: targetRoleCode,
+                assignedBy: invitation.invitedBy ?? actorUserId,
+                mutationFence: 1,
+              },
+            ],
+            { session },
+          );
+        }
         const accepted = await this.invitations()
           .findOneAndUpdate(
             {
@@ -489,6 +583,11 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
 
   private invitations(): Model<RecipientInvitationRow> {
     return this.model<RecipientInvitationRow>('organization_invitations');
+  }
+
+  private optionalModel<T>(name: string): Model<T> | undefined {
+    return this.connectionOrThrow().models[modelName(name)] as
+      Model<T> | undefined;
   }
 
   private model<T>(name: string): Model<T> {

@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
@@ -17,6 +18,8 @@ import {
   type MembershipMutationResult,
   type OrganizationMembershipCommand,
   type OrganizationMembershipCommandRepository,
+  type OrganizationOverviewSummary,
+  type OrganizationSettingsSummary,
 } from './organization-membership-command.repository';
 
 const resourceIdPattern = /^[a-f\d]{24}$/i;
@@ -47,6 +50,113 @@ export class OrganizationMembershipCommandService {
     @Inject(ORGANIZATION_INVITATION_READINESS)
     private readonly invitationReadiness: OrganizationInvitationReadiness,
   ) {}
+
+  async getOverview(
+    actor: AuthenticatedIdentity,
+    organizationId: string,
+  ): Promise<OrganizationOverviewSummary> {
+    this.requireOrganizationContext(actor, organizationId);
+    if (
+      !(await this.repository.hasPermission(
+        organizationId,
+        actor.id,
+        'organization.memberships.read',
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    if (!this.repository.getOrganizationOverview)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.repository.getOrganizationOverview(organizationId, new Date());
+  }
+
+  async getSettings(
+    actor: AuthenticatedIdentity,
+    organizationId: string,
+  ): Promise<OrganizationSettingsSummary> {
+    this.requireOrganizationContext(actor, organizationId);
+    if (
+      !(await this.repository.hasPermission(
+        organizationId,
+        actor.id,
+        'organization.memberships.read',
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    if (!this.repository.getOrganizationSettings)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.repository.getOrganizationSettings(organizationId);
+  }
+
+  async updateSettings(
+    actor: AuthenticatedIdentity,
+    organizationId: string,
+    input: {
+      expectedUpdatedAt: Date;
+      name?: string;
+      description?: string | null;
+      correlationId?: string;
+    },
+  ): Promise<OrganizationSettingsSummary> {
+    this.requireOrganizationContext(actor, organizationId);
+    if (
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime()) ||
+      (input.name === undefined && input.description === undefined)
+    )
+      validationFailed();
+    let normalizedName: string | undefined;
+    if (input.name !== undefined) {
+      if (typeof input.name !== 'string') validationFailed();
+      const trimmed = input.name.trim();
+      if (trimmed.length < 2 || trimmed.length > 100) validationFailed();
+      normalizedName = trimmed;
+    }
+    let normalizedDescription: string | null | undefined;
+    if (input.description !== undefined) {
+      if (input.description === null) {
+        normalizedDescription = null;
+      } else if (typeof input.description === 'string') {
+        if (input.description.length > 500) validationFailed();
+        const trimmed = input.description.trim();
+        normalizedDescription = trimmed.length === 0 ? null : trimmed;
+      } else {
+        validationFailed();
+      }
+    }
+    if (
+      !(await this.repository.hasPermission(
+        organizationId,
+        actor.id,
+        'organization.memberships.manage',
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    if (!this.repository.updateOrganizationSettings)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    return this.repository.updateOrganizationSettings({
+      actorUserId: actor.id,
+      organizationId,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      ...(normalizedName !== undefined ? { name: normalizedName } : {}),
+      ...(normalizedDescription !== undefined
+        ? { description: normalizedDescription }
+        : {}),
+      ...(input.correlationId ? { correlationId: input.correlationId } : {}),
+      now: new Date(),
+    });
+  }
 
   async listInvitations(
     actor: AuthenticatedIdentity,
@@ -252,6 +362,19 @@ export class OrganizationMembershipCommandService {
         !Number.isSafeInteger(command.expectedMembershipVersion) ||
         command.expectedMembershipVersion < 1 ||
         !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(command.reasonCode)
+      )
+        validationFailed();
+      return command;
+    }
+    if (command.command === 'RESUME' || command.command === 'REMOVE') {
+      if (
+        Object.keys(command).length !== 4 ||
+        !resourceIdPattern.test(command.membershipId) ||
+        !Number.isSafeInteger(command.expectedMembershipVersion) ||
+        command.expectedMembershipVersion < 1 ||
+        !['SECURITY_INCIDENT', 'ACCESS_REVIEW', 'ACCESS_REQUEST'].includes(
+          command.reasonCode,
+        )
       )
         validationFailed();
       return command;

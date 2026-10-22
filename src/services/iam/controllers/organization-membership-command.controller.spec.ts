@@ -29,6 +29,28 @@ describe('OrganizationMembershipCommandController', () => {
       body: { operationId: '851a2b3c4d5e6f7a8b9c0d1f' },
     }),
     listInvitations: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
+    getOverview: jest.fn().mockResolvedValue({
+      organization: {
+        id: organizationId,
+        name: 'Continuum',
+        slug: 'continuum',
+      },
+      metrics: { totalMembersCount: 4, leaderlessProjectsCount: 1 },
+      leaderlessProjects: [],
+      managers: [],
+    }),
+    getSettings: jest.fn().mockResolvedValue({
+      id: organizationId,
+      name: 'Continuum',
+      slug: 'continuum',
+      editableFields: ['name', 'description'],
+    }),
+    updateSettings: jest.fn().mockResolvedValue({
+      id: organizationId,
+      name: 'Continuum Updated',
+      slug: 'continuum',
+      editableFields: ['name', 'description'],
+    }),
   };
   let controller: OrganizationMembershipCommandController;
   let response: { setHeader: jest.Mock; status: jest.Mock };
@@ -374,5 +396,141 @@ describe('OrganizationMembershipCommandController', () => {
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(commands.listInvitations).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['resume', 'RESUME', 'ACCESS_REVIEW'],
+    ['resume', 'RESUME', 'ACCESS_REQUEST'],
+    ['remove', 'REMOVE', 'SECURITY_INCIDENT'],
+    ['remove', 'REMOVE', 'ACCESS_REQUEST'],
+  ] as const)(
+    'parses %s membership lifecycle command with expectedMembershipVersion and reasonCode',
+    async (methodName, commandCode, reasonCode) => {
+      const membershipId = '951a2b3c4d5e6f7a8b9c0d1f';
+      commands.execute.mockResolvedValueOnce({
+        httpStatus: 200,
+        replayed: false,
+        body: {
+          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+          membership: {
+            id: membershipId,
+            organizationId,
+            userId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+            status: commandCode === 'RESUME' ? 'ACTIVE' : 'REMOVED',
+            version: 2,
+          },
+        },
+      });
+      await controller[methodName](
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'stable-idempotency-key',
+        'request-id',
+        organizationId,
+        membershipId,
+        { expectedMembershipVersion: 1, reasonCode },
+        response as never,
+      );
+      expect(commands.execute).toHaveBeenCalledWith(
+        actor,
+        organizationId,
+        'stable-idempotency-key',
+        {
+          command: commandCode,
+          membershipId,
+          expectedMembershipVersion: 1,
+          reasonCode,
+        },
+        'request-id',
+      );
+    },
+  );
+
+  it('returns organization overview and enforces strict allowlist on settings update', async () => {
+    const overview = await controller.getOverview(
+      'Bearer token',
+      undefined,
+      organizationId,
+      response as never,
+    );
+    expect(commands.getOverview).toHaveBeenCalledWith(actor, organizationId);
+    expect(overview).toMatchObject({
+      organization: { id: organizationId },
+    });
+
+    await controller.updateSettings(
+      'Bearer token',
+      '__Host-csrf=csrf-token',
+      'csrf-token',
+      'request-id',
+      organizationId,
+      {
+        expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+        name: 'Continuum Updated',
+        description: 'Org description',
+      },
+      { requestId: 'request-id' } as never,
+      response as never,
+    );
+    expect(commands.updateSettings).toHaveBeenCalledWith(
+      actor,
+      organizationId,
+      {
+        expectedUpdatedAt: new Date('2026-10-14T00:00:00.000Z'),
+        name: 'Continuum Updated',
+        description: 'Org description',
+        correlationId: 'request-id',
+      },
+    );
+
+    await expect(
+      controller.updateSettings(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'request-id',
+        organizationId,
+        {
+          expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+          name: 'Continuum Updated',
+          slug: 'forbidden-slug-change',
+        },
+        { requestId: 'request-id' } as never,
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+    await expect(
+      controller.updateSettings(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'request-id',
+        organizationId,
+        {
+          expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+          name: 'A',
+        },
+        { requestId: 'request-id' } as never,
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+    await expect(
+      controller.updateSettings(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'request-id',
+        organizationId,
+        {
+          expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+          description: 'x'.repeat(501),
+        },
+        { requestId: 'request-id' } as never,
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });

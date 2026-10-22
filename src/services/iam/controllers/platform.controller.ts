@@ -619,18 +619,36 @@ function parsePlatformUserStatusChange(body: unknown): {
   status: 'ACTIVE' | 'SUSPENDED';
   expectedUpdatedAt: Date;
   reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+  emergencyBypassLastAdmin?: boolean;
 } {
   if (
     typeof body !== 'object' ||
     body === null ||
     Array.isArray(body) ||
-    Object.keys(body).length !== 3 ||
+    Object.keys(body).some(
+      (key) =>
+        ![
+          'status',
+          'expectedUpdatedAt',
+          'reasonCode',
+          'emergencyBypassLastAdmin',
+        ].includes(key),
+    ) ||
     !('status' in body) ||
     !('expectedUpdatedAt' in body) ||
     !('reasonCode' in body) ||
     !['ACTIVE', 'SUSPENDED'].includes(String(body.status)) ||
     typeof body.expectedUpdatedAt !== 'string' ||
     !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(String(body.reasonCode))
+  )
+    return invalid();
+  const record = body as Record<string, unknown>;
+  if (
+    'emergencyBypassLastAdmin' in record &&
+    (typeof record.emergencyBypassLastAdmin !== 'boolean' ||
+      (record.emergencyBypassLastAdmin === true &&
+        (record.status !== 'SUSPENDED' ||
+          record.reasonCode !== 'SECURITY_INCIDENT')))
   )
     return invalid();
   const expectedUpdatedAt = new Date(body.expectedUpdatedAt);
@@ -643,6 +661,9 @@ function parsePlatformUserStatusChange(body: unknown): {
     status: body.status as 'ACTIVE' | 'SUSPENDED',
     expectedUpdatedAt,
     reasonCode: body.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+    ...(typeof record.emergencyBypassLastAdmin === 'boolean'
+      ? { emergencyBypassLastAdmin: record.emergencyBypassLastAdmin }
+      : {}),
   };
 }
 
@@ -703,16 +724,34 @@ function parsePlatformUserProfileChange(
 
 function parsePlatformUserArchive(
   body: unknown,
-): Pick<PlatformUserArchiveInput, 'expectedUpdatedAt' | 'reasonCode'> {
+): Pick<
+  PlatformUserArchiveInput,
+  'expectedUpdatedAt' | 'reasonCode' | 'emergencyBypassLastAdmin'
+> {
   if (
     typeof body !== 'object' ||
     body === null ||
     Array.isArray(body) ||
-    Object.keys(body).length !== 2 ||
+    Object.keys(body).some(
+      (key) =>
+        ![
+          'expectedUpdatedAt',
+          'reasonCode',
+          'emergencyBypassLastAdmin',
+        ].includes(key),
+    ) ||
     !('expectedUpdatedAt' in body) ||
     !('reasonCode' in body) ||
     typeof body.expectedUpdatedAt !== 'string' ||
     !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(String(body.reasonCode))
+  )
+    invalid();
+  const record = body as Record<string, unknown>;
+  if (
+    'emergencyBypassLastAdmin' in record &&
+    (typeof record.emergencyBypassLastAdmin !== 'boolean' ||
+      (record.emergencyBypassLastAdmin === true &&
+        record.reasonCode !== 'SECURITY_INCIDENT'))
   )
     invalid();
   const expectedUpdatedAt = new Date(body.expectedUpdatedAt);
@@ -724,6 +763,9 @@ function parsePlatformUserArchive(
   return {
     expectedUpdatedAt,
     reasonCode: body.reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+    ...(typeof record.emergencyBypassLastAdmin === 'boolean'
+      ? { emergencyBypassLastAdmin: record.emergencyBypassLastAdmin }
+      : {}),
   };
 }
 

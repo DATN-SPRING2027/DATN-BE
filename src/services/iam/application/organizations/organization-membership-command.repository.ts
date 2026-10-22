@@ -46,6 +46,18 @@ export type OrganizationMembershipCommand =
       reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
     }
   | {
+      command: 'RESUME';
+      membershipId: string;
+      expectedMembershipVersion: number;
+      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST';
+    }
+  | {
+      command: 'REMOVE';
+      membershipId: string;
+      expectedMembershipVersion: number;
+      reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST';
+    }
+  | {
       command: 'SET_ORGANIZATION_ROLE';
       membershipId: string;
       expectedMembershipVersion: number;
@@ -134,6 +146,74 @@ export interface AdminInvitationPage {
   };
 }
 
+export interface OrganizationLeaderlessProjectItem {
+  id: string;
+  name: string;
+  code: string;
+  visibility: 'PRIVATE' | 'PUBLIC';
+  status: 'ACTIVE' | 'ARCHIVED';
+  activeMemberCount: number;
+  effectiveLeaderCount: number;
+  updatedAt: string;
+}
+
+export interface OrganizationManagerSummary {
+  userId: string;
+  fullName: string;
+  email: string;
+  accountStatus: string;
+}
+
+export interface OrganizationOverviewSummary {
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    description: string | null;
+    plan: 'FREE' | 'ENTERPRISE';
+    status: 'ACTIVE';
+    createdAt: string;
+    updatedAt: string;
+  };
+  metrics: {
+    activeMembers: number;
+    suspendedMembers: number;
+    pendingInvitations: number;
+    totalProjects: number;
+    activeProjects: number;
+    archivedProjects: number;
+    leaderlessProjectsCount: number;
+  };
+  leaderlessProjects: OrganizationLeaderlessProjectItem[];
+  managers: OrganizationManagerSummary[];
+}
+
+export interface OrganizationSettingsSummary {
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    description: string | null;
+    plan: 'FREE' | 'ENTERPRISE';
+    status: 'ACTIVE';
+    createdAt: string;
+    updatedAt: string;
+  };
+  editableFields: readonly ('name' | 'description')[];
+  managers: OrganizationManagerSummary[];
+  availablePermissions: string[];
+}
+
+export interface OrganizationSettingsUpdateInput {
+  actorUserId: string;
+  organizationId: string;
+  expectedUpdatedAt: Date;
+  name?: string;
+  description?: string | null;
+  now: Date;
+  correlationId?: string;
+}
+
 export interface OrganizationMembershipCommandRepository {
   hasPermission(
     this: void,
@@ -142,6 +222,19 @@ export interface OrganizationMembershipCommandRepository {
     permission:
       'organization.memberships.read' | 'organization.memberships.manage',
   ): Promise<boolean>;
+  getOrganizationOverview?(
+    this: void,
+    organizationId: string,
+    now: Date,
+  ): Promise<OrganizationOverviewSummary>;
+  getOrganizationSettings?(
+    this: void,
+    organizationId: string,
+  ): Promise<OrganizationSettingsSummary>;
+  updateOrganizationSettings?(
+    this: void,
+    input: OrganizationSettingsUpdateInput,
+  ): Promise<OrganizationSettingsSummary>;
   listInvitations(
     this: void,
     organizationId: string,

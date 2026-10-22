@@ -666,6 +666,30 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/organizations/:organizationId/overview')
+  getOrganizationOverview(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/organizations/:organizationId/settings')
+  getOrganizationSettings(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Patch('iam/organizations/:organizationId/settings')
+  updateOrganizationSettings(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/organizations/:organizationId/memberships')
   listOrganizationMemberships(
     @Req() request: Request,
@@ -716,6 +740,22 @@ export class GatewayIamController {
 
   @Post('iam/organizations/:organizationId/memberships/:membershipId/suspend')
   suspendOrganizationMembership(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations/:organizationId/memberships/:membershipId/resume')
+  resumeOrganizationMembership(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/organizations/:organizationId/memberships/:membershipId/remove')
+  removeOrganizationMembership(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {
