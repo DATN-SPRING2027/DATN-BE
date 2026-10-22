@@ -2508,6 +2508,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       )
       .exec();
 
+    const projectMembershipsModel =
+      this.optionalModel<ProjectMembershipDocument>('project_memberships');
     if (projectMembershipsModel) {
       await projectMembershipsModel
         .updateMany(

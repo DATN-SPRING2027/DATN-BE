@@ -900,9 +900,7 @@ describe('MongoOrganizationInvitationRepository', () => {
     const projectMemberships = {
       find: jest
         .fn()
-        .mockReturnValue(
-          queryChain([{ projectId, userId, status: 'ACTIVE' }]),
-        ),
+        .mockReturnValue(queryChain([{ projectId, userId, status: 'ACTIVE' }])),
       findOne: jest.fn().mockReturnValue(queryChain(null)),
       create: jest
         .fn()
@@ -1024,9 +1022,9 @@ describe('MongoOrganizationInvitationRepository', () => {
         now,
       }),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({
+      response: {
         code: 'MEMBER_HAS_ACTIVE_PROJECT_LEADERSHIP',
-      }),
+      },
     });
   });
 });

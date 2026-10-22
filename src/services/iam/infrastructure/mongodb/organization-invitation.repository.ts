@@ -329,7 +329,8 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
           invitation.projectRoleCode === 'MEMBER'
             ? invitation.projectRoleCode
             : undefined;
-        let invitedAccessScope: 'ORGANIZATION' | 'SPECIFIC_PROJECTS' | undefined =
+        let invitedAccessScope:
+          'ORGANIZATION' | 'SPECIFIC_PROJECTS' | undefined =
           invitation.accessScope === 'ORGANIZATION' ||
           invitation.accessScope === 'SPECIFIC_PROJECTS'
             ? invitation.accessScope
