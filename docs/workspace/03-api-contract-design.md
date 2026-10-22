@@ -131,7 +131,7 @@ Thắng đã chốt:
    - Mỗi Sprint thuộc **một Project** (`projectId`, `organizationId`, `name`, `goal`, `status: PLANNED | ACTIVE | COMPLETED`, `startDate`, `endDate`, `completedAt`, `version`).
    - Mỗi Task có tối đa 1 `sprintId` (`ObjectId | null`).
    - Tại một thời điểm một Project có tối đa 1 sprint ở trạng thái `ACTIVE`.
-   - Khi gọi `POST …/sprints/{sprintId}/complete`, Leader/Manager có thể truyền `moveIncompleteToSprintId` (`ObjectId | null`, `null` = đưa về backlog) để dời các task chưa `DONE`/`CANCELLED` trong cùng transaction.
+   - Khi gọi `POST …/sprints/{sprintId}/complete`, Leader/Manager bắt buộc gửi `If-Match: "sprint:<id>:<version>"` và `Idempotency-Key`, có thể truyền `moveIncompleteToSprintId` (`ObjectId | null`, `null` = đưa về backlog) để dời các task chưa `DONE`/`CANCELLED` trong cùng transaction. Mỗi task bị dời đều tăng `version` và được ghi một sự kiện `TASK_UPDATED` (`changedFields: ['sprintId']`, `fromSprintId`, `toSprintId`, `reason: 'SPRINT_COMPLETED'`) vào `task_events` để tab History giải thích đầy đủ mọi lần tăng `version`, đồng thời ghi `SPRINT_COMPLETED` vào `project_sprint_events`.
    - Endpoint `GET …/sprints` trả kèm thống kê `{totalTasks, doneTasks, inProgressTasks, todoTasks}` trên mỗi sprint để FE vẽ **Velocity** và **Burndown** trong Reports mà không cần N+1 request.
 
 ## 3. Ánh xạ field FE ↔ contract
@@ -180,6 +180,6 @@ Các năng lực thuộc module khác chưa đưa vào OpenAPI của Task:
 | update | allowlist field, `parentId` 1 cấp, `steps` ≤ 50 | CAS với 2 writer đồng thời: chính xác 1 thắng | 428/409 | assignee không phải member → 422; `sprintId` thuộc project khác → 422 |
 | transition | test policy D-08 mở rộng (`IN_REVIEW`, `CANCELLED` delete) | atomic với event `TASK_STATUS_TRANSITIONED` | 200 + ETag | MEMBER chuyển task người khác → 403; thiếu `reason` khi `CANCELLED`/`BLOCKED` → 422 |
 | comments / worklogs | validate body (`minutes` 1..1440, `body` 1..5000) | keyset pagination + idempotency | 200/201 khớp schema | cross-project / non-member → 404 |
-| sprints | validate dates (`startDate < endDate`), tối đa 1 ACTIVE sprint/project | complete sprint dời task chưa xong trong transaction | 200/201 khớp schema | MEMBER gọi create/patch/complete sprint → 403 |
+| sprints | validate dates (`startDate < endDate`), tối đa 1 ACTIVE sprint/project | complete sprint dời task chưa xong trong transaction + sinh `TASK_UPDATED` event cho từng task bị dời + ghi `project_sprint_events` | 200/201/409/428 khớp schema | MEMBER gọi create/patch/complete sprint → 403; `moveIncompleteToSprintId` thuộc project khác → 422 |
 | history | page/limit | thứ tự newest-first | schema | cross-project → 404 |
 | summary & org overview | mốc thời gian UTC | đối chiếu count với dataset seed | schema | non-ADMIN gọi `/organization/*` → 404; cross-org → không rò rỉ dữ liệu |

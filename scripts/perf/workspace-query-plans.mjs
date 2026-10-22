@@ -333,6 +333,32 @@ async function main() {
             .limit(50)
             .explain('executionStats'),
       },
+      Q4b_filter_assignee_only: {
+        run: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                assigneeId: assignee,
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                assigneeId: assignee,
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
       Q5_calendar_due_window_35d: {
         run: () =>
           items
@@ -585,6 +611,32 @@ async function main() {
             .limit(50)
             .explain('executionStats'),
       },
+      Q12b_sprint_only: {
+        run: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                sprintId: activeSprint,
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                sprintId: activeSprint,
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
       Q8b_overview_parallel_groups: {
         run: () =>
           Promise.all([
@@ -671,10 +723,23 @@ async function main() {
     ]);
     const phaseB = await runPhase('B_partial_due_parent');
 
-    // Phase C: final proposal — NON-partial due/parent indexes (also serve dueDate:null / parentId:null).
+    // Phase C: final proposal — NON-partial due/parent indexes (also serve dueDate:null / parentId:null)
+    // and `_id` placed before `status` on assignee/sprint indexes so standalone assigneeId/sprintId
+    // queries stream in `_id: 1` order without an in-memory SORT while combined +status queries filter
+    // `status` inside the index key before fetching documents.
+    await items.dropIndex('project_assignee_status_cursor');
+    await items.dropIndex('project_sprint_status_cursor');
     await items.dropIndex('project_due_cursor');
     await items.dropIndex('project_parent_cursor');
     await items.createIndexes([
+      {
+        key: { projectId: 1, assigneeId: 1, _id: 1, status: 1 },
+        name: 'project_assignee_cursor_status',
+      },
+      {
+        key: { projectId: 1, sprintId: 1, _id: 1, status: 1 },
+        name: 'project_sprint_cursor_status',
+      },
       { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
       {
         key: { projectId: 1, parentId: 1, _id: 1 },
@@ -706,8 +771,8 @@ async function main() {
     const writeWithC = await insertCost('final proposal (6 indexes + _id)');
     for (const name of [
       'project_status_cursor',
-      'project_assignee_status_cursor',
-      'project_sprint_status_cursor',
+      'project_assignee_cursor_status',
+      'project_sprint_cursor_status',
       'project_due_cursor',
       'project_parent_cursor',
     ]) {
@@ -757,13 +822,17 @@ async function main() {
       ),
     );
   } finally {
+    await cleanupScratchDatabase(client, scratchDbName, dbCreated);
+  }
+}
+
+export async function cleanupScratchDatabase(client, scratchDbName, dbCreated) {
+  try {
     if (dbCreated) {
-      await client
-        .db(scratchDbName)
-        .dropDatabase()
-        .catch(() => {});
+      await client.db(scratchDbName).dropDatabase();
     }
-    await client.close().catch(() => {});
+  } finally {
+    await client.close();
   }
 }
 

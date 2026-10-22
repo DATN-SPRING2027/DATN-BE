@@ -61,7 +61,7 @@ flowchart TB
     POLICY["task-lifecycle-policy (thêm IN_REVIEW) + task-field-policy (mới)"]
     REPO["TaskDataRepository + TaskCollaborationRepository + ProjectSprintRepository"]
   end
-  DB[("continuum_task: tasks, task_events, task_operations, task_counters, task_comments, task_worklogs, project_sprints")]
+  DB[("continuum_task: tasks, task_events, task_operations, task_counters, task_comments, task_worklogs, project_sprints, project_sprint_events")]
   GTC --> CTX --> HTTP --> GUARD --> APP
   APP --> POLICY
   APP --> REPO --> DB
@@ -103,15 +103,22 @@ flowchart TB
    - `task_comments`: `{_id, taskId, projectId, organizationId, authorId, body, createdAt}`, index `{projectId: 1, taskId: 1, _id: 1}`.
    - `task_worklogs`: `{_id, taskId, projectId, organizationId, authorId, minutes, note, loggedAt, createdAt}`, index `{projectId: 1, taskId: 1, _id: -1}`.
    - `project_sprints`: `{_id, projectId, organizationId, name, goal, status: 'PLANNED'|'ACTIVE'|'COMPLETED', startDate, endDate, createdBy, createdAt, completedAt, version}`, index `{projectId: 1, createdAt: -1}` và partial unique index `{projectId: 1}` với `partialFilterExpression: {status: 'ACTIVE'}` (đảm bảo tối đa 1 sprint `ACTIVE` mỗi project).
+   - `project_sprint_events`: `{_id, sprintId, projectId, organizationId, eventType: 'SPRINT_CREATED'|'SPRINT_UPDATED'|'SPRINT_COMPLETED', actorId, actorType, occurredAt, version, delta}`, unique index `{sprintId: 1, version: 1}` và `{projectId: 1, sprintId: 1, occurredAt: -1, _id: -1}`. Tách riêng khỏi `task_events` vì `task_events` bắt buộc `taskId: ObjectId` và phục vụ trực tiếp `GET /tasks/{taskId}/history`.
 
 3. **Migration:**
    - Tạo script mới `scripts/migrations/<date>-task-workspace-fields.mjs` (cấm sửa migration cũ). Theo pattern của `20261019-task-lifecycle-contract.mjs`: dry-run report + `--expected-report-sha256` + `--task-writes-paused`.
    - Task service chưa từng active ở production nên hiện chưa có dữ liệu cũ; nếu có dữ liệu test thì script backfill mặc định hoặc yêu cầu làm sạch trước khi áp validator mới.
-   - **Rollback:** khôi phục validator cũ sau khi `$unset` các field mới và drop các index mới.
+   - **Rollback:** khôi phục validator cũ (`tasks`, `task_events`, `task_operations`) sau khi `$unset` các field mới và drop các collection/index mới.
 
-4. **Event (`task_events`):**
-   - Cập nhật enum `fromStatus`/`toStatus` thêm `IN_REVIEW`.
-   - Thêm các loại sự kiện `TASK_UPDATED {changedFields, version}`, `TASK_COMMENT_ADDED {commentId}`, `TASK_WORKLOG_ADDED {worklogId, minutes}`, và sự kiện sprint (`SPRINT_CREATED`, `SPRINT_UPDATED`, `SPRINT_COMPLETED`) ghi chung transaction với mutation. Mọi sự kiện đều lưu `{actor, actorType, organizationId, projectId}` để đảm bảo truy vết đầy đủ khi Manager (`ADMIN`) thao tác trên bất kỳ project nào.
+4. **Mở rộng validator `task_events` & `task_operations` (`src/services/task/infrastructure/mongodb/task-database-schema.ts:145-375`) và đọc history:**
+   - Validator hiện tại của `task_events` dùng `oneOf` (trong `TASK_EVENT_JSON_SCHEMA`) và `$or` (trong `TASK_COLLECTION_VALIDATORS.task_events`) chỉ cho phép 2 nhánh `TASK_CREATED` và `TASK_STATUS_TRANSITIONED` với cặp `fromStatus -> toStatus` cố định. Migration `DB-1` bắt buộc chạy `collMod` cập nhật cả `task_events` và `task_operations`:
+     1. Thêm `'IN_REVIEW'` vào `TASK_STATUSES` và bổ sung các cặp chuyển trạng thái hợp lệ (`IN_PROGRESS <-> IN_REVIEW`, `IN_REVIEW -> DONE`, `IN_REVIEW -> BLOCKED`, `IN_REVIEW -> CANCELLED`, `BLOCKED -> IN_REVIEW`) vào biểu thức `$expr` của nhánh `TASK_STATUS_TRANSITIONED`.
+     2. Thêm `organizationId: ObjectId` vào base properties của `task_events` và mở rộng `oneOf` / `$or` thêm 3 nhánh sự kiện cấp task (tất cả đều có `taskId: ObjectId`):
+        - `TASK_UPDATED`: `version: int >= 2`, `delta: {type: 'FIELD_UPDATE', changedFields: string[] (minItems: 1), fromSprintId?: ObjectId|null, toSprintId?: ObjectId|null, reason?: string}`.
+        - `TASK_COMMENT_ADDED`: `version: int >= 1`, `delta: {type: 'COMMENT_ADDED', commentId: ObjectId}`.
+        - `TASK_WORKLOG_ADDED`: `version: int >= 1`, `delta: {type: 'WORKLOG_ADDED', worklogId: ObjectId, minutes: int (1..1440)}`.
+     3. Cập nhật partial unique index `task_event_task_mutation_version_unique` (`{taskId: 1, version: 1}`) với `partialFilterExpression: {eventType: {$in: ['TASK_STATUS_TRANSITIONED', 'TASK_UPDATED']}}` để đảm bảo mỗi lần tăng `task.version` (do đổi status, `PATCH` field, hoặc dời sprint khi complete sprint) đều có đúng 1 bản ghi lịch sử ứng với `(taskId, version)` đó, trong khi comment/worklog không tăng `task.version`.
+     4. Mở rộng `TaskHistoryQueryService` (`src/services/task/runtime/task-history-query.service.ts`) để ánh xạ đủ 5 loại `eventType` trong `task_events` sang `TaskHistoryEntry` trên `GET /api/v1/tasks/projects/{projectId}/tasks/{taskId}/history`.
 
 ### 2.3 Concurrency và consistency
 
@@ -119,7 +126,7 @@ flowchart TB
 |---|---|---|
 | Hai người sửa cùng task hoặc cùng sprint | `updateOne({_id, projectId, organizationId, version: expected}, {$set…, $inc:{version:1}})`; `matchedCount=0` thì đọc lại để phân biệt 404 và 409 (`TASK_VERSION_CONFLICT` / `SPRINT_VERSION_CONFLICT`); thiếu `If-Match` trả `428 PRECONDITION_REQUIRED` | atomic trên 1 document, chống ghi đè mù giữa 2 Leader/Manager |
 | Ghi task/comment/worklog/sprint + event | transaction (đã có trong `create`/`transitionStatus`) | cần nhất quán đa document; CI dùng replica set |
-| Complete sprint + dời task chưa xong | Trước và trong transaction: xác thực sprint nguồn `{_id: sprintId, projectId, organizationId, status: 'ACTIVE', version: expected}` và (nếu `moveIncompleteToSprintId != null`) xác thực sprint đích `{_id: moveIncompleteToSprintId, projectId, organizationId, status: 'PLANNED'}`. Sau đó cập nhật sprint nguồn sang `COMPLETED` (`version + 1`) và chạy `updateMany({organizationId, projectId, sprintId, status: {$nin: ['DONE', 'CANCELLED']}}, {$set: {sprintId: moveIncompleteToSprintId, updatedAt: now}, $inc: {version: 1}})` kèm ghi event `SPRINT_COMPLETED` | chống gán chéo project/org và chống race condition khi đóng sprint |
+| Complete sprint + dời task chưa xong | Trong cùng transaction: (1) CAS cập nhật sprint nguồn `{_id: sprintId, projectId, organizationId, status: 'ACTIVE', version: expected}` → `COMPLETED` (`version + 1`) và ghi `SPRINT_COMPLETED` vào `project_sprint_events`; (2) nếu `moveIncompleteToSprintId != null`, xác thực sprint đích thuộc `{projectId, organizationId, status: 'PLANNED'}`; (3) đọc danh sách task chưa hoàn tất `{_id, version}` thuộc `{organizationId, projectId, sprintId, status: {$nin: ['DONE', 'CANCELLED']}}`, thực hiện `bulkWrite` có điều kiện `version` (`$set: {sprintId: moveIncompleteToSprintId, updatedAt: now}, $inc: {version: 1}`, nếu `matchedCount` lệch thì abort `409`), và `insertMany` một sự kiện `TASK_UPDATED` (`version: task.version + 1`, `changedFields: ['sprintId']`, `fromSprintId`, `toSprintId`, `reason: 'SPRINT_COMPLETED'`) cho **từng task bị dời** vào `task_events` | chống gán chéo project/org, chống race condition với người đang sửa task, và bảo toàn bất biến: mọi lần tăng `task.version` đều có sự kiện giải thích trong `task_events` |
 | Tối đa 1 ACTIVE sprint/project | partial unique index `{projectId: 1}` với `{status: 'ACTIVE'}` | chống race condition khi 2 Leader bấm Start Sprint cùng lúc |
 | Retry create / comment / worklog / sprint | `Idempotency-Key` lưu trong `task_operations` (TTL 24h, unique `{actorId, projectId, operationId}`) | tái dùng collection có sẵn, không thêm Redis |
 | Cấp key song song | `findOneAndUpdate($inc)` + unique index | atomic, không race |

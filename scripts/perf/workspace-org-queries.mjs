@@ -208,6 +208,17 @@ async function main() {
             )
             .sort({ _id: 1 })
             .limit(50),
+        assigneeOnly: () =>
+          tasks
+            .find(
+              {
+                organizationId: targetOrg,
+                assigneeId: assignee,
+              },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
         assigneeStatus: () =>
           tasks
             .find(
@@ -271,6 +282,17 @@ async function main() {
           tasks
             .find(
               { projectId: { $in: projectIds }, status: 'IN_PROGRESS' },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
+        assigneeOnly: () =>
+          tasks
+            .find(
+              {
+                projectId: { $in: projectIds },
+                assigneeId: assignee,
+              },
               { projection },
             )
             .sort({ _id: 1 })
@@ -357,8 +379,8 @@ async function main() {
         name: 'project_status_cursor',
       },
       {
-        key: { projectId: 1, assigneeId: 1, status: 1, _id: 1 },
-        name: 'project_assignee_status_cursor',
+        key: { projectId: 1, assigneeId: 1, _id: 1, status: 1 },
+        name: 'project_assignee_cursor_status',
       },
       { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
     ]);
@@ -376,8 +398,8 @@ async function main() {
         name: 'org_project_cursor',
       },
       {
-        key: { organizationId: 1, assigneeId: 1, status: 1, _id: 1 },
-        name: 'org_assignee_status_cursor',
+        key: { organizationId: 1, assigneeId: 1, _id: 1, status: 1 },
+        name: 'org_assignee_cursor_status',
       },
       {
         key: { organizationId: 1, dueDate: 1, _id: 1 },
@@ -414,13 +436,17 @@ async function main() {
       ),
     );
   } finally {
+    await cleanupScratchDatabase(client, scratchDbName, dbCreated);
+  }
+}
+
+export async function cleanupScratchDatabase(client, scratchDbName, dbCreated) {
+  try {
     if (dbCreated) {
-      await client
-        .db(scratchDbName)
-        .dropDatabase()
-        .catch(() => {});
+      await client.db(scratchDbName).dropDatabase();
     }
-    await client.close().catch(() => {});
+  } finally {
+    await client.close();
   }
 }
 

@@ -86,8 +86,8 @@ paths:
       x-required-indexes:
         - '{projectId:1,_id:1} (existing task_project_cursor)'
         - '{projectId:1,status:1,_id:1}'
-        - '{projectId:1,assigneeId:1,status:1,_id:1}'
-        - '{projectId:1,sprintId:1,status:1,_id:1}'
+        - '{projectId:1,assigneeId:1,_id:1,status:1} (serves both standalone assigneeId in _id:1 order and assigneeId+status with index-key status filter; see 07 §4)'
+        - '{projectId:1,sprintId:1,_id:1,status:1} (serves both standalone sprintId in _id:1 order and sprintId+status with index-key status filter; see 07 §4)'
         - '{projectId:1,dueDate:1,_id:1} (NOT partial: also serves dueDate:null; see 07 §3)'
         - '{projectId:1,parentId:1,_id:1} (NOT partial: also serves parentId:null; see 07 §5)'
         - '{projectId:1,key:1} unique (exact key lookup)'
@@ -541,7 +541,9 @@ paths:
       description: |
         Protected by optimistic concurrency (`If-Match: "sprint:<id>:<version>"`) and `Idempotency-Key`.
         Verifies both `sprintId` and `moveIncompleteToSprintId` (when non-null) belong to `{organizationId, projectId}`
-        before committing the transaction.
+        before committing the transaction. Within the same transaction, every incomplete task (`status` not in `DONE`, `CANCELLED`)
+        whose `sprintId` changes has its `version` incremented and a corresponding `TASK_UPDATED` event (`changedFields: ["sprintId"]`,
+        `reason: "SPRINT_COMPLETED"`) written to `task_events`, while `SPRINT_COMPLETED` is recorded in `project_sprint_events`.
       x-status: PROPOSED
       parameters:
         - $ref: '#/components/parameters/SprintIfMatch'
@@ -617,7 +619,7 @@ paths:
         - '{organizationId:1,_id:1}'
         - '{organizationId:1,status:1,_id:1}'
         - '{organizationId:1,projectId:1,_id:1}'
-        - '{organizationId:1,assigneeId:1,status:1,_id:1}'
+        - '{organizationId:1,assigneeId:1,_id:1,status:1} (serves both standalone assigneeId in _id:1 order and assigneeId+status with index-key status filter; see 07 §12)'
         - '{organizationId:1,dueDate:1,_id:1} (NOT partial)'
         - '{organizationId:1,projectId:1,status:1,dueDate:1} (covered overdue summary)'
       parameters:
@@ -1197,6 +1199,17 @@ components:
         changedFields:
           type: array
           items: { type: string }
+        fromSprintId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        toSprintId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        commentId: { $ref: '#/components/schemas/ObjectIdString' }
+        worklogId: { $ref: '#/components/schemas/ObjectIdString' }
+        minutes: { type: integer, minimum: 1, maximum: 1440 }
     TaskHistoryPage:
       type: object
       additionalProperties: false

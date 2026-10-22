@@ -4,8 +4,14 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
-import { createUniqueScratchDbName as createPlanDbName } from './workspace-query-plans.mjs';
-import { createUniqueScratchDbName as createOrgDbName } from './workspace-org-queries.mjs';
+import {
+  cleanupScratchDatabase as cleanupPlanDb,
+  createUniqueScratchDbName as createPlanDbName,
+} from './workspace-query-plans.mjs';
+import {
+  cleanupScratchDatabase as cleanupOrgDb,
+  createUniqueScratchDbName as createOrgDbName,
+} from './workspace-org-queries.mjs';
 
 const scripts = [
   './workspace-query-plans.mjs',
@@ -50,6 +56,27 @@ test('createUniqueScratchDbName produces distinct per-run database names', () =>
   assert.notEqual(a, b);
   assert.match(a, /^datn_ws_perf_\d+_\d+_[0-9a-f]{8}$/);
   assert.match(c, /^datn_ws_org_perf_\d+_\d+_[0-9a-f]{8}$/);
+});
+
+test('cleanupScratchDatabase propagates dropDatabase errors while still closing the client', async () => {
+  for (const cleanup of [cleanupPlanDb, cleanupOrgDb]) {
+    let closed = false;
+    const fakeClient = {
+      db: () => ({
+        dropDatabase: async () => {
+          throw new Error('dropDatabase failed: disk full');
+        },
+      }),
+      close: async () => {
+        closed = true;
+      },
+    };
+    await assert.rejects(
+      () => cleanup(fakeClient, 'datn_ws_perf_test', true),
+      /dropDatabase failed: disk full/,
+    );
+    assert.equal(closed, true);
+  }
 });
 
 function validateAgainstOpenApiSchema(spec, schemaOrRef, value, path = '$') {
@@ -167,7 +194,7 @@ function validateAgainstOpenApiSchema(spec, schemaOrRef, value, path = '$') {
   }
 }
 
-test('04-api-inventory.yaml schemas accept valid TaskDetail, OrganizationTask, ProjectSprint and OrganizationTaskSummary samples', () => {
+test('04-api-inventory.yaml schemas accept valid TaskDetail, OrganizationTask, ProjectSprint, OrganizationTaskSummary and TaskHistoryEntry samples', () => {
   const spec = yaml.load(readFileSync(openapiPath, 'utf8'));
   const schemas = spec.components.schemas;
 
@@ -266,5 +293,23 @@ test('04-api-inventory.yaml schemas accept valid TaskDetail, OrganizationTask, P
     schemas.OrganizationTaskSummary,
     orgSummarySample,
     'OrganizationTaskSummary',
+  );
+
+  const historySample = {
+    id: '6717b0000000000000000099',
+    type: 'TASK_UPDATED',
+    actor: { id: '6717b0000000000000000003', fullName: 'Thang' },
+    occurredAt: '2026-10-22T12:45:00.000Z',
+    version: 3,
+    reason: 'SPRINT_COMPLETED',
+    changedFields: ['sprintId'],
+    fromSprintId: '6717b0000000000000000005',
+    toSprintId: null,
+  };
+  validateAgainstOpenApiSchema(
+    spec,
+    schemas.TaskHistoryEntry,
+    historySample,
+    'TaskHistoryEntry',
   );
 });
