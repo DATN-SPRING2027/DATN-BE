@@ -374,15 +374,33 @@ export class MongoProjectRepository implements ProjectRepository {
     }
 
     return baseRecords.map((record) => {
-      const activeMemberCount =
-        activeProjectMembersByProject.get(record.id)?.size ?? 0;
+      const activeMemberIds = [
+        ...(activeProjectMembersByProject.get(record.id) ?? []),
+      ];
+      const activeMemberCount = activeMemberIds.length;
       const leaders = effectiveLeadersByProject.get(record.id) ?? [];
       const effectiveLeaderCount = leaders.length;
+      const leaderIdSet = new Set(leaders.map((leader) => leader.userId));
+      const memberPreviews = [
+        ...leaders.map((leader) => ({
+          ...leader,
+          roleCode: 'TEAM_LEADER' as const,
+        })),
+        ...activeMemberIds
+          .filter((id) => !leaderIdSet.has(id))
+          .map((id) => activeUserMap.get(id))
+          .filter((item): item is NonNullable<typeof item> => Boolean(item))
+          .map((member) => ({
+            ...member,
+            roleCode: 'MEMBER' as const,
+          })),
+      ].slice(0, 8);
       return {
         ...record,
         activeMemberCount,
         effectiveLeaderCount,
         leaders,
+        memberPreviews,
         requiresLeaderRecovery:
           record.status === 'ACTIVE' && effectiveLeaderCount === 0,
       };

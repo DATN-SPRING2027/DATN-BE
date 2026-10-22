@@ -1362,6 +1362,9 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           invitationVersion: 1,
           invitationExpiresAt: expiresAt.toISOString(),
           ...(command.roleCode ? { requestedRoleCode: command.roleCode } : {}),
+          ...(command.projectRoleCode
+            ? { projectRoleCode: command.projectRoleCode }
+            : {}),
           ...(command.accessScope ? { accessScope: command.accessScope } : {}),
         },
       },
@@ -1375,6 +1378,9 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           tokenHash,
           encryptedToken,
           roleCode: requestedRoleCode,
+          ...(command.projectRoleCode
+            ? { projectRoleCode: command.projectRoleCode }
+            : {}),
           ...(command.accessScope ? { accessScope: command.accessScope } : {}),
           ...(command.projectIds ? { projectIds: command.projectIds } : {}),
           ...(command.message ? { message: command.message } : {}),
@@ -1525,6 +1531,26 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           tokenHash,
           encryptedToken,
           roleCode: requestedRoleCode,
+          ...(priorPayload?.projectRoleCode === 'TEAM_LEADER' ||
+          priorPayload?.projectRoleCode === 'MEMBER'
+            ? { projectRoleCode: priorPayload.projectRoleCode }
+            : {}),
+          ...(priorPayload?.accessScope === 'ORGANIZATION' ||
+          priorPayload?.accessScope === 'SPECIFIC_PROJECTS'
+            ? { accessScope: priorPayload.accessScope }
+            : {}),
+          ...(Array.isArray(priorPayload?.projectIds)
+            ? { projectIds: priorPayload.projectIds }
+            : {}),
+          ...(typeof priorPayload?.message === 'string'
+            ? { message: priorPayload.message }
+            : {}),
+          ...(typeof priorPayload?.expiresInDays === 'number'
+            ? { expiresInDays: priorPayload.expiresInDays }
+            : {}),
+          ...(typeof priorPayload?.requireApproval === 'boolean'
+            ? { requireApproval: priorPayload.requireApproval }
+            : {}),
         },
       },
     };
@@ -2164,6 +2190,11 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       eligibleAdminIds.length <= 1
     )
       throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
+    await this.assertNoActiveProjectLeadership(
+      organizationId,
+      membership.userId,
+      session,
+    );
     const updated = await this.memberships()
       .findOneAndUpdate(
         {
@@ -2313,52 +2344,16 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     };
   }
 
-  private async remove(
-    organizationIdText: string,
-    actorUserId: Types.ObjectId,
-    command: Extract<OrganizationMembershipCommand, { command: 'REMOVE' }>,
-    _now: Date,
+  private async assertNoActiveProjectLeadership(
+    organizationId: Types.ObjectId,
+    userId: Types.ObjectId,
     session: ClientSession,
-  ) {
-    const organizationId = new Types.ObjectId(organizationIdText);
-    const membership = await this.findMembership(
-      organizationId,
-      new Types.ObjectId(command.membershipId),
-      session,
-    );
-    if (membership.userId.equals(actorUserId))
-      throw new ForbiddenException({
-        code: 'MEMBERSHIP_SELF_ACTION_FORBIDDEN',
-      });
-    if (membership.version !== command.expectedMembershipVersion)
-      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
-    if (membership.status !== 'ACTIVE' && membership.status !== 'SUSPENDED')
-      throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
-
-    const [eligibleAdminIds, targetAdminAssignment] = await Promise.all([
-      this.eligibleAdminIds(organizationId, session),
-      this.assignments()
-        .exists({
-          organizationId,
-          userId: membership.userId,
-          roleCode: 'ADMIN',
-          ...organizationLevel,
-        })
-        .session(session),
-    ]);
-    if (
-      targetAdminAssignment &&
-      eligibleAdminIds.filter((id) => !id.equals(membership.userId)).length ===
-        0
-    ) {
-      throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
-    }
-
+  ): Promise<void> {
     const projectLeaderAssignments = await this.assignments()
       .find(
         {
           organizationId,
-          userId: membership.userId,
+          userId,
           roleCode: 'TEAM_LEADER',
           projectId: { $ne: null },
         },
@@ -2380,7 +2375,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           .find(
             {
               organizationId,
-              userId: membership.userId,
+              userId,
               projectId: { $in: projectIds },
               status: 'ACTIVE',
             },
@@ -2434,6 +2429,54 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
         });
       }
     }
+  }
+
+  private async remove(
+    organizationIdText: string,
+    actorUserId: Types.ObjectId,
+    command: Extract<OrganizationMembershipCommand, { command: 'REMOVE' }>,
+    _now: Date,
+    session: ClientSession,
+  ) {
+    const organizationId = new Types.ObjectId(organizationIdText);
+    const membership = await this.findMembership(
+      organizationId,
+      new Types.ObjectId(command.membershipId),
+      session,
+    );
+    if (membership.userId.equals(actorUserId))
+      throw new ForbiddenException({
+        code: 'MEMBERSHIP_SELF_ACTION_FORBIDDEN',
+      });
+    if (membership.version !== command.expectedMembershipVersion)
+      throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    if (membership.status !== 'ACTIVE' && membership.status !== 'SUSPENDED')
+      throw new ConflictException({ code: 'MEMBERSHIP_INVALID_TRANSITION' });
+
+    const [eligibleAdminIds, targetAdminAssignment] = await Promise.all([
+      this.eligibleAdminIds(organizationId, session),
+      this.assignments()
+        .exists({
+          organizationId,
+          userId: membership.userId,
+          roleCode: 'ADMIN',
+          ...organizationLevel,
+        })
+        .session(session),
+    ]);
+    if (
+      targetAdminAssignment &&
+      eligibleAdminIds.filter((id) => !id.equals(membership.userId)).length ===
+        0
+    ) {
+      throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
+    }
+
+    await this.assertNoActiveProjectLeadership(
+      organizationId,
+      membership.userId,
+      session,
+    );
 
     const updated = await this.memberships()
       .findOneAndUpdate(
@@ -2465,6 +2508,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       )
       .exec();
 
+    const projectMembershipsModel =
+      this.optionalModel<ProjectMembershipDocument>('project_memberships');
     if (projectMembershipsModel) {
       await projectMembershipsModel
         .updateMany(

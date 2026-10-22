@@ -38,7 +38,7 @@ export interface AcceptInvitationAcknowledgement {
     id: string;
     organizationId: string;
     userId: string;
-    status: 'ACTIVE';
+    status: 'ACTIVE' | 'SUSPENDED';
     version: number;
   };
   invitation: {

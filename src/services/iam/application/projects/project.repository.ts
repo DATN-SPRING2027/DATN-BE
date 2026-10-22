@@ -7,6 +7,7 @@ export interface ProjectLeaderSummary {
   userId: string;
   fullName: string;
   email: string;
+  roleCode?: 'TEAM_LEADER' | 'MEMBER';
 }
 
 export interface ProjectRecord {
@@ -23,6 +24,7 @@ export interface ProjectRecord {
   activeMemberCount?: number;
   effectiveLeaderCount?: number;
   leaders?: ProjectLeaderSummary[];
+  memberPreviews?: ProjectLeaderSummary[];
   requiresLeaderRecovery?: boolean;
 }
 
