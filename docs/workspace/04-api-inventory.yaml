@@ -1,0 +1,634 @@
+openapi: 3.1.0
+info:
+  title: Continuum AI Workspace Task API — proposed extension (DATN-FE PR #69 consumer)
+  version: 0.2.0-proposal
+  description: |
+    PROPOSAL ONLY — NOT APPROVED. Do not implement, route, or call any operation
+    in this document until gates G1–G6 in docs/workspace/02-fe-be-api-matrix.md §3
+    are recorded in a decision record (DATN_BE/AGENTS.md:11-12, 22).
+
+    Scope: the minimal Task surface needed by the DATN-FE workspace views
+    (List, Board, Calendar, Timeline, Overview, Reports, Issue Detail).
+    Comments, worklogs, checklists, sprints, Work Notes, Docs, Forms,
+    Development and AI are deliberately excluded (gate G8/G9).
+
+    Compatibility with the APPROVED D-05 slice (docs/openapi/task-v1-d05-slice.openapi.json):
+    - list/detail keep the same paths, the `afterId`/`limit` cursor semantics and the
+      seven existing response fields; new fields are additive.
+    - Public Gateway paths follow the existing Gateway rewrite `/api/v1/*` -> `/internal/*`
+      (src/gateway/gateway-iam.controller.ts:921), so `/api/v1/tasks/...` maps 1:1 to
+      the Task service `/internal/tasks/...` routes.
+    - Error bodies keep the StructuredExceptionFilter shape {code, message, details, requestId}
+      (src/common/http/structured-exception.filter.ts:18-58). RFC 9457 is NOT introduced
+      to avoid a parallel error standard.
+    - Cross-project or non-member access returns 404 (no existence oracle), as in the slice.
+  x-approval-status: PROPOSED_NOT_APPROVED
+  x-consumer: DATN-FE@80a324ffac9cbb1e1b45e0a34d44c9c6ef508046
+  x-blocking-gates: [G1, G2, G3, G4, G5, G6, G7]
+  license:
+    name: UNLICENSED
+    identifier: UNLICENSED
+security:
+  - sessionCookie: []
+x-decision-refs:
+  - DATN_BE/AGENTS.md (Task dormant exception, contract-first gate)
+  - Document/research-tech/ADR-009 (native Continuum Task is the only task source in MVP)
+  - Document/research-tech/ADR-010 (Gateway forwards to Task; OpenAPI before implementation)
+  - Document doc 25 D-08 (approved dormant lifecycle transition policy)
+  - Document doc 26 D-09 (accepted dormant history)
+  - Document doc 27 D05-DR1 record (branch only; DR-3, DR-7(c)(d), DR-8 DEFER)
+tags:
+  - name: Tasks
+    description: Task read and field mutation operations scoped to one Project.
+  - name: TaskLifecycle
+    description: Status transitions and history backed by the approved-dormant D-08/D-09 runtime.
+  - name: TaskViews
+    description: Read projections for Overview, Board headers and Reports.
+paths:
+  /api/v1/tasks/projects/{projectId}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Tasks]
+      operationId: listProjectTasks
+      summary: List tasks of a Project (List, Board column, Calendar, Timeline, Reports table)
+      description: |
+        Keyset pagination. Default order is `_id` ascending (approved D-05 slice).
+        When `dueFrom`/`dueTo` is supplied the order is `dueDate` ascending, `_id` ascending
+        and `cursor` must be used instead of `afterId`.
+        Filters are an allowlist; unknown query parameters return 422.
+        `subtaskCounts` is computed with one batched aggregation per page (no N+1).
+      x-status: PROPOSED (extends APPROVED listProjectTasks)
+      x-consumers:
+        - DATN_FE src/components/work/WorkListView.tsx
+        - DATN_FE src/components/work/WorkBoardView.tsx
+        - DATN_FE src/components/work/WorkCalendarView.tsx
+        - DATN_FE src/components/work/WorkTimelineView.tsx
+        - DATN_FE src/components/work/WorkReportsView.tsx
+      x-required-indexes:
+        - '{projectId:1,_id:1} (existing task_project_cursor)'
+        - '{projectId:1,status:1,_id:1}'
+        - '{projectId:1,assigneeId:1,status:1,_id:1}'
+        - '{projectId:1,dueDate:1,_id:1} (NOT partial: also serves dueDate:null; see 07 §3)'
+        - '{projectId:1,parentId:1,_id:1} (NOT partial: also serves parentId:null; see 07 §5)'
+        - '{projectId:1,key:1} unique (exact key lookup)'
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: afterId
+          in: query
+          description: Approved D-05 cursor for the default `_id` order. Mutually exclusive with `cursor`.
+          schema: { $ref: '#/components/schemas/ObjectIdString' }
+        - name: cursor
+          in: query
+          description: Opaque continuation token returned as `nextCursor`. Required for date-range paging.
+          schema: { type: string, maxLength: 256 }
+        - name: status
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 5
+            uniqueItems: true
+            items: { $ref: '#/components/schemas/TaskStatus' }
+        - name: assigneeId
+          in: query
+          description: ObjectId, or the literal `me` (resolved server-side from the session), or `none`.
+          schema: { type: string, pattern: '^([0-9a-f]{24}|me|none)$' }
+        - name: priority
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 3
+            uniqueItems: true
+            items: { $ref: '#/components/schemas/TaskPriority' }
+        - name: type
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 3
+            uniqueItems: true
+            items: { $ref: '#/components/schemas/TaskType' }
+        - name: parentId
+          in: query
+          description: ObjectId to list subtasks of a parent, or `none` for top-level tasks only.
+          schema: { type: string, pattern: '^([0-9a-f]{24}|none)$' }
+        - name: dueFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: dueDate
+          in: query
+          description: Only `none` (tasks without a due date, Calendar "unscheduled" drawer). Mutually exclusive with dueFrom/dueTo.
+          schema: { type: string, enum: [none] }
+        - name: dueTo
+          in: query
+          description: Exclusive upper bound. `dueTo - dueFrom` must be at most 100 days.
+          schema: { type: string, format: date-time }
+        - name: q
+          in: query
+          description: Case-insensitive literal substring on `title` or exact `key`. Escaped server-side; 2-100 code points.
+          schema: { type: string, minLength: 2, maxLength: 100 }
+      responses:
+        '200':
+          description: One page of tasks.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskPage' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+    post:
+      tags: [Tasks]
+      operationId: createProjectTask
+      summary: Create a task (Create dialog, List inline create, Board quick create)
+      x-status: PROPOSED (extends PROPOSED createProjectTask in task-v1-d05-create.openapi.json)
+      x-consumers:
+        - DATN_FE src/components/work/WorkItemCreateDialog.tsx
+        - DATN_FE src/components/work/WorkListView.tsx (inline create)
+        - DATN_FE src/components/work/WorkBoardView.tsx (quick create)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskCreateRequest' }
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location: { schema: { type: string } }
+            ETag: { $ref: '#/components/headers/TaskETag' }
+            Idempotency-Replayed: { schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+  /api/v1/tasks/projects/{projectId}/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getProjectTask
+      summary: Task detail (Issue Detail modal and full-page view)
+      x-status: PROPOSED (extends APPROVED getProjectTask)
+      responses:
+        '200':
+          description: Task detail.
+          headers:
+            ETag: { $ref: '#/components/headers/TaskETag' }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDetail' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+    patch:
+      tags: [Tasks]
+      operationId: updateProjectTask
+      summary: Partial update of non-lifecycle fields (title, description, priority, type, assignee, dates, labels, parent)
+      description: |
+        Status is NOT writable here; use the transitions resource so the approved D-08
+        lifecycle policy stays the single place for status rules.
+        Optimistic concurrency via `If-Match: "task:<id>:<version>"` (same format as Team ETag).
+        A stale version returns 409 TASK_VERSION_CONFLICT with the current version in `details`.
+        Setting `parentId` is limited to one level (a subtask cannot have subtasks).
+      x-status: PROPOSED
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskUpdateRequest' }
+      responses:
+        '200':
+          description: Updated.
+          headers:
+            ETag: { $ref: '#/components/headers/TaskETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDetail' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+  /api/v1/tasks/projects/{projectId}/tasks/{taskId}/transitions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [TaskLifecycle]
+      operationId: transitionProjectTask
+      summary: Change task status (Board drag-drop, inline status, bulk bar, detail)
+      description: |
+        HTTP adapter for the existing, approved-dormant TaskLifecycleCommandService
+        (src/services/task/runtime/task-lifecycle-policy.ts:86-189):
+        allowed transitions, reason >= 5 code points for BLOCKED/CANCELLED/reopen,
+        TODO->IN_PROGRESS requires an assignee, MEMBER may only move tasks assigned to
+        them (cancel/reopen: creator only); ADMIN/TEAM_LEADER may move any task.
+        The Idempotency-Key maps to the existing UUIDv4 `operationId`.
+      x-status: PROPOSED
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKeyUuid'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskTransitionRequest' }
+      responses:
+        '200':
+          description: Transition committed (or replayed).
+          headers:
+            ETag: { $ref: '#/components/headers/TaskETag' }
+            Idempotency-Replayed: { schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDetail' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+  /api/v1/tasks/projects/{projectId}/tasks/{taskId}/history:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [TaskLifecycle]
+      operationId: listProjectTaskHistory
+      summary: Task history (Issue Detail History tab)
+      description: HTTP adapter for the accepted-dormant TaskHistoryQueryService (doc 26 D-09). Newest first.
+      x-status: PROPOSED
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: History page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskHistoryPage' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+  /api/v1/tasks/projects/{projectId}/task-summary:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [TaskViews]
+      operationId: getProjectTaskSummary
+      summary: Aggregated counts for Overview, Board column headers and Reports KPIs
+      description: |
+        Single indexed aggregation over the Project scope, computed on demand
+        (see docs/workspace/07-performance-analysis.md). Time windows are evaluated
+        server-side in UTC against `asOf` so the FE no longer mislabels counts.
+        `byAssignee` returns at most 50 buckets ordered by count desc.
+      x-status: PROPOSED
+      x-consumers:
+        - DATN_FE src/components/work/WorkOverviewView.tsx
+        - DATN_FE src/components/work/WorkBoardView.tsx (column counts)
+        - DATN_FE src/components/work/WorkReportsView.tsx (KPI)
+      responses:
+        '200':
+          description: Summary.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskSummary' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/RetryLater' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: continuum_access
+      description: |
+        Browser session (HttpOnly access cookie set by IAM, authentication.controller.ts:59-94).
+        The Gateway resolves the identity and forwards trusted context to Task (gate G3);
+        the browser never calls the Task service directly (ADR-010).
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectIdString' }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectIdString' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Same format as Team/IAM commands; replay returns the stored response with `Idempotency-Replayed`.
+      schema: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+    IdempotencyKeyUuid:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUIDv4, stored as the lifecycle `operationId` (24h retention, task_operations TTL).
+      schema: { type: string, format: uuid }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string, pattern: '^"task:[0-9a-f]{24}:[1-9][0-9]*"$' }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Must equal the `__Host-csrf` cookie (double-submit), as in IAM command controllers.
+      schema: { type: string, minLength: 1 }
+  headers:
+    NoStore:
+      schema: { type: string, enum: [no-store] }
+    TaskETag:
+      schema: { type: string, pattern: '^"task:[0-9a-f]{24}:[1-9][0-9]*"$' }
+  responses:
+    Unauthenticated:
+      description: No valid session or no ACTIVE Organization Membership.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: In scope but the operation is not permitted for the actor (e.g. TASK_TRANSITION_FORBIDDEN, TASK_OPERATION_FORBIDDEN).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Project or task not found, or caller is not an ACTIVE member of the Project (TASK_NOT_FOUND / PROJECT_NOT_FOUND).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: TASK_VERSION_CONFLICT (details.currentVersion, details.currentStatus) or IDEMPOTENCY_KEY_REUSED.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ValidationFailed:
+      description: VALIDATION_FAILED, TASK_TRANSITION_NOT_ALLOWED, TASK_TRANSITION_REASON_REQUIRED, TASK_ASSIGNEE_NOT_PROJECT_MEMBER, TASK_PARENT_INVALID, TASK_SEARCH_TOO_BROAD (q exceeded maxTimeMS).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    PreconditionRequired:
+      description: PRECONDITION_REQUIRED (missing If-Match).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RetryLater:
+      description: RETRY_LATER (dependency unavailable); response includes Retry-After.
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    ObjectIdString:
+      type: string
+      pattern: '^[0-9a-f]{24}$'
+    TaskStatus:
+      description: Existing BE contract (task-contract.ts:10-16). FE `IN_REVIEW` is NOT included pending gate G7.
+      type: string
+      enum: [TODO, IN_PROGRESS, BLOCKED, DONE, CANCELLED]
+    TaskPriority:
+      type: string
+      enum: [LOW, MEDIUM, HIGH]
+    TaskType:
+      type: string
+      enum: [TASK, BUG, STORY]
+    TaskTitle:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: At least one non-whitespace code point (isValidTaskTitle). maxLength 255 is a NEW proposed bound.
+    PersonRef:
+      type: object
+      additionalProperties: false
+      required: [id, fullName]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectIdString' }
+        fullName: { type: string }
+    Task:
+      description: Compact list projection. The first seven properties are the APPROVED D-05 fields.
+      type: object
+      additionalProperties: false
+      required: [id, projectId, title, createdBy, createdAt, updatedAt, version, key, status, type, priority, assigneeId, dueDate, startDate, parentId, subtaskCounts]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectIdString' }
+        projectId: { $ref: '#/components/schemas/ObjectIdString' }
+        title: { $ref: '#/components/schemas/TaskTitle' }
+        createdBy: { $ref: '#/components/schemas/ObjectIdString' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        key:
+          type: string
+          description: Human key `<PROJECT_CODE>-<n>`, unique per Project, allocated atomically.
+          pattern: '^[A-Z0-9]{2,10}-[1-9][0-9]*$'
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        type: { $ref: '#/components/schemas/TaskType' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        assigneeId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        dueDate: { type: [string, 'null'], format: date-time }
+        startDate: { type: [string, 'null'], format: date-time }
+        parentId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        subtaskCounts:
+          type: object
+          additionalProperties: false
+          required: [total, done]
+          properties:
+            total: { type: integer, minimum: 0 }
+            done: { type: integer, minimum: 0 }
+    TaskDetail:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+        - type: object
+          required: [description, labels, completedAt]
+          properties:
+            description: { type: [string, 'null'], maxLength: 20000 }
+            labels:
+              type: array
+              maxItems: 20
+              items: { type: string, minLength: 1, maxLength: 40 }
+            completedAt: { type: [string, 'null'], format: date-time }
+    TaskPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfterId, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        nextAfterId:
+          description: Approved D-05 continuation for the default order; null on the last page or in date-range mode.
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        nextCursor:
+          type: [string, 'null']
+    TaskCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: { $ref: '#/components/schemas/TaskTitle' }
+        type: { $ref: '#/components/schemas/TaskType' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        assigneeId: { $ref: '#/components/schemas/ObjectIdString' }
+        dueDate: { type: string, format: date-time }
+        startDate: { type: string, format: date-time }
+        description: { type: string, maxLength: 20000 }
+        parentId: { $ref: '#/components/schemas/ObjectIdString' }
+        labels:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 40 }
+    TaskUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { $ref: '#/components/schemas/TaskTitle' }
+        type: { $ref: '#/components/schemas/TaskType' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        assigneeId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        dueDate: { type: [string, 'null'], format: date-time }
+        startDate: { type: [string, 'null'], format: date-time }
+        description: { type: [string, 'null'], maxLength: 20000 }
+        parentId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        labels:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 40 }
+    TaskTransitionRequest:
+      type: object
+      additionalProperties: false
+      required: [toStatus]
+      properties:
+        toStatus: { $ref: '#/components/schemas/TaskStatus' }
+        reason: { type: string, maxLength: 500 }
+    TaskHistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [id, type, actor, occurredAt, version]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectIdString' }
+        type: { type: string, enum: [TASK_CREATED, TASK_STATUS_TRANSITIONED, TASK_UPDATED] }
+        actor:
+          oneOf:
+            - $ref: '#/components/schemas/PersonRef'
+            - type: 'null'
+        occurredAt: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        fromStatus: { $ref: '#/components/schemas/TaskStatus' }
+        toStatus: { $ref: '#/components/schemas/TaskStatus' }
+        reason: { type: string }
+        changedFields:
+          type: array
+          items: { type: string }
+    TaskHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/TaskHistoryEntry' }
+        pagination:
+          type: object
+          additionalProperties: false
+          required: [page, limit, hasNext]
+          properties:
+            page: { type: integer, minimum: 1 }
+            limit: { type: integer, minimum: 1, maximum: 100 }
+            hasNext: { type: boolean }
+    CountBucket:
+      type: object
+      additionalProperties: false
+      required: [key, count]
+      properties:
+        key: { type: [string, 'null'] }
+        count: { type: integer, minimum: 0 }
+    TaskSummary:
+      type: object
+      additionalProperties: false
+      required: [asOf, total, byStatus, byPriority, byType, byAssignee, overdue, dueNext7Days, completedLast7Days, createdLast7Days]
+      properties:
+        asOf: { type: string, format: date-time }
+        total: { type: integer, minimum: 0 }
+        byStatus:
+          type: array
+          items: { $ref: '#/components/schemas/CountBucket' }
+        byPriority:
+          type: array
+          items: { $ref: '#/components/schemas/CountBucket' }
+        byType:
+          type: array
+          items: { $ref: '#/components/schemas/CountBucket' }
+        byAssignee:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/CountBucket' }
+        overdue: { type: integer, minimum: 0 }
+        dueNext7Days: { type: integer, minimum: 0 }
+        completedLast7Days: { type: integer, minimum: 0 }
+        createdLast7Days: { type: integer, minimum: 0 }
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [code, message, details, requestId]
+      description: Existing backend error shape produced by StructuredExceptionFilter.
+      properties:
+        code: { type: string, minLength: 1 }
+        message: { type: string, minLength: 1 }
+        details:
+          type: object
+          additionalProperties: true
+        requestId: { type: string, minLength: 1 }
