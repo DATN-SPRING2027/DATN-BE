@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
@@ -21,6 +22,7 @@ describe('default AppModule HTTP entrypoint', () => {
       imports: [AppModule],
     }).compile();
     app = module.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     configureApplication(app);
     await app.init();
   });

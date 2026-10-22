@@ -9,7 +9,7 @@ import {
 export class RedisService implements OnModuleDestroy {
   private readonly client: RedisConnection;
 
-  constructor(config: ConfigService) {
+  constructor(private readonly config: ConfigService) {
     this.client = createRedisConnection(config);
   }
 
@@ -27,6 +27,17 @@ export class RedisService implements OnModuleDestroy {
     await this.client.set(key, value);
   }
 
+  async increment(key: string, ttlSeconds: number): Promise<number> {
+    await this.connect();
+    const value = await this.client.eval(
+      "local next = redis.call('incr', KEYS[1]); redis.call('expire', KEYS[1], ARGV[1]); return next",
+      1,
+      key,
+      ttlSeconds,
+    );
+    return Number(value);
+  }
+
   async setIfAbsent(
     key: string,
     value: string,
@@ -42,6 +53,86 @@ export class RedisService implements OnModuleDestroy {
     await this.client.del(key);
   }
 
+  async consume(key: string): Promise<string | null> {
+    await this.connect();
+    return (await this.client.eval(
+      "local value = redis.call('get', KEYS[1]); if value then redis.call('del', KEYS[1]); end; return value",
+      1,
+      key,
+    )) as string | null;
+  }
+
+  async publish(channel: string, value: string): Promise<void> {
+    await this.connect();
+    await this.client.publish(channel, value);
+  }
+
+  async subscribe(
+    channel: string,
+    onMessage: (value: string) => void,
+  ): Promise<() => void> {
+    const subscriber = createRedisConnection(this.config);
+    try {
+      if (subscriber.status === 'wait') await subscriber.connect();
+      subscriber.on('message', (receivedChannel, value) => {
+        if (receivedChannel === channel && typeof value === 'string') {
+          onMessage(value);
+        }
+      });
+      await subscriber.subscribe(channel);
+      return () => subscriber.disconnect();
+    } catch (error) {
+      if (subscriber.status !== 'end') {
+        subscriber.disconnect();
+      }
+      throw error;
+    }
+  }
+
+  async touchPresenceSession(
+    key: string,
+    sessionId: string,
+    leaseMs: number,
+  ): Promise<boolean> {
+    await this.connect();
+    const wasOffline = await this.client.eval(
+      "local now = tonumber(ARGV[1]); redis.call('zremrangebyscore', KEYS[1], '-inf', now); local count = redis.call('zcard', KEYS[1]); redis.call('zadd', KEYS[1], tonumber(ARGV[2]), ARGV[3]); redis.call('pexpire', KEYS[1], tonumber(ARGV[4])); return count",
+      1,
+      key,
+      Date.now(),
+      Date.now() + leaseMs,
+      sessionId,
+      leaseMs * 2,
+    );
+    return Number(wasOffline) === 0;
+  }
+
+  async removePresenceSession(
+    key: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    await this.connect();
+    const remaining = await this.client.eval(
+      "redis.call('zrem', KEYS[1], ARGV[1]); redis.call('zremrangebyscore', KEYS[1], '-inf', ARGV[2]); local count = redis.call('zcard', KEYS[1]); if count == 0 then redis.call('del', KEYS[1]); end; return count",
+      1,
+      key,
+      sessionId,
+      Date.now(),
+    );
+    return Number(remaining) === 0;
+  }
+
+  async isPresenceOnline(key: string): Promise<boolean> {
+    await this.connect();
+    const count = await this.client.eval(
+      "redis.call('zremrangebyscore', KEYS[1], '-inf', ARGV[1]); return redis.call('zcard', KEYS[1])",
+      1,
+      key,
+      Date.now(),
+    );
+    return Number(count) > 0;
+  }
+
   revokeToken(tokenHash: string, ttlSeconds: number): Promise<void> {
     return this.set(`auth:blacklist:${tokenHash}`, '1', ttlSeconds);
   }
@@ -54,9 +145,13 @@ export class RedisService implements OnModuleDestroy {
     windowSeconds: number,
   ): Promise<boolean> {
     await this.connect();
-    const count = await this.client.incr(`rate:${key}`);
-    if (count === 1) await this.client.expire(`rate:${key}`, windowSeconds);
-    return count <= limit;
+    const count = await this.client.eval(
+      "local n = redis.call('incr', KEYS[1]); if n == 1 then redis.call('expire', KEYS[1], ARGV[1]); end; return n",
+      1,
+      `rate:${key}`,
+      windowSeconds,
+    );
+    return Number(count) <= limit;
   }
   acquireLock(
     key: string,

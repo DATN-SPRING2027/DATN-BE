@@ -38,6 +38,44 @@ spec:
               value: {{ $.Values.mongodb.uri | default (printf "mongodb://%s-mongo-0.%s-mongo-headless:27017,%s-mongo-1.%s-mongo-headless:27017,%s-mongo-2.%s-mongo-headless:27017/?replicaSet=rs0" (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $)) | quote }}
             - name: SERVICE_DATABASE
               value: {{ $service.database | quote }}
+            {{- if eq $name "chat" }}
+            - name: IAM_SERVICE_URL
+              value: http://{{ include "continuum-ai.fullname" $ }}-iam:3001
+            - name: CHAT_ALLOWED_ORIGINS
+              value: {{ $.Values.chat.allowedOrigins | quote }}
+            - name: R2_ENDPOINT
+              value: {{ $.Values.chat.r2.endpoint | quote }}
+            - name: R2_BUCKET
+              value: {{ $.Values.chat.r2.bucket | quote }}
+            - name: AWS_REGION
+              value: {{ $.Values.chat.s3.region | quote }}
+            - name: CHAT_S3_BUCKET
+              value: {{ $.Values.chat.s3.bucket | quote }}
+            {{- if $.Values.chat.r2.existingSecretName }}
+            - name: R2_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.chat.r2.existingSecretName }}
+                  key: access-key-id
+            - name: R2_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.chat.r2.existingSecretName }}
+                  key: secret-access-key
+            {{- end }}
+            {{- if $.Values.chat.s3.existingSecretName }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.chat.s3.existingSecretName }}
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.chat.s3.existingSecretName }}
+                  key: secret-access-key
+            {{- end }}
+            {{- end }}
             {{- if eq $name "iam" }}
             - name: JWT_SECRET
               valueFrom:

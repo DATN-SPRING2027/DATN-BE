@@ -94,6 +94,7 @@ import {
 import { PLATFORM_AUTHORITY_CHANGE_REPOSITORY } from './application/platform/platform-authority-change.repository';
 import { MongoPlatformAuthorityChangeRepository } from './infrastructure/mongodb/platform-authority-change.repository';
 import { AccountInvitationController } from './controllers/organization-invitation.controller';
+import { ChatCandidateController } from './controllers/chat-candidate.controller';
 import { OrganizationMembershipCommandController } from './controllers/organization-membership-command.controller';
 import { OrganizationMembershipCommandService } from './application/organizations/organization-membership-command.service';
 import { ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY } from './application/organizations/organization-membership-command.repository';
@@ -122,6 +123,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     AccountOrganizationController,
     OrganizationMembershipCommandController,
     AccountInvitationController,
+    ChatCandidateController,
   ],
   providers: [
     IamApplicationService,

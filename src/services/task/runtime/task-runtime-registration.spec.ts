@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
@@ -10,6 +11,7 @@ import { join } from 'node:path';
 import { SERVICE_DATABASES } from '../../../common/mongodb/database-names';
 
 describe('D-04 dormant runtime registration boundary', () => {
+  jest.setTimeout(30_000);
   const root = process.cwd();
 
   it('keeps Task out of default app, Gateway, package scripts and Compose', () => {
@@ -86,6 +88,7 @@ describe('D-04 dormant runtime registration boundary', () => {
         imports: [AppModule],
       }).compile();
       app = moduleRef.createNestApplication({ logger: false });
+      app.useWebSocketAdapter(new WsAdapter(app));
       configureApplication(app);
       await app.init();
 

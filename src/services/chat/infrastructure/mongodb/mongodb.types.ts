@@ -3,12 +3,13 @@ import type {
   ServiceName,
 } from '../../../../common/mongodb/database-names';
 
-export type IndexFields = Record<string, 1 | -1>;
+export type IndexFields = Record<string, 1 | -1 | 'text'>;
 
 export interface CollectionIndex {
   fields: IndexFields;
   options?: {
     unique?: boolean;
+    sparse?: boolean;
     expireAfterSeconds?: number;
     name?: string;
   };

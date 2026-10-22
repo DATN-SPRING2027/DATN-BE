@@ -65,6 +65,7 @@ services:
         REDIS_HOST: redis
         GATEWAY_PORT: 3000
         IAM_SERVICE_URL: http://iam:3001
+        CHAT_SERVICE_URL: http://chat:3005
         IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
         GATEWAY_TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:?Set the trusted BFF or edge proxy CIDR}
         SWAGGER_ENABLED: "false"
@@ -172,11 +173,23 @@ services:
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
       SERVICE_DATABASE: continuum_chat
       REDIS_HOST: redis
+      IAM_SERVICE_URL: http://iam:3001
+      CHAT_ALLOWED_ORIGINS: ${CHAT_ALLOWED_ORIGINS:-http://localhost:3000}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      CHAT_S3_BUCKET: ${CHAT_S3_BUCKET:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     depends_on:
       redis:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+      iam:
+        condition: service_started
     command: node dist/services/chat/main.js
   handover:
     <<: *backend-service

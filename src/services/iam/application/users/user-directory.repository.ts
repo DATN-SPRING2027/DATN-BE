@@ -28,6 +28,12 @@ export interface UserUpdate {
   status?: UserStatus;
 }
 
+export interface ChatCandidate {
+  id: string;
+  fullName: string;
+  avatarUrl: string | null;
+}
+
 export interface UserDirectoryRepository {
   isAdmin(organizationId: string, actorId: string): Promise<boolean>;
   list(
@@ -41,4 +47,14 @@ export interface UserDirectoryRepository {
     changes: UserUpdate,
     actorId: string,
   ): Promise<UserRecord | null>;
+  searchChatCandidates?(
+    organizationId: string,
+    actorId: string,
+    search: string,
+  ): Promise<ChatCandidate[]>;
+  findChatCandidates?(
+    organizationId: string,
+    actorId: string,
+    userIds: string[],
+  ): Promise<ChatCandidate[]>;
 }

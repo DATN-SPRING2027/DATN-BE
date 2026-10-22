@@ -1,5 +1,10 @@
 # IAM OpenAPI v1
 
+The [Chat v1 contract](chat-v1.openapi.json) covers human one-to-one and room
+chat through the Gateway, plus the event envelope and delivery rules for the
+Chat WebSocket. It is the implementation contract requested for this work; the
+status field does not imply separate Product, Security, or Architecture review.
+
 `iam-v1.openapi.json` is the review-first contract for the IAM slice.
 Password login/reset, verified email/password registration, Google OAuth,
 current user, logout and user directory are implemented. The
