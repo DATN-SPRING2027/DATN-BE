@@ -34,6 +34,10 @@ interface RecipientInvitationRow {
   organizationId: Types.ObjectId;
   email: string;
   roleCode?: 'ADMIN' | 'MEMBER';
+  projectRoleCode?: 'TEAM_LEADER' | 'MEMBER';
+  accessScope?: 'ORGANIZATION' | 'SPECIFIC_PROJECTS';
+  projectIds?: string[];
+  requireApproval?: boolean;
   status: RecipientInvitationStatus;
   version: number;
   invitedBy: Types.ObjectId;
@@ -320,24 +324,80 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
           invitation.roleCode === 'ADMIN' || invitation.roleCode === 'MEMBER'
             ? invitation.roleCode
             : undefined;
-        if (!invitedRoleCode) {
-          const outboxModel = this.optionalModel<{
-            payload?: { roleCode?: string };
-          }>('outbox_events');
-          if (typeof outboxModel?.findOne === 'function') {
-            const outboxEvent = await outboxModel
-              .findOne({
-                eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
-                aggregateType: 'ORGANIZATION_INVITATION',
-                aggregateId: invitation._id.toHexString(),
-              })
-              .session(session)
-              .lean()
-              .exec();
-            const outboxRoleCode = outboxEvent?.payload?.roleCode;
+        let invitedProjectRoleCode: 'TEAM_LEADER' | 'MEMBER' | undefined =
+          invitation.projectRoleCode === 'TEAM_LEADER' ||
+          invitation.projectRoleCode === 'MEMBER'
+            ? invitation.projectRoleCode
+            : undefined;
+        let invitedAccessScope: 'ORGANIZATION' | 'SPECIFIC_PROJECTS' | undefined =
+          invitation.accessScope === 'ORGANIZATION' ||
+          invitation.accessScope === 'SPECIFIC_PROJECTS'
+            ? invitation.accessScope
+            : undefined;
+        let invitedProjectIds: string[] = Array.isArray(invitation.projectIds)
+          ? invitation.projectIds.filter(
+              (id): id is string =>
+                typeof id === 'string' && /^[a-f\d]{24}$/i.test(id),
+            )
+          : [];
+        let invitedRequireApproval: boolean =
+          invitation.requireApproval === true;
+
+        const outboxModel = this.optionalModel<{
+          payload?: {
+            roleCode?: string;
+            projectRoleCode?: string;
+            accessScope?: string;
+            projectIds?: unknown;
+            requireApproval?: unknown;
+          };
+        }>('outbox_events');
+        if (typeof outboxModel?.findOne === 'function') {
+          const outboxEvent = await outboxModel
+            .findOne({
+              eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+              aggregateType: 'ORGANIZATION_INVITATION',
+              aggregateId: invitation._id.toHexString(),
+            })
+            .session(session)
+            .lean()
+            .exec();
+          const outboxPayload = outboxEvent?.payload;
+          if (!invitedRoleCode) {
+            const outboxRoleCode = outboxPayload?.roleCode;
             if (outboxRoleCode === 'ADMIN' || outboxRoleCode === 'MEMBER') {
               invitedRoleCode = outboxRoleCode;
             }
+          }
+          if (!invitedProjectRoleCode) {
+            const outboxProjectRoleCode = outboxPayload?.projectRoleCode;
+            if (
+              outboxProjectRoleCode === 'TEAM_LEADER' ||
+              outboxProjectRoleCode === 'MEMBER'
+            ) {
+              invitedProjectRoleCode = outboxProjectRoleCode;
+            }
+          }
+          if (!invitedAccessScope) {
+            const outboxAccessScope = outboxPayload?.accessScope;
+            if (
+              outboxAccessScope === 'ORGANIZATION' ||
+              outboxAccessScope === 'SPECIFIC_PROJECTS'
+            ) {
+              invitedAccessScope = outboxAccessScope;
+            }
+          }
+          if (
+            invitedProjectIds.length === 0 &&
+            Array.isArray(outboxPayload?.projectIds)
+          ) {
+            invitedProjectIds = outboxPayload.projectIds.filter(
+              (id): id is string =>
+                typeof id === 'string' && /^[a-f\d]{24}$/i.test(id),
+            );
+          }
+          if (outboxPayload?.requireApproval === true) {
+            invitedRequireApproval = true;
           }
         }
         const targetRoleCode: 'ADMIN' | 'MEMBER' =
@@ -375,6 +435,8 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
             code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
           });
 
+        const initialMembershipStatus: 'ACTIVE' | 'SUSPENDED' =
+          invitedRequireApproval ? 'SUSPENDED' : 'ACTIVE';
         const membershipId = new Types.ObjectId();
         await this.model<MembershipDocument>('organization_memberships').create(
           [
@@ -382,7 +444,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
               _id: membershipId,
               organizationId: invitation.organizationId,
               userId: actorUserId,
-              status: 'ACTIVE',
+              status: initialMembershipStatus,
               version: 1,
               mutationFence: 0,
             },
@@ -404,6 +466,133 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
             ],
             { session },
           );
+        }
+
+        const shouldProvisionProjects =
+          invitedProjectIds.length > 0 ||
+          invitedAccessScope === 'SPECIFIC_PROJECTS' ||
+          invitedProjectRoleCode === 'TEAM_LEADER';
+        if (shouldProvisionProjects) {
+          const candidateObjectIds = [
+            ...new Set(invitedProjectIds.map((id) => id.toLowerCase())),
+          ].map((id) => new Types.ObjectId(id));
+          const projectsModel = this.optionalModel<{
+            _id: Types.ObjectId;
+            organizationId: Types.ObjectId;
+            status: string;
+          }>('projects');
+          let targetProjectIds: Types.ObjectId[] = [];
+          if (typeof projectsModel?.find === 'function') {
+            const projectFilter: Record<string, unknown> = {
+              organizationId: invitation.organizationId,
+              status: 'ACTIVE',
+              $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
+            };
+            if (candidateObjectIds.length > 0) {
+              projectFilter._id = { $in: candidateObjectIds };
+            }
+            const activeProjects = await projectsModel
+              .find(projectFilter, { _id: 1 })
+              .session(session)
+              .lean()
+              .exec();
+            targetProjectIds = activeProjects.map((p) => p._id);
+          } else {
+            targetProjectIds = candidateObjectIds;
+          }
+
+          if (targetProjectIds.length > 0) {
+            const desiredProjectRoleCode: 'TEAM_LEADER' | 'MEMBER' =
+              invitedProjectRoleCode === 'TEAM_LEADER'
+                ? 'TEAM_LEADER'
+                : 'MEMBER';
+            const projectRole = await this.model<RoleDocument>('roles')
+              .findOne({ code: desiredProjectRoleCode, isSystem: true })
+              .session(session)
+              .lean()
+              .exec();
+            if (!projectRole)
+              throw new ServiceUnavailableException({
+                code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+              });
+            const projectMembershipsModel = this.optionalModel<{
+              _id: Types.ObjectId;
+              organizationId: Types.ObjectId;
+              projectId: Types.ObjectId;
+              userId: Types.ObjectId;
+              status: 'ACTIVE' | 'INACTIVE';
+              joinedAt: Date;
+            }>('project_memberships');
+
+            for (const projectId of targetProjectIds) {
+              if (
+                typeof projectMembershipsModel?.findOne === 'function' &&
+                typeof projectMembershipsModel?.create === 'function'
+              ) {
+                const existingPm = await projectMembershipsModel
+                  .findOne({
+                    organizationId: invitation.organizationId,
+                    projectId,
+                    userId: actorUserId,
+                  })
+                  .session(session)
+                  .lean()
+                  .exec();
+                if (!existingPm) {
+                  await projectMembershipsModel.create(
+                    [
+                      {
+                        organizationId: invitation.organizationId,
+                        projectId,
+                        userId: actorUserId,
+                        status: 'ACTIVE',
+                        joinedAt: input.now,
+                      },
+                    ],
+                    { session },
+                  );
+                } else if (
+                  existingPm.status !== 'ACTIVE' &&
+                  typeof projectMembershipsModel.updateOne === 'function'
+                ) {
+                  await projectMembershipsModel.updateOne(
+                    { _id: existingPm._id },
+                    { $set: { status: 'ACTIVE' } },
+                    { session },
+                  );
+                }
+              }
+
+              const existingProjectAssignments =
+                await this.model<RoleAssignmentDocument>('role_assignments')
+                  .find({
+                    organizationId: invitation.organizationId,
+                    projectId,
+                    userId: actorUserId,
+                  })
+                  .session(session)
+                  .lean()
+                  .exec();
+              if (existingProjectAssignments.length === 0) {
+                await this.model<RoleAssignmentDocument>(
+                  'role_assignments',
+                ).create(
+                  [
+                    {
+                      organizationId: invitation.organizationId,
+                      projectId,
+                      userId: actorUserId,
+                      roleId: projectRole._id,
+                      roleCode: desiredProjectRoleCode,
+                      assignedBy: invitation.invitedBy ?? actorUserId,
+                      mutationFence: 1,
+                    },
+                  ],
+                  { session },
+                );
+              }
+            }
+          }
         }
         const accepted = await this.invitations()
           .findOneAndUpdate(
@@ -437,7 +626,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
             id: membershipId.toHexString(),
             organizationId: invitation.organizationId.toHexString(),
             userId: actorUserId.toHexString(),
-            status: 'ACTIVE',
+            status: initialMembershipStatus,
             version: 1,
           },
           invitation: {
@@ -495,7 +684,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
                 invitationVersion: invitation.version,
               },
               after: {
-                membershipStatus: 'ACTIVE',
+                membershipStatus: initialMembershipStatus,
                 membershipVersion: 1,
                 invitationStatus: 'ACCEPTED',
                 invitationVersion: accepted.version,

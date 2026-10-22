@@ -19,6 +19,7 @@ export type OrganizationMembershipCommand =
       email: string;
       reasonCode: 'ACCESS_REQUEST' | 'ACCESS_REVIEW';
       roleCode?: 'ADMIN' | 'MEMBER';
+      projectRoleCode?: 'TEAM_LEADER' | 'MEMBER';
       accessScope?: OrganizationInvitationAccessScope;
       projectIds?: readonly string[];
       message?: string;

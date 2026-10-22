@@ -77,9 +77,23 @@ export class OrganizationInvitationService {
   }
 
   async resolveToken(token: string) {
-    if (typeof token !== 'string' || !invitationTokenPattern.test(token))
+    if (typeof token !== 'string')
       throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
-    const tokenHash = createHash('sha256').update(token).digest('hex');
+    let normalizedToken = token.trim().replace(/^#+/, '');
+    if (normalizedToken.startsWith('token=')) {
+      try {
+        normalizedToken = decodeURIComponent(
+          normalizedToken.slice('token='.length),
+        );
+      } catch {
+        throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+      }
+    }
+    if (!invitationTokenPattern.test(normalizedToken))
+      throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+    const tokenHash = createHash('sha256')
+      .update(normalizedToken)
+      .digest('hex');
     const invitation = await this.repository.resolveByTokenHash(
       tokenHash,
       new Date(),

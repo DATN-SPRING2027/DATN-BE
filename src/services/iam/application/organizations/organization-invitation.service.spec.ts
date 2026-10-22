@@ -91,10 +91,17 @@ describe('OrganizationInvitationService', () => {
       createHash('sha256').update(token).digest('hex'),
       expect.any(Date),
     );
+    await expect(service.resolveToken(`#token=${token}`)).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(repository.resolveByTokenHash).toHaveBeenLastCalledWith(
+      createHash('sha256').update(token).digest('hex'),
+      expect.any(Date),
+    );
     await expect(service.resolveToken('short')).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
-    expect(repository.resolveByTokenHash).toHaveBeenCalledTimes(1);
+    expect(repository.resolveByTokenHash).toHaveBeenCalledTimes(2);
   });
 
   it('accepts with the authenticated identity, both CAS versions, and activation gates', async () => {
