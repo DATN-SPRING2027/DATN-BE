@@ -188,6 +188,22 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/chat-candidates')
+  searchChatCandidates(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/chat-candidates/resolve')
+  resolveChatCandidates(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/projects')
   listProjects(
     @Req() request: Request,

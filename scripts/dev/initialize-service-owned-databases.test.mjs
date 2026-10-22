@@ -3,6 +3,7 @@ import test from 'node:test';
 import mongoose from 'mongoose';
 import {
   buildInitializationPlan,
+  duplicateKeyPipeline,
   initializeServiceOwnedDatabases,
   seedDevelopmentDataset,
   validateDevelopmentSeedEnvironment,
@@ -80,7 +81,12 @@ class FakeCollection {
   }
 
   async indexes() {
-    return this.indexDefinitions;
+    return this.indexDefinitions.map((index) => {
+      if (index.collation?.locale !== 'simple') return index;
+      return Object.fromEntries(
+        Object.entries(index).filter(([key]) => key !== 'collation'),
+      );
+    });
   }
 
   aggregate() {
@@ -258,6 +264,47 @@ test('derives all service collections and indexes from current Mongoose schemas'
       ({ name }) => name === 'team_audit_command_dedupe',
     ),
     false,
+  );
+});
+
+test('sparse unique index preflight excludes documents missing every indexed field', () => {
+  assert.deepEqual(
+    duplicateKeyPipeline({
+      key: { googleSubject: 1 },
+      options: { unique: true, sparse: true },
+    })[0],
+    { $match: { $or: [{ googleSubject: { $exists: true } }] } },
+  );
+  assert.deepEqual(
+    duplicateKeyPipeline({
+      key: { tenantId: 1, externalId: 1 },
+      options: { unique: true, sparse: true },
+    })[0],
+    {
+      $match: {
+        $or: [
+          { tenantId: { $exists: true } },
+          { externalId: { $exists: true } },
+        ],
+      },
+    },
+  );
+  assert.equal(
+    duplicateKeyPipeline({
+      key: { email: 1 },
+      options: { unique: true },
+    })[0].$group !== undefined,
+    true,
+  );
+  assert.deepEqual(
+    duplicateKeyPipeline({
+      key: { organizationId: 1, email: 1 },
+      options: {
+        unique: true,
+        partialFilterExpression: { status: 'PENDING' },
+      },
+    })[0],
+    { $match: { status: 'PENDING' } },
   );
 });
 

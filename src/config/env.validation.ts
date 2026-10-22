@@ -23,6 +23,7 @@ export interface EnvironmentVariables {
   JIRA_SERVICE_URL: string;
   LIFECYCLE_SERVICE_URL: string;
   CHAT_SERVICE_URL: string;
+  CHAT_ALLOWED_ORIGINS: string;
   HANDOVER_SERVICE_URL: string;
   INGESTION_SERVICE_URL: string;
   NOTIFICATION_SERVICE_URL: string;
@@ -44,6 +45,10 @@ export interface EnvironmentVariables {
   R2_BUCKET?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
+  AWS_REGION?: string;
+  CHAT_S3_BUCKET?: string;
+  AWS_ACCESS_KEY_ID?: string;
+  AWS_SECRET_ACCESS_KEY?: string;
   BACKEND_TIMEOUT_MS: number;
   SAG_API_BASE_URL?: string;
   SAG_BFF_SERVICE_TOKEN?: string;
@@ -82,6 +87,25 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   CHAT_SERVICE_URL: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .default('http://127.0.0.1:3005'),
+  CHAT_ALLOWED_ORIGINS: Joi.string()
+    .default('http://localhost:3000')
+    .custom((value: string, helpers) => {
+      const origins = value.split(',').map((origin) => origin.trim());
+      const valid = origins.every((origin) => {
+        try {
+          const parsed = new URL(origin);
+          return (
+            ['http:', 'https:'].includes(parsed.protocol) &&
+            parsed.origin === origin &&
+            parsed.username === '' &&
+            parsed.password === ''
+          );
+        } catch {
+          return false;
+        }
+      });
+      return valid ? value : helpers.error('any.invalid');
+    }),
   HANDOVER_SERVICE_URL: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .default('http://127.0.0.1:3006'),
@@ -132,6 +156,10 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   R2_BUCKET: Joi.string().allow('').optional(),
   R2_ACCESS_KEY_ID: Joi.string().allow('').optional(),
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
+  AWS_REGION: Joi.string().allow('').optional(),
+  CHAT_S3_BUCKET: Joi.string().allow('').optional(),
+  AWS_ACCESS_KEY_ID: Joi.string().allow('').optional(),
+  AWS_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
   BACKEND_TIMEOUT_MS: Joi.number().integer().min(100).max(30000).default(5000),
   SAG_API_BASE_URL: Joi.string()
     .trim()

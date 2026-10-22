@@ -1,4 +1,9 @@
 import {
+  autocompleteClause,
+  CHAT_SEARCH_INDEX,
+  literalPrefixRange,
+} from '../../../../common/search/indexed-search';
+import {
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -18,6 +23,7 @@ import type {
   UserRecord,
   UserStatus,
   UserUpdate,
+  ChatCandidate,
 } from '../../application/users/user-directory.repository';
 import { IAM_PERSISTENCE } from '../persistence';
 
@@ -191,6 +197,128 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           assignments.map((row) => row.roleCode),
         )
       : null;
+  }
+
+  async searchChatCandidates(
+    organizationId: string,
+    actorId: string,
+    search: string,
+  ): Promise<ChatCandidate[]> {
+    if (
+      !Types.ObjectId.isValid(organizationId) ||
+      !Types.ObjectId.isValid(actorId)
+    )
+      return [];
+    const emailPrefix = search.includes('@')
+      ? search.trim().toLowerCase()
+      : null;
+    const pipeline: PipelineStage[] = [
+      ...(emailPrefix
+        ? [{ $match: { email: literalPrefixRange(emailPrefix) } }]
+        : ([
+            {
+              $search: {
+                index: CHAT_SEARCH_INDEX,
+                compound: {
+                  should: [
+                    autocompleteClause('fullName', search),
+                    autocompleteClause('email', search),
+                  ],
+                  minimumShouldMatch: 1,
+                },
+              },
+            },
+          ] as PipelineStage[])),
+      {
+        $match: { status: 'ACTIVE', _id: { $ne: new Types.ObjectId(actorId) } },
+      },
+      {
+        $lookup: {
+          from: 'organization_memberships',
+          localField: '_id',
+          foreignField: 'userId',
+          pipeline: [
+            {
+              $match: {
+                organizationId: new Types.ObjectId(organizationId),
+                status: 'ACTIVE',
+              },
+            },
+          ],
+          as: 'activeMembership',
+        },
+      },
+      { $match: { 'activeMembership.0': { $exists: true } } },
+      ...(emailPrefix
+        ? ([
+            {
+              $addFields: {
+                searchRank: { $cond: [{ $eq: ['$email', emailPrefix] }, 0, 1] },
+              },
+            },
+            { $sort: { searchRank: 1, email: 1, _id: 1 } },
+          ] as PipelineStage[])
+        : []),
+      { $limit: 20 },
+      {
+        $project: {
+          _id: 0,
+          id: { $toString: '$_id' },
+          fullName: 1,
+          avatarUrl: { $ifNull: ['$avatarUrl', null] },
+        },
+      },
+    ];
+    return this.users().aggregate<ChatCandidate>(pipeline).exec();
+  }
+
+  async findChatCandidates(
+    organizationId: string,
+    actorId: string,
+    userIds: string[],
+  ): Promise<ChatCandidate[]> {
+    if (
+      !Types.ObjectId.isValid(organizationId) ||
+      !Types.ObjectId.isValid(actorId)
+    )
+      return [];
+    const ids = [...new Set(userIds.map((id) => id.toLowerCase()))]
+      .filter(
+        (id) => id !== actorId.toLowerCase() && Types.ObjectId.isValid(id),
+      )
+      .map((id) => new Types.ObjectId(id));
+    if (ids.length === 0) return [];
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          organizationId: new Types.ObjectId(organizationId),
+          userId: { $in: ids },
+          status: 'ACTIVE',
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          pipeline: [
+            { $match: { status: 'ACTIVE' } },
+            { $project: { fullName: 1, avatarUrl: 1 } },
+          ],
+          as: 'user',
+        },
+      },
+      { $unwind: '$user' },
+      {
+        $project: {
+          _id: 0,
+          id: { $toString: '$userId' },
+          fullName: '$user.fullName',
+          avatarUrl: { $ifNull: ['$user.avatarUrl', null] },
+        },
+      },
+    ];
+    return this.memberships().aggregate<ChatCandidate>(pipeline).exec();
   }
 
   async update(

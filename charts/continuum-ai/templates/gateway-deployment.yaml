@@ -33,6 +33,8 @@ spec:
               value: {{ .Values.gateway.port | quote }}
             - name: IAM_SERVICE_URL
               value: http://{{ include "continuum-ai.fullname" . }}-iam:3001
+            - name: CHAT_SERVICE_URL
+              value: http://{{ include "continuum-ai.fullname" . }}-chat:3005
             - name: IAM_GATEWAY_SECRET
               valueFrom:
                 secretKeyRef:
@@ -78,6 +80,8 @@ metadata:
     {{- include "continuum-ai.labels" . | nindent 4 }}
   annotations:
     nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:
@@ -87,6 +91,13 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
+          - path: /internal/chat/ws
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "continuum-ai.fullname" . }}-chat
+                port:
+                  name: http
           - path: /
             pathType: Prefix
             backend:

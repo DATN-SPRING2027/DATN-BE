@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
 import { configureApplication } from './bootstrap';
 import { ConfigService } from '@nestjs/config';
@@ -8,6 +9,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log'],
   });
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   const config = app.get(ConfigService);
   configureApplication(

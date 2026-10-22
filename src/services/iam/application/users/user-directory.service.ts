@@ -11,6 +11,7 @@ import {
   type UserListQuery,
   type UserRecord,
   type UserUpdate,
+  type ChatCandidate,
 } from './user-directory.repository';
 
 @Injectable()
@@ -43,6 +44,32 @@ export class UserDirectoryService {
         message: 'User not found.',
       });
     return user;
+  }
+
+  async searchChatCandidates(
+    actor: AuthenticatedIdentity,
+    search: string,
+  ): Promise<ChatCandidate[]> {
+    return (
+      (await this.repository.searchChatCandidates?.(
+        actor.organizationId,
+        actor.id,
+        search,
+      )) ?? []
+    );
+  }
+
+  async getChatCandidates(
+    actor: AuthenticatedIdentity,
+    userIds: string[],
+  ): Promise<ChatCandidate[]> {
+    return (
+      (await this.repository.findChatCandidates?.(
+        actor.organizationId,
+        actor.id,
+        userIds,
+      )) ?? []
+    );
   }
 
   async update(

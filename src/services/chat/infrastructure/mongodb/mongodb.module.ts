@@ -47,6 +47,7 @@ export class MongoInfrastructureModule {
         }),
         MongooseModule.forFeature(models, serviceDatabaseName),
       ],
+      exports: [MongooseModule],
     };
   }
 }

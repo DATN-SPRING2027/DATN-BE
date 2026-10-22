@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Type } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { ConfigService } from '@nestjs/config';
 import { Transport } from '@nestjs/microservices';
 import { getConnectionToken } from '@nestjs/mongoose';
@@ -51,6 +52,7 @@ export function assertStandaloneServiceDatabase(
 export async function bootstrapService(
   serviceModule: Type<unknown>,
   serviceDatabase: ServiceDatabaseOwner,
+  enableWebSockets = false,
 ): Promise<void> {
   assertStandaloneServiceDatabase(
     process.env.INFRA_ENABLED,
@@ -59,6 +61,7 @@ export async function bootstrapService(
   );
 
   const app = await NestFactory.create(serviceModule);
+  if (enableWebSockets) app.useWebSocketAdapter(new WsAdapter(app));
   const config = app.get(ConfigService);
   app.setGlobalPrefix('internal');
   const databaseName =

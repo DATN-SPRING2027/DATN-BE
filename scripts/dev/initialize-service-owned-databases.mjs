@@ -245,23 +245,50 @@ function optionsCompatible(actual, expected) {
   return relevantIndexOptions.every((key) => {
     const actualValue = actual[key];
     const expectedValue = expected[key];
+    if (
+      key === 'collation' &&
+      actualValue === undefined &&
+      expectedValue?.locale === 'simple' &&
+      Object.keys(expectedValue).length === 1
+    ) {
+      // MongoDB omits the explicit default simple collation from listIndexes().
+      return true;
+    }
     if (actualValue === undefined && expectedValue === undefined) return true;
     return isDeepStrictEqual(actualValue, expectedValue);
   });
 }
 
-function duplicateKeyPipeline(index) {
+export function duplicateKeyPipeline(index) {
   const keyValues = Object.fromEntries(
     Object.keys(index.key).map((field) => [
       field,
       { $ifNull: [`$${field}`, null] },
     ]),
   );
-  return [
+  const pipeline = [];
+  const filters = [];
+  if (index.options?.partialFilterExpression) {
+    filters.push(index.options.partialFilterExpression);
+  }
+  if (index.options?.sparse === true) {
+    filters.push({
+      $or: Object.keys(index.key).map((field) => ({
+        [field]: { $exists: true },
+      })),
+    });
+  }
+  if (filters.length === 1) {
+    pipeline.push({ $match: filters[0] });
+  } else if (filters.length > 1) {
+    pipeline.push({ $match: { $and: filters } });
+  }
+  pipeline.push(
     { $group: { _id: keyValues, count: { $sum: 1 } } },
     { $match: { count: { $gt: 1 } } },
     { $limit: 1 },
-  ];
+  );
+  return pipeline;
 }
 
 function databaseFor(connection, databaseName) {

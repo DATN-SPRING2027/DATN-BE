@@ -20,6 +20,19 @@ ingress:
   host: api.continuum.local
   tlsSecretName: continuum-api-tls
 
+chat:
+  # Origins are checked on the direct WebSocket endpoint; set the actual FE origins at install time.
+  allowedOrigins: "https://api.continuum.local,http://localhost:3000"
+  # Documents use Cloudflare R2; image objects use AWS S3.
+  r2:
+    endpoint: ""
+    bucket: ""
+    existingSecretName: ""
+  s3:
+    region: ""
+    bucket: ""
+    existingSecretName: ""
+
 services:
   iam: { port: 3001, database: continuum_iam, replicas: 1 }
   capture: { port: 3002, database: continuum_capture, replicas: 1 }
