@@ -316,8 +316,32 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
         if (existingMembership)
           throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
 
+        let invitedRoleCode: 'ADMIN' | 'MEMBER' | undefined =
+          invitation.roleCode === 'ADMIN' || invitation.roleCode === 'MEMBER'
+            ? invitation.roleCode
+            : undefined;
+        if (!invitedRoleCode) {
+          const outboxModel = this.optionalModel<{
+            payload?: { roleCode?: string };
+          }>('outbox_events');
+          if (typeof outboxModel?.findOne === 'function') {
+            const outboxEvent = await outboxModel
+              .findOne({
+                eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+                aggregateType: 'ORGANIZATION_INVITATION',
+                aggregateId: invitation._id.toHexString(),
+              })
+              .session(session)
+              .lean()
+              .exec();
+            const outboxRoleCode = outboxEvent?.payload?.roleCode;
+            if (outboxRoleCode === 'ADMIN' || outboxRoleCode === 'MEMBER') {
+              invitedRoleCode = outboxRoleCode;
+            }
+          }
+        }
         const targetRoleCode: 'ADMIN' | 'MEMBER' =
-          invitation.roleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
+          invitedRoleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
         const targetRole = await this.model<RoleDocument>('roles')
           .findOne({ code: targetRoleCode, isSystem: true })
           .session(session)
@@ -559,6 +583,11 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
 
   private invitations(): Model<RecipientInvitationRow> {
     return this.model<RecipientInvitationRow>('organization_invitations');
+  }
+
+  private optionalModel<T>(name: string): Model<T> | undefined {
+    return this.connectionOrThrow().models[modelName(name)] as
+      Model<T> | undefined;
   }
 
   private model<T>(name: string): Model<T> {

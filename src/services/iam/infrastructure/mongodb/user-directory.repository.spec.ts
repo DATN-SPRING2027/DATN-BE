@@ -354,11 +354,13 @@ describe('MongoUserDirectoryRepository', () => {
           chain([{ userId: new Types.ObjectId(userId), roleCode: 'MEMBER' }]),
         ),
     };
+    const inTransactionBeforeQuery = chain(user);
     const updatedUser = { ...user, fullName: 'Updated Member' };
     const users = {
       findById: jest
         .fn()
         .mockReturnValueOnce(chain(user))
+        .mockReturnValueOnce(inTransactionBeforeQuery)
         .mockReturnValueOnce(chain(updatedUser)),
       updateOne: jest.fn().mockReturnValue(chain({ matchedCount: 1 })),
     };
@@ -384,6 +386,9 @@ describe('MongoUserDirectoryRepository', () => {
     );
 
     expect(transactionSession.withTransaction).toHaveBeenCalledTimes(1);
+    expect(inTransactionBeforeQuery.session).toHaveBeenCalledWith(
+      transactionSession,
+    );
     expect(users.updateOne).toHaveBeenCalledWith(
       { _id: new Types.ObjectId(userId) },
       { $set: { fullName: 'Updated Member' } },
@@ -403,5 +408,71 @@ describe('MongoUserDirectoryRepository', () => {
     );
     expect(transactionSession.endSession).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ id: userId, fullName: 'Updated Member' });
+  });
+
+  it('re-reads before profile state inside the transaction on retry so concurrent updates record B -> C instead of stale A -> C', async () => {
+    const actorId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const transactionSession = {
+      withTransaction: jest.fn(async (callback: () => Promise<void>) => {
+        await callback();
+        return callback();
+      }),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const memberships = {
+      exists: jest.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+    };
+    const assignments = {
+      find: jest
+        .fn()
+        .mockReturnValue(
+          chain([{ userId: new Types.ObjectId(userId), roleCode: 'MEMBER' }]),
+        ),
+    };
+    const stateA = { ...user, fullName: 'Name A' };
+    const stateB = { ...user, fullName: 'Name B' };
+    const stateC = { ...user, fullName: 'Name C' };
+    const firstAttemptQuery = chain(stateA);
+    const retryAttemptQuery = chain(stateB);
+    const users = {
+      findById: jest
+        .fn()
+        .mockReturnValueOnce(chain(stateA))
+        .mockReturnValueOnce(firstAttemptQuery)
+        .mockReturnValueOnce(retryAttemptQuery)
+        .mockReturnValueOnce(chain(stateC)),
+      updateOne: jest.fn().mockReturnValue(chain({ matchedCount: 1 })),
+    };
+    const auditInsertOne = jest.fn().mockResolvedValue({});
+    const connection = {
+      startSession: jest.fn().mockResolvedValue(transactionSession),
+      useDb: jest.fn().mockReturnValue({
+        collection: jest.fn().mockReturnValue({ insertOne: auditInsertOne }),
+      }),
+      models: {
+        continuum_iam_organization_memberships: memberships,
+        continuum_iam_role_assignments: assignments,
+        continuum_iam_users: users,
+      },
+    } as unknown as Connection;
+
+    const repository = new MongoUserDirectoryRepository(connection);
+    const result = await repository.update(
+      organizationId,
+      userId,
+      { fullName: 'Name C' },
+      actorId,
+    );
+
+    expect(firstAttemptQuery.session).toHaveBeenCalledWith(transactionSession);
+    expect(retryAttemptQuery.session).toHaveBeenCalledWith(transactionSession);
+    expect(auditInsertOne).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        before: { fullName: 'Name B', avatarUrl: '' },
+        after: { fullName: 'Name C', avatarUrl: '' },
+      }),
+      { session: transactionSession },
+    );
+    expect(result).toMatchObject({ id: userId, fullName: 'Name C' });
   });
 });

@@ -1,7 +1,17 @@
-import { Types } from 'mongoose';
+import { model, Types } from 'mongoose';
+import { ConfigService } from '@nestjs/config';
 import { IAM_PERSISTENCE } from '../persistence';
+import { OrganizationInvitationPayloadCipher } from '../email/organization-invitation-payload.cipher';
+import { membershipInvitationSchema } from './membership-lifecycle.schemas';
+import { outboxSchema } from './mongodb.schemas';
 import { MongoOrganizationInvitationRepository } from './organization-invitation.repository';
 import { MongoOrganizationMembershipCommandRepository } from './organization-membership-command.repository';
+
+const InvitationValidator = model(
+  'DatnInvitationV3SchemaValidatorSpec',
+  membershipInvitationSchema,
+);
+const OutboxValidator = model('DatnOutboxV3SchemaValidatorSpec', outboxSchema);
 
 const userId = new Types.ObjectId('751a2b3c4d5e6f7a8b9c0d1f');
 const organizationId = new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d1f');
@@ -273,7 +283,8 @@ describe('MongoOrganizationInvitationRepository', () => {
     );
   });
 
-  it('grants ADMIN organization role assignment when accepting an ADMIN invitation', async () => {
+  it('grants ADMIN organization role assignment when accepting an ADMIN V3 invitation validated against membershipInvitationSchema', async () => {
+    const actorId = new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d11');
     const adminRoleId = new Types.ObjectId('a51a2b3c4d5e6f7a8b9c0d1f');
     const session = {
       withTransaction: jest.fn(async (cb: () => Promise<void>) => cb()),
@@ -281,54 +292,123 @@ describe('MongoOrganizationInvitationRepository', () => {
     };
     const queryChain = <T>(val: T) => ({
       session: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
       lean: jest.fn().mockReturnThis(),
       exec: jest.fn().mockResolvedValue(val),
     });
+
+    const createdInvitations: Array<Record<string, unknown>> = [];
+    const createdOutboxEvents: Array<Record<string, unknown>> = [];
+
     const operations = {
       findOne: jest.fn().mockReturnValue(queryChain(null)),
+      countDocuments: jest.fn().mockReturnValue(queryChain(0)),
       create: jest.fn().mockResolvedValue([]),
       deleteOne: jest.fn().mockReturnValue({ exec: jest.fn() }),
     };
     const invitations = {
-      findOne: jest.fn().mockReturnValue(
-        queryChain({
-          _id: invitationId,
-          organizationId,
-          email: 'invitee@example.test',
-          roleCode: 'ADMIN',
-          contractVersion: 3,
-          version: 1,
-          status: 'PENDING',
-          expiresAt: new Date('2026-10-21T00:00:00.000Z'),
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          if (filter.status === 'PENDING' && filter.email) {
+            return queryChain(null);
+          }
+          const match = createdInvitations.find(
+            (doc) => String(doc._id) === String(filter._id),
+          );
+          return queryChain(match ?? null);
         }),
-      ),
-      findOneAndUpdate: jest.fn().mockReturnValue(
-        queryChain({
-          _id: invitationId,
-          organizationId,
-          email: 'invitee@example.test',
-          roleCode: 'ADMIN',
-          contractVersion: 3,
-          version: 2,
-          status: 'ACCEPTED',
-          expiresAt: new Date('2026-10-21T00:00:00.000Z'),
+      create: jest
+        .fn()
+        .mockImplementation((docs: Array<Record<string, unknown>>) => {
+          for (const doc of docs) {
+            const validationError = new InvitationValidator(doc).validateSync();
+            expect(validationError).toBeUndefined();
+            expect(doc.roleCode).toBeUndefined();
+            createdInvitations.push(doc);
+          }
+          return Promise.resolve(docs);
         }),
-      ),
+      findOneAndUpdate: jest
+        .fn()
+        .mockImplementation(
+          (
+            filter: Record<string, unknown>,
+            update: { $set?: Record<string, unknown> },
+          ) => {
+            const match = createdInvitations.find(
+              (doc) => String(doc._id) === String(filter._id),
+            );
+            const updated = match
+              ? {
+                  ...match,
+                  ...(update.$set ?? {}),
+                  version: Number(match.version ?? 1) + 1,
+                }
+              : null;
+            return queryChain(updated);
+          },
+        ),
+    };
+    const outbox = {
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          const match = createdOutboxEvents.find(
+            (doc) => doc.aggregateId === filter.aggregateId,
+          );
+          return queryChain(match ?? null);
+        }),
+      create: jest
+        .fn()
+        .mockImplementation((docs: Array<Record<string, unknown>>) => {
+          for (const doc of docs) {
+            const validationError = new OutboxValidator(doc).validateSync();
+            expect(validationError).toBeUndefined();
+            createdOutboxEvents.push(doc);
+          }
+          return Promise.resolve(docs);
+        }),
+      updateMany: jest.fn().mockReturnValue({ exec: jest.fn() }),
     };
     const users = {
-      findOne: jest.fn().mockReturnValue(
-        queryChain({
-          _id: userId,
-          email: 'invitee@example.test',
-          status: 'ACTIVE',
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          if (
+            filter.email === 'invitee@example.test' ||
+            String(filter._id) === userId.toHexString()
+          ) {
+            return queryChain({
+              _id: userId,
+              email: 'invitee@example.test',
+              status: 'ACTIVE',
+            });
+          }
+          return queryChain({
+            _id: actorId,
+            email: 'manager@example.test',
+            status: 'ACTIVE',
+          });
         }),
-      ),
     };
     const memberships = {
+      exists: jest
+        .fn()
+        .mockReturnValue(queryChain({ _id: new Types.ObjectId() })),
       findOne: jest.fn().mockReturnValue(queryChain(null)),
       create: jest.fn().mockResolvedValue([]),
     };
     const roles = {
+      find: jest.fn().mockReturnValue(
+        queryChain([
+          {
+            _id: adminRoleId,
+            code: 'ADMIN',
+            permissions: ['organization.memberships.manage'],
+          },
+        ]),
+      ),
       findOne: jest.fn().mockReturnValue(
         queryChain({
           _id: adminRoleId,
@@ -338,7 +418,12 @@ describe('MongoOrganizationInvitationRepository', () => {
       ),
     };
     const assignments = {
-      find: jest.fn().mockReturnValue(queryChain([])),
+      find: jest.fn().mockImplementation((filter: Record<string, unknown>) => {
+        if (filter.roleCode === 'ADMIN') {
+          return queryChain([{ userId: actorId, roleId: adminRoleId }]);
+        }
+        return queryChain([]);
+      }),
       create: jest.fn().mockResolvedValue([]),
     };
     const organizations = {
@@ -348,6 +433,9 @@ describe('MongoOrganizationInvitationRepository', () => {
           status: 'ACTIVE',
         }),
       ),
+      updateOne: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({ matchedCount: 1 }),
+      }),
     };
     const auditInsertOne = jest.fn().mockResolvedValue({});
     const connection = {
@@ -365,8 +453,56 @@ describe('MongoOrganizationInvitationRepository', () => {
         [`${IAM_PERSISTENCE.databaseName}_roles`]: roles,
         [`${IAM_PERSISTENCE.databaseName}_role_assignments`]: assignments,
         [`${IAM_PERSISTENCE.databaseName}_organizations`]: organizations,
+        [`${IAM_PERSISTENCE.databaseName}_outbox_events`]: outbox,
       },
     };
+
+    const cipher = new OrganizationInvitationPayloadCipher(
+      new ConfigService({
+        JWT_SECRET:
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      }),
+    );
+    const commandRepo = new MongoOrganizationMembershipCommandRepository(
+      connection as never,
+      cipher,
+    );
+    const inviteResult = await commandRepo.execute({
+      actorUserId: actorId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      idempotencyKey: 'invite-admin-v3-key-1234',
+      command: {
+        command: 'INVITE',
+        email: 'invitee@example.test',
+        roleCode: 'ADMIN',
+        reasonCode: 'ACCESS_REQUEST',
+      },
+      invitationReadinessReady: true,
+      now,
+    });
+    expect(inviteResult.httpStatus).toBe(201);
+    const firstInvitationId = (
+      inviteResult.body as { invitation: { id: string } }
+    ).invitation.id;
+
+    const resendResult = await commandRepo.execute({
+      actorUserId: actorId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      idempotencyKey: 'resend-admin-v3-key-1234',
+      command: {
+        command: 'RESEND',
+        invitationId: firstInvitationId,
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        reasonCode: 'ACCESS_REVIEW',
+      },
+      invitationReadinessReady: true,
+      now,
+    });
+    expect(resendResult.httpStatus).toBe(200);
+    const resentInvitationId = (
+      resendResult.body as { invitation: { id: string } }
+    ).invitation.id;
 
     const repository = new MongoOrganizationInvitationRepository(
       connection as never,
@@ -374,7 +510,7 @@ describe('MongoOrganizationInvitationRepository', () => {
     await repository.acceptForRecipient({
       actorUserId: userId.toHexString(),
       authenticatedEmail: 'invitee@example.test',
-      invitationId: invitationId.toHexString(),
+      invitationId: resentInvitationId,
       expectedMembershipVersion: 0,
       expectedInvitationVersion: 1,
       readinessReady: true,

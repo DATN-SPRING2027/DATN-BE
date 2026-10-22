@@ -214,7 +214,6 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
       organizationId,
       userId,
       actorId,
-      before,
       changes,
     );
     return this.find(organizationId, userId);
@@ -224,20 +223,22 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     organizationId: string,
     userId: string,
     actorId: string,
-    before: UserRecord,
     changes: UserUpdate,
   ): Promise<void> {
     if (!this.connection)
       throw new Error('User directory persistence unavailable');
     const session = await this.connection.startSession();
+    const userObjectId = new Types.ObjectId(userId);
     try {
       await session.withTransaction(async () => {
+        const existing = await this.users()
+          .findById(userObjectId, { fullName: 1, avatarUrl: 1 })
+          .session(session)
+          .lean()
+          .exec();
+        if (!existing) return;
         await this.users()
-          .updateOne(
-            { _id: new Types.ObjectId(userId) },
-            { $set: changes },
-            { session },
-          )
+          .updateOne({ _id: userObjectId }, { $set: changes }, { session })
           .exec();
         await this.connection!.useDb(AUDIT_DATABASE_NAME, { useCache: true })
           .collection(IAM_AUDIT_COLLECTION_NAME)
@@ -256,15 +257,15 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
               targetResource: 'USER',
               targetResourceId: userId,
               before: {
-                fullName: before.fullName,
-                avatarUrl: before.avatarUrl ?? '',
+                fullName: existing.fullName,
+                avatarUrl: existing.avatarUrl ?? '',
               },
               after: {
-                fullName: changes.fullName ?? before.fullName,
+                fullName: changes.fullName ?? existing.fullName,
                 avatarUrl:
                   changes.avatarUrl !== undefined
                     ? (changes.avatarUrl ?? '')
-                    : (before.avatarUrl ?? ''),
+                    : (existing.avatarUrl ?? ''),
               },
             },
             { session },

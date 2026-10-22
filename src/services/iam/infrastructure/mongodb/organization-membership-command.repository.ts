@@ -1333,7 +1333,6 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           _id: invitationId,
           organizationId,
           email: command.email,
-          roleCode: requestedRoleCode,
           contractVersion: 3,
           tokenHash,
           version: 1,
@@ -1375,7 +1374,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           recipientEmail: command.email,
           tokenHash,
           encryptedToken,
-          ...(command.roleCode ? { roleCode: command.roleCode } : {}),
+          roleCode: requestedRoleCode,
           ...(command.accessScope ? { accessScope: command.accessScope } : {}),
           ...(command.projectIds ? { projectIds: command.projectIds } : {}),
           ...(command.message ? { message: command.message } : {}),
@@ -1434,6 +1433,29 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .exec();
     if (!changed)
       throw new ConflictException({ code: 'INVITATION_VERSION_CONFLICT' });
+    const outboxModel = this.optionalModel<{
+      payload?: Record<string, unknown>;
+    }>('outbox_events');
+    const priorOutbox =
+      typeof outboxModel?.findOne === 'function'
+        ? await outboxModel
+            .findOne({
+              eventName: 'ORGANIZATION_INVITATION_EMAIL_REQUESTED',
+              aggregateType: 'ORGANIZATION_INVITATION',
+              aggregateId: oldInvitation._id.toHexString(),
+            })
+            .session(session)
+            .lean()
+            .exec()
+        : null;
+    const priorPayload =
+      typeof priorOutbox?.payload === 'object' && priorOutbox.payload !== null
+        ? priorOutbox.payload
+        : undefined;
+    const requestedRoleCode: 'ADMIN' | 'MEMBER' =
+      oldInvitation.roleCode === 'ADMIN' || priorPayload?.roleCode === 'ADMIN'
+        ? 'ADMIN'
+        : 'MEMBER';
     await this.cancelPendingDelivery(oldInvitation._id.toHexString(), session);
 
     const invitationId = new Types.ObjectId();
@@ -1447,15 +1469,12 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       tokenHash,
     };
     const encryptedToken = this.cipherOrThrow().encryptToken(token, binding);
-    const requestedRoleCode: 'ADMIN' | 'MEMBER' =
-      oldInvitation.roleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
     await this.invitations().create(
       [
         {
           _id: invitationId,
           organizationId,
           email: oldInvitation.email,
-          roleCode: requestedRoleCode,
           contractVersion: 3,
           tokenHash,
           version: 1,
@@ -1491,6 +1510,9 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           invitationStatus: 'PENDING',
           invitationVersion: 1,
           invitationExpiresAt: expiresAt.toISOString(),
+          ...(requestedRoleCode === 'ADMIN'
+            ? { requestedRoleCode: 'ADMIN' }
+            : {}),
         },
       },
       outbox: {
@@ -1502,6 +1524,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           recipientEmail: oldInvitation.email,
           tokenHash,
           encryptedToken,
+          roleCode: requestedRoleCode,
         },
       },
     };
