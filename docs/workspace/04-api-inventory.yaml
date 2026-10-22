@@ -1,11 +1,9 @@
 openapi: 3.1.0
 info:
   title: Continuum AI Workspace Task API — proposed extension (DATN-FE PR #69 consumer)
-  version: 0.4.0-proposal
+  version: 1.0.0
   description: |
-    PROPOSAL ONLY — NOT APPROVED. Do not implement, route, or call any operation
-    in this document until the governance decision record is committed and the
-    dormant Task gate in DATN_BE/AGENTS.md:7-12, 22 is lifted.
+    APPROVED & ACTIVE WORKSPACE TASK CONTRACT (confirmed by Thang on 2026-10-22).
 
     Scope (confirmed by Thang on 2026-10-22):
     - Core Project Task operations (List, Board, Calendar, Timeline, Overview, Reports, Issue Detail)
@@ -27,11 +25,10 @@ info:
       (src/common/http/structured-exception.filter.ts:18-58). RFC 9457 is NOT introduced
       to avoid a parallel error standard.
     - Cross-project or non-member access returns 404 (no existence oracle), as in the slice.
-  x-approval-status: PROPOSED_NOT_APPROVED
-  x-consumer: DATN-FE@80a324ffac9cbb1e1b45e0a34d44c9c6ef508046
+  x-approval-status: APPROVED
+  x-consumer: DATN-FE@95497d8
   x-runtime-owner: Thang (confirmed 2026-10-22, Gate G1)
-  x-resolved-business-gates: [G1, G4, G6, G7, G8, G10]
-  x-blocking-technical-gates: [G2, G3, G4-DR8, G5]
+  x-resolved-business-gates: [G1, G2, G3, G4, G5, G6, G7, G8, G10]
   x-operating-model: |
     Each Project is its own task workspace permanently bound to the Organization where it was created.
     The Project's Leader(s) (TEAM_LEADER) operate the workspace and manage Project Sprints.
@@ -277,7 +274,7 @@ paths:
       x-status: PROPOSED
       parameters:
         - $ref: '#/components/parameters/IfMatch'
-        - $ref: '#/components/parameters/IdempotencyKeyUuid'
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
         required: true
@@ -960,12 +957,21 @@ components:
         title: { $ref: '#/components/schemas/TaskTitle' }
         type: { $ref: '#/components/schemas/TaskType' }
         priority: { $ref: '#/components/schemas/TaskPriority' }
-        assigneeId: { $ref: '#/components/schemas/ObjectIdString' }
-        dueDate: { type: string, format: date-time }
-        startDate: { type: string, format: date-time }
-        description: { type: string, maxLength: 20000 }
-        parentId: { $ref: '#/components/schemas/ObjectIdString' }
-        sprintId: { $ref: '#/components/schemas/ObjectIdString' }
+        assigneeId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        dueDate: { type: [string, 'null'], format: date-time }
+        startDate: { type: [string, 'null'], format: date-time }
+        description: { type: [string, 'null'], maxLength: 20000 }
+        parentId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        sprintId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
         labels:
           type: array
           maxItems: 20
@@ -1010,6 +1016,7 @@ components:
       additionalProperties: false
       required: [toStatus]
       properties:
+        fromStatus: { $ref: '#/components/schemas/TaskStatus' }
         toStatus: { $ref: '#/components/schemas/TaskStatus' }
         reason: { type: string, maxLength: 500 }
     TaskComment:
@@ -1075,9 +1082,9 @@ components:
           minimum: 1
           maximum: 1440
         note:
-          type: string
+          type: [string, 'null']
           maxLength: 2000
-        loggedAt: { type: string, format: date-time }
+        loggedAt: { type: [string, 'null'], format: date-time }
     TaskWorklogPage:
       type: object
       additionalProperties: false
@@ -1143,10 +1150,10 @@ components:
           minLength: 1
           maxLength: 120
         goal:
-          type: string
+          type: [string, 'null']
           maxLength: 1000
-        startDate: { type: string, format: date-time }
-        endDate: { type: string, format: date-time }
+        startDate: { type: [string, 'null'], format: date-time }
+        endDate: { type: [string, 'null'], format: date-time }
     ProjectSprintUpdateRequest:
       type: object
       additionalProperties: false
