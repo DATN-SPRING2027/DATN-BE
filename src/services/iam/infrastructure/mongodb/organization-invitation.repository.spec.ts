@@ -689,4 +689,342 @@ describe('MongoOrganizationInvitationRepository', () => {
       { session },
     );
   });
+
+  it('applies requireApproval, projectIds, and projectRoleCode on accept and blocks suspending an active project leader', async () => {
+    const actorId = new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d11');
+    const membershipId = new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d22');
+    const projectId = new Types.ObjectId('651a2b3c4d5e6f7a8b9c0d33');
+    const memberRoleId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d1f');
+    const leaderRoleId = new Types.ObjectId('b51a2b3c4d5e6f7a8b9c0d1f');
+    const adminRoleId = new Types.ObjectId('a51a2b3c4d5e6f7a8b9c0d1f');
+    const session = {
+      withTransaction: jest.fn(async (cb: () => Promise<void>) => cb()),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const queryChain = <T>(val: T) => ({
+      session: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(val),
+    });
+
+    const createdInvitations: Array<Record<string, unknown>> = [];
+    const createdOutboxEvents: Array<Record<string, unknown>> = [];
+    const createdMemberships: Array<Record<string, unknown>> = [];
+    const createdProjectMemberships: Array<Record<string, unknown>> = [];
+
+    const operations = {
+      findOne: jest.fn().mockReturnValue(queryChain(null)),
+      countDocuments: jest.fn().mockReturnValue(queryChain(0)),
+      create: jest.fn().mockResolvedValue([]),
+      deleteOne: jest.fn().mockReturnValue({ exec: jest.fn() }),
+    };
+    const invitations = {
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          if (filter.status === 'PENDING' && filter.email) {
+            return queryChain(null);
+          }
+          const match = createdInvitations.find(
+            (doc) => String(doc._id) === String(filter._id),
+          );
+          return queryChain(match ?? null);
+        }),
+      create: jest
+        .fn()
+        .mockImplementation((docs: Array<Record<string, unknown>>) => {
+          createdInvitations.push(...docs);
+          return Promise.resolve(docs);
+        }),
+      findOneAndUpdate: jest
+        .fn()
+        .mockImplementation(
+          (
+            filter: Record<string, unknown>,
+            update: { $set?: Record<string, unknown> },
+          ) => {
+            const match = createdInvitations.find(
+              (doc) => String(doc._id) === String(filter._id),
+            );
+            const updated = match
+              ? {
+                  ...match,
+                  ...(update.$set ?? {}),
+                  version: Number(match.version ?? 1) + 1,
+                }
+              : null;
+            return queryChain(updated);
+          },
+        ),
+    };
+    const outbox = {
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          const match = createdOutboxEvents.find(
+            (doc) => doc.aggregateId === filter.aggregateId,
+          );
+          return queryChain(match ?? null);
+        }),
+      create: jest
+        .fn()
+        .mockImplementation((docs: Array<Record<string, unknown>>) => {
+          createdOutboxEvents.push(...docs);
+          return Promise.resolve(docs);
+        }),
+      updateMany: jest.fn().mockReturnValue({ exec: jest.fn() }),
+    };
+    const users = {
+      find: jest.fn().mockReturnValue(
+        queryChain([
+          { _id: actorId, status: 'ACTIVE' },
+          { _id: userId, status: 'ACTIVE' },
+        ]),
+      ),
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          if (
+            filter.email === 'leader@example.test' ||
+            String(filter._id) === userId.toHexString()
+          ) {
+            return queryChain({
+              _id: userId,
+              email: 'leader@example.test',
+              status: 'ACTIVE',
+            });
+          }
+          return queryChain({
+            _id: actorId,
+            email: 'admin@example.test',
+            status: 'ACTIVE',
+          });
+        }),
+    };
+    const memberships = {
+      exists: jest
+        .fn()
+        .mockReturnValue(queryChain({ _id: new Types.ObjectId() })),
+      find: jest
+        .fn()
+        .mockReturnValue(queryChain([{ _id: membershipId, userId: actorId }])),
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          if (String(filter._id) === membershipId.toHexString()) {
+            return queryChain({
+              _id: membershipId,
+              organizationId,
+              userId,
+              status: 'ACTIVE',
+              version: 1,
+            });
+          }
+          return queryChain(null);
+        }),
+      create: jest
+        .fn()
+        .mockImplementation((docs: Array<Record<string, unknown>>) => {
+          createdMemberships.push(...docs);
+          return Promise.resolve(docs);
+        }),
+      findOneAndUpdate: jest.fn(),
+    };
+    const roles = {
+      find: jest.fn().mockReturnValue(
+        queryChain([
+          {
+            _id: adminRoleId,
+            code: 'ADMIN',
+            permissions: ['organization.memberships.manage'],
+          },
+        ]),
+      ),
+      findOne: jest
+        .fn()
+        .mockImplementation((filter: Record<string, unknown>) => {
+          if (filter.code === 'TEAM_LEADER') {
+            return queryChain({
+              _id: leaderRoleId,
+              code: 'TEAM_LEADER',
+              isSystem: true,
+            });
+          }
+          if (filter.code === 'ADMIN') {
+            return queryChain({
+              _id: adminRoleId,
+              code: 'ADMIN',
+              isSystem: true,
+            });
+          }
+          return queryChain({
+            _id: memberRoleId,
+            code: 'MEMBER',
+            isSystem: true,
+          });
+        }),
+    };
+    const assignments = {
+      find: jest.fn().mockImplementation((filter: Record<string, unknown>) => {
+        if (filter.roleCode === 'ADMIN') {
+          return queryChain([{ userId: actorId, roleId: adminRoleId }]);
+        }
+        if (filter.roleCode === 'TEAM_LEADER') {
+          return queryChain([
+            {
+              userId,
+              roleId: leaderRoleId,
+              roleCode: 'TEAM_LEADER',
+              projectId,
+            },
+          ]);
+        }
+        return queryChain([]);
+      }),
+      create: jest.fn().mockResolvedValue([]),
+    };
+    const projects = {
+      find: jest.fn().mockReturnValue(
+        queryChain([
+          {
+            _id: projectId,
+            organizationId,
+            code: 'PRJ-1',
+            name: 'Core Platform',
+            status: 'ACTIVE',
+          },
+        ]),
+      ),
+    };
+    const projectMemberships = {
+      find: jest
+        .fn()
+        .mockReturnValue(queryChain([{ projectId, userId, status: 'ACTIVE' }])),
+      findOne: jest.fn().mockReturnValue(queryChain(null)),
+      create: jest
+        .fn()
+        .mockImplementation((docs: Array<Record<string, unknown>>) => {
+          createdProjectMemberships.push(...docs);
+          return Promise.resolve(docs);
+        }),
+    };
+    const organizations = {
+      findById: jest
+        .fn()
+        .mockReturnValue(queryChain({ _id: organizationId, status: 'ACTIVE' })),
+      updateOne: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({ matchedCount: 1 }),
+      }),
+    };
+    const auditInsertOne = jest.fn().mockResolvedValue({});
+    const connection = {
+      startSession: jest.fn().mockResolvedValue(session),
+      useDb: jest.fn().mockReturnValue({
+        collection: jest.fn().mockReturnValue({ insertOne: auditInsertOne }),
+      }),
+      models: {
+        [`${IAM_PERSISTENCE.databaseName}_membership_operations`]: operations,
+        [`${IAM_PERSISTENCE.databaseName}_organization_invitations`]:
+          invitations,
+        [`${IAM_PERSISTENCE.databaseName}_users`]: users,
+        [`${IAM_PERSISTENCE.databaseName}_organization_memberships`]:
+          memberships,
+        [`${IAM_PERSISTENCE.databaseName}_roles`]: roles,
+        [`${IAM_PERSISTENCE.databaseName}_role_assignments`]: assignments,
+        [`${IAM_PERSISTENCE.databaseName}_organizations`]: organizations,
+        [`${IAM_PERSISTENCE.databaseName}_outbox_events`]: outbox,
+        [`${IAM_PERSISTENCE.databaseName}_projects`]: projects,
+        [`${IAM_PERSISTENCE.databaseName}_project_memberships`]:
+          projectMemberships,
+      },
+    };
+
+    const cipher = new OrganizationInvitationPayloadCipher(
+      new ConfigService({
+        JWT_SECRET:
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      }),
+    );
+    const commandRepo = new MongoOrganizationMembershipCommandRepository(
+      connection as never,
+      cipher,
+    );
+
+    const inviteResult = await commandRepo.execute({
+      actorUserId: actorId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      idempotencyKey: 'invite-leader-v3-key-1234',
+      command: {
+        command: 'INVITE',
+        email: 'leader@example.test',
+        roleCode: 'MEMBER',
+        projectRoleCode: 'TEAM_LEADER',
+        accessScope: 'SPECIFIC_PROJECTS',
+        projectIds: [projectId.toHexString()],
+        requireApproval: true,
+        reasonCode: 'ACCESS_REQUEST',
+      },
+      invitationReadinessReady: true,
+      now,
+    });
+    expect(inviteResult.httpStatus).toBe(201);
+    const createdInvitationId = (
+      inviteResult.body as { invitation: { id: string } }
+    ).invitation.id;
+
+    const invitationRepo = new MongoOrganizationInvitationRepository(
+      connection as never,
+    );
+    const acceptResult = await invitationRepo.acceptForRecipient({
+      actorUserId: userId.toHexString(),
+      authenticatedEmail: 'leader@example.test',
+      invitationId: createdInvitationId,
+      expectedMembershipVersion: 0,
+      expectedInvitationVersion: 1,
+      readinessReady: true,
+      idempotencyKey: 'accept-leader-v3-key-1234',
+      now,
+    });
+    expect(acceptResult.acknowledgement.membership.status).toBe('SUSPENDED');
+    expect(createdMemberships[0]?.status).toBe('SUSPENDED');
+    expect(createdProjectMemberships).toHaveLength(1);
+    expect(createdProjectMemberships[0]).toMatchObject({
+      organizationId,
+      projectId,
+      userId,
+      status: 'ACTIVE',
+    });
+    expect(assignments.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          organizationId,
+          projectId,
+          userId,
+          roleId: leaderRoleId,
+          roleCode: 'TEAM_LEADER',
+        }),
+      ],
+      { session },
+    );
+
+    await expect(
+      commandRepo.execute({
+        actorUserId: actorId.toHexString(),
+        organizationId: organizationId.toHexString(),
+        idempotencyKey: 'suspend-leader-v3-key-1234',
+        command: {
+          command: 'SUSPEND',
+          membershipId: membershipId.toHexString(),
+          expectedMembershipVersion: 1,
+          reasonCode: 'ACCESS_REVIEW',
+        },
+        now,
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'MEMBER_HAS_ACTIVE_PROJECT_LEADERSHIP',
+      },
+    });
+  });
 });

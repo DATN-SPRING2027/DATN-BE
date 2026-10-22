@@ -251,6 +251,7 @@ export class OrganizationMembershipCommandService {
         'email',
         'reasonCode',
         'roleCode',
+        'projectRoleCode',
         'accessScope',
         'projectIds',
         'message',
@@ -269,6 +270,12 @@ export class OrganizationMembershipCommandService {
         command.roleCode !== undefined &&
         command.roleCode !== 'ADMIN' &&
         command.roleCode !== 'MEMBER'
+      )
+        validationFailed();
+      if (
+        command.projectRoleCode !== undefined &&
+        command.projectRoleCode !== 'TEAM_LEADER' &&
+        command.projectRoleCode !== 'MEMBER'
       )
         validationFailed();
       if (
@@ -322,6 +329,9 @@ export class OrganizationMembershipCommandService {
         email: normalizeMembershipEmail(command.email),
         reasonCode: command.reasonCode,
         ...(command.roleCode ? { roleCode: command.roleCode } : {}),
+        ...(command.projectRoleCode
+          ? { projectRoleCode: command.projectRoleCode }
+          : {}),
         ...(command.accessScope ? { accessScope: command.accessScope } : {}),
         ...(normalizedProjectIds ? { projectIds: normalizedProjectIds } : {}),
         ...(normalizedMessage ? { message: normalizedMessage } : {}),

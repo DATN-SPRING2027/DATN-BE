@@ -73,6 +73,7 @@ const allowedInviteKeys = new Set([
   'email',
   'reasonCode',
   'roleCode',
+  'projectRoleCode',
   'accessScope',
   'projectIds',
   'message',
@@ -80,6 +81,7 @@ const allowedInviteKeys = new Set([
   'requireApproval',
 ]);
 const allowedInviteRoleCodes = new Set(['ADMIN', 'MEMBER']);
+const allowedInviteProjectRoleCodes = new Set(['TEAM_LEADER', 'MEMBER']);
 const allowedInviteAccessScopes = new Set([
   'ORGANIZATION',
   'SPECIFIC_PROJECTS',
@@ -107,6 +109,16 @@ function parseInvite(body: unknown): OrganizationMembershipCommand {
     )
       return validationFailed();
     roleCode = record.roleCode as 'ADMIN' | 'MEMBER';
+  }
+
+  let projectRoleCode: 'TEAM_LEADER' | 'MEMBER' | undefined;
+  if (record.projectRoleCode !== undefined) {
+    if (
+      typeof record.projectRoleCode !== 'string' ||
+      !allowedInviteProjectRoleCodes.has(record.projectRoleCode)
+    )
+      return validationFailed();
+    projectRoleCode = record.projectRoleCode as 'TEAM_LEADER' | 'MEMBER';
   }
 
   let accessScope: 'ORGANIZATION' | 'SPECIFIC_PROJECTS' | undefined;
@@ -167,6 +179,7 @@ function parseInvite(body: unknown): OrganizationMembershipCommand {
     email: record.email,
     reasonCode: record.reasonCode as 'ACCESS_REQUEST' | 'ACCESS_REVIEW',
     ...(roleCode ? { roleCode } : {}),
+    ...(projectRoleCode ? { projectRoleCode } : {}),
     ...(accessScope ? { accessScope } : {}),
     ...(projectIds ? { projectIds } : {}),
     ...(message ? { message } : {}),

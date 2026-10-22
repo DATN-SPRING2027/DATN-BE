@@ -214,7 +214,9 @@ function validResult(binding: OperationBinding, value: unknown): boolean {
     member.id !== String(binding.membershipId) ||
     member.organizationId !== String(binding.organizationId) ||
     member.userId !== String(binding.targetUserId) ||
-    member.status !== resultStates[binding.command] ||
+    (binding.command === 'ACCEPT'
+      ? member.status !== 'ACTIVE' && member.status !== 'SUSPENDED'
+      : member.status !== resultStates[binding.command]) ||
     typeof member.status !== 'string' ||
     !membershipStates.has(member.status) ||
     !version(member.version)
