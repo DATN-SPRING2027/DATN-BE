@@ -7,15 +7,24 @@
  *   B. no schema change: caller supplies the Organization's projectIds and the
  *      existing {projectId, ...} indexes are used with `$in`
  *
- * Safety: loopback mongodb:// only; fixed disposable scratch database that is
- * dropped at start and end. Never touches continuum_task or any service DB.
+ * Safety:
+ *  - Loopback mongodb:// only.
+ *  - Uniquely generated scratch database per run (`datn_ws_org_perf_<pid>_<ts>_<rand>`),
+ *    verified not to exist beforehand, and dropped in a `try / finally` block.
+ *  - Never touches continuum_task or any service DB.
  *
  * Usage:
  *   node scripts/perf/workspace-org-queries.mjs [--uri mongodb://127.0.0.1:27017] [--iterations 20]
  */
+import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { MongoClient, ObjectId } from 'mongodb';
 
-const SCRATCH_DB = 'datn_workspace_perf_org_scratch';
+export function createUniqueScratchDbName(prefix = 'datn_ws_org_perf') {
+  const suffix = randomBytes(4).toString('hex');
+  return `${prefix}_${process.pid}_${Date.now()}_${suffix}`;
+}
+
 const args = new Map(
   process.argv.slice(2).reduce((pairs, value, index, all) => {
     if (value.startsWith('--')) pairs.push([value.slice(2), all[index + 1]]);
@@ -26,7 +35,7 @@ const uri =
   args.get('uri') ?? 'mongodb://127.0.0.1:27017/?directConnection=true';
 const iterations = Number(args.get('iterations') ?? 20);
 
-function assertLoopback(value) {
+export function assertLoopback(value) {
   const parsed = new URL(value);
   if (parsed.protocol !== 'mongodb:')
     throw new Error('Only mongodb:// URIs are allowed.');
@@ -36,8 +45,15 @@ function assertLoopback(value) {
   }
 }
 
-const STATUSES = ['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCELLED'];
-const WEIGHTS = [0.3, 0.2, 0.05, 0.4, 0.05];
+const STATUSES = [
+  'TODO',
+  'IN_PROGRESS',
+  'IN_REVIEW',
+  'BLOCKED',
+  'DONE',
+  'CANCELLED',
+];
+const WEIGHTS = [0.28, 0.18, 0.08, 0.04, 0.37, 0.05];
 let seed = 20261022;
 function random() {
   seed = (seed * 1664525 + 1013904223) % 4294967296;
@@ -128,202 +144,292 @@ function summarize(explain) {
 
 async function main() {
   assertLoopback(uri);
+  const scratchDbName = createUniqueScratchDbName('datn_ws_org_perf');
   const client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 });
   await client.connect();
-  const db = client.db(SCRATCH_DB);
-  await db.dropDatabase();
-  const tasks = db.collection('tasks');
-  const members = Array.from({ length: 30 }, () => new ObjectId());
+  let dbCreated = false;
 
-  // Target org: 40 projects x 2,500 tasks = 100k. Three noise orgs of equal size.
-  const targetOrg = new ObjectId();
-  const target = buildOrg(targetOrg, 40, 2_500, members);
-  const noiseOrgs = [new ObjectId(), new ObjectId(), new ObjectId()];
-  const all = [target.docs];
-  for (const org of noiseOrgs) all.push(buildOrg(org, 40, 2_500, members).docs);
-  for (const docs of all) {
-    for (let offset = 0; offset < docs.length; offset += 5000) {
-      await tasks.insertMany(docs.slice(offset, offset + 5000), {
-        ordered: false,
-      });
+  try {
+    const existing = await client
+      .db('admin')
+      .command({ listDatabases: 1, nameOnly: true });
+    if (existing.databases?.some((entry) => entry.name === scratchDbName)) {
+      throw new Error(
+        `Refusing to run: scratch database ${scratchDbName} already exists.`,
+      );
     }
-  }
-  const totalDocs = await tasks.estimatedDocumentCount();
-  const projectIds = target.projectIds;
-  const openStatuses = ['TODO', 'IN_PROGRESS', 'BLOCKED'];
-  const now = new Date(BASE + 160 * DAY);
-  const projection = {
-    title: 1,
-    status: 1,
-    assigneeId: 1,
-    dueDate: 1,
-    projectId: 1,
-  };
 
-  const strategies = {
-    A_organizationId: {
-      list: () =>
-        tasks
-          .find({ organizationId: targetOrg }, { projection })
-          .sort({ _id: 1 })
-          .limit(50),
-      status: () =>
-        tasks
-          .find(
-            { organizationId: targetOrg, status: 'IN_PROGRESS' },
-            { projection },
-          )
-          .sort({ _id: 1 })
-          .limit(50),
-      oneProject: () =>
-        tasks
-          .find(
-            { organizationId: targetOrg, projectId: projectIds[7] },
-            { projection },
-          )
-          .sort({ _id: 1 })
-          .limit(50),
-      summary: () =>
-        tasks.aggregate([
-          { $match: { organizationId: targetOrg } },
-          {
-            $group: {
-              _id: { p: '$projectId', s: '$status' },
-              n: { $sum: 1 },
-            },
-          },
-        ]),
-      overdue: () =>
-        tasks.aggregate([
-          {
-            $match: {
-              organizationId: targetOrg,
-              status: { $in: openStatuses },
-              dueDate: { $lt: now },
-            },
-          },
-          { $group: { _id: '$projectId', n: { $sum: 1 } } },
-        ]),
-    },
-    B_projectId_in: {
-      list: () =>
-        tasks
-          .find({ projectId: { $in: projectIds } }, { projection })
-          .sort({ _id: 1 })
-          .limit(50),
-      status: () =>
-        tasks
-          .find(
-            { projectId: { $in: projectIds }, status: 'IN_PROGRESS' },
-            { projection },
-          )
-          .sort({ _id: 1 })
-          .limit(50),
-      oneProject: () =>
-        tasks
-          .find({ projectId: projectIds[7] }, { projection })
-          .sort({ _id: 1 })
-          .limit(50),
-      summary: () =>
-        tasks.aggregate([
-          { $match: { projectId: { $in: projectIds } } },
-          {
-            $group: {
-              _id: { p: '$projectId', s: '$status' },
-              n: { $sum: 1 },
-            },
-          },
-        ]),
-      overdue: () =>
-        tasks.aggregate([
-          {
-            $match: {
-              projectId: { $in: projectIds },
-              status: { $in: openStatuses },
-              dueDate: { $lt: now },
-            },
-          },
-          { $group: { _id: '$projectId', n: { $sum: 1 } } },
-        ]),
-    },
-  };
+    const db = client.db(scratchDbName);
+    dbCreated = true;
+    const tasks = db.collection('tasks');
+    const members = Array.from({ length: 30 }, () => new ObjectId());
 
-  async function run(label) {
-    const out = [];
-    for (const [name, queries] of Object.entries(strategies)) {
-      for (const [query, build] of Object.entries(queries)) {
-        const isAggregate = query === 'summary' || query === 'overdue';
-        const latency = await time(async () => {
-          await build().toArray();
-        });
-        const explain = await build().explain('executionStats');
-        out.push({
-          phase: label,
-          strategy: name,
-          query,
-          ...latency,
-          ...summarize(explain),
-          aggregate: isAggregate,
+    // Target org: 40 projects x 2,500 tasks = 100k. Three noise orgs of equal size.
+    const targetOrg = new ObjectId();
+    const target = buildOrg(targetOrg, 40, 2_500, members);
+    const noiseOrgs = [new ObjectId(), new ObjectId(), new ObjectId()];
+    const all = [target.docs];
+    for (const org of noiseOrgs)
+      all.push(buildOrg(org, 40, 2_500, members).docs);
+    for (const docs of all) {
+      for (let offset = 0; offset < docs.length; offset += 5000) {
+        await tasks.insertMany(docs.slice(offset, offset + 5000), {
+          ordered: false,
         });
       }
     }
-    return out;
-  }
+    const totalDocs = await tasks.estimatedDocumentCount();
+    const projectIds = target.projectIds;
+    const assignee = members[0];
+    const openStatuses = ['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'BLOCKED'];
+    const now = new Date(BASE + 160 * DAY);
+    const dueStart = new Date(BASE + 120 * DAY);
+    const dueEnd = new Date(BASE + 155 * DAY);
+    const projection = {
+      title: 1,
+      status: 1,
+      assigneeId: 1,
+      dueDate: 1,
+      projectId: 1,
+    };
 
-  // Phase 1: only the indexes that already exist in the approved Task design
-  // ({projectId,_id}) plus the proposed ones in 07 §9 that apply to B.
-  await tasks.createIndexes([
-    { key: { projectId: 1, _id: 1 }, name: 'project_cursor' },
-    { key: { projectId: 1, status: 1, _id: 1 }, name: 'project_status_cursor' },
-    { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
-  ]);
-  const phaseB = await run('1_project_indexes_only');
-
-  // Phase 2: add the organizationId indexes required by strategy A.
-  await tasks.createIndexes([
-    { key: { organizationId: 1, _id: 1 }, name: 'org_cursor' },
-    {
-      key: { organizationId: 1, status: 1, _id: 1 },
-      name: 'org_status_cursor',
-    },
-    {
-      key: { organizationId: 1, projectId: 1, _id: 1 },
-      name: 'org_project_cursor',
-    },
-    {
-      key: { organizationId: 1, projectId: 1, status: 1, dueDate: 1 },
-      name: 'org_project_status_due',
-    },
-  ]);
-  const phaseA = await run('2_plus_organization_indexes');
-
-  const stats = await db.command({ collStats: 'tasks' });
-  await db.dropDatabase();
-  await client.close();
-  console.log(
-    JSON.stringify(
-      {
-        environment: {
-          totalDocs,
-          targetOrgDocs: target.docs.length,
-          projects: projectIds.length,
-          iterations,
-        },
-        indexSizesKB: Object.fromEntries(
-          Object.entries(stats.indexSizes).map(([k, v]) => [
-            k,
-            Math.round(v / 1024),
+    const strategies = {
+      A_organizationId: {
+        list: () =>
+          tasks
+            .find({ organizationId: targetOrg }, { projection })
+            .sort({ _id: 1 })
+            .limit(50),
+        status: () =>
+          tasks
+            .find(
+              { organizationId: targetOrg, status: 'IN_PROGRESS' },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
+        assigneeStatus: () =>
+          tasks
+            .find(
+              {
+                organizationId: targetOrg,
+                assigneeId: assignee,
+                status: { $in: ['TODO', 'IN_PROGRESS', 'IN_REVIEW'] },
+              },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
+        dueWindow: () =>
+          tasks
+            .find(
+              {
+                organizationId: targetOrg,
+                dueDate: { $gte: dueStart, $lt: dueEnd },
+              },
+              { projection },
+            )
+            .sort({ dueDate: 1, _id: 1 })
+            .limit(50),
+        oneProject: () =>
+          tasks
+            .find(
+              { organizationId: targetOrg, projectId: projectIds[7] },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
+        summary: () =>
+          tasks.aggregate([
+            { $match: { organizationId: targetOrg } },
+            {
+              $group: {
+                _id: { p: '$projectId', s: '$status' },
+                n: { $sum: 1 },
+              },
+            },
           ]),
-        ),
-        results: [...phaseB, ...phaseA],
+        overdue: () =>
+          tasks.aggregate([
+            {
+              $match: {
+                organizationId: targetOrg,
+                status: { $in: openStatuses },
+                dueDate: { $lt: now },
+              },
+            },
+            { $group: { _id: '$projectId', n: { $sum: 1 } } },
+          ]),
       },
-      null,
-      2,
-    ),
-  );
+      B_projectId_in: {
+        list: () =>
+          tasks
+            .find({ projectId: { $in: projectIds } }, { projection })
+            .sort({ _id: 1 })
+            .limit(50),
+        status: () =>
+          tasks
+            .find(
+              { projectId: { $in: projectIds }, status: 'IN_PROGRESS' },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
+        assigneeStatus: () =>
+          tasks
+            .find(
+              {
+                projectId: { $in: projectIds },
+                assigneeId: assignee,
+                status: { $in: ['TODO', 'IN_PROGRESS', 'IN_REVIEW'] },
+              },
+              { projection },
+            )
+            .sort({ _id: 1 })
+            .limit(50),
+        dueWindow: () =>
+          tasks
+            .find(
+              {
+                projectId: { $in: projectIds },
+                dueDate: { $gte: dueStart, $lt: dueEnd },
+              },
+              { projection },
+            )
+            .sort({ dueDate: 1, _id: 1 })
+            .limit(50),
+        oneProject: () =>
+          tasks
+            .find({ projectId: projectIds[7] }, { projection })
+            .sort({ _id: 1 })
+            .limit(50),
+        summary: () =>
+          tasks.aggregate([
+            { $match: { projectId: { $in: projectIds } } },
+            {
+              $group: {
+                _id: { p: '$projectId', s: '$status' },
+                n: { $sum: 1 },
+              },
+            },
+          ]),
+        overdue: () =>
+          tasks.aggregate([
+            {
+              $match: {
+                projectId: { $in: projectIds },
+                status: { $in: openStatuses },
+                dueDate: { $lt: now },
+              },
+            },
+            { $group: { _id: '$projectId', n: { $sum: 1 } } },
+          ]),
+      },
+    };
+
+    async function run(label) {
+      const out = [];
+      for (const [name, queries] of Object.entries(strategies)) {
+        for (const [query, build] of Object.entries(queries)) {
+          const isAggregate = query === 'summary' || query === 'overdue';
+          const latency = await time(async () => {
+            await build().toArray();
+          });
+          const explain = await build().explain('executionStats');
+          out.push({
+            phase: label,
+            strategy: name,
+            query,
+            ...latency,
+            ...summarize(explain),
+            aggregate: isAggregate,
+          });
+        }
+      }
+      return out;
+    }
+
+    // Phase 1: project-scoped indexes.
+    await tasks.createIndexes([
+      { key: { projectId: 1, _id: 1 }, name: 'project_cursor' },
+      {
+        key: { projectId: 1, status: 1, _id: 1 },
+        name: 'project_status_cursor',
+      },
+      {
+        key: { projectId: 1, assigneeId: 1, status: 1, _id: 1 },
+        name: 'project_assignee_status_cursor',
+      },
+      { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
+    ]);
+    const phaseB = await run('1_project_indexes_only');
+
+    // Phase 2: add the organizationId indexes required by strategy A.
+    await tasks.createIndexes([
+      { key: { organizationId: 1, _id: 1 }, name: 'org_cursor' },
+      {
+        key: { organizationId: 1, status: 1, _id: 1 },
+        name: 'org_status_cursor',
+      },
+      {
+        key: { organizationId: 1, projectId: 1, _id: 1 },
+        name: 'org_project_cursor',
+      },
+      {
+        key: { organizationId: 1, assigneeId: 1, status: 1, _id: 1 },
+        name: 'org_assignee_status_cursor',
+      },
+      {
+        key: { organizationId: 1, dueDate: 1, _id: 1 },
+        name: 'org_due_cursor',
+      },
+      {
+        key: { organizationId: 1, projectId: 1, status: 1, dueDate: 1 },
+        name: 'org_project_status_due',
+      },
+    ]);
+    const phaseA = await run('2_plus_organization_indexes');
+
+    const stats = await db.command({ collStats: 'tasks' });
+    console.log(
+      JSON.stringify(
+        {
+          environment: {
+            scratchDbName,
+            totalDocs,
+            targetOrgDocs: target.docs.length,
+            projects: projectIds.length,
+            iterations,
+          },
+          indexSizesKB: Object.fromEntries(
+            Object.entries(stats.indexSizes).map(([k, v]) => [
+              k,
+              Math.round(v / 1024),
+            ]),
+          ),
+          results: [...phaseB, ...phaseA],
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    if (dbCreated) {
+      await client
+        .db(scratchDbName)
+        .dropDatabase()
+        .catch(() => {});
+    }
+    await client.close().catch(() => {});
+  }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

@@ -68,7 +68,7 @@ Quy ước:
 | V2 | Board | Thứ tự card trong cột | **UNUSED** (FE không có reorder trong cột: `WorkBoardView.tsx:297-307`) | – | **Không implement** rank/LexoRank (YAGNI) | – |
 | V3 | Calendar | Item theo khoảng ngày | **MISSING + BLOCKED** | `dueDate` + range query | W1 với `dueFrom`/`dueTo` | P1 |
 | V3b | Calendar | Kéo thả đổi ngày | **UNUSED** (FE chưa có tính năng này) | – | Không làm | – |
-| V4 | Overview, Reports | Aggregate status/priority/type/assignee | **MISSING + BLOCKED** | aggregation | `GET …/tasks/summary` tính on-demand bằng indexed aggregation (đo ở 07) | P1 |
+| V4 | Overview, Reports | Aggregate status/priority/type/assignee | **MISSING + BLOCKED** | aggregation | `GET …/task-summary` tính on-demand bằng indexed aggregation (đo ở 07) | P1 |
 | V5 | Reports | Burndown, velocity | **MISSING + BLOCKED** | cần sprint counts | **Đã chốt G8:** lấy từ `GET …/sprints` (có sẵn `counts {totalTasks, doneTasks, inProgressTasks, todoTasks}`) kết hợp `task_events` | P1 |
 | V6 | Timeline | Epic, child, khoảng ngày | **MISSING + BLOCKED** | `startDate`, `dueDate`, hierarchy | W1 với range filter + `parentId`; bỏ mock `INITIAL_TIMELINE_EPICS` | P2 |
 | V7 | Timeline | Sửa start/due | **MISSING + BLOCKED** | – | qua W4 | P2 |

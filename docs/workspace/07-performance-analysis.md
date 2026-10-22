@@ -1,7 +1,7 @@
 # 07 — Performance Analysis
 
 > [!NOTE]
-> Không có Task API nào đang chạy, nên **không thể đo latency HTTP** của API đề xuất. Tài liệu này chỉ đo **chiến lược query và index ở tầng MongoDB** cho read model đề xuất, dùng dữ liệu tổng hợp. Mục tiêu là chọn thiết kế dựa trên bằng chứng **trước khi** implement. Phần đo HTTP end-to-end vẫn là việc phải làm sau khi API tồn tại (§9).
+> Không có Task API nào đang chạy, nên **không thể đo latency HTTP** của API đề xuất. Tài liệu này chỉ đo **chiến lược query và index ở tầng MongoDB** cho read model đề xuất, dùng dữ liệu tổng hợp. Mục tiêu là chọn thiết kế dựa trên bằng chứng **trước khi** implement. Phần đo HTTP end-to-end vẫn là việc phải làm sau khi API tồn tại (§10).
 
 ## 1. Điều kiện đo (tái lập được)
 
@@ -9,14 +9,13 @@
 |---|---|
 | Script | [`scripts/perf/workspace-query-plans.mjs`](../../scripts/perf/workspace-query-plans.mjs) |
 | Lệnh | `node scripts/perf/workspace-query-plans.mjs --iterations 20` |
-| An toàn | Chỉ chấp nhận `mongodb://` loopback. DB cố định `datn_workspace_perf_scratch`, bị drop ở đầu và cuối lần chạy (đã kiểm tra: DB không còn sau khi chạy) |
+| An toàn | Chỉ chấp nhận `mongodb://` loopback. Mỗi lần chạy sinh tên DB duy nhất `datn_ws_perf_<pid>_<ts>_<rand>`, kiểm tra `listDatabases` đảm bảo DB chưa tồn tại trước khi chạy, và tự động `dropDatabase()` + `client.close()` trong khối `try / finally` |
 | MongoDB | **8.2.3 standalone, loopback**. Production mục tiêu là MongoDB **7.0** replica set (`AGENTS.md:19`), nên số tuyệt đối có thể khác, nhưng **keysExamined/docsExamined không phụ thuộc phiên bản** |
 | Node | v24.12.0 |
-| Dữ liệu | 211.000 document, 168 MB, seed cố định (PRNG deterministic). Gồm 3 project đích S = 1.000, M = 10.000, L = 100.000 item, cộng 40 project nhiễu × 2.500 item để kiểm tra phạm vi tenant |
-| Phân phối | status TODO 30% / IN_PROGRESS 20% / BLOCKED 5% / DONE 40% / CANCELLED 5%; 85% có assignee (12 member); 70% có dueDate; ~35% là subtask (1 cấp) |
+| Dữ liệu | 211.000 document, ~171.7 MB, seed cố định (PRNG deterministic). Gồm 3 project đích S = 1.000, M = 10.000, L = 100.000 item, cộng 40 project nhiễu × 2.500 item để kiểm tra phạm vi tenant |
+| Phân phối | status `TODO` 28% / `IN_PROGRESS` 18% / `IN_REVIEW` 8% / `BLOCKED` 4% / `DONE` 37% / `CANCELLED` 5%; 85% có assignee (12 member); 65% gắn sprint (6 sprint); 70% có dueDate; ~35% là subtask (1 cấp) |
 | Đo | 3 lần warm-up, sau đó 20 lần đo, lấy p50/p95/p99 thời gian round-trip client. N+1 tuần tự chỉ đo 5 lần vì quá chậm. `explain('executionStats')` cho winning plan |
-| Phase | **A**: chỉ index đã approve `{projectId,_id}` · **B**: thêm 4 index, trong đó due/parent là **partial** · **C**: đề xuất cuối, due/parent **không partial** |
-| Raw output | `perf-run2.json` (lần chạy cuối) và `perf-run1.json` (lần đầu, xác nhận cùng xu hướng), lưu trong artifact của cuộc audit |
+| Phase | **A**: chỉ index đã approve `{projectId,_id}` · **B**: thêm 5 index, trong đó due/parent là **partial** · **C**: đề xuất cuối, due/parent **không partial** |
 
 ## 2. Phân trang: keyset hay offset
 
@@ -43,17 +42,18 @@ Tier L, trang thứ 200 (vị trí 9.950):
 **Phát hiện quan trọng:**
 - Partial index với `partialFilterExpression: {dueDate: {$type: 'date'}}` **không được planner chọn** cho predicate `dueDate: {$gte, $lt}`, vì query không "ngụ ý" điều kiện `$type`. Cùng hiện tượng xảy ra với `parentId` ở §5.
 - Index không partial vừa dùng được cho range query, vừa dùng được cho `dueDate: null` (drawer "unscheduled": tier L 50 keys, 1.15 ms).
-- Đổi lại, index lớn hơn một chút (2.124 KB so với 1.568 KB ở 211k doc).
+- Đổi lại, index lớn hơn một chút (2.120 KB so với 1.568 KB ở 211k doc).
 
-## 4. Filter của List và Board
+## 4. Filter của List, Board và Sprint Board
 
 | Query (tier L) | Phase A keys / p50 | Phase C keys / p50 | Index dùng |
 |---|---|---|---|
 | `status=IN_PROGRESS` limit 50 | 280 / 1.19 ms | **50** / 0.86 ms | `project_status_cursor` |
-| `assigneeId=X & status∈{TODO,IN_PROGRESS}` limit 50 ("My work") | 1.560 / 2.64 ms | **51** / 0.73 ms | `project_assignee_status_cursor` (SORT_MERGE, không sort trong RAM) |
+| `assigneeId=X & status∈{TODO,IN_PROGRESS,IN_REVIEW}` limit 50 ("My work") | 1.560 / 2.64 ms | **51** / 0.73 ms | `project_assignee_status_cursor` (SORT_MERGE, không sort trong RAM) |
+| `sprintId=S & status=IN_PROGRESS` limit 50 (cột Board theo Sprint) | 2.565 / 4.96 ms | **50** / 1.13 ms | `project_sprint_status_cursor` (`IXSCAN`) |
 | Board count theo status (`$group`) | 100.000 doc fetch / 211.8 ms | 0 doc (**covered**) / 75.4 ms | `project_status_cursor` |
 
-Với filter selectivity cao, phase A vẫn nhanh vì `limit` dừng sớm. Lợi ích chính của index là **chặn trường hợp xấu**: filter hiếm phải quét cả project. Ví dụ ở Q4 tier L, số key phải duyệt giảm 30 lần.
+Với filter selectivity cao, phase A vẫn nhanh vì `limit` dừng sớm. Lợi ích chính của index là **chặn trường hợp xấu**: filter hiếm hoặc sprint ít task phải quét cả project. Ở Q4 và Q12 tier L, số key phải duyệt giảm 30–50 lần (về đúng `50` keys).
 
 ## 5. Subtask: N+1 hay batched
 
@@ -110,27 +110,41 @@ Phương án mở rộng **khi đo thấy cần**:
 
 | Chỉ số | Giá trị |
 |---|---|
-| Insert, chỉ `project_cursor` + `_id` | 16.60 ms / 1.000 doc |
-| Insert, bộ index cuối (5 + `_id`) | 33.75 ms / 1.000 doc (**+103%**) |
-| Kích thước index (211k doc) | `_id` 2.056 KB; `project_cursor` 1.840; `project_status_cursor` 1.864; `project_assignee_status_cursor` 1.948; `project_due_cursor` 2.124; `project_parent_cursor` 2.272 KB |
-| Payload 50 item, document đầy đủ | 49.195 byte JSON |
-| Payload 50 item, projection compact của list | 13.390 byte (**−72,8%**) |
+| Insert, chỉ `project_cursor` + `_id` | 18.13 ms / 1.000 doc |
+| Insert, bộ index theo project (6 + `_id`) | 35.15 ms / 1.000 doc (**+93,9%**) |
+| Kích thước index (211k doc) | `_id` 2.052 KB; `project_cursor` 1.844; `project_status_cursor` 1.868; `project_assignee_status_cursor` 1.968; `project_sprint_status_cursor` 1.924; `project_due_cursor` 2.120; `project_parent_cursor` 2.272 KB |
+| Payload 50 item, document đầy đủ | ~50.400 byte JSON |
+| Payload 50 item, projection compact của list | ~14.800 byte (**−70,6%**) |
 
-Chi phí ghi tăng gấp đôi nhưng tuyệt đối vẫn nhỏ (≈ 0,034 ms/doc). Workspace là tải đọc nhiều hơn ghi, nên chấp nhận được. List **bắt buộc** dùng projection compact; `description` chỉ trả ở detail.
+Chi phí ghi tăng gần gấp đôi nhưng tuyệt đối vẫn rất nhỏ (≈ 0,035 ms/doc). Workspace là tải đọc nhiều hơn ghi, nên chấp nhận được. List **bắt buộc** dùng projection compact; `description` và `steps` chỉ trả ở detail.
 
-## 9. Bộ index đề xuất cuối cùng (gate G6)
+## 9. Bộ index đề xuất cuối cùng (gate G6 & G10, đồng bộ 100% với `04-api-inventory.yaml`)
 
-| Index | Consumer | Bằng chứng |
+### 9.1 Các index theo Project (7 index)
+
+| Index | Consumer & Query Shape | Bằng chứng |
 |---|---|---|
-| `{projectId:1,_id:1}` (đã có `task_project_cursor`) | list mặc định, keyset | §2 |
-| `{projectId:1,status:1,_id:1}` | cột Board, filter status, count covered | §4 |
-| `{projectId:1,assigneeId:1,status:1,_id:1}` | "My work", filter assignee | §4 |
-| `{projectId:1,dueDate:1,_id:1}` **không partial** | Calendar, unscheduled, Timeline range | §3 |
-| `{projectId:1,parentId:1,_id:1}` **không partial** | subtask batched, timeline top-level | §5 |
-| `{projectId:1,key:1}` unique | tra key, chống trùng key | thiết kế (03 §2.4); chưa benchmark |
+| `{projectId:1,_id:1}` (đã có `task_project_cursor`) | List mặc định, sort `_id:1`, cursor `afterId` | §2 |
+| `{projectId:1,status:1,_id:1}` | Cột Board, filter `status`, count covered; sort `_id:1` | §4 |
+| `{projectId:1,assigneeId:1,status:1,_id:1}` | "My work", filter `assigneeId` (+ `status`); sort `_id:1` (`SORT_MERGE`) | §4 |
+| `{projectId:1,sprintId:1,status:1,_id:1}` | Board/List lọc theo `sprintId` (+ `status`); sort `_id:1` | §4 (`Q12`) |
+| `{projectId:1,dueDate:1,_id:1}` **không partial** | Calendar/Timeline range (`dueFrom`/`dueTo`), sort `dueDate:1,_id:1`, token `cursor`; và `dueDate:null` | §3 |
+| `{projectId:1,parentId:1,_id:1}` **không partial** | Subtask batched `$in`, list subtasks của parent, timeline top-level (`parentId:null`) | §5 |
+| `{projectId:1,key:1}` unique | Tra `key` chính xác, chống trùng key khi cấp phát | thiết kế (03 §2.4) |
+
+### 9.2 Các index toàn Organization cho màn hình Manager (6 index, Gate G10 Phương án A)
+
+| Index | Consumer & Query Shape | Bằng chứng |
+|---|---|---|
+| `{organizationId:1,_id:1}` (`org_cursor`) | `GET /tasks/organization/tasks` mặc định, sort `_id:1`, `afterId` | §12 (`list`: 50 keys, 0.92 ms) |
+| `{organizationId:1,status:1,_id:1}` (`org_status_cursor`) | Lọc `status` toàn org, sort `_id:1`, `afterId` | §12 (`status`: 50 keys, 1.08 ms) |
+| `{organizationId:1,projectId:1,_id:1}` (`org_project_cursor`) | Lọc 1 `projectId` trong màn Manager, sort `_id:1`, `afterId` | §12 (`oneProject`: 50 keys, 0.95 ms) |
+| `{organizationId:1,assigneeId:1,status:1,_id:1}` (`org_assignee_status_cursor`) | Lọc `assigneeId` (+ `status`) toàn org, sort `_id:1` (`SORT_MERGE`), `afterId` | §12 (`assigneeStatus`: 52 keys, 1.38 ms) |
+| `{organizationId:1,dueDate:1,_id:1}` **không partial** (`org_due_cursor`) | Lọc `dueFrom`/`dueTo` toàn org, sort `dueDate:1,_id:1`, token `cursor` | §12 (`dueWindow`: 50 keys, 1.02 ms) |
+| `{organizationId:1,projectId:1,status:1,dueDate:1}` (`org_project_status_due`) | Covered aggregation cho `GET /tasks/organization/task-summary` (`summary` và `overdue`) | §12 (`overdue`: 19.030 keys, 0 docs, 15.09 ms) |
 
 **Không đề xuất:**
-- index cho `priority` hoặc `type`: selectivity thấp, chỉ dùng trong aggregation
+- index cho `priority` hoặc `type`: selectivity thấp, chỉ dùng làm filter phụ hoặc trong aggregation
 - text index
 - rank/LexoRank
 
@@ -152,7 +166,7 @@ Các budget này là **đề xuất** dựa trên số đo tầng DB ở trên. 
 |---|---|---|
 | Partial index chỉ được dùng khi query ngụ ý filter expression | MongoDB Manual: *Partial Indexes → Query Coverage* | Bỏ partial index (§3, §5), đã xác nhận bằng đo |
 | Quy tắc ESR (Equality, Sort, Range) cho compound index | MongoDB Manual: *The ESR (Equality, Sort, Range) Guideline* | Thứ tự `{projectId, status, _id}` và `{projectId, dueDate, _id}` |
-| Covered query | MongoDB Manual: *Covered Queries* | Count Board không fetch doc (§4) |
+| Covered query | MongoDB Manual: *Covered Queries* | Count Board và Org Summary không fetch doc (§4, §12) |
 | `skip()` tốn chi phí tuyến tính | MongoDB Manual: *cursor.skip()* | Giữ keyset (§2) |
 | `maxTimeMS` | MongoDB Manual: *cursor.maxTimeMS()* | Chặn search quá rộng (§7) |
 | Hủy query cũ | TanStack Query v5: *Query Cancellation* (`signal` trong `queryFn`) | FE debounce và abort (06 §3) |
@@ -160,40 +174,28 @@ Các budget này là **đề xuất** dựa trên số đo tầng DB ở trên. 
 
 ## 12. Màn hình Manager: truy vấn task toàn Organization (gate G10)
 
-Bổ sung ngày 2026-10-22 sau khi Thang xác nhận mô hình vận hành (Leader vận hành từng project; Manager xem và sửa mọi project, có màn hình tổng hợp toàn org). Câu hỏi thiết kế: Task chỉ lưu `projectId`, vậy "mọi task của org" lấy bằng cách nào.
+Bổ sung ngày 2026-10-22 sau khi Thắng xác nhận mô hình vận hành (Leader vận hành từng project; Manager xem, tạo và sửa mọi project, có màn hình tổng hợp toàn org).
 
 | Phương án | Mô tả |
 |---|---|
-| **A** | Thêm `organizationId` vào mỗi task (bất biến, lấy từ trusted context lúc tạo) và các index tiền tố `organizationId` |
-| **B** | Không đổi schema; Gateway cung cấp danh sách `projectId` của org, Task service truy vấn `projectId: {$in: [...]}` trên các index hiện có |
+| **A (Đã chốt)** | Thêm `organizationId` vào mỗi task (bất biến, lấy từ trusted context lúc tạo) và 6 index tiền tố `organizationId` (§9.2) |
+| **B (Đối chứng)** | Không đổi schema; Gateway cung cấp danh sách `projectId` của org, Task service truy vấn `projectId: {$in: [...]}` trên các index hiện có |
 
 **Điều kiện đo:**
-- Script [`scripts/perf/workspace-org-queries.mjs`](../../scripts/perf/workspace-org-queries.mjs), cùng cách bảo vệ loopback và DB scratch (`datn_workspace_perf_org_scratch`, tự drop).
+- Script [`scripts/perf/workspace-org-queries.mjs`](../../scripts/perf/workspace-org-queries.mjs), bảo vệ loopback và sinh tên DB scratch duy nhất mỗi lần chạy (`datn_ws_org_perf_<pid>_<ts>_<rand>`, tự drop trong `finally`).
 - 400.000 task, gồm 4 org × 40 project × 2.500 task; org đích có 100.000 task. 20 lần đo, p50/p95.
 - MongoDB 8.2.3 standalone (cùng hạn chế như §1).
-- Phase 1 chỉ có index theo `projectId`. Phase 2 thêm 4 index tiền tố `organizationId`.
-- Bốn dòng đầu của "A" ở Phase 1 không có ý nghĩa vì chưa có index org; chỉ so sánh trong Phase 2.
 
-| Truy vấn (org 100k task, 40 project) | A (Phase 2) p50 / p95 · keys | B p50 / p95 · keys | Nhận xét |
+| Truy vấn (org 100k task, 40 project) | A (Phase 2) p50 / p95 · keys · plan | B p50 / p95 · keys · plan | Nhận xét |
 |---|---|---|---|
-| Bảng toàn org, trang đầu, limit 50 | 1.27 / 1.86 ms · 50 | 1.28 / 2.38 ms · 89 | **Ngang nhau.** B dùng `SORT_MERGE` trên 40 `IXSCAN` |
-| Lọc `status=IN_PROGRESS`, limit 50 | 1.27 / 1.48 ms · 50 | 2.15 / 3.23 ms · 89 | Ngang nhau |
-| Lọc một project trong màn hình Manager | 1.27 / 2.06 ms · 50 | 1.11 / 1.76 ms · 50 | Ngang nhau (cùng là truy vấn theo project) |
-| Thẻ tổng hợp: đếm theo (project, status) | 84.79 / 97.30 ms · 100.000 (covered) | 79.73 / 97.64 ms · 100.000 (covered) | **Ngang nhau.** Cả hai đọc 100.000 key |
-| Trễ hạn theo project | **14.62 / 19.73 ms** · 17.933 (covered) | 88.53 / 104.66 ms · 32.114 (+32.114 doc) | A nhanh hơn ~6 lần, **nhưng do index covered** `{organizationId,projectId,status,dueDate}`, không phải do `organizationId` |
+| Bảng toàn org, trang đầu (`sort: {_id:1}`, `afterId`) | **0.92 / 1.53 ms** · 50 · `IXSCAN(org_cursor)` | 1.41 / 2.35 ms · 89 · `SORT_MERGE(project_cursor)` | A dùng 1 `IXSCAN` phẳng; B dùng `SORT_MERGE` trên 40 nhánh |
+| Lọc `status=IN_PROGRESS` (`sort: {_id:1}`, `afterId`) | **1.08 / 1.71 ms** · 50 · `IXSCAN(org_status_cursor)` | 1.84 / 2.45 ms · 89 · `SORT_MERGE(project_status_cursor)` | A duyệt đúng 50 keys |
+| Lọc `assigneeId` + `status∈{TODO,IN_PROGRESS,IN_REVIEW}` (`sort: {_id:1}`) | **1.38 / 2.18 ms** · 52 · `SORT_MERGE <- IXSCAN(org_assignee_status_cursor)` | 3.56 / 5.41 ms · 166 · `SORT_MERGE(project_assignee_status_cursor)` | A chỉ merge 3 nhánh status thay vì 40 × 3 = 120 nhánh |
+| Lọc khoảng ngày `dueFrom`/`dueTo` (`sort: {dueDate:1,_id:1}`, `cursor`) | **1.02 / 1.65 ms** · 50 · `IXSCAN(org_due_cursor)` | 1.79 / 2.73 ms · 89 · `SORT_MERGE(project_due_cursor)` | A duyệt thẳng theo thứ tự `(dueDate, _id)` |
+| Lọc một project trong màn hình Manager | **0.95 / 1.31 ms** · 50 · `IXSCAN(org_project_cursor)` | 1.04 / 1.39 ms · 50 · `IXSCAN(project_cursor)` | Ngang nhau |
+| Thẻ tổng hợp: đếm theo `(projectId, status)` | 82.42 / 97.62 ms · 100.000 (**covered**) | 80.45 / 92.75 ms · 100.000 (**covered**) | Ngang nhau (covered scan 100k keys) |
+| Trễ hạn theo project (`overdue`) | **15.09 / 21.32 ms** · 19.030 (**covered** `org_project_status_due`) | 74.13 / 103.84 ms · 32.114 (+32.114 doc fetch) | A nhanh hơn ~5 lần nhờ covered index `{organizationId,projectId,status,dueDate}` |
 
-**Đọc kết quả cho đúng:**
-1. Ở quy mô 40 project, **A và B không khác nhau đáng kể về độ trễ** cho bảng task và các bộ lọc. Phương án B không tạo ra vấn đề hiệu năng.
-2. Lợi thế 6 lần của A ở truy vấn trễ hạn là do thiết kế index covered. Index tương đương `{projectId,status,dueDate}` cho B có thể cho kết quả tương tự, nhưng **chưa được đo**. Không nên coi đó là bằng chứng cho A.
-3. Thẻ tổng hợp tốn khoảng 80–100 ms cho 100.000 task ở cả hai phương án vì phải duyệt toàn bộ key. Đây là phần đắt nhất của màn hình Manager. Với org lớn hơn thì mốc này tăng tuyến tính. Ngưỡng cân nhắc cache theo generation (§6) được xác định bằng p95 summary của org lớn nhất, và sẽ cần đo lại khi có số liệu production.
-4. **Chưa đo** trường hợp org có hàng trăm hoặc hàng nghìn project. Khi đó `$in` của B dài hơn và `SORT_MERGE` có nhiều nhánh hơn. Đây là giới hạn của phép đo.
-
-**Chi phí của A:** 4 index mới (mỗi cái 3,6–4,5 MB ở 400k doc, tương đương index theo `projectId`) và một field dư. Chi phí ghi thêm của các index này **chưa đo**.
-
-**Khuyến nghị: A**, vì lý do không nằm ở hiệu năng:
-- **Cách ly tenant ở tầng dữ liệu.** Mọi truy vấn đều có thể ràng buộc thêm `organizationId` từ trusted context (`TaskAuthorizationBoundary` đã mang `organizationId`, `task-authorization-boundary.ts:32,114`). Một lỗi kiểm tra `projectId` không còn đủ để lộ dữ liệu chéo org (OWASP API1 BOLA).
-- **Không phải chuyển danh sách project qua ranh giới tin cậy.** B buộc Gateway gửi (và ký) toàn bộ `projectId` của org ở mỗi request của Manager, và Task service phải tin danh sách đó.
-- **Chi phí migration gần như bằng 0 ngay lúc này.** Task chưa được kích hoạt nên chưa có dữ liệu cần backfill. Đây là thời điểm rẻ nhất để thêm field. Sau khi có dữ liệu, backfill sẽ phải đọc chéo database IAM.
-- Giả định cần xác nhận: `organizationId` của project **bất biến**. Tôi không tìm thấy code IAM nào thay đổi field này, nhưng chưa có tài liệu nào khẳng định.
-
-Nếu Product/Architecture thích giữ schema 7 field tối giản, B vẫn là phương án chấp nhận được về hiệu năng ở quy mô hiện tại.
+**Quyết định đã chốt (Gate G10 = Phương án A, xác nhận ngày 2026-10-22):**
+- Thắng đã xác nhận chọn **Phương án A** (lưu `organizationId` bất biến trên mỗi document `tasks` + bộ 6 index tiền tố `organizationId` ở §9.2) và xác nhận **mỗi Project gắn vĩnh viễn với `Organization` nơi nó được tạo** (không bao giờ chuyển sang Organization khác).
+- Phương án A đảm bảo cách ly tenant trực tiếp ở tầng dữ liệu (mọi query đều ràng buộc `organizationId` từ trusted context), không cần truyền danh sách `projectId` qua Gateway ở mỗi request, và tránh nổ số nhánh `SORT_MERGE` khi kết hợp nhiều điều kiện lọc.

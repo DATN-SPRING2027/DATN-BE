@@ -111,15 +111,15 @@ flowchart TB
 
 4. **Event (`task_events`):**
    - Cập nhật enum `fromStatus`/`toStatus` thêm `IN_REVIEW`.
-   - Thêm biến thể `TASK_UPDATED {changedFields, version}` ghi chung transaction với `PATCH`.
+   - Thêm các loại sự kiện `TASK_UPDATED {changedFields, version}`, `TASK_COMMENT_ADDED {commentId}`, `TASK_WORKLOG_ADDED {worklogId, minutes}`, và sự kiện sprint (`SPRINT_CREATED`, `SPRINT_UPDATED`, `SPRINT_COMPLETED`) ghi chung transaction với mutation. Mọi sự kiện đều lưu `{actor, actorType, organizationId, projectId}` để đảm bảo truy vết đầy đủ khi Manager (`ADMIN`) thao tác trên bất kỳ project nào.
 
 ### 2.3 Concurrency và consistency
 
 | Vấn đề | Cách xử lý | Lý do |
 |---|---|---|
-| Hai người sửa cùng task | `updateOne({_id, projectId, version: expected}, {$set…, $inc:{version:1}})`; `matchedCount=0` thì đọc lại để phân biệt 404 và 409 | atomic trên 1 document, không cần lock |
-| Ghi task + event | transaction (đã có trong `create`/`transitionStatus`) | cần nhất quán đa document; CI dùng replica set |
-| Complete sprint + dời task chưa xong | transaction cập nhật `project_sprints` sang `COMPLETED` và `updateMany` các task chưa `DONE`/`CANCELLED` sang `moveIncompleteToSprintId` | nhất quán khi đóng sprint |
+| Hai người sửa cùng task hoặc cùng sprint | `updateOne({_id, projectId, organizationId, version: expected}, {$set…, $inc:{version:1}})`; `matchedCount=0` thì đọc lại để phân biệt 404 và 409 (`TASK_VERSION_CONFLICT` / `SPRINT_VERSION_CONFLICT`); thiếu `If-Match` trả `428 PRECONDITION_REQUIRED` | atomic trên 1 document, chống ghi đè mù giữa 2 Leader/Manager |
+| Ghi task/comment/worklog/sprint + event | transaction (đã có trong `create`/`transitionStatus`) | cần nhất quán đa document; CI dùng replica set |
+| Complete sprint + dời task chưa xong | Trước và trong transaction: xác thực sprint nguồn `{_id: sprintId, projectId, organizationId, status: 'ACTIVE', version: expected}` và (nếu `moveIncompleteToSprintId != null`) xác thực sprint đích `{_id: moveIncompleteToSprintId, projectId, organizationId, status: 'PLANNED'}`. Sau đó cập nhật sprint nguồn sang `COMPLETED` (`version + 1`) và chạy `updateMany({organizationId, projectId, sprintId, status: {$nin: ['DONE', 'CANCELLED']}}, {$set: {sprintId: moveIncompleteToSprintId, updatedAt: now}, $inc: {version: 1}})` kèm ghi event `SPRINT_COMPLETED` | chống gán chéo project/org và chống race condition khi đóng sprint |
 | Tối đa 1 ACTIVE sprint/project | partial unique index `{projectId: 1}` với `{status: 'ACTIVE'}` | chống race condition khi 2 Leader bấm Start Sprint cùng lúc |
 | Retry create / comment / worklog / sprint | `Idempotency-Key` lưu trong `task_operations` (TTL 24h, unique `{actorId, projectId, operationId}`) | tái dùng collection có sẵn, không thêm Redis |
 | Cấp key song song | `findOneAndUpdate($inc)` + unique index | atomic, không race |

@@ -59,9 +59,9 @@ Không có regression: src không bị thay đổi, nên đây là kết quả k
 
 | Lệnh | Kết quả |
 |---|---|
-| `node --test scripts/perf/workspace-query-plans.test.mjs` (4 test: 2 script × 2 trường hợp từ chối URI) | **4 pass / 0 fail**. Kiểm tra `listDatabases`: không còn database `datn_workspace*` nào |
-| `npx @redocly/cli@1 lint docs/workspace/04-api-inventory.yaml --skip-rule no-empty-servers` (17 operations, `0.3.0-proposal`) | valid, 0 error / 0 warning |
-| `node scripts/perf/workspace-org-queries.mjs --iterations 20` | exit 0, kết quả ở [07 §12](07-performance-analysis.md); DB scratch tự drop |
+| `node --test scripts/perf/workspace-query-plans.test.mjs` (6 test: 2 script × 2 trường hợp từ chối URI + unique scratch DB name + JSON Schema Draft 2020-12 validation cho `Task`, `TaskDetail`, `OrganizationTask`, `ProjectSprint`, `OrganizationTaskSummary`) | **6 pass / 0 fail**. Kiểm tra `listDatabases`: không còn database `datn_ws*` nào |
+| `npx @redocly/cli@1 lint docs/workspace/04-api-inventory.yaml --skip-rule no-empty-servers` (17 operations, `0.4.0-proposal`) | valid, 0 error / 0 warning |
+| `node scripts/perf/workspace-query-plans.mjs --iterations 20` & `node scripts/perf/workspace-org-queries.mjs --iterations 20` | exit 0, kết quả ở [07](07-performance-analysis.md); DB scratch duy nhất mỗi run, tự drop trong `finally` |
 
 ## 4. Những gì CHƯA được kiểm chứng (và lý do)
 

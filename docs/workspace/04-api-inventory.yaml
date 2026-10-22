@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Continuum AI Workspace Task API — proposed extension (DATN-FE PR #69 consumer)
-  version: 0.3.0-proposal
+  version: 0.4.0-proposal
   description: |
     PROPOSAL ONLY — NOT APPROVED. Do not implement, route, or call any operation
     in this document until the governance decision record is committed and the
@@ -12,7 +12,7 @@ info:
     - Status enum includes `IN_REVIEW` (`TODO`, `IN_PROGRESS`, `IN_REVIEW`, `BLOCKED`, `DONE`, `CANCELLED`);
       UI "Delete task" transitions to `CANCELLED` with a reason (soft cancel, preserves audit history).
     - Labels (`labels`), Checklists (`steps`), Task Comments (`comments`), Task Worklogs (`worklogs`),
-      and Project-scoped Sprints (`sprints`, velocity & burndown metrics).
+      and Project-scoped Sprints (`sprints`, velocity & burndown metrics, protected by Sprint ETag/If-Match CAS).
     - Organization-wide Manager overview endpoints (`/api/v1/tasks/organization/*`) backed by an
       immutable `organizationId` stored on each task document (Gate G10 Option A).
     - Work Notes, Docs, Forms, Development and AI remain outside this Task contract (gate G9).
@@ -87,9 +87,9 @@ paths:
         - '{projectId:1,_id:1} (existing task_project_cursor)'
         - '{projectId:1,status:1,_id:1}'
         - '{projectId:1,assigneeId:1,status:1,_id:1}'
+        - '{projectId:1,sprintId:1,status:1,_id:1}'
         - '{projectId:1,dueDate:1,_id:1} (NOT partial: also serves dueDate:null; see 07 §3)'
         - '{projectId:1,parentId:1,_id:1} (NOT partial: also serves parentId:null; see 07 §5)'
-        - '{projectId:1,sprintId:1,status:1,_id:1}'
         - '{projectId:1,key:1} unique (exact key lookup)'
       parameters:
         - name: limit
@@ -483,6 +483,7 @@ paths:
         '201':
           description: Sprint created.
           headers:
+            ETag: { $ref: '#/components/headers/SprintETag' }
             Idempotency-Replayed: { schema: { type: string, enum: ['true'] } }
           content:
             application/json:
@@ -501,9 +502,13 @@ paths:
       tags: [ProjectSprints]
       operationId: updateProjectSprint
       summary: Update sprint metadata or start a PLANNED sprint (TEAM_LEADER or ADMIN only)
-      description: At most one sprint per Project may be `ACTIVE` at a time.
+      description: |
+        At most one sprint per Project may be `ACTIVE` at a time.
+        Protected by optimistic concurrency via `If-Match: "sprint:<id>:<version>"`;
+        missing header returns 428 PRECONDITION_REQUIRED, stale version returns 409 SPRINT_VERSION_CONFLICT.
       x-status: PROPOSED
       parameters:
+        - $ref: '#/components/parameters/SprintIfMatch'
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
         required: true
@@ -513,6 +518,8 @@ paths:
       responses:
         '200':
           description: Sprint updated.
+          headers:
+            ETag: { $ref: '#/components/headers/SprintETag' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProjectSprint' }
@@ -521,6 +528,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
         '503': { $ref: '#/components/responses/RetryLater' }
   /api/v1/tasks/projects/{projectId}/sprints/{sprintId}/complete:
     parameters:
@@ -530,8 +538,13 @@ paths:
       tags: [ProjectSprints]
       operationId: completeProjectSprint
       summary: Complete an ACTIVE sprint and optionally move incomplete tasks (TEAM_LEADER or ADMIN only)
+      description: |
+        Protected by optimistic concurrency (`If-Match: "sprint:<id>:<version>"`) and `Idempotency-Key`.
+        Verifies both `sprintId` and `moveIncompleteToSprintId` (when non-null) belong to `{organizationId, projectId}`
+        before committing the transaction.
       x-status: PROPOSED
       parameters:
+        - $ref: '#/components/parameters/SprintIfMatch'
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
@@ -542,6 +555,9 @@ paths:
       responses:
         '200':
           description: Sprint completed.
+          headers:
+            ETag: { $ref: '#/components/headers/SprintETag' }
+            Idempotency-Replayed: { schema: { type: string, enum: ['true'] } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProjectSprint' }
@@ -550,6 +566,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
         '503': { $ref: '#/components/responses/RetryLater' }
   /api/v1/tasks/projects/{projectId}/task-summary:
     parameters:
@@ -588,8 +605,8 @@ paths:
         ADMIN (Manager) only; every other role receives 404 so the route does not reveal itself.
         The Organization is taken from the authenticated session, never from the client.
         Backed by the immutable `organizationId` stored on each task document (Gate G10 Option A confirmed).
-        Uses the same keyset pagination and filter allowlist as listProjectTasks, plus an optional
-        `projectId` filter (the Manager drill-down into one Project).
+        Default order is `_id` ascending with `afterId`. When `dueFrom`/`dueTo` is supplied,
+        order is `dueDate` ascending, `_id` ascending and `cursor` must be used instead of `afterId`.
         Includes PRIVATE Projects the Manager is not a member of (decision recorded 2026-10-22).
         Each item additionally carries `projectName` and `projectCode` for display.
       x-status: PROPOSED
@@ -600,14 +617,21 @@ paths:
         - '{organizationId:1,_id:1}'
         - '{organizationId:1,status:1,_id:1}'
         - '{organizationId:1,projectId:1,_id:1}'
-        - '{organizationId:1,dueDate:1,_id:1}'
+        - '{organizationId:1,assigneeId:1,status:1,_id:1}'
+        - '{organizationId:1,dueDate:1,_id:1} (NOT partial)'
+        - '{organizationId:1,projectId:1,status:1,dueDate:1} (covered overdue summary)'
       parameters:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
         - name: afterId
           in: query
+          description: Keyset continuation for the default `_id` ascending order. Mutually exclusive with `cursor`.
           schema: { $ref: '#/components/schemas/ObjectIdString' }
+        - name: cursor
+          in: query
+          description: Opaque continuation token returned as `nextCursor`. Required when `dueFrom`/`dueTo` is supplied.
+          schema: { type: string, maxLength: 256 }
         - name: projectId
           in: query
           description: Restrict to one Project of the Organization. A Project outside the Organization yields an empty page, not an error.
@@ -629,6 +653,7 @@ paths:
           schema: { type: string, format: date-time }
         - name: dueTo
           in: query
+          description: Exclusive upper bound. `dueTo - dueFrom` must be at most 100 days.
           schema: { type: string, format: date-time }
       responses:
         '200':
@@ -650,13 +675,22 @@ paths:
       description: |
         ADMIN (Manager) only; other roles receive 404. Computed on demand with indexed aggregation
         over `organizationId` (about 80-100 ms p50/p95 for 100k tasks in 40 Projects, see 07 §12).
-        `projects` is bounded to 200 rows ordered by `overdue` descending then `total` descending;
-        `truncated` is true when the Organization has more Projects than the bound.
+        `totals` always reflects the full Organization aggregate across all Projects.
+        `projects` is paginated with `limit` (1..200, default 50) and deterministic keyset `cursor`
+        ordered by `overdue` descending, `total` descending, `projectId` ascending.
       x-status: PROPOSED
       x-resolved-gate: G10 Option A
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          description: Opaque keyset continuation token encoding `(overdue, total, projectId)` from `nextCursor`.
+          schema: { type: string, maxLength: 256 }
       responses:
         '200':
-          description: Per-Project summary.
+          description: Per-Project summary page and full Organization totals.
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStore' }
           content:
@@ -664,6 +698,7 @@ paths:
               schema: { $ref: '#/components/schemas/OrganizationTaskSummary' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
         '503': { $ref: '#/components/responses/RetryLater' }
 components:
   securitySchemes:
@@ -708,6 +743,11 @@ components:
       in: header
       required: true
       schema: { type: string, pattern: '^"task:[0-9a-f]{24}:[1-9][0-9]*"$' }
+    SprintIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string, pattern: '^"sprint:[0-9a-f]{24}:[1-9][0-9]*"$' }
     CsrfToken:
       name: X-CSRF-Token
       in: header
@@ -719,6 +759,8 @@ components:
       schema: { type: string, enum: [no-store] }
     TaskETag:
       schema: { type: string, pattern: '^"task:[0-9a-f]{24}:[1-9][0-9]*"$' }
+    SprintETag:
+      schema: { type: string, pattern: '^"sprint:[0-9a-f]{24}:[1-9][0-9]*"$' }
   responses:
     Unauthenticated:
       description: No valid session or no ACTIVE Organization Membership.
@@ -736,7 +778,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Conflict:
-      description: TASK_VERSION_CONFLICT (details.currentVersion, details.currentStatus), SPRINT_ALREADY_ACTIVE, or IDEMPOTENCY_KEY_REUSED.
+      description: TASK_VERSION_CONFLICT (details.currentVersion, details.currentStatus), SPRINT_VERSION_CONFLICT, SPRINT_ALREADY_ACTIVE, or IDEMPOTENCY_KEY_REUSED.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -803,6 +845,13 @@ components:
           maxLength: 500
         done:
           type: boolean
+    SubtaskCounts:
+      type: object
+      additionalProperties: false
+      required: [total, done]
+      properties:
+        total: { type: integer, minimum: 0 }
+        done: { type: integer, minimum: 0 }
     Task:
       description: Compact list projection. The first seven properties are the APPROVED D-05 fields.
       type: object
@@ -841,25 +890,51 @@ components:
           type: array
           maxItems: 20
           items: { type: string, minLength: 1, maxLength: 40 }
-        subtaskCounts:
-          type: object
-          additionalProperties: false
-          required: [total, done]
-          properties:
-            total: { type: integer, minimum: 0 }
-            done: { type: integer, minimum: 0 }
+        subtaskCounts: { $ref: '#/components/schemas/SubtaskCounts' }
     TaskDetail:
-      allOf:
-        - $ref: '#/components/schemas/Task'
-        - type: object
-          required: [description, steps, completedAt]
-          properties:
-            description: { type: [string, 'null'], maxLength: 20000 }
-            steps:
-              type: array
-              maxItems: 50
-              items: { $ref: '#/components/schemas/TaskChecklistStep' }
-            completedAt: { type: [string, 'null'], format: date-time }
+      description: 'Full task detail projection (flattened with additionalProperties=false so JSON Schema Draft 2020-12 validators accept detail-only properties alongside base Task fields).'
+      type: object
+      additionalProperties: false
+      required: [id, projectId, title, createdBy, createdAt, updatedAt, version, key, status, type, priority, assigneeId, dueDate, startDate, parentId, sprintId, labels, subtaskCounts, description, steps, completedAt]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectIdString' }
+        projectId: { $ref: '#/components/schemas/ObjectIdString' }
+        title: { $ref: '#/components/schemas/TaskTitle' }
+        createdBy: { $ref: '#/components/schemas/ObjectIdString' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        key:
+          type: string
+          pattern: '^[A-Z0-9]{2,10}-[1-9][0-9]*$'
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        type: { $ref: '#/components/schemas/TaskType' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        assigneeId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        dueDate: { type: [string, 'null'], format: date-time }
+        startDate: { type: [string, 'null'], format: date-time }
+        parentId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        sprintId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        labels:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 40 }
+        subtaskCounts: { $ref: '#/components/schemas/SubtaskCounts' }
+        description: { type: [string, 'null'], maxLength: 20000 }
+        steps:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/TaskChecklistStep' }
+        completedAt: { type: [string, 'null'], format: date-time }
     TaskPage:
       type: object
       additionalProperties: false
@@ -1019,7 +1094,7 @@ components:
     ProjectSprint:
       type: object
       additionalProperties: false
-      required: [id, projectId, name, goal, status, startDate, endDate, createdBy, createdAt, completedAt, counts]
+      required: [id, projectId, name, goal, status, startDate, endDate, createdBy, createdAt, completedAt, version, counts]
       properties:
         id: { $ref: '#/components/schemas/ObjectIdString' }
         projectId: { $ref: '#/components/schemas/ObjectIdString' }
@@ -1036,6 +1111,9 @@ components:
         createdBy: { $ref: '#/components/schemas/ObjectIdString' }
         createdAt: { type: string, format: date-time }
         completedAt: { type: [string, 'null'], format: date-time }
+        version:
+          type: integer
+          minimum: 1
         counts:
           type: object
           additionalProperties: false
@@ -1099,7 +1177,14 @@ components:
       required: [id, type, actor, occurredAt, version]
       properties:
         id: { $ref: '#/components/schemas/ObjectIdString' }
-        type: { type: string, enum: [TASK_CREATED, TASK_STATUS_TRANSITIONED, TASK_UPDATED] }
+        type:
+          type: string
+          enum:
+            - TASK_CREATED
+            - TASK_STATUS_TRANSITIONED
+            - TASK_UPDATED
+            - TASK_COMMENT_ADDED
+            - TASK_WORKLOG_ADDED
         actor:
           oneOf:
             - $ref: '#/components/schemas/PersonRef'
@@ -1160,25 +1245,61 @@ components:
         completedLast7Days: { type: integer, minimum: 0 }
         createdLast7Days: { type: integer, minimum: 0 }
     OrganizationTask:
-      allOf:
-        - $ref: '#/components/schemas/Task'
-        - type: object
-          required: [projectName, projectCode]
-          properties:
-            projectName: { type: string }
-            projectCode: { type: string }
+      description: 'Organization-wide task list row (flattened with additionalProperties=false so JSON Schema Draft 2020-12 validators accept projectName and projectCode alongside base Task fields).'
+      type: object
+      additionalProperties: false
+      required: [id, projectId, projectName, projectCode, title, createdBy, createdAt, updatedAt, version, key, status, type, priority, assigneeId, dueDate, startDate, parentId, sprintId, labels, subtaskCounts]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectIdString' }
+        projectId: { $ref: '#/components/schemas/ObjectIdString' }
+        projectName: { type: string, minLength: 1 }
+        projectCode: { type: string, minLength: 2, maxLength: 10 }
+        title: { $ref: '#/components/schemas/TaskTitle' }
+        createdBy: { $ref: '#/components/schemas/ObjectIdString' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        key:
+          type: string
+          pattern: '^[A-Z0-9]{2,10}-[1-9][0-9]*$'
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        type: { $ref: '#/components/schemas/TaskType' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        assigneeId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        dueDate: { type: [string, 'null'], format: date-time }
+        startDate: { type: [string, 'null'], format: date-time }
+        parentId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        sprintId:
+          oneOf:
+            - $ref: '#/components/schemas/ObjectIdString'
+            - type: 'null'
+        labels:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 40 }
+        subtaskCounts: { $ref: '#/components/schemas/SubtaskCounts' }
     OrganizationTaskPage:
       type: object
       additionalProperties: false
-      required: [items, nextAfterId]
+      required: [items, nextAfterId, nextCursor]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/OrganizationTask' }
         nextAfterId:
+          description: Continuation for the default `_id` ascending order; null on the last page or in date-range mode.
           oneOf:
             - $ref: '#/components/schemas/ObjectIdString'
             - type: 'null'
+        nextCursor:
+          description: Opaque continuation token for date-range (`dueFrom`/`dueTo`) mode; null otherwise.
+          type: [string, 'null']
     ProjectTaskSummaryRow:
       type: object
       additionalProperties: false
@@ -1199,7 +1320,7 @@ components:
     OrganizationTaskSummary:
       type: object
       additionalProperties: false
-      required: [asOf, totals, projects, truncated]
+      required: [asOf, totals, projects, nextCursor]
       properties:
         asOf: { type: string, format: date-time }
         totals:
@@ -1214,7 +1335,9 @@ components:
           type: array
           maxItems: 200
           items: { $ref: '#/components/schemas/ProjectTaskSummaryRow' }
-        truncated: { type: boolean }
+        nextCursor:
+          description: Opaque continuation token encoding `(overdue, total, projectId)` when more Projects remain; null on the last page.
+          type: [string, 'null']
     ErrorResponse:
       type: object
       additionalProperties: false

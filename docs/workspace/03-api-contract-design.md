@@ -12,7 +12,7 @@
 | Envelope | DTO trả trực tiếp, không bọc thêm; trang Task/Comment/Worklog dùng `{items, nextAfterId}` (D-05) | `src/services/task/http/task-response.ts`; `docs/openapi/task-v1-d05-slice.openapi.json` |
 | Pagination | Keyset `afterId` + `limit` 1–100 (D-05 DR-6). Bổ sung `cursor` opaque cho chế độ date-range | doc 27 DR-6; đo ở [07](07-performance-analysis.md) §2 |
 | Non-member / cross-scope | **404**, không để lộ sự tồn tại của resource | slice OpenAPI; `ProjectAccessAuthorizationGuard` trả `PROJECT_NOT_FOUND` |
-| CAS | `If-Match: "task:<id>:<version>"` và `ETag` cùng định dạng; thiếu header thì `428 PRECONDITION_REQUIRED`; stale thì `409 TASK_VERSION_CONFLICT` | `team-contract.ts:188-207`; `task-lifecycle-policy.ts:108-115` |
+| CAS | `If-Match: "task:<id>:<version>"` (hoặc `"sprint:<id>:<version>"` cho Sprint) và `ETag` cùng định dạng; thiếu header thì `428 PRECONDITION_REQUIRED`; stale thì `409 TASK_VERSION_CONFLICT` / `SPRINT_VERSION_CONFLICT` | `team-contract.ts:188-207`; `task-lifecycle-policy.ts:108-115` |
 | Idempotency | `Idempotency-Key` cho create task/comment/worklog/sprint (regex giống Team/IAM). Với transition, key UUIDv4 được lưu làm `operationId` | `team-contract.ts:33,178-184`; `task_operations` (`task-database-schema.ts:84-120`) |
 | CSRF | `X-CSRF-Token` = cookie `__Host-csrf` cho mọi mutation | `organization-membership-command.controller.ts:402…`; `team-foundation.controller.ts:249-258` |
 | Membership | Mọi op kiểm tra ACTIVE org membership **và** ACTIVE project membership (hoặc role ADMIN toàn org) ở server | `AGENTS.md:25`; `task-lifecycle-policy.ts:102-105` |
@@ -43,10 +43,10 @@ Không tạo endpoint riêng cho Board, Calendar hay Timeline vì cả ba đều
 | 11 | POST | `/api/v1/tasks/projects/{projectId}/tasks/{taskId}/worklogs` | Detail / List row "Log work" | MỚI (G8) | `Idempotency-Key` + CSRF |
 | 12 | GET | `/api/v1/tasks/projects/{projectId}/sprints` | Board sprint header, List/Reports sprint filter, Burndown/Velocity | MỚI (G8) | theo từng project |
 | 13 | POST | `/api/v1/tasks/projects/{projectId}/sprints` | Create sprint | MỚI (G8) | chỉ `TEAM_LEADER` hoặc `ADMIN` |
-| 14 | PATCH | `/api/v1/tasks/projects/{projectId}/sprints/{sprintId}` | Edit sprint name/goal/dates/start sprint | MỚI (G8) | chỉ `TEAM_LEADER` hoặc `ADMIN` |
-| 15 | POST | `/api/v1/tasks/projects/{projectId}/sprints/{sprintId}/complete` | Board "Complete sprint" | MỚI (G8) | chỉ `TEAM_LEADER` hoặc `ADMIN`; tùy chọn dời task chưa xong sang sprint khác hoặc backlog |
-| 16 | GET | `/api/v1/tasks/organization/tasks` | Màn hình Manager toàn org (bảng task) | MỚI (G4, G10) | chỉ `ADMIN` |
-| 17 | GET | `/api/v1/tasks/organization/task-summary` | Màn hình Manager toàn org (thẻ theo project) | MỚI (G4, G10) | chỉ `ADMIN` |
+| 14 | PATCH | `/api/v1/tasks/projects/{projectId}/sprints/{sprintId}` | Edit sprint name/goal/dates/start sprint | MỚI (G8) | chỉ `TEAM_LEADER` hoặc `ADMIN`; bắt buộc `If-Match: "sprint:<id>:<version>"` |
+| 15 | POST | `/api/v1/tasks/projects/{projectId}/sprints/{sprintId}/complete` | Board "Complete sprint" | MỚI (G8) | chỉ `TEAM_LEADER` hoặc `ADMIN`; bắt buộc `If-Match` + `Idempotency-Key`; tùy chọn dời task chưa xong |
+| 16 | GET | `/api/v1/tasks/organization/tasks` | Màn hình Manager toàn org (bảng task) | MỚI (G4, G10) | chỉ `ADMIN`; keyset `afterId` hoặc `cursor` (cho `dueFrom`/`dueTo`) |
+| 17 | GET | `/api/v1/tasks/organization/task-summary` | Màn hình Manager toàn org (thẻ theo project) | MỚI (G4, G10) | chỉ `ADMIN`; `totals` toàn org + phân trang `projects` bằng `limit` & `cursor`/`nextCursor` |
 
 ### 2.1 Lý do tách `status` khỏi `PATCH` và quy tắc `IN_REVIEW` / `CANCELLED` (G7 đã chốt)
 
@@ -112,8 +112,8 @@ Thắng đã chốt:
 
 | # | Method | Path (public) | Mục đích |
 |---|---|---|---|
-| 16 | GET | `/api/v1/tasks/organization/tasks` | Bảng task toàn org (keyset, cùng filter với list theo project, thêm `projectId` tùy chọn) |
-| 17 | GET | `/api/v1/tasks/organization/task-summary` | Thẻ tổng hợp: mỗi project một dòng `{projectId, projectName, projectCode, total, byStatus, overdue, inProgress}` |
+| 16 | GET | `/api/v1/tasks/organization/tasks` | Bảng task toàn org: thứ tự mặc định `_id` tăng dần với `afterId`; khi truyền `dueFrom`/`dueTo` thì sắp theo `dueDate` tăng dần, `_id` tăng dần và dùng `cursor`/`nextCursor` |
+| 17 | GET | `/api/v1/tasks/organization/task-summary` | Thẻ tổng hợp: `totals` luôn phản ánh toàn bộ Organization; danh sách `projects` được phân trang keyset (`limit` 1..200 mặc định 50, `cursor`/`nextCursor` mã hóa `(overdue, total, projectId)`) để truy cập được mọi Project ngay cả khi vượt 200 |
 
 - **Organization không nằm trong path.** Org lấy từ session đã xác thực (`AGENTS.md:25`).
 - Chỉ ADMIN truy cập được. Các role khác nhận **404** (không tiết lộ sự tồn tại).

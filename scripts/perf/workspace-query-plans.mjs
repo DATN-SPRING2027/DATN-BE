@@ -9,15 +9,21 @@
  *
  * Safety:
  *  - URI must be mongodb:// on a loopback host (127.0.0.1 / localhost / ::1).
- *  - Database name is fixed to a disposable scratch name and is dropped at the
- *    start and the end of the run. No other database is read or written.
+ *  - Database name is uniquely generated per run (`datn_ws_perf_<pid>_<ts>_<rand>`),
+ *    verified not to exist beforehand, and dropped in a `try / finally` block.
  *
  * Usage:
- *   node scripts/perf/workspace-query-plans.mjs [--uri mongodb://127.0.0.1:27017] [--iterations 30]
+ *   node scripts/perf/workspace-query-plans.mjs [--uri mongodb://127.0.0.1:27017] [--iterations 20]
  */
+import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { MongoClient, ObjectId } from 'mongodb';
 
-const SCRATCH_DB = 'datn_workspace_perf_scratch';
+export function createUniqueScratchDbName(prefix = 'datn_ws_perf') {
+  const suffix = randomBytes(4).toString('hex');
+  return `${prefix}_${process.pid}_${Date.now()}_${suffix}`;
+}
+
 const args = new Map(
   process.argv.slice(2).reduce((pairs, value, index, all) => {
     if (value.startsWith('--')) pairs.push([value.slice(2), all[index + 1]]);
@@ -26,9 +32,9 @@ const args = new Map(
 );
 const uri =
   args.get('uri') ?? 'mongodb://127.0.0.1:27017/?directConnection=true';
-const iterations = Number(args.get('iterations') ?? 30);
+const iterations = Number(args.get('iterations') ?? 20);
 
-function assertLoopback(value) {
+export function assertLoopback(value) {
   const parsed = new URL(value);
   if (parsed.protocol !== 'mongodb:')
     throw new Error('Only mongodb:// URIs are allowed.');
@@ -38,8 +44,15 @@ function assertLoopback(value) {
   }
 }
 
-const STATUSES = ['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCELLED'];
-const STATUS_WEIGHTS = [0.3, 0.2, 0.05, 0.4, 0.05];
+const STATUSES = [
+  'TODO',
+  'IN_PROGRESS',
+  'IN_REVIEW',
+  'BLOCKED',
+  'DONE',
+  'CANCELLED',
+];
+const STATUS_WEIGHTS = [0.28, 0.18, 0.08, 0.04, 0.37, 0.05];
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH'];
 const TYPES = ['TASK', 'BUG', 'STORY'];
 
@@ -62,7 +75,7 @@ function pick(values, weights) {
 const BASE_DATE = Date.UTC(2026, 0, 1);
 const DAY = 86_400_000;
 
-function buildItems(projectId, count, members) {
+function buildItems(projectId, count, members, sprints) {
   const items = [];
   const parents = [];
   for (let index = 0; index < count; index += 1) {
@@ -82,6 +95,7 @@ function buildItems(projectId, count, members) {
       assigneeId: random() < 0.85 ? pick(members) : null,
       reporterId: pick(members),
       parentId: isSubtask ? pick(parents) : null,
+      sprintId: random() < 0.65 ? pick(sprints) : null,
       startDate: hasDue ? new Date(created) : null,
       dueDate: hasDue ? new Date(due) : null,
       createdAt: new Date(created),
@@ -147,541 +161,618 @@ function summarizeExplain(explain) {
 
 async function main() {
   assertLoopback(uri);
+  const scratchDbName = createUniqueScratchDbName('datn_ws_perf');
   const client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 });
   await client.connect();
-  const db = client.db(SCRATCH_DB);
-  const buildInfo = await client.db('admin').command({ buildInfo: 1 });
-  await db.dropDatabase();
-  const items = db.collection('work_items');
+  let dbCreated = false;
 
-  const members = Array.from({ length: 12 }, () => new ObjectId());
-  const tiers = [
-    { name: 'S', count: 1_000, projectId: new ObjectId() },
-    { name: 'M', count: 10_000, projectId: new ObjectId() },
-    { name: 'L', count: 100_000, projectId: new ObjectId() },
-  ];
-  const noiseProjects = 40;
-  const loadStarted = Date.now();
-  for (const tier of tiers) {
-    const docs = buildItems(tier.projectId, tier.count, members);
-    for (let offset = 0; offset < docs.length; offset += 5000) {
-      await items.insertMany(docs.slice(offset, offset + 5000), {
-        ordered: false,
-      });
+  try {
+    const existing = await client
+      .db('admin')
+      .command({ listDatabases: 1, nameOnly: true });
+    if (existing.databases?.some((entry) => entry.name === scratchDbName)) {
+      throw new Error(
+        `Refusing to run: scratch database ${scratchDbName} already exists.`,
+      );
     }
-    tier.sampleParents = docs
-      .filter((doc) => doc.parentId === null)
-      .slice(0, 50)
-      .map((doc) => doc._id);
-    tier.deepAfterId = docs
-      .map((doc) => doc._id)
-      .sort((a, b) => a.toHexString().localeCompare(b.toHexString()))[
-      Math.min(docs.length - 1, 10_000 - 1)
+
+    const db = client.db(scratchDbName);
+    dbCreated = true;
+    const buildInfo = await client.db('admin').command({ buildInfo: 1 });
+    const items = db.collection('work_items');
+
+    const members = Array.from({ length: 12 }, () => new ObjectId());
+    const sprints = Array.from({ length: 6 }, () => new ObjectId());
+    const tiers = [
+      { name: 'S', count: 1_000, projectId: new ObjectId() },
+      { name: 'M', count: 10_000, projectId: new ObjectId() },
+      { name: 'L', count: 100_000, projectId: new ObjectId() },
     ];
-  }
-  for (let index = 0; index < noiseProjects; index += 1) {
-    const docs = buildItems(new ObjectId(), 2_500, members);
-    await items.insertMany(docs, { ordered: false });
-  }
-  const totalDocs = await items.estimatedDocumentCount();
-  const collStats = await db.command({ collStats: 'work_items' });
-  const loadSeconds = (Date.now() - loadStarted) / 1000;
+    const noiseProjects = 40;
+    const loadStarted = Date.now();
+    for (const tier of tiers) {
+      const docs = buildItems(tier.projectId, tier.count, members, sprints);
+      for (let offset = 0; offset < docs.length; offset += 5000) {
+        await items.insertMany(docs.slice(offset, offset + 5000), {
+          ordered: false,
+        });
+      }
+      tier.sampleParents = docs
+        .filter((doc) => doc.parentId === null)
+        .slice(0, 50)
+        .map((doc) => doc._id);
+      tier.deepAfterId = docs
+        .map((doc) => doc._id)
+        .sort((a, b) => a.toHexString().localeCompare(b.toHexString()))[
+        Math.min(docs.length - 1, 10_000 - 1)
+      ];
+    }
+    for (let index = 0; index < noiseProjects; index += 1) {
+      const docs = buildItems(new ObjectId(), 2_500, members, sprints);
+      await items.insertMany(docs, { ordered: false });
+    }
+    const totalDocs = await items.estimatedDocumentCount();
+    const collStats = await db.command({ collStats: 'work_items' });
+    const loadSeconds = (Date.now() - loadStarted) / 1000;
 
-  const assignee = members[0];
-  const windowStart = new Date(BASE_DATE + 120 * DAY);
-  const windowEnd = new Date(BASE_DATE + 155 * DAY);
-  const listProjection = {
-    title: 1,
-    key: 1,
-    type: 1,
-    status: 1,
-    priority: 1,
-    assigneeId: 1,
-    dueDate: 1,
-    parentId: 1,
-    updatedAt: 1,
-    version: 1,
-  };
+    const assignee = members[0];
+    const activeSprint = sprints[0];
+    const windowStart = new Date(BASE_DATE + 120 * DAY);
+    const windowEnd = new Date(BASE_DATE + 155 * DAY);
+    const listProjection = {
+      title: 1,
+      key: 1,
+      type: 1,
+      status: 1,
+      priority: 1,
+      assigneeId: 1,
+      dueDate: 1,
+      parentId: 1,
+      sprintId: 1,
+      labels: 1,
+      updatedAt: 1,
+      version: 1,
+    };
 
-  const queries = (tier) => ({
-    Q1_list_first_page_keyset: {
-      run: () =>
-        items
-          .find({ projectId: tier.projectId }, { projection: listProjection })
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find({ projectId: tier.projectId }, { projection: listProjection })
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q2a_deep_page_offset_skip_9950: {
-      run: () =>
-        items
-          .find({ projectId: tier.projectId }, { projection: listProjection })
-          .sort({ _id: 1 })
-          .skip(Math.min(9_950, tier.count - 50))
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find({ projectId: tier.projectId }, { projection: listProjection })
-          .sort({ _id: 1 })
-          .skip(Math.min(9_950, tier.count - 50))
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q2b_deep_page_keyset_afterId: {
-      run: () =>
-        items
-          .find(
-            { projectId: tier.projectId, _id: { $gt: tier.deepAfterId } },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            { projectId: tier.projectId, _id: { $gt: tier.deepAfterId } },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q3_filter_status_in_progress: {
-      run: () =>
-        items
-          .find(
-            { projectId: tier.projectId, status: 'IN_PROGRESS' },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            { projectId: tier.projectId, status: 'IN_PROGRESS' },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q4_filter_assignee_open_status: {
-      run: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              assigneeId: assignee,
-              status: { $in: ['TODO', 'IN_PROGRESS'] },
-            },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              assigneeId: assignee,
-              status: { $in: ['TODO', 'IN_PROGRESS'] },
-            },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q5_calendar_due_window_35d: {
-      run: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              dueDate: { $gte: windowStart, $lt: windowEnd },
-            },
-            { projection: { title: 1, key: 1, status: 1, dueDate: 1 } },
-          )
-          .sort({ dueDate: 1, _id: 1 })
-          .limit(500)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              dueDate: { $gte: windowStart, $lt: windowEnd },
-            },
-            { projection: { title: 1, key: 1, status: 1, dueDate: 1 } },
-          )
-          .sort({ dueDate: 1, _id: 1 })
-          .limit(500)
-          .explain('executionStats'),
-    },
-    Q6_board_status_counts: {
-      run: () =>
-        items
-          .aggregate([
-            { $match: { projectId: tier.projectId } },
-            { $group: { _id: '$status', count: { $sum: 1 } } },
-          ])
-          .toArray(),
-      explain: () =>
-        items
-          .aggregate([
-            { $match: { projectId: tier.projectId } },
-            { $group: { _id: '$status', count: { $sum: 1 } } },
-          ])
-          .explain('executionStats'),
-    },
-    Q7a_subtask_counts_N_plus_1: {
-      run: () =>
-        Promise.all(
-          tier.sampleParents.map((parentId) =>
-            items.countDocuments({ projectId: tier.projectId, parentId }),
-          ),
-        ),
-      explain: null,
-    },
-    Q7a_subtask_counts_N_plus_1_sequential: {
-      runs: 5,
-      run: async () => {
-        for (const parentId of tier.sampleParents)
-          await items.countDocuments({ projectId: tier.projectId, parentId });
+    const queries = (tier) => ({
+      Q1_list_first_page_keyset: {
+        run: () =>
+          items
+            .find({ projectId: tier.projectId }, { projection: listProjection })
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find({ projectId: tier.projectId }, { projection: listProjection })
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
       },
-      explain: null,
-    },
-    Q7b_subtask_counts_batched: {
-      run: () =>
-        items
-          .aggregate([
-            {
-              $match: {
+      Q2a_deep_page_offset_skip_9950: {
+        run: () =>
+          items
+            .find({ projectId: tier.projectId }, { projection: listProjection })
+            .sort({ _id: 1 })
+            .skip(Math.min(9_950, tier.count - 50))
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find({ projectId: tier.projectId }, { projection: listProjection })
+            .sort({ _id: 1 })
+            .skip(Math.min(9_950, tier.count - 50))
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q2b_deep_page_keyset_afterId: {
+        run: () =>
+          items
+            .find(
+              { projectId: tier.projectId, _id: { $gt: tier.deepAfterId } },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              { projectId: tier.projectId, _id: { $gt: tier.deepAfterId } },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q3_filter_status_in_progress: {
+        run: () =>
+          items
+            .find(
+              { projectId: tier.projectId, status: 'IN_PROGRESS' },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              { projectId: tier.projectId, status: 'IN_PROGRESS' },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q4_filter_assignee_open_status: {
+        run: () =>
+          items
+            .find(
+              {
                 projectId: tier.projectId,
-                parentId: { $in: tier.sampleParents },
+                assigneeId: assignee,
+                status: { $in: ['TODO', 'IN_PROGRESS', 'IN_REVIEW'] },
               },
-            },
-            {
-              $group: {
-                _id: '$parentId',
-                total: { $sum: 1 },
-                done: { $sum: { $cond: [{ $eq: ['$status', 'DONE'] }, 1, 0] } },
-              },
-            },
-          ])
-          .toArray(),
-      explain: () =>
-        items
-          .aggregate([
-            {
-              $match: {
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
                 projectId: tier.projectId,
-                parentId: { $in: tier.sampleParents },
+                assigneeId: assignee,
+                status: { $in: ['TODO', 'IN_PROGRESS', 'IN_REVIEW'] },
               },
-            },
-            {
-              $group: {
-                _id: '$parentId',
-                total: { $sum: 1 },
-                done: { $sum: { $cond: [{ $eq: ['$status', 'DONE'] }, 1, 0] } },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q5_calendar_due_window_35d: {
+        run: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                dueDate: { $gte: windowStart, $lt: windowEnd },
               },
-            },
-          ])
-          .explain('executionStats'),
-    },
-    Q8_overview_facet: {
-      run: () =>
-        items
-          .aggregate([
-            { $match: { projectId: tier.projectId } },
-            {
-              $facet: {
-                byStatus: [{ $group: { _id: '$status', n: { $sum: 1 } } }],
-                byPriority: [{ $group: { _id: '$priority', n: { $sum: 1 } } }],
-                byType: [{ $group: { _id: '$type', n: { $sum: 1 } } }],
-                byAssignee: [
-                  { $group: { _id: '$assigneeId', n: { $sum: 1 } } },
-                ],
+              { projection: { title: 1, key: 1, status: 1, dueDate: 1 } },
+            )
+            .sort({ dueDate: 1, _id: 1 })
+            .limit(500)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                dueDate: { $gte: windowStart, $lt: windowEnd },
               },
-            },
-          ])
-          .toArray(),
-      explain: () =>
-        items
-          .aggregate([
-            { $match: { projectId: tier.projectId } },
-            {
-              $facet: {
-                byStatus: [{ $group: { _id: '$status', n: { $sum: 1 } } }],
-              },
-            },
-          ])
-          .explain('executionStats'),
-    },
-    Q9_title_contains_search: {
-      run: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              title: { $regex: 'billing', $options: 'i' },
-            },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              title: { $regex: 'billing', $options: 'i' },
-            },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q9b_title_contains_rare_term: {
-      run: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              title: { $regex: 'nomatchterm', $options: 'i' },
-            },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            {
-              projectId: tier.projectId,
-              title: { $regex: 'nomatchterm', $options: 'i' },
-            },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q10_calendar_unscheduled: {
-      run: () =>
-        items
-          .find(
-            { projectId: tier.projectId, dueDate: null },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            { projectId: tier.projectId, dueDate: null },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q11_timeline_top_level: {
-      run: () =>
-        items
-          .find(
-            { projectId: tier.projectId, parentId: null },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .toArray(),
-      explain: () =>
-        items
-          .find(
-            { projectId: tier.projectId, parentId: null },
-            { projection: listProjection },
-          )
-          .sort({ _id: 1 })
-          .limit(50)
-          .explain('executionStats'),
-    },
-    Q8b_overview_parallel_groups: {
-      run: () =>
-        Promise.all([
+              { projection: { title: 1, key: 1, status: 1, dueDate: 1 } },
+            )
+            .sort({ dueDate: 1, _id: 1 })
+            .limit(500)
+            .explain('executionStats'),
+      },
+      Q6_board_status_counts: {
+        run: () =>
           items
             .aggregate([
               { $match: { projectId: tier.projectId } },
-              { $group: { _id: '$status', n: { $sum: 1 } } },
+              { $group: { _id: '$status', count: { $sum: 1 } } },
             ])
             .toArray(),
+        explain: () =>
           items
             .aggregate([
               { $match: { projectId: tier.projectId } },
-              { $group: { _id: '$assigneeId', n: { $sum: 1 } } },
+              { $group: { _id: '$status', count: { $sum: 1 } } },
+            ])
+            .explain('executionStats'),
+      },
+      Q7a_subtask_counts_N_plus_1: {
+        run: () =>
+          Promise.all(
+            tier.sampleParents.map((parentId) =>
+              items.countDocuments({ projectId: tier.projectId, parentId }),
+            ),
+          ),
+        explain: null,
+      },
+      Q7a_subtask_counts_N_plus_1_sequential: {
+        runs: 5,
+        run: async () => {
+          for (const parentId of tier.sampleParents)
+            await items.countDocuments({ projectId: tier.projectId, parentId });
+        },
+        explain: null,
+      },
+      Q7b_subtask_counts_batched: {
+        run: () =>
+          items
+            .aggregate([
+              {
+                $match: {
+                  projectId: tier.projectId,
+                  parentId: { $in: tier.sampleParents },
+                },
+              },
+              {
+                $group: {
+                  _id: '$parentId',
+                  total: { $sum: 1 },
+                  done: {
+                    $sum: { $cond: [{ $eq: ['$status', 'DONE'] }, 1, 0] },
+                  },
+                },
+              },
             ])
             .toArray(),
+        explain: () =>
+          items
+            .aggregate([
+              {
+                $match: {
+                  projectId: tier.projectId,
+                  parentId: { $in: tier.sampleParents },
+                },
+              },
+              {
+                $group: {
+                  _id: '$parentId',
+                  total: { $sum: 1 },
+                  done: {
+                    $sum: { $cond: [{ $eq: ['$status', 'DONE'] }, 1, 0] },
+                  },
+                },
+              },
+            ])
+            .explain('executionStats'),
+      },
+      Q8_overview_facet: {
+        run: () =>
           items
             .aggregate([
               { $match: { projectId: tier.projectId } },
               {
-                $group: { _id: { p: '$priority', t: '$type' }, n: { $sum: 1 } },
+                $facet: {
+                  byStatus: [{ $group: { _id: '$status', n: { $sum: 1 } } }],
+                  byPriority: [
+                    { $group: { _id: '$priority', n: { $sum: 1 } } },
+                  ],
+                  byType: [{ $group: { _id: '$type', n: { $sum: 1 } } }],
+                  byAssignee: [
+                    { $group: { _id: '$assigneeId', n: { $sum: 1 } } },
+                  ],
+                },
               },
             ])
             .toArray(),
-        ]),
-      explain: null,
-    },
-  });
+        explain: () =>
+          items
+            .aggregate([
+              { $match: { projectId: tier.projectId } },
+              {
+                $facet: {
+                  byStatus: [{ $group: { _id: '$status', n: { $sum: 1 } } }],
+                },
+              },
+            ])
+            .explain('executionStats'),
+      },
+      Q9_title_contains_search: {
+        run: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                title: { $regex: 'billing', $options: 'i' },
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                title: { $regex: 'billing', $options: 'i' },
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q9b_title_contains_rare_term: {
+        run: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                title: { $regex: 'nomatchterm', $options: 'i' },
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                title: { $regex: 'nomatchterm', $options: 'i' },
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q10_calendar_unscheduled: {
+        run: () =>
+          items
+            .find(
+              { projectId: tier.projectId, dueDate: null },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              { projectId: tier.projectId, dueDate: null },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q11_timeline_top_level: {
+        run: () =>
+          items
+            .find(
+              { projectId: tier.projectId, parentId: null },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              { projectId: tier.projectId, parentId: null },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q12_sprint_board_column: {
+        run: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                sprintId: activeSprint,
+                status: 'IN_PROGRESS',
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .toArray(),
+        explain: () =>
+          items
+            .find(
+              {
+                projectId: tier.projectId,
+                sprintId: activeSprint,
+                status: 'IN_PROGRESS',
+              },
+              { projection: listProjection },
+            )
+            .sort({ _id: 1 })
+            .limit(50)
+            .explain('executionStats'),
+      },
+      Q8b_overview_parallel_groups: {
+        run: () =>
+          Promise.all([
+            items
+              .aggregate([
+                { $match: { projectId: tier.projectId } },
+                { $group: { _id: '$status', n: { $sum: 1 } } },
+              ])
+              .toArray(),
+            items
+              .aggregate([
+                { $match: { projectId: tier.projectId } },
+                { $group: { _id: '$assigneeId', n: { $sum: 1 } } },
+              ])
+              .toArray(),
+            items
+              .aggregate([
+                { $match: { projectId: tier.projectId } },
+                {
+                  $group: {
+                    _id: { p: '$priority', t: '$type' },
+                    n: { $sum: 1 },
+                  },
+                },
+              ])
+              .toArray(),
+          ]),
+        explain: null,
+      },
+    });
 
-  async function runPhase(label) {
-    const results = [];
-    for (const tier of tiers) {
-      for (const [name, query] of Object.entries(queries(tier))) {
-        const latency = await time(query.run, query.runs);
-        const plan = query.explain
-          ? summarizeExplain(await query.explain())
-          : {};
-        results.push({
-          phase: label,
-          tier: tier.name,
-          items: tier.count,
-          query: name,
-          ...latency,
-          ...plan,
+    async function runPhase(label) {
+      const results = [];
+      for (const tier of tiers) {
+        for (const [name, query] of Object.entries(queries(tier))) {
+          const latency = await time(query.run, query.runs);
+          const plan = query.explain
+            ? summarizeExplain(await query.explain())
+            : {};
+          results.push({
+            phase: label,
+            tier: tier.name,
+            items: tier.count,
+            query: name,
+            ...latency,
+            ...plan,
+          });
+        }
+      }
+      return results;
+    }
+
+    // Phase A: only the already-approved Task index shape {projectId, _id}.
+    await items.createIndex(
+      { projectId: 1, _id: 1 },
+      { name: 'project_cursor' },
+    );
+    const phaseA = await runPhase('A_existing_index_only');
+
+    // Phase B: first candidate set, with PARTIAL due/parent indexes.
+    await items.createIndexes([
+      {
+        key: { projectId: 1, status: 1, _id: 1 },
+        name: 'project_status_cursor',
+      },
+      {
+        key: { projectId: 1, assigneeId: 1, status: 1, _id: 1 },
+        name: 'project_assignee_status_cursor',
+      },
+      {
+        key: { projectId: 1, sprintId: 1, status: 1, _id: 1 },
+        name: 'project_sprint_status_cursor',
+      },
+      {
+        key: { projectId: 1, dueDate: 1, _id: 1 },
+        name: 'project_due_cursor',
+        partialFilterExpression: { dueDate: { $type: 'date' } },
+      },
+      {
+        key: { projectId: 1, parentId: 1, _id: 1 },
+        name: 'project_parent_cursor',
+        partialFilterExpression: { parentId: { $type: 'objectId' } },
+      },
+    ]);
+    const phaseB = await runPhase('B_partial_due_parent');
+
+    // Phase C: final proposal — NON-partial due/parent indexes (also serve dueDate:null / parentId:null).
+    await items.dropIndex('project_due_cursor');
+    await items.dropIndex('project_parent_cursor');
+    await items.createIndexes([
+      { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
+      {
+        key: { projectId: 1, parentId: 1, _id: 1 },
+        name: 'project_parent_cursor',
+      },
+    ]);
+    const phaseC = await runPhase('C_final_proposal');
+
+    const indexStats = await db.command({ collStats: 'work_items' });
+
+    // Write-cost check: insert 2,000 docs with the final index set vs the existing index only.
+    async function insertCost(label) {
+      const docs = buildItems(new ObjectId(), 2_000, members, sprints);
+      const started = process.hrtime.bigint();
+      for (let offset = 0; offset < docs.length; offset += 100) {
+        await items.insertMany(docs.slice(offset, offset + 100), {
+          ordered: false,
         });
       }
+      return {
+        label,
+        msPer1000Docs: +(
+          Number(process.hrtime.bigint() - started) /
+          1e6 /
+          2
+        ).toFixed(2),
+      };
     }
-    return results;
-  }
-
-  // Phase A: only the already-approved Task index shape {projectId, _id}.
-  await items.createIndex({ projectId: 1, _id: 1 }, { name: 'project_cursor' });
-  const phaseA = await runPhase('A_existing_index_only');
-
-  // Phase B: first candidate set, with PARTIAL due/parent indexes.
-  await items.createIndexes([
-    { key: { projectId: 1, status: 1, _id: 1 }, name: 'project_status_cursor' },
-    {
-      key: { projectId: 1, assigneeId: 1, status: 1, _id: 1 },
-      name: 'project_assignee_status_cursor',
-    },
-    {
-      key: { projectId: 1, dueDate: 1, _id: 1 },
-      name: 'project_due_cursor',
-      partialFilterExpression: { dueDate: { $type: 'date' } },
-    },
-    {
-      key: { projectId: 1, parentId: 1, _id: 1 },
-      name: 'project_parent_cursor',
-      partialFilterExpression: { parentId: { $type: 'objectId' } },
-    },
-  ]);
-  const phaseB = await runPhase('B_partial_due_parent');
-
-  // Phase C: final proposal — NON-partial due/parent indexes (also serve dueDate:null / parentId:null).
-  await items.dropIndex('project_due_cursor');
-  await items.dropIndex('project_parent_cursor');
-  await items.createIndexes([
-    { key: { projectId: 1, dueDate: 1, _id: 1 }, name: 'project_due_cursor' },
-    {
-      key: { projectId: 1, parentId: 1, _id: 1 },
-      name: 'project_parent_cursor',
-    },
-  ]);
-  const phaseC = await runPhase('C_final_proposal');
-
-  const indexStats = await db.command({ collStats: 'work_items' });
-
-  // Write-cost check: insert 2,000 docs with the final index set vs the existing index only.
-  async function insertCost(label) {
-    const docs = buildItems(new ObjectId(), 2_000, members);
-    const started = process.hrtime.bigint();
-    for (let offset = 0; offset < docs.length; offset += 100) {
-      await items.insertMany(docs.slice(offset, offset + 100), {
-        ordered: false,
-      });
+    const writeWithC = await insertCost('final proposal (6 indexes + _id)');
+    for (const name of [
+      'project_status_cursor',
+      'project_assignee_status_cursor',
+      'project_sprint_status_cursor',
+      'project_due_cursor',
+      'project_parent_cursor',
+    ]) {
+      await items.dropIndex(name);
     }
-    return {
-      label,
-      msPer1000Docs: +(
-        Number(process.hrtime.bigint() - started) /
-        1e6 /
-        2
-      ).toFixed(2),
+    const writeWithA = await insertCost('existing project_cursor + _id only');
+
+    // Payload size: compact list projection vs full document.
+    const sampleFull = await items
+      .find({ projectId: tiers[1].projectId })
+      .limit(50)
+      .toArray();
+    const sampleCompact = await items
+      .find({ projectId: tiers[1].projectId }, { projection: listProjection })
+      .limit(50)
+      .toArray();
+    const payload = {
+      fullJsonBytesPer50: Buffer.byteLength(JSON.stringify(sampleFull)),
+      compactJsonBytesPer50: Buffer.byteLength(JSON.stringify(sampleCompact)),
     };
-  }
-  const writeWithC = await insertCost('final proposal (5 indexes + _id)');
-  for (const name of [
-    'project_status_cursor',
-    'project_assignee_status_cursor',
-    'project_due_cursor',
-    'project_parent_cursor',
-  ]) {
-    await items.dropIndex(name);
-  }
-  const writeWithA = await insertCost('existing project_cursor + _id only');
 
-  // Payload size: compact list projection vs full document.
-  const sampleFull = await items
-    .find({ projectId: tiers[1].projectId })
-    .limit(50)
-    .toArray();
-  const sampleCompact = await items
-    .find({ projectId: tiers[1].projectId }, { projection: listProjection })
-    .limit(50)
-    .toArray();
-  const payload = {
-    fullJsonBytesPer50: Buffer.byteLength(JSON.stringify(sampleFull)),
-    compactJsonBytesPer50: Buffer.byteLength(JSON.stringify(sampleCompact)),
-  };
-
-  await db.dropDatabase();
-  await client.close();
-
-  console.log(
-    JSON.stringify(
-      {
-        environment: {
-          mongodVersion: buildInfo.version,
-          topology: 'standalone loopback',
-          node: process.version,
-          iterations,
-          totalDocs,
-          dataSizeMB: +(collStats.size / 1024 / 1024).toFixed(1),
-          loadSeconds,
+    console.log(
+      JSON.stringify(
+        {
+          environment: {
+            mongodVersion: buildInfo.version,
+            topology: 'standalone loopback',
+            node: process.version,
+            scratchDbName,
+            iterations,
+            totalDocs,
+            dataSizeMB: +(collStats.size / 1024 / 1024).toFixed(1),
+            loadSeconds,
+          },
+          indexSizesKB: Object.fromEntries(
+            Object.entries(indexStats.indexSizes).map(([k, v]) => [
+              k,
+              Math.round(v / 1024),
+            ]),
+          ),
+          writeCost: [writeWithA, writeWithC],
+          payload,
+          results: [...phaseA, ...phaseB, ...phaseC],
         },
-        indexSizesKB: Object.fromEntries(
-          Object.entries(indexStats.indexSizes).map(([k, v]) => [
-            k,
-            Math.round(v / 1024),
-          ]),
-        ),
-        writeCost: [writeWithA, writeWithC],
-        payload,
-        results: [...phaseA, ...phaseB, ...phaseC],
-      },
-      null,
-      2,
-    ),
-  );
+        null,
+        2,
+      ),
+    );
+  } finally {
+    if (dbCreated) {
+      await client
+        .db(scratchDbName)
+        .dropDatabase()
+        .catch(() => {});
+    }
+    await client.close().catch(() => {});
+  }
 }
 
-main().catch(async (error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
