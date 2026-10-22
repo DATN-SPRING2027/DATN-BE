@@ -9,7 +9,7 @@
 
 ## 1. Kết luận một câu
 
-UI Workspace của PR #69 là **giao diện hoàn chỉnh nhưng chưa có backend**. Lý do không chỉ là thiếu code: repository **chủ động cấm** expose Task API cho tới khi có quyết định Architecture/Product/Security được ghi nhận. Vì vậy đợt này hoàn thành audit, contract đề xuất, kiến trúc và bằng chứng hiệu năng, nhưng **không implement API**. Đây là kết quả đúng theo governance, không phải kết quả bỏ dở.
+UI Workspace của PR #69 là **giao diện hoàn chỉnh nhưng hiện đang chạy trên mock data** vì `src/services/task/**` ở BE đang ở trạng thái **dormant** theo `DATN_BE/AGENTS.md:7-12,22`. Trong đợt audit này, chúng ta đã kiểm kê toàn bộ FE/BE, đo kiểm hiệu năng thực tế trên MongoDB, thiết kế bộ OpenAPI 3.1.0 gồm **17 operations**, và **chốt toàn bộ quyết định nghiệp vụ & kiến trúc (G1, G4, G6, G7, G8, G10) cùng Thắng** để sẵn sàng bước vào giai đoạn mở khóa dormant và implement (Phase 8).
 
 ## 2. Bức tranh hiện tại
 
@@ -19,29 +19,25 @@ UI Workspace của PR #69 là **giao diện hoàn chỉnh nhưng chưa có backe
 | API thật FE đang dùng trong Work | 3: `GET /auth/me`, `GET /iam/projects`, `GET /iam/projects/{id}` |
 | Capability có FE consumer | 40: 4 MATCHED · 4 PARTIAL · 3 INCOMPATIBLE · 8 BLOCKED_DECISION · 21 MISSING ([02](02-fe-be-api-matrix.md) §2) |
 | Màn hình Manager (yêu cầu nghiệp vụ 2026-10-22) | 6 chức năng M1–M6, **không** nằm trong mẫu số 40 vì FE chưa có màn hình này ([02](02-fe-be-api-matrix.md) §1.6) |
-| Mô hình vận hành | Mỗi Project là một workspace task; Leader vận hành; Manager (ADMIN) xem và sửa mọi project; Member sửa task mình tạo hoặc được giao |
+| Mô hình vận hành (đã chốt) | Mỗi Project là một workspace task gắn vĩnh viễn với Organization nơi tạo; Leader (`TEAM_LEADER`) vận hành chính và quản lý Sprint; Manager (`ADMIN`) có màn hình toàn org và xem/tạo/sửa task ở mọi project (kể cả `PRIVATE`); Member (`MEMBER`) tạo task và sửa task mình tạo hoặc được giao |
 | Task backend | Đã có schema 9 field, 5 index, repository, lifecycle policy (D-08), history (D-09) và 3 controller **dormant** (loopback, DenyAll) |
 | Source of truth | **Native Continuum Task** (ADR-009). Jira module chỉ có scaffold, không có OAuth/webhook/sync |
 | Work Notes, Knowledge, Docs, Handover, Notification | Module chỉ có endpoint health và schema scaffold; không có business route |
 
-## 3. BLOCKED_DECISION: phương án và hệ quả
+## 3. Bảng tổng hợp các Gate đã được Thắng chốt ngày 2026-10-22
 
-| Gate | Câu hỏi | Phương án A (khuyến nghị) | Phương án B | Hệ quả nếu không quyết |
-|---|---|---|---|---|
-| **G1** Runtime owner | Ai sở hữu vận hành `continuum_task` và workflow migration/seed? | Chỉ định một người (ví dụ Danh, người viết D-04/D-05) làm runtime owner. Dùng pattern migration có sẵn (`20261019-task-lifecycle-contract.mjs`) | Tạm chạy Task trong monolith (`AppModule`). **Trái** ADR-010 và AGENTS.md | Không thể activate Task |
-| **G2** Approve contract | Approve [04-api-inventory.yaml](04-api-inventory.yaml)? | Approve 9 op tối thiểu (7 theo project, 2 cho Manager toàn org), mỗi op một decision record | Chỉ approve read (list/detail mở rộng + summary + 2 route Manager) trước, mutation sau | Không được implement (`AGENTS.md:22`) |
-| **G3** DR-3 trust | Gateway→Task tin context như thế nào? | Giai đoạn đầu: Task chạy cùng network nội bộ, Gateway ký context bằng EdDSA (đã có prototype ở `runtime/prototypes/**`), Task verify + chống replay | mTLS đầy đủ | DenyAll giữ nguyên |
-| **G4** DR-8 scope evidence | Task lấy ACTIVE org/project membership từ đâu? | Gateway gửi kèm evidence đã ký; Task không truy vấn chéo DB IAM | Task gọi IAM `/internal` mỗi request: thêm latency và phụ thuộc | DenyAll giữ nguyên |
-| **G5** DR-7(c)(d) | Điều kiện create | Theo slice proposal hiện có | – | Không có create |
-| **G6** Schema | Mở rộng field + 5 index ([07](07-performance-analysis.md) §9) | Migration mới, có dry-run SHA và rollback | Giữ 7 field: FE chỉ hiển thị được title | View không có dữ liệu ý nghĩa |
-| **G7** Status enum | FE `IN_REVIEW` khác BE `BLOCKED`/`CANCELLED`; delete? | Giữ enum BE (đã approve D-08); FE đổi cột "In Review" thành "Blocked"; delete = `CANCELLED` có reason | Thêm `IN_REVIEW` vào BE: phải sửa policy D-08 + migration + decision record mới | Board không map được |
-| **G8** Phạm vi MVP | comments, worklog, checklist, sprint, labels | MVP gồm labels; comments/worklog/checklist/sprint để P2 | Đưa comments vào MVP (collection riêng) | FE phải ẩn tính năng |
-| **G9** Work Notes | Contract capture khác FE và thiếu `taskId` | Viết contract Work Notes mới theo ADR-009 §3 (`taskId`), thống nhất `kind/body/blocker/nextStep` | Giữ schema capture hiện tại và đổi FE theo | Work Notes vẫn mock |
-| **G10** Truy vấn toàn org cho Manager | Task chỉ có `projectId`. Lấy "mọi task của org" thế nào? | Thêm `organizationId` bất biến vào task + 4 index tiền tố org (cách ly tenant ở tầng dữ liệu; chưa có dữ liệu nên chưa cần backfill) | Giữ schema; Gateway gửi danh sách `projectId` đã ký và Task dùng `$in`. Đo được độ trễ ngang A ở 40 project ([07](07-performance-analysis.md) §12) | Không làm được màn hình Manager |
-
-**Về G1.** G1 hỏi *ai chịu trách nhiệm kỹ thuật* cho `continuum_task` (database, migration, deploy). Điều này khác với *vai trò nghiệp vụ* vận hành task (Leader và Manager), vốn đã được Thang xác nhận ngày 2026-10-22. G1 vẫn còn mở.
-
-**Về G4.** Đã có đầu vào nghiệp vụ: Manager xem và sửa task mọi project (kể cả PRIVATE); Leader vận hành project của mình; Member tạo và sửa task mình tạo hoặc được giao ([03 §2.5](03-api-contract-design.md)). Còn cần ghi thành decision record, chọn nguồn scope evidence, và ghi rõ ngoại lệ so với nguyên tắc BA "Manager không mặc nhiên quản lý nội dung project".
+| Gate | Câu hỏi | Quyết định đã chốt (2026-10-22) | Bước kỹ thuật tiếp theo |
+|---|---|---|---|
+| **G1** Runtime owner | Ai sở hữu vận hành `continuum_task` và workflow migration/seed? | **Đã chốt:** **Thắng (Leader)** là accountable runtime owner cho `continuum_task`. | Ghi vào decision record và cập nhật `DATN_BE/AGENTS.md` (bước `D0`). |
+| **G2** Approve contract | Approve [04-api-inventory.yaml](04-api-inventory.yaml)? | **Sẵn sàng duyệt:** 17 operations (7 Task core, 4 Comments/Worklogs, 4 Project Sprints, 2 Manager Org Overview). | Đổi `x-approval-status` sang `APPROVED` khi mở khóa `D0`. |
+| **G3** DR-3 trust | Gateway→Task tin context như thế nào? | Dùng EdDSA signed context từ Gateway sang Task (đã có prototype ở `src/services/task/runtime/prototypes/**`). | Wire vào Gateway & Task runtime ở bước `BE-1`/`BE-2`. |
+| **G4** Phân quyền & DR-8 scope evidence | Ai được xem/tạo/sửa task và lấy membership từ đâu? | **Đã chốt:** Manager (`ADMIN`) xem/tạo/sửa mọi project (kể cả `PRIVATE`); Leader (`TEAM_LEADER`) vận hành project + sprint; Member (`MEMBER`) tạo task và sửa task mình tạo/được giao. Gateway truyền signed scope evidence. | Implement policy ALLOW ở `BE-1`. |
+| **G5** DR-7(c)(d) | Điều kiện create task | **Đã chốt:** ADMIN, TEAM_LEADER, MEMBER đều được tạo task với `Idempotency-Key`. | Implement ở `BE-3`. |
+| **G6** Schema & Collections | Mở rộng `tasks` và thêm collection mới? | **Đã chốt:** Mở rộng `tasks` + thêm `task_counters`, `task_comments`, `task_worklogs`, `project_sprints` kèm bộ index không partial ([07](07-performance-analysis.md) §9). | Tạo migration mới ở `DB-1`. |
+| **G7** Status enum & Delete | Xử lý `IN_REVIEW` và nút Delete task? | **Đã chốt:** (1) Thêm `IN_REVIEW` vào BE enum (`TODO`, `IN_PROGRESS`, `IN_REVIEW`, `BLOCKED`, `DONE`, `CANCELLED`); cả assignee, Leader, Manager đều được chuyển thẳng sang `DONE` hoặc qua `IN_REVIEW`. (2) Delete trên UI = chuyển sang `CANCELLED` kèm `reason` ≥ 5 ký tự (giữ audit). | Cập nhật `task-lifecycle-policy.ts` ở `BE-4`. |
+| **G8** Phạm vi tính năng mở rộng | Có làm labels, checklist, comments, worklog, sprint? | **Đã chốt:** Đưa cả 5 tính năng (`labels`, `steps`, `comments`, `worklogs`, `project_sprints`) vào phạm vi triển khai. Mỗi Sprint thuộc 1 Project, do Leader/Manager tạo và đóng. | Implement ở `DB-1`, `BE-5`, `BE-6`, `BE-7`. |
+| **G9** Work Notes / Docs / Forms / Dev | Các module phụ ngoài Task | Tách sang pha sau (module `capture`, `lifecycle`, `ingestion`). | Giữ rõ trạng thái ngoài phạm vi đợt 1. |
+| **G10** Truy vấn toàn org cho Manager | Lưu `organizationId` trên task hay truyền `projectIds`? | **Đã chốt Phương án A:** Lưu `organizationId` bất biến trên mỗi document `tasks` (lấy từ trusted context lúc tạo) + 4 compound index tiền tố `organizationId`. Xác nhận Project gắn vĩnh viễn với Organization nơi nó được tạo. | Đưa vào migration `DB-1` và dùng ở `BE-8`. |
 
 ## 4. Phát hiện ngoài phạm vi (cần task riêng)
 
@@ -60,19 +56,18 @@ Phần đánh giá này áp dụng cho **sản phẩm của đợt này** (tài 
 
 | Tiêu chí | Đánh giá |
 |---|---|
-| Correctness | Contract tái sử dụng nguyên văn policy D-08 đã approve (transition, reason, actor) thay vì viết lại. Mọi claim đều có `path:line` |
-| Maintainability | 7 op trên 5 resource; Board, Calendar và Timeline dùng chung list. Không có interface một-implementation, không thêm module mới |
-| Security | 404 cho cross-scope; `{_id, projectId}` cho mọi lookup; `assigneeId=me` resolve ở server; CSRF, CAS và Idempotency theo mẫu IAM/Team; escape `q` + `maxTimeMS` |
+| Correctness | Contract kế thừa policy D-08 (mở rộng `IN_REVIEW` và soft-cancel `CANCELLED` theo quyết định G7). Mọi claim đều có `path:line` |
+| Maintainability | 17 op có cấu trúc nhất quán; Board, Calendar và Timeline dùng chung list. Không có interface một-implementation, không thêm module mới |
+| Security | 404 cho cross-scope; `{_id, projectId}` cho mọi lookup; `organizationId` bất biến từ session; `assigneeId=me` resolve ở server; CSRF, CAS và Idempotency theo mẫu IAM/Team; escape `q` + `maxTimeMS` |
 | Performance | Quyết định index dựa trên số đo: calendar tier L từ 299.5 xuống 3.5 ms; subtask batched từ 209.8 xuống 1.4 ms; filter assignee 1.560 xuống 51 keys. Phát hiện và loại bỏ partial index không dùng được |
 | Duplication | Không tạo database task thứ hai; không tạo endpoint theo view; tái dùng `task_operations` cho idempotency thay vì thêm Redis |
-| Contract consistency | Giữ error shape, keyset D-05, ETag format của Team, `no-store`; OpenAPI pass Redocly |
+| Contract consistency | Giữ error shape, keyset D-05, ETag format của Team, `no-store`; OpenAPI 3.1.0 pass Redocly |
 | Testability | Mỗi op có ma trận test unit/integration/contract/negative ([03](03-api-contract-design.md) §5); safety guard của benchmark có test |
-| Architectural fit | Đúng ADR-009/010, D-08/D-09 và các ràng buộc dormant trong `AGENTS.md` |
+| Architectural fit | Đúng ADR-009/010, D-08/D-09 và lộ trình mở khóa dormant trong `AGENTS.md` |
 
 ## 6. Rủi ro còn lại
 
-1. **Toàn bộ Workspace vẫn là mock.** Người dùng có thể nhầm là tính năng đã chạy, dù UI có nhãn "Preview data".
+1. **Toàn bộ Workspace trên PR #69 hiện vẫn là mock** cho tới khi các PR từ `DB-1` đến `FE-5` trong [06-implementation-plan.md](06-implementation-plan.md) được thực thi và merge.
 2. Benchmark chạy trên MongoDB 8.2.3 standalone, không phải 7.0 replica set. Số tuyệt đối cần xác nhận lại; số keys/docs examined thì có giá trị.
-3. Chưa có số đo HTTP end-to-end.
-4. Lộ trình ở [06](06-implementation-plan.md) giả định G1–G7 được quyết theo phương án A. Nếu chọn B, ước lượng sẽ thay đổi.
-5. Nếu Product giữ toàn bộ tính năng trên UI (Development, Forms, Docs, AI, Sprint), phạm vi backend lớn hơn nhiều so với ước lượng P0/P1.
+3. Chưa có số đo HTTP end-to-end (vì Task service đang dormant).
+4. Các tab ngoài phạm vi Task (`Docs`, `Forms`, `Development`, `Work Notes`, `AI Copilot`) thuộc gate G9 sẽ cần ẩn hoặc hiển thị trạng thái "Not available yet" ở bước `FE-4` để không đánh lừa người dùng.

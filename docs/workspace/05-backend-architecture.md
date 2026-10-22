@@ -38,9 +38,9 @@ flowchart LR
 
 Không có event bus chạy thật giữa các module.
 
-## 2. Đề xuất kiến trúc cho Workspace Task (khi gate mở)
+## 2. Đề xuất kiến trúc cho Workspace Task (đã đồng bộ G1, G4, G6, G7, G8, G10)
 
-**Quyết định:** đặt toàn bộ logic Task trong **Task service sẵn có** (`src/services/task/**`). Không tạo module "work" mới, không thêm collection song song trong IAM.
+**Quyết định:** đặt toàn bộ logic Task, Comment, Worklog và Project Sprint trong **Task service sẵn có** (`src/services/task/**`, database `continuum_task`, runtime owner: **Thắng**). Không tạo module "work" mới, không thêm collection song song trong IAM.
 
 Lý do:
 - ADR-010 đã chốt ranh giới Task.
@@ -52,16 +52,16 @@ Lý do:
 flowchart TB
   subgraph Gateway
     GTC["GatewayTaskController (allowlist /api/v1/tasks/*)"]
-    CTX["Trusted context: identity + ACTIVE org membership (IAM)"]
+    CTX["Trusted context: identity + ACTIVE org/project membership (IAM)"]
   end
   subgraph TaskService["Task service (src/services/task)"]
-    HTTP["http/ controllers + DTO (list, detail, create, patch, transition, history, summary)"]
+    HTTP["http/ controllers + DTO (tasks, transitions, history, comments, worklogs, sprints, summary, org-overview)"]
     GUARD["TaskAuthorizationHttpGuard + TaskAuthorizationBoundary"]
-    APP["application: TaskQueryService, TaskCommandService, TaskLifecycleCommandService (có sẵn), TaskHistoryQueryService (có sẵn)"]
-    POLICY["task-lifecycle-policy (có sẵn) + task-field-policy (mới)"]
-    REPO["TaskDataRepository (mở rộng)"]
+    APP["application: TaskQueryService, TaskCommandService, TaskLifecycleCommandService, TaskHistoryQueryService, TaskCollaborationService, ProjectSprintService"]
+    POLICY["task-lifecycle-policy (thêm IN_REVIEW) + task-field-policy (mới)"]
+    REPO["TaskDataRepository + TaskCollaborationRepository + ProjectSprintRepository"]
   end
-  DB[("continuum_task: tasks, task_events, task_operations, task_counters (mới)")]
+  DB[("continuum_task: tasks, task_events, task_operations, task_counters, task_comments, task_worklogs, project_sprints")]
   GTC --> CTX --> HTTP --> GUARD --> APP
   APP --> POLICY
   APP --> REPO --> DB
@@ -74,39 +74,44 @@ flowchart TB
 | Gateway controller | allowlist path; kiểm tra session; forward trusted context theo DR-3; map 503/504 | business rule, query DB Task |
 | Task `http/` | validate DTO (class-validator, whitelist), parse `If-Match`/`Idempotency-Key`, map kết quả sang HTTP | logic nghiệp vụ |
 | `TaskAuthorizationBoundary` | lấy evidence ACTIVE org + project membership + role (DR-8); quyết định ALLOW/DENY theo op | tin bất kỳ id hay role nào từ FE |
-| Application services | orchestration, CAS, idempotency, transaction (task + event) | chi tiết Mongo |
-| Policy | hàm thuần: transition (sẵn có), field-update (mới: ai sửa field nào, `parentId` 1 cấp) | I/O |
-| `TaskDataRepository` | query có scope `projectId`, projection, keyset, aggregation, index-aware | quyết định quyền |
+| Application services | orchestration, CAS, idempotency, transaction (task + event, hoặc complete sprint + dời task) | chi tiết Mongo |
+| Policy | hàm thuần: transition (mở rộng `IN_REVIEW`), field-update (ai sửa field nào, `parentId` 1 cấp, `steps` ≤ 50) | I/O |
+| Repositories | query có scope `projectId` / `organizationId`, projection, keyset, aggregation, index-aware | quyết định quyền |
 
-**Không thêm** port/adapter interface cho repository vì chỉ có một implementation (Ponytail: "no interfaces with only one implementation"). Repository hiện tại đã là class cụ thể và test được qua disposable DB.
+**Không thêm** port/adapter interface cho repository vì chỉ có một implementation (Ponytail: "no interfaces with only one implementation").
 
-### 2.2 Thay đổi schema đề xuất (gate G6, cần migration MỚI)
+### 2.2 Thay đổi schema & collection mới (gate G6, G7, G8, G10 — cần migration MỚI)
 
-`tasks` đang dùng `additionalProperties:false` (`task-database-schema.ts:127-141`). Đề xuất bổ sung các field sau:
+1. **Mở rộng collection `tasks`** (`task-database-schema.ts:127-141`, `additionalProperties:false`):
+   - Enum `status`: mở rộng thành `['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'BLOCKED', 'DONE', 'CANCELLED']` (G7).
 
-| Field | Kiểu | Bắt buộc | Ghi chú |
+| Field mới trên `tasks` | Kiểu | Bắt buộc | Ghi chú |
 |---|---|---|---|
-| `organizationId` | ObjectId | ✓ (task mới) | **Bất biến**, lấy từ trusted context lúc tạo, không bao giờ nhận từ body. Phục vụ màn hình Manager toàn org và cách ly tenant ở tầng dữ liệu (G10, [07 §12](07-performance-analysis.md)). Cần xác nhận `organizationId` của project bất biến |
+| `organizationId` | ObjectId | ✓ (task mới) | **Bất biến**, lấy từ trusted context lúc tạo, không bao giờ nhận từ body. Phục vụ màn hình Manager toàn org và cách ly tenant ở tầng dữ liệu (G10 Phương án A đã chốt; Project gắn vĩnh viễn với Organization lúc tạo) |
 | `key` | string | ✓ (task mới) | unique `{projectId, key}` |
-| `type` | enum TASK/BUG/STORY | ✓, default TASK | |
-| `priority` | enum LOW/MEDIUM/HIGH | ✓, default MEDIUM | |
+| `type` | enum `TASK/BUG/STORY` | ✓, default `TASK` | |
+| `priority` | enum `LOW/MEDIUM/HIGH` | ✓, default `MEDIUM` | |
 | `description` | string ≤ 20000 \| null | | |
 | `dueDate`, `startDate` | Date \| null | | validate `startDate ≤ dueDate` |
 | `parentId` | ObjectId \| null | | chỉ 1 cấp, cùng project |
-| `labels` | string[] ≤ 20 | default [] | |
+| `sprintId` | ObjectId \| null | | tham chiếu `project_sprints._id` cùng project |
+| `labels` | string[] ≤ 20 | default `[]` | mỗi label 1..40 ký tự |
+| `steps` | `{id, text, done}[]` ≤ 50 | default `[]` | checklist ngay trên task (G8) |
 
-Thêm collection `task_counters {_id: projectId, seq}` để cấp key.
+2. **Các collection mới trong `continuum_task` (G6, G8):**
+   - `task_counters`: `{_id: projectId, seq: int}` để cấp phát atomic `key` `<CODE>-<n>`.
+   - `task_comments`: `{_id, taskId, projectId, organizationId, authorId, body, createdAt}`, index `{projectId: 1, taskId: 1, _id: 1}`.
+   - `task_worklogs`: `{_id, taskId, projectId, organizationId, authorId, minutes, note, loggedAt, createdAt}`, index `{projectId: 1, taskId: 1, _id: -1}`.
+   - `project_sprints`: `{_id, projectId, organizationId, name, goal, status: 'PLANNED'|'ACTIVE'|'COMPLETED', startDate, endDate, createdBy, createdAt, completedAt, version}`, index `{projectId: 1, createdAt: -1}` và partial unique index `{projectId: 1}` với `partialFilterExpression: {status: 'ACTIVE'}` (đảm bảo tối đa 1 sprint `ACTIVE` mỗi project).
 
-**Migration:**
-- Tạo script mới `scripts/migrations/<date>-task-workspace-fields.mjs` (cấm sửa migration cũ). Theo pattern của `20261019-task-lifecycle-contract.mjs`: dry-run report + `--expected-report-sha256` + `--task-writes-paused`.
-- Backfill 7-field task cũ:
-  - `type=TASK`, `priority=MEDIUM`
-  - `organizationId`: Task chưa được kích hoạt nên hiện **chưa có dữ liệu cần backfill**. Nếu đã có task thì phải tra project→org từ IAM trong script migration (đọc chéo database, cần runtime owner phê duyệt)
-  - `labels=[]`, các field nullable = `null`
-  - `key` cấp theo thứ tự `_id`
-- **Rollback:** validator cũ không chấp nhận field mới. Phương án rollback là khôi phục validator mới, hoặc `$unset` các field mới sau khi pause writes. Phải ghi trong decision record.
+3. **Migration:**
+   - Tạo script mới `scripts/migrations/<date>-task-workspace-fields.mjs` (cấm sửa migration cũ). Theo pattern của `20261019-task-lifecycle-contract.mjs`: dry-run report + `--expected-report-sha256` + `--task-writes-paused`.
+   - Task service chưa từng active ở production nên hiện chưa có dữ liệu cũ; nếu có dữ liệu test thì script backfill mặc định hoặc yêu cầu làm sạch trước khi áp validator mới.
+   - **Rollback:** khôi phục validator cũ sau khi `$unset` các field mới và drop các index mới.
 
-**Event:** thêm biến thể `TASK_UPDATED {changedFields, version}` vào `task_events`, ghi chung transaction với update. Nhờ vậy history (W14) phản ánh cả thay đổi field.
+4. **Event (`task_events`):**
+   - Cập nhật enum `fromStatus`/`toStatus` thêm `IN_REVIEW`.
+   - Thêm biến thể `TASK_UPDATED {changedFields, version}` ghi chung transaction với `PATCH`.
 
 ### 2.3 Concurrency và consistency
 
@@ -114,36 +119,35 @@ Thêm collection `task_counters {_id: projectId, seq}` để cấp key.
 |---|---|---|
 | Hai người sửa cùng task | `updateOne({_id, projectId, version: expected}, {$set…, $inc:{version:1}})`; `matchedCount=0` thì đọc lại để phân biệt 404 và 409 | atomic trên 1 document, không cần lock |
 | Ghi task + event | transaction (đã có trong `create`/`transitionStatus`) | cần nhất quán đa document; CI dùng replica set |
-| Retry create | `Idempotency-Key` lưu trong `task_operations` (TTL 24h, unique `{actorId, projectId, operationId}`) | tái dùng collection có sẵn, không thêm Redis |
+| Complete sprint + dời task chưa xong | transaction cập nhật `project_sprints` sang `COMPLETED` và `updateMany` các task chưa `DONE`/`CANCELLED` sang `moveIncompleteToSprintId` | nhất quán khi đóng sprint |
+| Tối đa 1 ACTIVE sprint/project | partial unique index `{projectId: 1}` với `{status: 'ACTIVE'}` | chống race condition khi 2 Leader bấm Start Sprint cùng lúc |
+| Retry create / comment / worklog / sprint | `Idempotency-Key` lưu trong `task_operations` (TTL 24h, unique `{actorId, projectId, operationId}`) | tái dùng collection có sẵn, không thêm Redis |
 | Cấp key song song | `findOneAndUpdate($inc)` + unique index | atomic, không race |
 | Distributed lock | **Không dùng** | không có yêu cầu |
 
 ### 2.4 Bảo mật
 
-- Object-level authorization ở **mọi** op: query luôn có `projectId` lấy từ path **và** đã được xác thực membership. Lấy task theo `{_id, projectId}` (chống IDOR chéo project).
+- Object-level authorization ở **mọi** op: query luôn có `projectId` lấy từ path **và** đã được xác thực membership (hoặc role ADMIN toàn org). Lấy task/comment/worklog/sprint theo `{_id, projectId}` (chống IDOR chéo project).
 - `assigneeId` mới phải là ACTIVE project member. Nguồn evidence lấy theo DR-8.
 - `assigneeId=me` được resolve ở server.
-- **Manager (ADMIN):** hai route `/api/v1/tasks/organization/*` chỉ ADMIN truy cập; role khác nhận 404. Org lấy từ session, và mọi truy vấn của Manager đều ràng buộc `organizationId` từ trusted context. Với route theo project, ADMIN được truy cập mọi project trong org (kể cả PRIVATE), dùng cùng quy tắc phạm vi org của `evaluateProjectReadScope` (`authorization.policy.ts:245-301`).
-- Mọi thay đổi do ADMIN thực hiện ghi `actor`/`actorType` vào `task_events` để truy vết (ngoại lệ có chủ đích so với nguyên tắc BA "Manager không mặc nhiên quản lý nội dung project", xem [03 §2.5](03-api-contract-design.md)).
+- **Manager (`ADMIN`):** hai route `/api/v1/tasks/organization/*` chỉ ADMIN truy cập; role khác nhận 404. Org lấy từ session, và mọi truy vấn của Manager đều ràng buộc `organizationId` từ trusted context. Với route theo project, ADMIN được xem, tạo và sửa task ở mọi project trong org (kể cả PRIVATE).
+- Mọi thay đổi do ADMIN thực hiện ghi `actor`/`actorType` vào `task_events` để truy vết.
 - Không có trường nào nhận `organizationId` hay `role` từ client.
-- `q` phải được escape regex và giới hạn độ dài 2–100 để chống ReDoS và full scan. Repo **chưa có** helper escape dùng chung: hàm escape đang bị lặp private ở `platform-administration.repository.ts:243-244`, `project-access.repository.ts:101-102,336`.
-  - Khi implement, nên chuyển một bản duy nhất vào `src/common/search/` (cạnh `literal-search.ts`), thay vì viết bản thứ tư.
-  - `literalPrefixRange` (`src/common/search/indexed-search.ts`) dùng được nếu chọn tìm theo prefix của `key`.
-- CSRF double-submit cho mutation.
+- `q` được escape regex và giới hạn độ dài 2–100 kèm `maxTimeMS` để chống ReDoS và full scan.
+- CSRF double-submit cho mọi mutation.
 
-**Phát hiện ngoài phạm vi (cần task riêng):** các mutation Project trong `project-access.controller.ts:159-372` **không** kiểm tra CSRF, khác với các controller command của IAM. Cookie `SameSite=Lax` giảm rủi ro nhưng không thay thế được defense-in-depth. Mức độ **Medium**. Ghi nhận ở [09](09-final-audit.md).
+**Phát hiện ngoài phạm vi (cần task riêng):** các mutation Project trong `project-access.controller.ts:159-372` **không** kiểm tra CSRF, khác với các controller command của IAM. Mức độ **Medium**. Ghi nhận ở [09](09-final-audit.md).
 
 ## 3. Quyết định chính và tradeoff
 
 | Quyết định | Phương án khác | Lý do chọn |
 |---|---|---|
-| Native Task là source of truth | Jira-backed; đồng bộ Jira | ADR-009/010 đã chốt; Jira module chỉ có scaffold, không có OAuth/webhook/sync |
+| Native Task là source of truth | Jira-backed; đồng bộ Jira | ADR-009/010 đã chốt; Jira module chỉ có scaffold |
 | Một list endpoint có filter thay vì board/calendar/timeline endpoint riêng | endpoint theo view | 1 chỗ authz/query; index phục vụ chung; ít API |
-| Status chỉ qua `transitions` | `PATCH status` | giữ policy D-08 là nguồn duy nhất |
-| Subtask = Task có `parentId` (1 cấp) | collection riêng; materialized path | FE chỉ có 1 cấp; tái dùng toàn bộ lifecycle |
-| `subtaskCounts` tính batched lúc đọc | counter denormalized | không lệch dữ liệu; đo cho thấy rẻ (07 §5) |
+| Status chỉ qua `transitions`, mở rộng thêm `IN_REVIEW` và dùng `CANCELLED` cho Delete | `PATCH status` hoặc hard delete | giữ policy D-08 là nguồn duy nhất và bảo toàn lịch sử audit (G7) |
+| Subtask = Task có `parentId` (1 cấp); Checklist = mảng `steps` ≤ 50 trên Task | collection riêng cho subtask/checklist | FE chỉ có 1 cấp subtask và checklist nhỏ; giảm join |
+| Comments (`task_comments`), Worklogs (`task_worklogs`), Sprints (`project_sprints`) tách collection riêng | nhúng vào document `tasks` | tránh tăng kích thước document `tasks` không giới hạn và hỗ trợ keyset pagination (G8) |
+| Lưu `organizationId` bất biến trên `tasks` (G10 Phương án A) | Gateway truyền danh sách `projectIds` mỗi lần gọi | Project gắn vĩnh viễn với Organization; cách ly tenant trực tiếp ở tầng dữ liệu và đơn giản hóa query toàn org |
+| `subtaskCounts` tính batched lúc đọc | counter denormalized | không lệch dữ liệu; đo cho thấy rẻ (`1.41 ms` ở [07](07-performance-analysis.md) §5) |
 | Summary on-demand bằng aggregation có index | cache Redis; materialized view | đo ở 07 §6; tránh độ phức tạp invalidation khi chưa cần |
 | Không rank/LexoRank | fractional index | FE không có reorder trong cột |
-| Keyset pagination | offset | đo ở 07 §2; tương thích DR-6 |
-| Error shape hiện tại | RFC 9457 | tránh hai chuẩn lỗi |
-| Không thêm queue | BullMQ cho create/update | CRUD đồng bộ, không gọi integration ngoài |
