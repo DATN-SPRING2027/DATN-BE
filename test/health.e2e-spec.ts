@@ -67,4 +67,23 @@ describe('Health (e2e)', () => {
       requestId: 'architecture-check-1',
     });
   });
+
+  it('returns a structured 400 for malformed JSON before route handling', async () => {
+    const server = app.getHttpServer() as App;
+
+    const response = await request(server)
+      .post('/api/v1/health')
+      .set('Content-Type', 'application/json')
+      .set('x-request-id', 'malformed-json-check-1')
+      .send('{"status":')
+      .expect(400);
+
+    expect(response.headers['x-request-id']).toBe('malformed-json-check-1');
+    expect(response.body).toMatchObject({
+      code: 'HTTP_400',
+      details: {},
+      requestId: 'malformed-json-check-1',
+    });
+    expect(response.body).toHaveProperty('message');
+  });
 });
