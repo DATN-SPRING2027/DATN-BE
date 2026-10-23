@@ -77,6 +77,33 @@ function userIdFromBody(body: unknown): string {
   return record.userId;
 }
 
+function addMemberFromBody(body: unknown): {
+  userId: string;
+  role?: 'MEMBER' | 'TEAM_LEADER';
+} {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    return invalid();
+  const record = body as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) => key !== 'userId' && key !== 'role' && key !== 'roleCode',
+    ) ||
+    !validId(record.userId)
+  )
+    return invalid();
+  const roleValue = record.role ?? record.roleCode;
+  if (
+    roleValue !== undefined &&
+    roleValue !== 'MEMBER' &&
+    roleValue !== 'TEAM_LEADER'
+  )
+    return invalid();
+  return {
+    userId: record.userId,
+    ...(roleValue ? { role: roleValue } : {}),
+  };
+}
+
 function leaderChangeFromBody(body: unknown): {
   previousUserId: string;
   nextUserId: string;
@@ -297,7 +324,10 @@ export class ProjectAccessController {
   ) {
     response.setHeader('Cache-Control', 'no-store');
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
-    return this.access.addMember(actor, projectId, userIdFromBody(body));
+    const input = addMemberFromBody(body);
+    return input.role
+      ? this.access.addMember(actor, projectId, input.userId, input.role)
+      : this.access.addMember(actor, projectId, input.userId);
   }
 
   @Delete('memberships/:membershipId')

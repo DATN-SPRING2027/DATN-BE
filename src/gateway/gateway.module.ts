@@ -5,6 +5,7 @@ import { MetricsModule } from '../common/observability/metrics.module';
 import { GatewayHealthController } from './gateway-health.controller';
 import { GatewayIamController } from './gateway-iam.controller';
 import { GatewayChatController } from './gateway-chat.controller';
+import { GatewayTaskWorkspaceController } from './gateway-task-workspace.controller';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { GatewayChatController } from './gateway-chat.controller';
     GatewayHealthController,
     GatewayIamController,
     GatewayChatController,
+    GatewayTaskWorkspaceController,
   ],
 })
 export class GatewayModule {}
