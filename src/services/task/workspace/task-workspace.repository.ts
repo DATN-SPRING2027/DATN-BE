@@ -1,6 +1,5 @@
 import {
   Injectable,
-  Logger,
   NotFoundException,
   OnModuleInit,
   Optional,
@@ -40,6 +39,7 @@ import {
 } from './task-workspace.types';
 
 export interface WorkspaceIdempotencyCommitSpec<T> {
+  claimId: string;
   actorId: string;
   projectId: string;
   operationId: string;
@@ -82,7 +82,6 @@ export interface ListTasksFilter {
 
 @Injectable()
 export class TaskWorkspaceRepository implements OnModuleInit {
-  private readonly logger = new Logger(TaskWorkspaceRepository.name);
   private indexesEnsured = false;
 
   constructor(
@@ -112,25 +111,14 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     if (process.env.INFRA_ENABLED !== 'true') return;
-    try {
-      await this.ensureIndexes();
-    } catch (error) {
-      this.logger.warn(
-        `Deferred index initialization on ${WORKSPACE_TASK_DATABASE_NAME}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+    await this.ensureIndexes();
   }
 
   private async syncCollectionIndexes(
     collection: mongoose.mongo.Collection,
     specs: WorkspaceIndexSpec[],
   ): Promise<void> {
-    const existing = (await collection
-      .listIndexes()
-      .toArray()
-      .catch(() => [])) as Array<{
+    const existing = (await collection.listIndexes().toArray()) as Array<{
       name?: string;
       key?: Record<string, 1 | -1>;
       unique?: boolean;
@@ -140,6 +128,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
     for (const spec of specs) {
       const targetKeyJson = JSON.stringify(spec.key);
+      let matched = false;
       for (const idx of existing) {
         if (!idx.name || idx.name === '_id_') continue;
         const sameName = idx.name === spec.name;
@@ -155,20 +144,18 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           JSON.stringify(spec.partialFilterExpression ?? null);
 
         if (!sameName || !sameKey || !sameUnique || !sameTtl || !samePartial) {
-          await collection.dropIndex(idx.name).catch(() => undefined);
+          throw new Error(
+            `Index ${idx.name} on ${collection.collectionName} conflicts with ${spec.name}; run the workspace index migration during a maintenance window.`,
+          );
         }
+        matched = true;
       }
 
-      await collection.createIndex(spec.key, {
-        name: spec.name,
-        ...(spec.unique ? { unique: true } : {}),
-        ...(spec.expireAfterSeconds !== undefined
-          ? { expireAfterSeconds: spec.expireAfterSeconds }
-          : {}),
-        ...(spec.partialFilterExpression
-          ? { partialFilterExpression: spec.partialFilterExpression }
-          : {}),
-      });
+      if (!matched) {
+        throw new Error(
+          `Index ${spec.name} is missing on ${collection.collectionName}; run the workspace index migration before starting the API.`,
+        );
+      }
     }
   }
 
@@ -176,32 +163,27 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     if (this.indexesEnsured) return;
     const database = this.db;
 
-    const existingCollections = await database
-      .listCollections({}, { nameOnly: true })
-      .toArray()
-      .catch(() => []);
-    const existingNames = new Set(existingCollections.map((c) => c.name));
+    const existingCollections = await database.listCollections().toArray();
+    const existingByName = new Map(existingCollections.map((c) => [c.name, c]));
 
     for (const [collName, validator] of Object.entries(
       WORKSPACE_COLLECTION_VALIDATORS,
     )) {
-      if (!existingNames.has(collName)) {
-        await database
-          .createCollection(collName, {
-            validator,
-            validationLevel: 'strict',
-            validationAction: 'error',
-          })
-          .catch(() => undefined);
-      } else {
-        await database
-          .command({
-            collMod: collName,
-            validator,
-            validationLevel: 'strict',
-            validationAction: 'error',
-          })
-          .catch(() => undefined);
+      const existing = existingByName.get(collName);
+      if (!existing) {
+        throw new Error(
+          `Collection ${collName} is missing; run the workspace migration before starting the API.`,
+        );
+      }
+      const options = 'options' in existing ? existing.options : undefined;
+      if (
+        JSON.stringify(options?.validator) !== JSON.stringify(validator) ||
+        options?.validationLevel !== 'strict' ||
+        options?.validationAction !== 'error'
+      ) {
+        throw new Error(
+          `Collection ${collName} has an incompatible validator; run the workspace migration before starting the API.`,
+        );
       }
     }
 
@@ -216,35 +198,26 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     work: (session?: mongoose.mongo.ClientSession) => Promise<T>,
   ): Promise<T> {
     const client = this.db.client;
-    if (!client) return work(undefined);
+    if (!client) {
+      throw new ServiceUnavailableException({
+        code: 'RETRY_LATER',
+        message: 'Task database transactions are unavailable.',
+      });
+    }
     const session = client.startSession();
     try {
       let result!: T;
-      try {
-        await session.withTransaction(
-          async (txSession) => {
-            result = await work(txSession);
-          },
-          {
-            readPreference: 'primary',
-            readConcern: { level: 'snapshot' },
-            writeConcern: { w: 'majority' },
-          },
-        );
-        return result;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // Standalone MongoDB instances in local tests do not support multi-doc transactions
-        if (
-          message.includes(
-            'Transaction numbers are only allowed on a replica set member or mongos',
-          ) ||
-          message.includes('transactions are not supported')
-        ) {
-          return await work(undefined);
-        }
-        throw error;
-      }
+      await session.withTransaction(
+        async (txSession) => {
+          result = await work(txSession);
+        },
+        {
+          readPreference: 'primary',
+          readConcern: { level: 'snapshot' },
+          writeConcern: { w: 'majority' },
+        },
+      );
+      return result;
     } finally {
       await session.endSession().catch(() => undefined);
     }
@@ -273,7 +246,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     operationId: string;
     fingerprint: string;
   }): Promise<
-    | { kind: 'CLAIMED' }
+    | { kind: 'CLAIMED'; claimId: string }
     | { kind: 'REPLAY'; record: WorkspaceIdempotencyRecord }
     | { kind: 'IN_PROGRESS' }
     | { kind: 'CONFLICT_FINGERPRINT' }
@@ -287,20 +260,25 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       WORKSPACE_TASK_OPERATIONS_COLLECTION,
     );
 
-    // Reclaim any expired record or stale IN_PROGRESS lease before atomic insert
+    // Reclaim expired records or stale claims with the same fingerprint.
     await col.deleteOne({
       actorId: actorObjId,
       projectId: projectObjId,
       operationId: input.operationId,
       $or: [
         { expiresAt: { $lte: now } },
-        { state: 'IN_PROGRESS', leaseUntil: { $lte: now } },
+        {
+          state: 'IN_PROGRESS',
+          fingerprint: input.fingerprint,
+          leaseUntil: { $lte: now },
+        },
       ],
     });
 
     try {
+      const claimId = new Types.ObjectId();
       await col.insertOne({
-        _id: new Types.ObjectId(),
+        _id: claimId,
         actorId: actorObjId,
         projectId: projectObjId,
         operationId: input.operationId,
@@ -312,7 +290,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         leaseUntil,
         expiresAt,
       });
-      return { kind: 'CLAIMED' };
+      return { kind: 'CLAIMED', claimId: claimId.toHexString() };
     } catch (error) {
       if (!(
         error instanceof mongoose.mongo.MongoServerError && error.code === 11000
@@ -341,6 +319,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     actorId: string,
     projectId: string,
     operationId: string,
+    claimId: string,
   ): Promise<void> {
     await this.db
       .collection<WorkspaceIdempotencyRecord>(
@@ -350,6 +329,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         actorId: new Types.ObjectId(actorId),
         projectId: new Types.ObjectId(projectId),
         operationId,
+        _id: new Types.ObjectId(claimId),
         state: 'IN_PROGRESS',
       })
       .catch(() => undefined);
@@ -357,6 +337,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
   async saveIdempotency(
     record: {
+      claimId: string;
       actorId: string;
       projectId: string;
       operationId: string;
@@ -371,7 +352,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
   ): Promise<void> {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    await this.db
+    const result = await this.db
       .collection<WorkspaceIdempotencyRecord>(
         WORKSPACE_TASK_OPERATIONS_COLLECTION,
       )
@@ -380,6 +361,9 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           actorId: new Types.ObjectId(record.actorId),
           projectId: new Types.ObjectId(record.projectId),
           operationId: record.operationId,
+          _id: new Types.ObjectId(record.claimId),
+          fingerprint: record.fingerprint,
+          state: 'IN_PROGRESS',
         },
         {
           $set: {
@@ -396,16 +380,14 @@ export class TaskWorkspaceRepository implements OnModuleInit {
               ...(record.location ? { location: record.location } : {}),
             },
           },
-          $setOnInsert: {
-            _id: new Types.ObjectId(),
-            createdAt: now,
-          },
         },
         {
-          upsert: true,
           ...(session ? { session } : {}),
         },
       );
+    if (result.matchedCount !== 1) {
+      throw new Error('Idempotency claim was lost before commit');
+    }
   }
 
   async allocateNextTaskKey(
@@ -648,6 +630,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     const res = spec.buildResponse(entity);
     await this.saveIdempotency(
       {
+        claimId: spec.claimId,
         actorId: spec.actorId,
         projectId: spec.projectId,
         operationId: spec.operationId,

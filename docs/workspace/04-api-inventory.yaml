@@ -676,7 +676,8 @@ paths:
         over `organizationId` (about 80-100 ms p50/p95 for 100k tasks in 40 Projects, see 07 §12).
         `totals` always reflects the full Organization aggregate across all Projects.
         `projects` is paginated with `limit` (1..200, default 50) and deterministic keyset `cursor`
-        ordered by `overdue` descending, `total` descending, `projectId` ascending.
+        ordered by immutable `projectId` ascending so changes to task counts do not repeat or skip Projects.
+        `asOf` fixes the overdue threshold, while status and totals are computed live on each page.
       x-status: PROPOSED
       x-resolved-gate: G10 Option A
       parameters:
@@ -685,7 +686,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
         - name: cursor
           in: query
-          description: Opaque keyset continuation token encoding `(overdue, total, projectId)` from `nextCursor`.
+          description: Opaque continuation token containing the last `projectId` from `nextCursor`.
           schema: { type: string, maxLength: 256 }
       responses:
         '200':
@@ -1356,7 +1357,7 @@ components:
           maxItems: 200
           items: { $ref: '#/components/schemas/ProjectTaskSummaryRow' }
         nextCursor:
-          description: Opaque continuation token encoding `(overdue, total, projectId)` when more Projects remain; null on the last page.
+          description: Opaque `projectId` continuation token when more Projects remain; null on the last page.
           type: [string, 'null']
     ErrorResponse:
       type: object

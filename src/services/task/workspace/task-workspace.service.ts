@@ -149,7 +149,7 @@ export class TaskWorkspaceService {
     operationId: string,
     fingerprint: string,
     reuseMessage: string,
-  ): Promise<WorkspaceHttpResult | null> {
+  ): Promise<WorkspaceHttpResult | string> {
     const claim = await this.repository.claimIdempotency({
       actorId,
       projectId,
@@ -179,7 +179,7 @@ export class TaskWorkspaceService {
         replayed: true,
       };
     }
-    return null;
+    return claim.claimId;
   }
 
   private parseOptionalDate(value: unknown, fieldName: string): Date | null {
@@ -947,7 +947,7 @@ export class TaskWorkspaceService {
       fingerprint,
       'Idempotency-Key was already used with a different request payload.',
     );
-    if (replayed) return replayed;
+    if (typeof replayed !== 'string') return replayed;
 
     try {
       if (assigneeId) {
@@ -1027,6 +1027,7 @@ export class TaskWorkspaceService {
         dueDate,
         startDate,
         idempotency: {
+          claimId: replayed,
           actorId: ctx.actorId,
           projectId: ctx.projectId,
           operationId,
@@ -1059,6 +1060,7 @@ export class TaskWorkspaceService {
         ctx.actorId,
         ctx.projectId,
         operationId,
+        replayed,
       );
       throw error;
     }
@@ -1482,7 +1484,7 @@ export class TaskWorkspaceService {
       fingerprint,
       'Idempotency-Key was already used with a different transition payload.',
     );
-    if (replayed) return replayed;
+    if (typeof replayed !== 'string') return replayed;
 
     try {
       const existing = await this.repository.getTaskById(ctx.projectId, taskId);
@@ -1550,6 +1552,7 @@ export class TaskWorkspaceService {
         operationId,
         correlationId: params.correlationId ?? randomUUID(),
         idempotency: {
+          claimId: replayed,
           actorId: ctx.actorId,
           projectId: ctx.projectId,
           operationId,
@@ -1599,6 +1602,7 @@ export class TaskWorkspaceService {
         ctx.actorId,
         ctx.projectId,
         operationId,
+        replayed,
       );
       throw error;
     }
@@ -1871,7 +1875,7 @@ export class TaskWorkspaceService {
       fingerprint,
       'Idempotency-Key was already used with a different comment payload.',
     );
-    if (replayed) return replayed;
+    if (typeof replayed !== 'string') return replayed;
 
     try {
       const task = await this.repository.getTaskById(ctx.projectId, taskId);
@@ -1892,6 +1896,7 @@ export class TaskWorkspaceService {
         operationId,
         correlationId: params.correlationId ?? randomUUID(),
         idempotency: {
+          claimId: replayed,
           actorId: ctx.actorId,
           projectId: ctx.projectId,
           operationId,
@@ -1913,6 +1918,7 @@ export class TaskWorkspaceService {
         ctx.actorId,
         ctx.projectId,
         operationId,
+        replayed,
       );
       throw error;
     }
@@ -2074,7 +2080,7 @@ export class TaskWorkspaceService {
       fingerprint,
       'Idempotency-Key was already used with a different worklog payload.',
     );
-    if (replayed) return replayed;
+    if (typeof replayed !== 'string') return replayed;
 
     try {
       const task = await this.repository.getTaskById(ctx.projectId, taskId);
@@ -2097,6 +2103,7 @@ export class TaskWorkspaceService {
         operationId,
         correlationId: params.correlationId ?? randomUUID(),
         idempotency: {
+          claimId: replayed,
           actorId: ctx.actorId,
           projectId: ctx.projectId,
           operationId,
@@ -2118,6 +2125,7 @@ export class TaskWorkspaceService {
         ctx.actorId,
         ctx.projectId,
         operationId,
+        replayed,
       );
       throw error;
     }
@@ -2266,7 +2274,7 @@ export class TaskWorkspaceService {
       fingerprint,
       'Idempotency-Key was already used with a different sprint payload.',
     );
-    if (replayed) return replayed;
+    if (typeof replayed !== 'string') return replayed;
 
     try {
       const sprint = await this.repository.createProjectSprint({
@@ -2278,6 +2286,7 @@ export class TaskWorkspaceService {
         startDate,
         endDate,
         idempotency: {
+          claimId: replayed,
           actorId: ctx.actorId,
           projectId: ctx.projectId,
           operationId,
@@ -2304,6 +2313,7 @@ export class TaskWorkspaceService {
         ctx.actorId,
         ctx.projectId,
         operationId,
+        replayed,
       );
       throw error;
     }
@@ -2566,7 +2576,7 @@ export class TaskWorkspaceService {
       fingerprint,
       'Idempotency-Key was already used with a different completeSprint payload.',
     );
-    if (replayed) return replayed;
+    if (typeof replayed !== 'string') return replayed;
 
     try {
       const outcome = await this.repository.completeProjectSprint({
@@ -2578,6 +2588,7 @@ export class TaskWorkspaceService {
         moveIncompleteToSprintId,
         correlationId: params.correlationId ?? randomUUID(),
         idempotency: {
+          claimId: replayed,
           actorId: ctx.actorId,
           projectId: ctx.projectId,
           operationId,
@@ -2640,6 +2651,7 @@ export class TaskWorkspaceService {
         ctx.actorId,
         ctx.projectId,
         operationId,
+        replayed,
       );
       throw error;
     }
@@ -2788,11 +2800,8 @@ export class TaskWorkspaceService {
 
     let cursorTuple:
       | {
-          overdue: number;
-          total: number;
           projectId: string;
-          asOf?: Date;
-          seen?: string[];
+          asOf: Date;
         }
       | undefined;
     if (
@@ -2885,47 +2894,22 @@ export class TaskWorkspaceService {
       }
     }
 
-    const sortedProjects = [...perProjectMap.values()].sort((a, b) => {
-      if (b.overdue !== a.overdue) return b.overdue - a.overdue;
-      if (b.total !== a.total) return b.total - a.total;
-      return a.projectId.localeCompare(b.projectId);
-    });
-
-    const seenSet = cursorTuple?.seen ? new Set(cursorTuple.seen) : null;
+    const sortedProjects = [...perProjectMap.values()].sort((a, b) =>
+      a.projectId.localeCompare(b.projectId),
+    );
     const filteredProjects = cursorTuple
-      ? seenSet
-        ? sortedProjects.filter(
-            (item) => !seenSet.has(item.projectId.toLowerCase()),
-          )
-        : sortedProjects.filter((item) => {
-            if (item.overdue !== cursorTuple.overdue) {
-              return item.overdue < cursorTuple.overdue;
-            }
-            if (item.total !== cursorTuple.total) {
-              return item.total < cursorTuple.total;
-            }
-            return item.projectId > cursorTuple.projectId;
-          })
+      ? sortedProjects.filter((item) => item.projectId > cursorTuple.projectId)
       : sortedProjects;
 
     const hasMore = filteredProjects.length > limit;
     const pageProjects = hasMore
       ? filteredProjects.slice(0, limit)
       : filteredProjects;
-    const nextSeen = [
-      ...(cursorTuple?.seen ?? []),
-      ...pageProjects.map((p) => p.projectId.toLowerCase()),
-    ].slice(0, 500);
     const nextCursor =
       hasMore && pageProjects.length > 0
         ? encodeOrgSummaryCursor(
-            pageProjects[pageProjects.length - 1].overdue,
-            pageProjects[pageProjects.length - 1].total,
             pageProjects[pageProjects.length - 1].projectId,
-            {
-              asOf: asOf.toISOString(),
-              seen: nextSeen,
-            },
+            asOf.toISOString(),
           )
         : null;
 

@@ -278,29 +278,22 @@ export function decodeDateRangeCursor(
 }
 
 export function encodeOrgSummaryCursor(
-  overdue: number,
-  total: number,
   projectId: string,
-  options?: { asOf?: string; seen?: string[] },
+  asOf: string,
 ): string {
   return Buffer.from(
     JSON.stringify({
-      overdue,
-      total,
+      v: 2,
       projectId,
-      ...(options?.asOf ? { asOf: options.asOf } : {}),
-      ...(options?.seen ? { seen: options.seen } : {}),
+      asOf,
     }),
     'utf8',
   ).toString('base64url');
 }
 
 export function decodeOrgSummaryCursor(cursor: string): {
-  overdue: number;
-  total: number;
   projectId: string;
-  asOf?: Date;
-  seen?: string[];
+  asOf: Date;
 } | null {
   try {
     const raw = JSON.parse(
@@ -309,42 +302,18 @@ export function decodeOrgSummaryCursor(cursor: string): {
     if (
       typeof raw !== 'object' ||
       raw === null ||
-      typeof raw.overdue !== 'number' ||
-      !Number.isSafeInteger(raw.overdue) ||
-      raw.overdue < 0 ||
-      typeof raw.total !== 'number' ||
-      !Number.isSafeInteger(raw.total) ||
-      raw.total < 0 ||
+      raw.v !== 2 ||
       typeof raw.projectId !== 'string' ||
-      !/^[0-9a-f]{24}$/i.test(raw.projectId)
+      !/^[0-9a-f]{24}$/i.test(raw.projectId) ||
+      typeof raw.asOf !== 'string'
     ) {
       return null;
     }
-    let asOf: Date | undefined;
-    if (raw.asOf !== undefined) {
-      if (typeof raw.asOf !== 'string') return null;
-      const parsedAsOf = new Date(raw.asOf);
-      if (!Number.isFinite(parsedAsOf.getTime())) return null;
-      asOf = parsedAsOf;
-    }
-    let seen: string[] | undefined;
-    if (raw.seen !== undefined) {
-      if (
-        !Array.isArray(raw.seen) ||
-        raw.seen.some(
-          (id) => typeof id !== 'string' || !/^[0-9a-f]{24}$/i.test(id),
-        )
-      ) {
-        return null;
-      }
-      seen = raw.seen.map((id: string) => id.toLowerCase());
-    }
+    const asOf = new Date(raw.asOf);
+    if (!Number.isFinite(asOf.getTime())) return null;
     return {
-      overdue: raw.overdue,
-      total: raw.total,
       projectId: raw.projectId.toLowerCase(),
-      ...(asOf ? { asOf } : {}),
-      ...(seen ? { seen } : {}),
+      asOf,
     };
   } catch {
     return null;

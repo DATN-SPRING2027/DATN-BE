@@ -60,7 +60,7 @@ class InMemoryTaskWorkspaceRepository {
     operationId: string;
     fingerprint: string;
   }): Promise<
-    | { kind: 'CLAIMED' }
+    | { kind: 'CLAIMED'; claimId: string }
     | { kind: 'REPLAY'; record: WorkspaceIdempotencyRecord }
     | { kind: 'IN_PROGRESS' }
     | { kind: 'CONFLICT_FINGERPRINT' }
@@ -72,6 +72,13 @@ class InMemoryTaskWorkspaceRepository {
       const expired =
         existing.expiresAt <= now ||
         (existing.state === 'IN_PROGRESS' && existing.leaseUntil <= now);
+      if (
+        expired &&
+        existing.expiresAt > now &&
+        existing.fingerprint !== input.fingerprint
+      ) {
+        return { kind: 'CONFLICT_FINGERPRINT' };
+      }
       if (!expired) {
         if (existing.fingerprint !== input.fingerprint) {
           return { kind: 'CONFLICT_FINGERPRINT' };
@@ -84,8 +91,9 @@ class InMemoryTaskWorkspaceRepository {
       this.idempotency.delete(key);
     }
 
+    const claimId = new Types.ObjectId();
     this.idempotency.set(key, {
-      _id: new Types.ObjectId(),
+      _id: claimId,
       actorId: new Types.ObjectId(input.actorId),
       projectId: new Types.ObjectId(input.projectId),
       operationId: input.operationId,
@@ -97,22 +105,27 @@ class InMemoryTaskWorkspaceRepository {
       leaseUntil: new Date(now.getTime() + 30_000),
       expiresAt: new Date(now.getTime() + 86_400_000),
     });
-    return { kind: 'CLAIMED' };
+    return { kind: 'CLAIMED', claimId: claimId.toHexString() };
   }
 
   async releaseIdempotency(
     actorId: string,
     projectId: string,
     operationId: string,
+    claimId: string,
   ): Promise<void> {
     const key = `${actorId}:${projectId}:${operationId}`;
     const existing = this.idempotency.get(key);
-    if (existing?.state === 'IN_PROGRESS') {
+    if (
+      existing?.state === 'IN_PROGRESS' &&
+      existing._id.toHexString() === claimId
+    ) {
       this.idempotency.delete(key);
     }
   }
 
   async saveIdempotency(record: {
+    claimId: string;
     actorId: string;
     projectId: string;
     operationId: string;
@@ -124,10 +137,20 @@ class InMemoryTaskWorkspaceRepository {
     location?: string;
   }): Promise<void> {
     const now = new Date();
+    const existing = this.idempotency.get(
+      `${record.actorId}:${record.projectId}:${record.operationId}`,
+    );
+    if (
+      existing?.state !== 'IN_PROGRESS' ||
+      existing._id.toHexString() !== record.claimId ||
+      existing.fingerprint !== record.fingerprint
+    ) {
+      throw new Error('Idempotency claim was lost before commit');
+    }
     this.idempotency.set(
       `${record.actorId}:${record.projectId}:${record.operationId}`,
       {
-        _id: new Types.ObjectId(),
+        _id: existing._id,
         actorId: new Types.ObjectId(record.actorId),
         projectId: new Types.ObjectId(record.projectId),
         operationId: record.operationId,
@@ -151,6 +174,7 @@ class InMemoryTaskWorkspaceRepository {
   private async commitIdempotencySpec<T>(
     spec:
       | {
+          claimId: string;
           actorId: string;
           projectId: string;
           operationId: string;
@@ -169,6 +193,7 @@ class InMemoryTaskWorkspaceRepository {
     if (!spec) return;
     const res = spec.buildResponse(entity);
     await this.saveIdempotency({
+      claimId: spec.claimId,
       actorId: spec.actorId,
       projectId: spec.projectId,
       operationId: spec.operationId,

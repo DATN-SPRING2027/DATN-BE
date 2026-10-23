@@ -113,7 +113,7 @@ Thắng đã chốt:
 | # | Method | Path (public) | Mục đích |
 |---|---|---|---|
 | 16 | GET | `/api/v1/tasks/organization/tasks` | Bảng task toàn org: thứ tự mặc định `_id` tăng dần với `afterId`; khi truyền `dueFrom`/`dueTo` thì sắp theo `dueDate` tăng dần, `_id` tăng dần và dùng `cursor`/`nextCursor` |
-| 17 | GET | `/api/v1/tasks/organization/task-summary` | Thẻ tổng hợp: `totals` luôn phản ánh toàn bộ Organization; danh sách `projects` được phân trang keyset (`limit` 1..200 mặc định 50, `cursor`/`nextCursor` mã hóa `(overdue, total, projectId)`) để truy cập được mọi Project ngay cả khi vượt 200 |
+| 17 | GET | `/api/v1/tasks/organization/task-summary` | Thẻ tổng hợp: `totals` phản ánh toàn bộ Organization tại thời điểm từng request; danh sách `projects` được phân trang theo `projectId` bất biến (`limit` 1..200 mặc định 50, `cursor`/`nextCursor`). `asOf` cố định ngưỡng trễ hạn, còn số liệu được tính live trên mỗi trang. |
 
 - **Organization không nằm trong path.** Org lấy từ session đã xác thực (`AGENTS.md:25`).
 - Chỉ ADMIN truy cập được. Các role khác nhận **404** (không tiết lộ sự tồn tại).

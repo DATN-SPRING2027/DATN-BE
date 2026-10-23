@@ -126,11 +126,14 @@ flowchart TB
 |---|---|---|
 | Hai người sửa cùng task hoặc cùng sprint | `updateOne({_id, projectId, organizationId, version: expected}, {$set…, $inc:{version:1}})`; `matchedCount=0` thì đọc lại để phân biệt 404 và 409 (`TASK_VERSION_CONFLICT` / `SPRINT_VERSION_CONFLICT`); thiếu `If-Match` trả `428 PRECONDITION_REQUIRED` | atomic trên 1 document, chống ghi đè mù giữa 2 Leader/Manager |
 | Ghi task/comment/worklog/sprint + event | transaction (đã có trong `create`/`transitionStatus`) | cần nhất quán đa document; CI dùng replica set |
+
 | Complete sprint + dời task chưa xong | Trong cùng transaction: (1) CAS cập nhật sprint nguồn `{_id: sprintId, projectId, organizationId, status: 'ACTIVE', version: expected}` → `COMPLETED` (`version + 1`) và ghi `SPRINT_COMPLETED` vào `project_sprint_events`; (2) nếu `moveIncompleteToSprintId != null`, xác thực sprint đích thuộc `{projectId, organizationId, status: 'PLANNED'}`; (3) đọc danh sách task chưa hoàn tất `{_id, version}` thuộc `{organizationId, projectId, sprintId, status: {$nin: ['DONE', 'CANCELLED']}}`, thực hiện `bulkWrite` có điều kiện `version` (`$set: {sprintId: moveIncompleteToSprintId, updatedAt: now}, $inc: {version: 1}`, nếu `matchedCount` lệch thì abort `409`), và `insertMany` một sự kiện `TASK_UPDATED` (`version: task.version + 1`, `changedFields: ['sprintId']`, `fromSprintId`, `toSprintId`, `reason: 'SPRINT_COMPLETED'`) cho **từng task bị dời** vào `task_events` | chống gán chéo project/org, chống race condition với người đang sửa task, và bảo toàn bất biến: mọi lần tăng `task.version` đều có sự kiện giải thích trong `task_events` |
 | Tối đa 1 ACTIVE sprint/project | partial unique index `{projectId: 1}` với `{status: 'ACTIVE'}` | chống race condition khi 2 Leader bấm Start Sprint cùng lúc |
 | Retry create / comment / worklog / sprint | `Idempotency-Key` lưu trong `task_operations` (TTL 24h, unique `{actorId, projectId, operationId}`) | tái dùng collection có sẵn, không thêm Redis |
 | Cấp key song song | `findOneAndUpdate($inc)` + unique index | atomic, không race |
 | Distributed lock | **Không dùng** | không có yêu cầu |
+
+Runtime Task Workspace kiểm tra collection validator và index khi khởi động, nhưng không tự sửa hoặc xóa index. Chạy migration workspace khi tạm dừng ghi trước khi khởi động API; schema/index không khớp sẽ làm startup thất bại. Các mutation đa document yêu cầu MongoDB replica set hỗ trợ transaction, không chạy fallback ghi từng document trên standalone.
 
 ### 2.4 Bảo mật
 
