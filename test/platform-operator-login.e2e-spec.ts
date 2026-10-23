@@ -49,6 +49,10 @@ describe('Platform Operator login and provisioning (e2e)', () => {
   let administration: jest.Mocked<
     Pick<
       PlatformAdministrationService,
+      | 'listProjects'
+      | 'findProject'
+      | 'listProjectMemberships'
+      | 'changeProjectMetadata'
       | 'listOrganizations'
       | 'findOrganization'
       | 'lookupActiveUser'
@@ -121,6 +125,16 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     });
     listOperationalMetadata = jest.fn().mockResolvedValue([]);
     administration = {
+      listProjects: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
+      findProject: jest.fn(),
+      listProjectMemberships: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
+      changeProjectMetadata: jest.fn(),
       executePlatformInvitationCommand: jest.fn().mockResolvedValue({
         httpStatus: 201,
         replayed: false,
@@ -723,6 +737,153 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     plan: 'FREE',
     firstAdminUserId: ADMIN_ID,
   };
+
+  describe('Platform Project HTTP boundary', () => {
+    const base = '/api/v1/iam/platform/projects';
+    const projectId = '851a2b3c4d5e6f7a8b9c0d21';
+    const body = {
+      name: 'Reviewed project',
+      code: 'REVIEW',
+      visibility: 'PRIVATE',
+      expectedUpdatedAt: '2026-10-06T00:00:00.000Z',
+      reasonCode: 'ACCESS_REVIEW',
+    };
+
+    it.each(['', `/${projectId}`, `/${projectId}/memberships`])(
+      'requires authentication and exact read authority for GET %s',
+      async (suffix) => {
+        const server = app.getHttpServer() as App;
+        await request(server)
+          .get(base + suffix)
+          .expect(401);
+        await request(server)
+          .get(base + suffix)
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .set('X-Role', 'PLATFORM_OPERATOR')
+          .expect(403);
+        assignedPermission = 'platform.projects.project.read';
+        await request(server)
+          .get(base + suffix)
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .expect(200)
+          .expect('Cache-Control', 'no-store');
+        assignmentActive = false;
+        await request(server)
+          .get(base + suffix)
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .expect(403);
+      },
+    );
+
+    it('parses bounded Project search and membership filters', async () => {
+      assignedPermission = 'platform.projects.project.read';
+      const server = app.getHttpServer() as App;
+      await request(server)
+        .get(base)
+        .query({
+          page: 2,
+          pageSize: 10,
+          search: ' Alpha ',
+          visibility: 'PRIVATE',
+          status: 'ACTIVE',
+        })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.listProjects).toHaveBeenCalledWith({
+        page: 2,
+        pageSize: 10,
+        search: 'Alpha',
+        visibility: 'PRIVATE',
+        status: 'ACTIVE',
+      });
+      await request(server)
+        .get(`${base}/${projectId}/memberships`)
+        .query({ status: 'INACTIVE', search: ' member ' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.listProjectMemberships).toHaveBeenCalledWith({
+        projectId,
+        page: 1,
+        pageSize: 20,
+        status: 'INACTIVE',
+        search: 'member',
+      });
+    });
+
+    it.each([
+      { pageSize: 101 },
+      { page: 0 },
+      { organizationId: 'bad' },
+      { visibility: 'UNKNOWN' },
+      { search: ' ' },
+      { extra: 'value' },
+    ])('rejects invalid Project query %j', async (query) => {
+      assignedPermission = 'platform.projects.project.read';
+      await request(app.getHttpServer() as App)
+        .get(base)
+        .query(query)
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      expect(administration.listProjects).not.toHaveBeenCalled();
+    });
+
+    it('requires manage authority and CSRF for cookie mutations', async () => {
+      const server = app.getHttpServer() as App;
+      assignedPermission = 'platform.projects.project.read';
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send(body)
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(403);
+      assignedPermission = 'platform.projects.project.manage';
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send(body)
+        .set('Cookie', `continuum_access=${operatorToken()}`)
+        .expect(403);
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send(body)
+        .set(
+          'Cookie',
+          `continuum_access=${operatorToken()}; __Host-csrf=fixture`,
+        )
+        .set('X-CSRF-Token', 'fixture')
+        .set('X-Request-Id', 'project-review-1')
+        .expect(200);
+      expect(administration.changeProjectMetadata).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          name: body.name,
+          code: body.code,
+          visibility: body.visibility,
+          expectedUpdatedAt: new Date(body.expectedUpdatedAt),
+          reasonCode: body.reasonCode,
+          correlationId: 'project-review-1',
+        }),
+      );
+    });
+
+    it.each([
+      { description: 'tenant content' },
+      { organizationId: ADMIN_ID },
+      { status: 'ARCHIVED' },
+      { code: 'bad code' },
+      { visibility: 'UNKNOWN' },
+      { name: '' },
+      { expectedUpdatedAt: 'bad-date' },
+      { reasonCode: 'UNKNOWN' },
+    ])('rejects unsafe or invalid metadata %j', async (change) => {
+      assignedPermission = 'platform.projects.project.manage';
+      await request(app.getHttpServer() as App)
+        .patch(`${base}/${projectId}`)
+        .send({ ...body, ...change })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      expect(administration.changeProjectMetadata).not.toHaveBeenCalled();
+    });
+  });
 
   function operatorToken() {
     return app.get(AccessTokenService).signAccessToken({

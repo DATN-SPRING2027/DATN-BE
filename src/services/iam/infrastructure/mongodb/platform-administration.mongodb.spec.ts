@@ -745,6 +745,126 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     ).rejects.toMatchObject({ response: { code: 'PROJECT_VERSION_STALE' } });
   });
 
+  function projectChange(name = 'Reviewed project') {
+    return {
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      expectedUpdatedAt: new Date('2026-10-06T00:00:00.000Z'),
+      name,
+      reasonCode: 'ACCESS_REVIEW' as const,
+      now: new Date('2026-10-16T12:00:00.000Z'),
+    };
+  }
+
+  it('does not mutate or audit an orphan Project whose Organization is missing', async () => {
+    await connection
+      .collection('organizations')
+      .deleteOne({ _id: organizationId });
+    await expect(
+      administration.changeProjectMetadata(projectChange()),
+    ).resolves.toBeNull();
+    expect(
+      await connection.collection('projects').findOne({ _id: projectId }),
+    ).toMatchObject({ name: 'Private project alpha' });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('serializes concurrent Project metadata edits with one winner and one audit', async () => {
+    const results = await Promise.allSettled([
+      administration.changeProjectMetadata(projectChange('First edit')),
+      administration.changeProjectMetadata(projectChange('Second edit')),
+    ]);
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({
+          response: { code: 'PROJECT_VERSION_STALE' },
+        }),
+      }),
+    ]);
+    expect(
+      await audit().countDocuments({
+        action: 'platform.project.metadata.changed',
+      }),
+    ).toBe(1);
+  });
+
+  it('rolls back Project metadata when the required audit cannot commit', async () => {
+    const writer = jest
+      .spyOn(
+        administration as unknown as {
+          writePlatformMetadataAudit: (...args: unknown[]) => Promise<void>;
+        },
+        'writePlatformMetadataAudit',
+      )
+      .mockRejectedValueOnce(new Error('audit unavailable'));
+    try {
+      await expect(
+        administration.changeProjectMetadata(projectChange()),
+      ).rejects.toMatchObject({
+        response: { code: 'IAM_PLATFORM_PROJECT_UPDATE_FAILED' },
+      });
+    } finally {
+      writer.mockRestore();
+    }
+    expect(
+      await connection.collection('projects').findOne({ _id: projectId }),
+    ).toMatchObject({
+      name: 'Private project alpha',
+      updatedAt: projectChange().expectedUpdatedAt,
+    });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('denies Project edits after Platform authority is revoked without writes', async () => {
+    await connection
+      .collection('platform_authority_assignments')
+      .deleteMany({ subjectUserId: actorId });
+    await expect(
+      administration.changeProjectMetadata(projectChange()),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(
+      await connection.collection('projects').findOne({ _id: projectId }),
+    ).toMatchObject({ name: 'Private project alpha' });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('rejects duplicate Project codes within the same Organization atomically', async () => {
+    await connection.collection('projects').insertOne({
+      _id: new Types.ObjectId(),
+      organizationId,
+      name: 'Another project',
+      code: 'TAKEN',
+      visibility: 'PRIVATE',
+      status: 'ACTIVE',
+      createdAt: projectChange().expectedUpdatedAt,
+      updatedAt: projectChange().expectedUpdatedAt,
+    });
+    await expect(
+      administration.changeProjectMetadata({
+        ...projectChange(),
+        code: 'TAKEN',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'PROJECT_CODE_CONFLICT' } });
+    expect(
+      await connection.collection('projects').findOne({ _id: projectId }),
+    ).toMatchObject({ name: 'Private project alpha', code: 'ALPHA' });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
+  it('replays an already applied Project edit without changing its version or duplicating audit', async () => {
+    const first = await administration.changeProjectMetadata(projectChange());
+    const replay = await administration.changeProjectMetadata(projectChange());
+    expect(replay).toEqual(first);
+    expect(
+      await audit().countDocuments({
+        action: 'platform.project.metadata.changed',
+      }),
+    ).toBe(1);
+  });
+
   it('changes a User account status with fresh Platform authority, last-admin protection, session revocation and atomic audit', async () => {
     const now = new Date('2026-10-16T12:00:00.000Z');
     await connection.collection('refresh_sessions').insertOne({
