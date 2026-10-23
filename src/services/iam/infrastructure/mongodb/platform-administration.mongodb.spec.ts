@@ -996,6 +996,117 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     ).rejects.toMatchObject({ response: { code: 'USER_VERSION_STALE' } });
   });
 
+  it('restores an archived user while retaining suspended status, memberships and revoked sessions', async () => {
+    const archivedAt = new Date('2026-10-16T12:00:00.000Z');
+    const now = new Date('2026-10-21T12:00:00.000Z');
+    await administration.archiveUser({
+      actorUserId: actorId.toHexString(),
+      userId: memberId.toHexString(),
+      expectedUpdatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      reasonCode: 'ACCESS_REVIEW',
+      now: archivedAt,
+    });
+    await connection.collection('refresh_sessions').insertOne({
+      userId: memberId,
+      isRevoked: true,
+      tokenHash: 'retained-session-secret',
+      expiresAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+    const memberships = await connection
+      .collection('organization_memberships')
+      .find({ userId: memberId })
+      .toArray();
+    const input = {
+      actorUserId: actorId.toHexString(),
+      userId: memberId.toHexString(),
+      expectedUpdatedAt: archivedAt,
+      reasonCode: 'ACCESS_REVIEW' as const,
+      correlationId: 'restore-user-1',
+      now,
+    };
+    const result = await administration.restoreUser(input);
+    expect(result).toMatchObject({
+      status: 'SUSPENDED',
+      archivedAt: null,
+      updatedAt: now.toISOString(),
+    });
+    expect(
+      await connection
+        .collection('organization_memberships')
+        .find({ userId: memberId })
+        .toArray(),
+    ).toEqual(memberships);
+    expect(
+      await connection
+        .collection('refresh_sessions')
+        .findOne({ userId: memberId }),
+    ).toMatchObject({ isRevoked: true });
+    expect(
+      await audit().countDocuments({ action: 'platform.user.restored' }),
+    ).toBe(1);
+    expect(
+      await audit().findOne({ action: 'platform.user.restored' }),
+    ).toMatchObject({
+      actorUserId: actorId.toHexString(),
+      targetResourceId: memberId.toHexString(),
+      previousStatus: 'SUSPENDED',
+      newStatus: 'SUSPENDED',
+      requestId: 'restore-user-1',
+    });
+    expect(JSON.stringify(result)).not.toContain('secret');
+    await expect(administration.restoreUser(input)).rejects.toMatchObject({
+      response: { code: 'USER_VERSION_STALE' },
+    });
+    expect(
+      await audit().countDocuments({ action: 'platform.user.restored' }),
+    ).toBe(1);
+  });
+
+  it('rolls back restoration when the required audit cannot commit', async () => {
+    const archivedAt = new Date('2026-10-16T12:00:00.000Z');
+    await connection.collection('users').updateOne(
+      { _id: memberId },
+      {
+        $set: {
+          status: 'SUSPENDED',
+          archivedAt,
+          archivedBy: actorId,
+          updatedAt: archivedAt,
+        },
+      },
+    );
+    const writer = jest
+      .spyOn(
+        administration as unknown as {
+          writePlatformUserRestoreAudit: (...args: unknown[]) => Promise<void>;
+        },
+        'writePlatformUserRestoreAudit',
+      )
+      .mockRejectedValueOnce(new Error('audit unavailable'));
+    try {
+      await expect(
+        administration.restoreUser({
+          actorUserId: actorId.toHexString(),
+          userId: memberId.toHexString(),
+          expectedUpdatedAt: archivedAt,
+          reasonCode: 'ACCESS_REVIEW',
+          now: new Date('2026-10-21T12:00:00.000Z'),
+        }),
+      ).rejects.toMatchObject({ status: 500 });
+    } finally {
+      writer.mockRestore();
+    }
+    expect(
+      await connection.collection('users').findOne({ _id: memberId }),
+    ).toMatchObject({
+      status: 'SUSPENDED',
+      archivedAt,
+      archivedBy: actorId,
+      updatedAt: archivedAt,
+    });
+    expect(await audit().countDocuments()).toBe(0);
+  });
+
   it('archives a user without deleting the user or memberships and revokes sessions atomically', async () => {
     const now = new Date('2026-10-16T12:00:00.000Z');
     await connection.collection('refresh_sessions').insertOne({
