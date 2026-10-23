@@ -3,6 +3,7 @@ import {
   CHAT_SEARCH_INDEX,
   literalPrefixRange,
 } from '../../../../common/search/indexed-search';
+import { normalizeSearchText } from '../../../../common/search/literal-search';
 import {
   ConflictException,
   ForbiddenException,
@@ -202,33 +203,15 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
   async searchChatCandidates(
     organizationId: string,
     actorId: string,
-    search: string,
+    search = '',
   ): Promise<ChatCandidate[]> {
     if (
       !Types.ObjectId.isValid(organizationId) ||
       !Types.ObjectId.isValid(actorId)
     )
       return [];
-    const emailPrefix = search.includes('@')
-      ? search.trim().toLowerCase()
-      : null;
-    const pipeline: PipelineStage[] = [
-      ...(emailPrefix
-        ? [{ $match: { email: literalPrefixRange(emailPrefix) } }]
-        : ([
-            {
-              $search: {
-                index: CHAT_SEARCH_INDEX,
-                compound: {
-                  should: [
-                    autocompleteClause('fullName', search),
-                    autocompleteClause('email', search),
-                  ],
-                  minimumShouldMatch: 1,
-                },
-              },
-            },
-          ] as PipelineStage[])),
+    const trimmed = search.trim();
+    const membershipFilter: PipelineStage[] = [
       {
         $match: { status: 'ACTIVE', _id: { $ne: new Types.ObjectId(actorId) } },
       },
@@ -249,6 +232,53 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
         },
       },
       { $match: { 'activeMembership.0': { $exists: true } } },
+    ];
+    const projectionStage: PipelineStage = {
+      $project: {
+        _id: 0,
+        id: { $toString: '$_id' },
+        fullName: 1,
+        email: 1,
+        avatarUrl: { $ifNull: ['$avatarUrl', null] },
+      },
+    };
+    if (!trimmed) {
+      return this.listOrganizationCandidates(
+        organizationId,
+        actorId,
+        50,
+        membershipFilter,
+        projectionStage,
+      );
+    }
+    const emailPrefix = trimmed.includes('@') ? trimmed.toLowerCase() : null;
+    if (!emailPrefix && normalizeSearchText(trimmed).length < 2) {
+      return this.filterOrganizationCandidates(
+        organizationId,
+        actorId,
+        trimmed,
+        membershipFilter,
+        projectionStage,
+      );
+    }
+    const pipeline: PipelineStage[] = [
+      ...(emailPrefix
+        ? [{ $match: { email: literalPrefixRange(emailPrefix) } }]
+        : ([
+            {
+              $search: {
+                index: CHAT_SEARCH_INDEX,
+                compound: {
+                  should: [
+                    autocompleteClause('fullName', trimmed),
+                    autocompleteClause('email', trimmed),
+                  ],
+                  minimumShouldMatch: 1,
+                },
+              },
+            },
+          ] as PipelineStage[])),
+      ...membershipFilter,
       ...(emailPrefix
         ? ([
             {
@@ -260,16 +290,109 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           ] as PipelineStage[])
         : []),
       { $limit: 20 },
-      {
-        $project: {
-          _id: 0,
-          id: { $toString: '$_id' },
-          fullName: 1,
-          avatarUrl: { $ifNull: ['$avatarUrl', null] },
-        },
-      },
+      projectionStage,
     ];
-    return this.users().aggregate<ChatCandidate>(pipeline).exec();
+    try {
+      return await this.users().aggregate<ChatCandidate>(pipeline).exec();
+    } catch {
+      return this.filterOrganizationCandidates(
+        organizationId,
+        actorId,
+        trimmed,
+        membershipFilter,
+        projectionStage,
+      );
+    }
+  }
+
+  private async listOrganizationCandidates(
+    organizationId: string,
+    actorId: string,
+    limit: number,
+    membershipFilter: PipelineStage[],
+    projectionStage: PipelineStage,
+  ): Promise<ChatCandidate[]> {
+    const membershipsModel = this.connection?.models[
+      modelName('organization_memberships')
+    ] as Model<MembershipDocument> | undefined;
+    if (membershipsModel) {
+      return membershipsModel
+        .aggregate<ChatCandidate>([
+          {
+            $match: {
+              organizationId: new Types.ObjectId(organizationId),
+              userId: { $ne: new Types.ObjectId(actorId) },
+              status: 'ACTIVE',
+            },
+          },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'userId',
+              foreignField: '_id',
+              pipeline: [
+                { $match: { status: 'ACTIVE' } },
+                { $project: { fullName: 1, email: 1, avatarUrl: 1 } },
+              ],
+              as: 'user',
+            },
+          },
+          { $unwind: '$user' },
+          { $sort: { 'user.fullName': 1, userId: 1 } },
+          { $limit: limit },
+          {
+            $project: {
+              _id: 0,
+              id: { $toString: '$userId' },
+              fullName: '$user.fullName',
+              email: '$user.email',
+              avatarUrl: { $ifNull: ['$user.avatarUrl', null] },
+            },
+          },
+        ])
+        .exec();
+    }
+    return this.users()
+      .aggregate<ChatCandidate>([
+        ...membershipFilter,
+        { $sort: { fullName: 1, _id: 1 } },
+        { $limit: limit },
+        projectionStage,
+      ])
+      .exec();
+  }
+
+  private async filterOrganizationCandidates(
+    organizationId: string,
+    actorId: string,
+    trimmed: string,
+    membershipFilter: PipelineStage[],
+    projectionStage: PipelineStage,
+  ): Promise<ChatCandidate[]> {
+    const allMembers = await this.listOrganizationCandidates(
+      organizationId,
+      actorId,
+      1000,
+      membershipFilter,
+      projectionStage,
+    );
+    const normalizedTokens = normalizeSearchText(trimmed)
+      .split(/\s+/)
+      .filter(Boolean);
+    const lowerQuery = trimmed.toLowerCase();
+    return allMembers
+      .filter((candidate) => {
+        const normalizedName = normalizeSearchText(candidate.fullName);
+        const lowerEmail = candidate.email?.toLowerCase() ?? '';
+        const matchesTokens =
+          normalizedTokens.length > 0 &&
+          normalizedTokens.every(
+            (token) =>
+              normalizedName.includes(token) || lowerEmail.includes(token),
+          );
+        return matchesTokens || lowerEmail.includes(lowerQuery);
+      })
+      .slice(0, 20);
   }
 
   async findChatCandidates(
@@ -303,7 +426,7 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           foreignField: '_id',
           pipeline: [
             { $match: { status: 'ACTIVE' } },
-            { $project: { fullName: 1, avatarUrl: 1 } },
+            { $project: { fullName: 1, email: 1, avatarUrl: 1 } },
           ],
           as: 'user',
         },
@@ -314,6 +437,7 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
           _id: 0,
           id: { $toString: '$userId' },
           fullName: '$user.fullName',
+          email: '$user.email',
           avatarUrl: { $ifNull: ['$user.avatarUrl', null] },
         },
       },

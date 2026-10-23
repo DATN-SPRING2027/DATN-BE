@@ -28,19 +28,19 @@ export class ChatCandidateController {
   ) {
     response.setHeader('Cache-Control', 'no-store');
     if (
-      typeof search !== 'string' ||
-      search.trim().length < 2 ||
-      search.length > 80
+      search !== undefined &&
+      (typeof search !== 'string' || search.length > 80)
     ) {
       throw new UnprocessableEntityException({
         code: 'CHAT_SEARCH_INVALID',
-        message: 'Search must contain between 2 and 80 characters.',
+        message: 'Search must contain at most 80 characters.',
       });
     }
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    const normalizedSearch = typeof search === 'string' ? search.trim() : '';
     return {
       actor: { id: actor.id, organizationId: actor.organizationId },
-      data: await this.directory.searchChatCandidates(actor, search.trim()),
+      data: await this.directory.searchChatCandidates(actor, normalizedSearch),
     };
   }
 
@@ -58,7 +58,7 @@ export class ChatCandidateController {
       Array.isArray(body) ||
       Object.keys(body).some((key) => key !== 'userIds') ||
       !Array.isArray((body as { userIds?: unknown }).userIds) ||
-      (body as { userIds: unknown[] }).userIds.length > 49 ||
+      (body as { userIds: unknown[] }).userIds.length > 50 ||
       !(body as { userIds: unknown[] }).userIds.every(
         (id) => typeof id === 'string' && /^[a-f\d]{24}$/i.test(id),
       )
