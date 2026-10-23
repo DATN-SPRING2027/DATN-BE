@@ -65,10 +65,7 @@ describe('ProjectController trusted Organization boundary', () => {
         name: 'Public Project',
         code: 'PUB1',
         visibility: 'PUBLIC',
-        memberUserIds: [
-          'dddddddddddddddddddddddd',
-          'DDDDDDDDDDDDDDDDDDDDDDDD',
-        ],
+        memberUserIds: ['dddddddddddddddddddddddd', 'DDDDDDDDDDDDDDDDDDDDDDDD'],
         leaderUserIds: ['eeeeeeeeeeeeeeeeeeeeeeee'],
       },
       response,

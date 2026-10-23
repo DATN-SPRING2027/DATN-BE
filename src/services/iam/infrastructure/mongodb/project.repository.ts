@@ -224,8 +224,7 @@ export class MongoProjectRepository implements ProjectRepository {
             ),
           ];
           const usersModel = this.connection?.models[name('users')] as
-            | Model<UserSummaryDocument>
-            | undefined;
+            Model<UserSummaryDocument> | undefined;
           if (usersModel && validUserHexIds.length > 0) {
             const activeUsers = await usersModel
               .find(
@@ -566,8 +565,7 @@ export class MongoProjectRepository implements ProjectRepository {
   ): Promise<ProjectOrganizationMemberCandidate[]> {
     if (!validId(organizationId) || !validId(actorUserId)) return [];
     const usersModel = this.connection?.models[name('users')] as
-      | Model<UserSummaryDocument>
-      | undefined;
+      Model<UserSummaryDocument> | undefined;
     if (!usersModel) return [];
 
     const organization = new Types.ObjectId(organizationId);

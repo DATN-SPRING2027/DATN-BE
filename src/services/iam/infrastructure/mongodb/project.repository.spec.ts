@@ -517,12 +517,14 @@ describe('MongoProjectRepository creation', () => {
         ]),
       );
     (connection.models as Record<string, unknown>).continuum_iam_users = {
-      find: jest.fn().mockReturnValue(
-        query([
-          { _id: new Types.ObjectId(memberHex) },
-          { _id: new Types.ObjectId(leaderHex) },
-        ]),
-      ),
+      find: jest
+        .fn()
+        .mockReturnValue(
+          query([
+            { _id: new Types.ObjectId(memberHex) },
+            { _id: new Types.ObjectId(leaderHex) },
+          ]),
+        ),
     };
     roles.findOne
       .mockReturnValueOnce(
