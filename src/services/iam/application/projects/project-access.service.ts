@@ -67,12 +67,10 @@ export class ProjectAccessService {
     search?: string,
   ) {
     const searchTerm = search?.trim();
-    if (!searchTerm) return { data: [] };
-
     const candidates = await this.repository.listMemberCandidates(
       actor.organizationId,
       projectId,
-      searchTerm,
+      searchTerm && searchTerm.length > 0 ? searchTerm : undefined,
     );
     return { data: candidates };
   }
@@ -98,13 +96,26 @@ export class ProjectAccessService {
     return { data: candidates };
   }
 
-  addMember(actor: AuthenticatedIdentity, projectId: string, userId: string) {
-    return this.repository.addMember(
-      actor.organizationId,
-      actor.id,
-      projectId,
-      userId,
-    );
+  addMember(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+    userId: string,
+    role?: 'MEMBER' | 'TEAM_LEADER',
+  ) {
+    return role
+      ? this.repository.addMember(
+          actor.organizationId,
+          actor.id,
+          projectId,
+          userId,
+          role,
+        )
+      : this.repository.addMember(
+          actor.organizationId,
+          actor.id,
+          projectId,
+          userId,
+        );
   }
 
   removeMember(

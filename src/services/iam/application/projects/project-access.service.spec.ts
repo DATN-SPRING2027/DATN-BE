@@ -105,7 +105,8 @@ describe('ProjectAccessService', () => {
     expect(result).toEqual({ data: candidates });
   });
 
-  it('does not query member candidates when the search is missing or blank', async () => {
+  it('queries all active organization member candidates when search is missing or blank', async () => {
+    listMemberCandidates.mockResolvedValue([]);
     await expect(
       service.listMemberCandidates(actor, projectId),
     ).resolves.toEqual({ data: [] });
@@ -113,7 +114,18 @@ describe('ProjectAccessService', () => {
       service.listMemberCandidates(actor, projectId, '   '),
     ).resolves.toEqual({ data: [] });
 
-    expect(listMemberCandidates).not.toHaveBeenCalled();
+    expect(listMemberCandidates).toHaveBeenNthCalledWith(
+      1,
+      'org-1',
+      'proj-1',
+      undefined,
+    );
+    expect(listMemberCandidates).toHaveBeenNthCalledWith(
+      2,
+      'org-1',
+      'proj-1',
+      undefined,
+    );
   });
 
   it('delegates listMembers and returns paginated result', async () => {
