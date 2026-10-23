@@ -50,6 +50,39 @@ export class OrganizationProvisioningService {
     });
   }
 
+  async checkSlugAvailability(slug: string): Promise<{
+    slug: string;
+    valid: boolean;
+    available: boolean;
+    reason?: 'INVALID_FORMAT' | 'TAKEN';
+  }> {
+    const normalized = slug.trim().toLowerCase();
+    const isValidFormat =
+      normalized.length >= 1 &&
+      normalized.length <= 100 &&
+      /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalized);
+
+    if (!isValidFormat) {
+      return {
+        slug: normalized,
+        valid: false,
+        available: false,
+        reason: 'INVALID_FORMAT',
+      };
+    }
+
+    const available = this.repository.isSlugAvailable
+      ? await this.repository.isSlugAvailable(normalized)
+      : true;
+
+    return {
+      slug: normalized,
+      valid: true,
+      available,
+      ...(available ? {} : { reason: 'TAKEN' as const }),
+    };
+  }
+
   create(
     actor: AuthenticatedPlatformSubject,
     input: OrganizationProvisioningInput,

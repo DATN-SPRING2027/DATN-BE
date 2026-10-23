@@ -26,4 +26,5 @@ export interface OrganizationProvisioningRepository {
     actorUserId: string,
     input: OrganizationProvisioningInput,
   ): Promise<ProvisionedOrganization>;
+  isSlugAvailable?(this: void, slug: string): Promise<boolean>;
 }

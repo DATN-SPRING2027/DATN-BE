@@ -2,8 +2,10 @@ import {
   Body,
   Controller,
   ForbiddenException,
+  Get,
   Headers,
   Post,
+  Query,
   Res,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -44,6 +46,20 @@ export class AccountOrganizationController {
     private readonly auth: AuthenticationApplicationService,
     private readonly organizations: OrganizationProvisioningService,
   ) {}
+
+  @Get('slug-availability')
+  async checkSlugAvailability(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Query('slug') slug: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    await this.auth.getCurrentSessionIdentity(authorization, cookie);
+    return this.organizations.checkSlugAvailability(
+      typeof slug === 'string' ? slug : '',
+    );
+  }
 
   @Post()
   async create(

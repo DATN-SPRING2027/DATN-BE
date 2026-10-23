@@ -10,6 +10,7 @@ import type { Connection, Model } from 'mongoose';
 import type {
   ProjectListQuery,
   ProjectCreateInput,
+  ProjectOrganizationMemberCandidate,
   ProjectRecord,
   ProjectRepository,
   ProjectStatus,
@@ -61,6 +62,7 @@ interface UserSummaryDocument {
   _id: Types.ObjectId;
   email: string;
   fullName?: string;
+  avatarUrl?: string | null;
   status: string;
 }
 interface OrgMembershipSummaryDocument {
@@ -71,6 +73,8 @@ interface OrgMembershipSummaryDocument {
 const name = (collection: string) =>
   `${IAM_PERSISTENCE.databaseName}_${collection}`;
 const validId = (value: string) => /^[a-f\d]{24}$/i.test(value);
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 @Injectable()
 export class MongoProjectRepository implements ProjectRepository {
@@ -124,7 +128,7 @@ export class MongoProjectRepository implements ProjectRepository {
                 ...(input.description === undefined
                   ? {}
                   : { description: input.description }),
-                visibility: 'PRIVATE',
+                visibility: input.visibility ?? 'PRIVATE',
                 status: 'ACTIVE',
                 createdBy: new Types.ObjectId(creatorId),
               },
@@ -174,6 +178,117 @@ export class MongoProjectRepository implements ProjectRepository {
           ],
           { session },
         );
+
+        const requestedLeaderSet = new Set(
+          (input.leaderUserIds ?? [])
+            .map((id) => id.toLowerCase())
+            .filter((id) => validId(id) && id !== creatorId.toLowerCase()),
+        );
+        const requestedMemberIds = [
+          ...new Set([
+            ...(input.memberUserIds ?? [])
+              .map((id) => id.toLowerCase())
+              .filter((id) => validId(id) && id !== creatorId.toLowerCase()),
+            ...requestedLeaderSet,
+          ]),
+        ];
+        const addedMemberIds: string[] = [];
+        const addedLeaderIds: string[] = [];
+        if (requestedMemberIds.length > 0) {
+          const candidateObjectIds = requestedMemberIds.map(
+            (id) => new Types.ObjectId(id),
+          );
+          const [memberRole, activeOrgMembers] = await Promise.all([
+            this.model<RoleDocument>('roles')
+              .findOne({ code: 'MEMBER' })
+              .session(session)
+              .lean()
+              .exec(),
+            this.model<OrgMembershipSummaryDocument>('organization_memberships')
+              .find(
+                {
+                  organizationId: new Types.ObjectId(organizationId),
+                  userId: { $in: candidateObjectIds },
+                  status: 'ACTIVE',
+                },
+                { userId: 1 },
+              )
+              .session(session)
+              .lean()
+              .exec(),
+          ]);
+
+          let validUserHexIds = [
+            ...new Set(
+              activeOrgMembers.map((row) => String(row.userId).toLowerCase()),
+            ),
+          ];
+          const usersModel = this.connection?.models[name('users')] as
+            | Model<UserSummaryDocument>
+            | undefined;
+          if (usersModel && validUserHexIds.length > 0) {
+            const activeUsers = await usersModel
+              .find(
+                {
+                  _id: {
+                    $in: validUserHexIds.map((id) => new Types.ObjectId(id)),
+                  },
+                  status: 'ACTIVE',
+                },
+                { _id: 1 },
+              )
+              .session(session)
+              .lean()
+              .exec();
+            const activeUserHexSet = new Set(
+              activeUsers.map((user) => String(user._id).toLowerCase()),
+            );
+            validUserHexIds = validUserHexIds.filter((id) =>
+              activeUserHexSet.has(id),
+            );
+          }
+
+          if (validUserHexIds.length > 0) {
+            const hasRegularMembers = validUserHexIds.some(
+              (id) => !requestedLeaderSet.has(id),
+            );
+            if (hasRegularMembers && !memberRole) {
+              throw new Error(
+                'Project member bootstrap requires a MEMBER Role',
+              );
+            }
+            const now = new Date();
+            await this.model<MembershipDocument>('project_memberships').create(
+              validUserHexIds.map((memberId) => ({
+                organizationId: new Types.ObjectId(organizationId),
+                projectId: new Types.ObjectId(created!.id),
+                userId: new Types.ObjectId(memberId),
+                status: 'ACTIVE' as const,
+                joinedAt: now,
+              })),
+              { session },
+            );
+            await this.model<RoleAssignmentDocument>('role_assignments').create(
+              validUserHexIds.map((memberId) => {
+                const isLeader = requestedLeaderSet.has(memberId);
+                return {
+                  organizationId: new Types.ObjectId(organizationId),
+                  projectId: new Types.ObjectId(created!.id),
+                  userId: new Types.ObjectId(memberId),
+                  roleId: isLeader ? leaderRole._id : memberRole!._id,
+                  roleCode: isLeader ? 'TEAM_LEADER' : 'MEMBER',
+                  assignedBy: new Types.ObjectId(creatorId),
+                };
+              }),
+              { session },
+            );
+            addedMemberIds.push(...validUserHexIds);
+            addedLeaderIds.push(
+              ...validUserHexIds.filter((id) => requestedLeaderSet.has(id)),
+            );
+          }
+        }
+
         await this.connection!.useDb(this.auditDatabaseName, { useCache: true })
           .collection(IAM_AUDIT_COLLECTION_NAME)
           .insertOne(
@@ -189,6 +304,12 @@ export class MongoProjectRepository implements ProjectRepository {
                   projectMembershipId: String(projectMembership._id),
                   roleAssignmentId: String(roleAssignment._id),
                   roleCode: 'TEAM_LEADER',
+                  ...(addedMemberIds.length > 0
+                    ? { initialMemberUserIds: addedMemberIds }
+                    : {}),
+                  ...(addedLeaderIds.length > 0
+                    ? { initialLeaderUserIds: addedLeaderIds }
+                    : {}),
                 },
               },
               occurredAt: new Date(),
@@ -436,6 +557,88 @@ export class MongoProjectRepository implements ProjectRepository {
       usersModel,
     );
     return enriched ?? baseRecord;
+  }
+
+  async listOrganizationMemberCandidates(
+    organizationId: string,
+    actorUserId: string,
+    search?: string,
+  ): Promise<ProjectOrganizationMemberCandidate[]> {
+    if (!validId(organizationId) || !validId(actorUserId)) return [];
+    const usersModel = this.connection?.models[name('users')] as
+      | Model<UserSummaryDocument>
+      | undefined;
+    if (!usersModel) return [];
+
+    const organization = new Types.ObjectId(organizationId);
+    const activeMemberships = await this.model<OrgMembershipSummaryDocument>(
+      'organization_memberships',
+    )
+      .find(
+        {
+          organizationId: organization,
+          status: 'ACTIVE',
+        },
+        { userId: 1 },
+      )
+      .lean()
+      .exec();
+
+    const candidateObjectIds = activeMemberships
+      .map((row) => row.userId)
+      .filter((id) => String(id).toLowerCase() !== actorUserId.toLowerCase());
+    if (candidateObjectIds.length === 0) return [];
+
+    const userFilter: Record<string, unknown> = {
+      _id: { $in: candidateObjectIds },
+      status: 'ACTIVE',
+    };
+    if (search && search.trim().length > 0) {
+      const pattern = new RegExp(escapeRegExp(search.trim()), 'i');
+      userFilter.$or = [{ fullName: pattern }, { email: pattern }];
+    }
+
+    const users = await usersModel
+      .find(userFilter, { _id: 1, email: 1, fullName: 1, avatarUrl: 1 })
+      .sort({ fullName: 1, email: 1 })
+      .limit(50)
+      .lean()
+      .exec();
+    if (users.length === 0) return [];
+
+    const matchedUserIds = users.map((user) => user._id);
+    const orgAssignments = await this.model<RoleAssignmentDocument>(
+      'role_assignments',
+    )
+      .find(
+        {
+          organizationId: organization,
+          userId: { $in: matchedUserIds },
+          $or: [{ projectId: null }, { projectId: { $exists: false } }],
+        },
+        { userId: 1, roleCode: 1 },
+      )
+      .lean()
+      .exec();
+
+    const roleByUserId = new Map<string, string>();
+    for (const assignment of orgAssignments) {
+      const uid = String(assignment.userId);
+      if (!roleByUserId.has(uid) || assignment.roleCode === 'ADMIN') {
+        roleByUserId.set(uid, assignment.roleCode);
+      }
+    }
+
+    return users.map((user) => {
+      const uid = String(user._id);
+      return {
+        userId: uid,
+        fullName: user.fullName ?? user.email,
+        email: user.email,
+        avatarUrl: user.avatarUrl ?? null,
+        roleCode: roleByUserId.get(uid) ?? 'MEMBER',
+      };
+    });
   }
 
   private async visibleScope(

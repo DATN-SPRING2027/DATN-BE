@@ -38,6 +38,17 @@ export interface ProjectCreateInput {
   name: string;
   code: string;
   description?: string;
+  visibility?: ProjectVisibility;
+  memberUserIds?: string[];
+  leaderUserIds?: string[];
+}
+
+export interface ProjectOrganizationMemberCandidate {
+  userId: string;
+  fullName: string;
+  email: string;
+  avatarUrl?: string | null;
+  roleCode: string;
 }
 
 export interface ProjectRepository {
@@ -56,4 +67,9 @@ export interface ProjectRepository {
     userId: string,
     projectId: string,
   ): Promise<ProjectRecord | null>;
+  listOrganizationMemberCandidates?(
+    organizationId: string,
+    actorUserId: string,
+    search?: string,
+  ): Promise<ProjectOrganizationMemberCandidate[]>;
 }
