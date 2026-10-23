@@ -49,11 +49,17 @@ describe('Platform Operator login and provisioning (e2e)', () => {
   let administration: jest.Mocked<
     Pick<
       PlatformAdministrationService,
+      | 'listProjects'
+      | 'findProject'
+      | 'listProjectMemberships'
+      | 'changeProjectMetadata'
       | 'listOrganizations'
       | 'findOrganization'
       | 'lookupActiveUser'
       | 'listOrganizationMemberships'
       | 'suspendMembership'
+      | 'executePlatformInvitationCommand'
+      | 'listPlatformMemberships'
     >
   >;
 
@@ -119,6 +125,33 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     });
     listOperationalMetadata = jest.fn().mockResolvedValue([]);
     administration = {
+      listProjects: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
+      findProject: jest.fn(),
+      listProjectMemberships: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
+      changeProjectMetadata: jest.fn(),
+      executePlatformInvitationCommand: jest.fn().mockResolvedValue({
+        httpStatus: 201,
+        replayed: false,
+        body: {
+          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+          invitation: {
+            id: ADMIN_ID,
+            status: 'PENDING',
+            version: 1,
+            expiresAt: '2026-11-01T00:00:00.000Z',
+          },
+        },
+      }),
+      listPlatformMemberships: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
       listOrganizations: jest.fn().mockResolvedValue({
         data: [],
         pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
@@ -537,6 +570,142 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     });
   });
 
+  it('requires the exact read permission for the global membership directory', async () => {
+    const read = () =>
+      request(app.getHttpServer() as App)
+        .get('/api/v1/iam/platform/memberships')
+        .set('Authorization', `Bearer ${operatorToken()}`);
+    assignedPermission = 'platform.memberships.invitation.manage';
+    await read().expect(403);
+    expect(administration.listPlatformMemberships).not.toHaveBeenCalled();
+    assignedPermission = 'platform.memberships.membership.read';
+    await read().expect(200).expect('Cache-Control', 'no-store');
+    expect(administration.listPlatformMemberships).toHaveBeenCalledWith({
+      page: 1,
+      pageSize: 20,
+    });
+    await read().query({ pageSize: 101 }).expect(422);
+    await read().query({ organizationId: 'invalid' }).expect(422);
+    await read().query({ roleCode: 'PLATFORM_OPERATOR' }).expect(422);
+    expect(administration.listPlatformMemberships).toHaveBeenCalledTimes(1);
+  });
+
+  const platformInvitationCases = [
+    {
+      action: '',
+      body: { email: 'invitee@example.test', reasonCode: 'ACCESS_REQUEST' },
+      command: 'INVITE',
+    },
+    {
+      action: `/${ADMIN_ID}/resend`,
+      body: {
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        reasonCode: 'ACCESS_REVIEW',
+      },
+      command: 'RESEND',
+    },
+    {
+      action: `/${ADMIN_ID}/cancel`,
+      body: {
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        reasonCode: 'INVITATION_CANCELLED',
+      },
+      command: 'CANCEL',
+    },
+  ];
+
+  it.each(platformInvitationCases)(
+    'requires exact authority and CSRF for $command',
+    async ({ action, body, command }) => {
+      const post = () =>
+        request(app.getHttpServer() as App)
+          .post(
+            `/api/v1/iam/platform/organizations/${ADMIN_ID}/invitations${action}`,
+          )
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .set('Idempotency-Key', 'platform-invitation-http-test');
+      assignedPermission = 'platform.memberships.membership.read';
+      await post()
+        .set('Cookie', '__Host-csrf=csrf-value')
+        .set('X-CSRF-Token', 'csrf-value')
+        .send(body)
+        .expect(403);
+      assignedPermission = 'platform.memberships.invitation.manage';
+      await post().send(body).expect(403);
+      await post()
+        .set('Cookie', '__Host-csrf=csrf-value')
+        .set('X-CSRF-Token', 'wrong')
+        .send(body)
+        .expect(403);
+      expect(
+        administration.executePlatformInvitationCommand,
+      ).not.toHaveBeenCalled();
+      administration.executePlatformInvitationCommand.mockResolvedValueOnce({
+        httpStatus: command === 'INVITE' ? 201 : 200,
+        replayed: false,
+        body: {
+          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+          invitation: {
+            id: ADMIN_ID,
+            status: command === 'CANCEL' ? 'CANCELLED' : 'PENDING',
+            version: 1,
+            expiresAt: '2026-11-01T00:00:00.000Z',
+          },
+        },
+      });
+      const response = await post()
+        .set('Cookie', '__Host-csrf=csrf-value')
+        .set('X-CSRF-Token', 'csrf-value')
+        .send(body)
+        .expect(command === 'INVITE' ? 201 : 200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers['x-idempotent-replay']).toBe('false');
+      expect(
+        administration.executePlatformInvitationCommand,
+      ).toHaveBeenCalledWith({
+        actorUserId: USER_ID,
+        organizationId: ADMIN_ID,
+        idempotencyKey: 'platform-invitation-http-test',
+        command: {
+          ...body,
+          command,
+          ...(command === 'INVITE' ? {} : { invitationId: ADMIN_ID }),
+        },
+      });
+    },
+  );
+
+  it.each(platformInvitationCases)(
+    'rejects injected authority and invalid request IDs for $command',
+    async ({ action, body }) => {
+      assignedPermission = 'platform.memberships.invitation.manage';
+      const post = () =>
+        request(app.getHttpServer() as App)
+          .post(
+            `/api/v1/iam/platform/organizations/${ADMIN_ID}/invitations${action}`,
+          )
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .set('Cookie', '__Host-csrf=csrf-value')
+          .set('X-CSRF-Token', 'csrf-value')
+          .set('Idempotency-Key', 'platform-invitation-http-test');
+      await post()
+        .send({ ...body, roleCode: 'ADMIN' })
+        .expect(422);
+      await post()
+        .send({ ...body, actorUserId: ADMIN_ID })
+        .expect(422);
+      await post()
+        .set('X-Request-ID', 'invalid request id')
+        .send(body)
+        .expect(422);
+      expect(
+        administration.executePlatformInvitationCommand,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
   it('denies audit access when the current assignment grants only health read', async () => {
     assignedPermission = 'platform.health.read';
     const token = operatorToken();
@@ -568,6 +737,153 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     plan: 'FREE',
     firstAdminUserId: ADMIN_ID,
   };
+
+  describe('Platform Project HTTP boundary', () => {
+    const base = '/api/v1/iam/platform/projects';
+    const projectId = '851a2b3c4d5e6f7a8b9c0d21';
+    const body = {
+      name: 'Reviewed project',
+      code: 'REVIEW',
+      visibility: 'PRIVATE',
+      expectedUpdatedAt: '2026-10-06T00:00:00.000Z',
+      reasonCode: 'ACCESS_REVIEW',
+    };
+
+    it.each(['', `/${projectId}`, `/${projectId}/memberships`])(
+      'requires authentication and exact read authority for GET %s',
+      async (suffix) => {
+        const server = app.getHttpServer() as App;
+        await request(server)
+          .get(base + suffix)
+          .expect(401);
+        await request(server)
+          .get(base + suffix)
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .set('X-Role', 'PLATFORM_OPERATOR')
+          .expect(403);
+        assignedPermission = 'platform.projects.project.read';
+        await request(server)
+          .get(base + suffix)
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .expect(200)
+          .expect('Cache-Control', 'no-store');
+        assignmentActive = false;
+        await request(server)
+          .get(base + suffix)
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .expect(403);
+      },
+    );
+
+    it('parses bounded Project search and membership filters', async () => {
+      assignedPermission = 'platform.projects.project.read';
+      const server = app.getHttpServer() as App;
+      await request(server)
+        .get(base)
+        .query({
+          page: 2,
+          pageSize: 10,
+          search: ' Alpha ',
+          visibility: 'PRIVATE',
+          status: 'ACTIVE',
+        })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.listProjects).toHaveBeenCalledWith({
+        page: 2,
+        pageSize: 10,
+        search: 'Alpha',
+        visibility: 'PRIVATE',
+        status: 'ACTIVE',
+      });
+      await request(server)
+        .get(`${base}/${projectId}/memberships`)
+        .query({ status: 'INACTIVE', search: ' member ' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.listProjectMemberships).toHaveBeenCalledWith({
+        projectId,
+        page: 1,
+        pageSize: 20,
+        status: 'INACTIVE',
+        search: 'member',
+      });
+    });
+
+    it.each([
+      { pageSize: 101 },
+      { page: 0 },
+      { organizationId: 'bad' },
+      { visibility: 'UNKNOWN' },
+      { search: ' ' },
+      { extra: 'value' },
+    ])('rejects invalid Project query %j', async (query) => {
+      assignedPermission = 'platform.projects.project.read';
+      await request(app.getHttpServer() as App)
+        .get(base)
+        .query(query)
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      expect(administration.listProjects).not.toHaveBeenCalled();
+    });
+
+    it('requires manage authority and CSRF for cookie mutations', async () => {
+      const server = app.getHttpServer() as App;
+      assignedPermission = 'platform.projects.project.read';
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send(body)
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(403);
+      assignedPermission = 'platform.projects.project.manage';
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send(body)
+        .set('Cookie', `continuum_access=${operatorToken()}`)
+        .expect(403);
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send(body)
+        .set(
+          'Cookie',
+          `continuum_access=${operatorToken()}; __Host-csrf=fixture`,
+        )
+        .set('X-CSRF-Token', 'fixture')
+        .set('X-Request-Id', 'project-review-1')
+        .expect(200);
+      expect(administration.changeProjectMetadata).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          name: body.name,
+          code: body.code,
+          visibility: body.visibility,
+          expectedUpdatedAt: new Date(body.expectedUpdatedAt),
+          reasonCode: body.reasonCode,
+          correlationId: 'project-review-1',
+        }),
+      );
+    });
+
+    it.each([
+      { description: 'tenant content' },
+      { organizationId: ADMIN_ID },
+      { status: 'ARCHIVED' },
+      { code: 'bad code' },
+      { visibility: 'UNKNOWN' },
+      { name: '' },
+      { expectedUpdatedAt: 'bad-date' },
+      { reasonCode: 'UNKNOWN' },
+    ])('rejects unsafe or invalid metadata %j', async (change) => {
+      assignedPermission = 'platform.projects.project.manage';
+      await request(app.getHttpServer() as App)
+        .patch(`${base}/${projectId}`)
+        .send({ ...body, ...change })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      expect(administration.changeProjectMetadata).not.toHaveBeenCalled();
+    });
+  });
 
   function operatorToken() {
     return app.get(AccessTokenService).signAccessToken({

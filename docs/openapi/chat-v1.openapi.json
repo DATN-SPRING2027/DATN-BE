@@ -18,15 +18,15 @@
     "/api/v1/chat/candidates": {
       "get": {
         "operationId": "searchChatCandidates",
-        "summary": "Search active organization members: folded word-prefix names and literal indexed email prefixes; exact email matches rank first",
+        "summary": "List or search active organization members: folded word-prefix names and literal indexed email prefixes; exact email matches rank first",
         "parameters": [
           {
             "name": "search",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
-              "minLength": 2,
+              "minLength": 0,
               "maxLength": 80
             }
           }
@@ -3010,6 +3010,9 @@
           "fullName": {
             "type": "string"
           },
+          "email": {
+            "type": "string"
+          },
           "avatarUrl": {
             "type": [
               "string",
@@ -3029,7 +3032,7 @@
         "properties": {
           "data": {
             "type": "array",
-            "maxItems": 20,
+            "maxItems": 50,
             "items": {
               "$ref": "#/components/schemas/Candidate"
             }

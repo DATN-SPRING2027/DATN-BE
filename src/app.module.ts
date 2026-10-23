@@ -10,6 +10,7 @@ import { IngestionModule } from './services/ingestion/ingestion.module';
 import { JiraModule } from './services/jira/jira.module';
 import { LifecycleModule } from './services/lifecycle/lifecycle.module';
 import { NotificationModule } from './services/notification/notification.module';
+import { TaskWorkspaceModule } from './services/task/workspace/task-workspace.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { NotificationModule } from './services/notification/notification.module'
     HandoverModule,
     IngestionModule,
     NotificationModule,
+    TaskWorkspaceModule,
     AiEngineModule,
   ],
 })

@@ -48,7 +48,7 @@ export class UserDirectoryService {
 
   async searchChatCandidates(
     actor: AuthenticatedIdentity,
-    search: string,
+    search = '',
   ): Promise<ChatCandidate[]> {
     return (
       (await this.repository.searchChatCandidates?.(
