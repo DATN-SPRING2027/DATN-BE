@@ -12,6 +12,7 @@ import {
   CHAT_SEARCH_INDEX,
   textSearchStage,
 } from '../../../../common/search/indexed-search';
+import { normalizeSearchText } from '../../../../common/search/literal-search';
 import type {
   ChatActor,
   ChatCandidate,
@@ -255,6 +256,16 @@ export class MongoChatRepository
     archived = false,
     conversationId?: string,
   ): Promise<ChatConversationPage> {
+    if (search && normalizeSearchText(search).length < 2) {
+      return this.filterConversationsFallback(
+        actor,
+        limit,
+        before,
+        search,
+        archived,
+        conversationId,
+      );
+    }
     const stages: PipelineStage[] = [
       ...(search
         ? [
@@ -427,9 +438,20 @@ export class MongoChatRepository
         },
       },
     ];
-    const rows = await this.members
-      .aggregate<ConversationAggregate>(stages)
-      .exec();
+    let rows: ConversationAggregate[];
+    try {
+      rows = await this.members.aggregate<ConversationAggregate>(stages).exec();
+    } catch (error) {
+      if (!search) throw error;
+      return this.filterConversationsFallback(
+        actor,
+        limit,
+        before,
+        search,
+        archived,
+        conversationId,
+      );
+    }
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit);
     const next = page.at(-1);
@@ -444,6 +466,44 @@ export class MongoChatRepository
               isPinned: next.isPinned ?? false,
             }
           : null,
+    };
+  }
+
+  private async filterConversationsFallback(
+    actor: ChatActor,
+    limit: number,
+    before: ChatCursor | undefined,
+    search: string,
+    archived: boolean,
+    conversationId?: string,
+  ): Promise<ChatConversationPage> {
+    const fallbackPage = await this.listConversations(
+      actor,
+      Math.max(limit, 50),
+      before,
+      undefined,
+      archived,
+      conversationId,
+    );
+    const tokens = normalizeSearchText(search).split(/\s+/).filter(Boolean);
+    const filtered = fallbackPage.data
+      .filter((conversation) => {
+        const label =
+          conversation.type === 'ROOM'
+            ? (conversation.title ?? '')
+            : (conversation.members.find((m) => m.userId !== actor.id)
+                ?.displayName ?? '');
+        const normalizedLabel = normalizeSearchText(label);
+        return (
+          tokens.length === 0 ||
+          tokens.every((token) => normalizedLabel.includes(token))
+        );
+      })
+      .slice(0, limit);
+    return {
+      data: filtered,
+      hasMore: false,
+      nextCursor: null,
     };
   }
 

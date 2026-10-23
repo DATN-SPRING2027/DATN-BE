@@ -11,6 +11,7 @@ export interface ChatActor {
 export interface ChatCandidate {
   id: string;
   fullName: string;
+  email?: string;
   avatarUrl: string | null;
   isOnline?: boolean;
 }

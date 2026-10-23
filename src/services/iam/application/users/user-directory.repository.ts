@@ -31,6 +31,7 @@ export interface UserUpdate {
 export interface ChatCandidate {
   id: string;
   fullName: string;
+  email?: string;
   avatarUrl: string | null;
 }
 
@@ -50,7 +51,7 @@ export interface UserDirectoryRepository {
   searchChatCandidates?(
     organizationId: string,
     actorId: string,
-    search: string,
+    search?: string,
   ): Promise<ChatCandidate[]>;
   findChatCandidates?(
     organizationId: string,

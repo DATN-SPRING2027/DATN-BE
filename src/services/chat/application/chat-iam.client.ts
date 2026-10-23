@@ -59,14 +59,16 @@ export class ChatIamClient {
 
   async searchCandidates(
     credentials: ChatCredentials,
-    search: string,
+    search = '',
   ): Promise<{
     actorId: string;
     organizationId: string;
     data: ChatCandidate[];
   }> {
+    const trimmed = search.trim();
+    const query = trimmed ? `?search=${encodeURIComponent(trimmed)}` : '';
     const result = await this.request(
-      `/internal/iam/chat-candidates?search=${encodeURIComponent(search)}`,
+      `/internal/iam/chat-candidates${query}`,
       credentials,
     );
     if (
@@ -193,6 +195,7 @@ export class ChatIamClient {
       typeof value.id === 'string' &&
       /^[a-f\d]{24}$/i.test(value.id) &&
       typeof value.fullName === 'string' &&
+      (value.email === undefined || typeof value.email === 'string') &&
       (value.avatarUrl === null || typeof value.avatarUrl === 'string')
     );
   }

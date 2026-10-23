@@ -150,6 +150,25 @@ describe('ChatApplicationService', () => {
     expect(iam.searchCandidates.mock.calls).toHaveLength(0);
   });
 
+  it('lists organization member candidates when search is omitted or empty', async () => {
+    const { service, redis, iam } = createService();
+    const candidate = {
+      id: '507f1f77bcf86cd799439003',
+      fullName: 'First Member',
+      email: 'first@datn.edu.vn',
+      avatarUrl: null,
+    };
+    redis.get.mockResolvedValue(null);
+    iam.searchCandidates.mockResolvedValue({
+      actorId: actor.id,
+      organizationId: actor.organizationId,
+      data: [candidate],
+    });
+    const result = await service.searchCandidates({}, undefined);
+    expect(iam.searchCandidates.mock.calls).toEqual([[{}, '']]);
+    expect(result.data).toEqual([{ ...candidate, isOnline: false }]);
+  });
+
   it('passes message search and its cursor to the member-scoped repository', async () => {
     const { service, searchMessages } = createService();
     const conversationId = '507f1f77bcf86cd799439013';

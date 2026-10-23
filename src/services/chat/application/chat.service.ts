@@ -175,20 +175,21 @@ export class ChatApplicationService {
 
   async searchCandidates(credentials: ChatCredentials, searchValue: unknown) {
     if (
-      typeof searchValue !== 'string' ||
-      searchValue.trim().length < 2 ||
-      searchValue.length > 80
+      searchValue !== undefined &&
+      (typeof searchValue !== 'string' || searchValue.length > 80)
     )
-      return invalid('Search must contain between 2 and 80 characters.');
+      return invalid('Search must contain at most 80 characters.');
+    const normalizedSearch =
+      typeof searchValue === 'string' ? searchValue.trim() : '';
     const actor = await this.iam.getActor(credentials);
     const cacheKey = this.redisKey(
-      `candidate-search-v2:${actor.organizationId}:${actor.id}:${createHash(
+      `candidate-search-v3:${actor.organizationId}:${actor.id}:${createHash(
         'sha256',
       )
         .update(
-          searchValue.includes('@')
-            ? searchValue.trim().toLowerCase()
-            : normalizeSearchText(searchValue),
+          normalizedSearch.includes('@')
+            ? normalizedSearch.toLowerCase()
+            : normalizeSearchText(normalizedSearch),
         )
         .digest('hex')}`,
     );
@@ -209,7 +210,7 @@ export class ChatApplicationService {
         }),
       };
     } else {
-      result = await this.iam.searchCandidates(credentials, searchValue.trim());
+      result = await this.iam.searchCandidates(credentials, normalizedSearch);
       await this.redis.set(
         cacheKey,
         JSON.stringify(result.data.map((candidate) => candidate.id)),
