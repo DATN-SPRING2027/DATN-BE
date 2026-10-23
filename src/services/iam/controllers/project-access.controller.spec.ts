@@ -243,13 +243,13 @@ describe('ProjectAccessController contract validation', () => {
     );
   });
 
-  it('does not accept client-selected roles when adding a Project member', async () => {
+  it('validates optional role when adding a Project member and rejects unsupported roles', async () => {
     const { controller, access, response } = fixture();
     await expect(
       controller.addMember(
         undefined,
         undefined,
-        { userId: memberId, roleCode: 'TEAM_LEADER' },
+        { userId: memberId, role: 'ADMIN' },
         response,
         projectId,
       ),
@@ -264,6 +264,20 @@ describe('ProjectAccessController contract validation', () => {
       projectId,
     );
     expect(access.addMember).toHaveBeenCalledWith(actor, projectId, memberId);
+
+    await controller.addMember(
+      undefined,
+      undefined,
+      { userId: memberId, role: 'TEAM_LEADER' },
+      response,
+      projectId,
+    );
+    expect(access.addMember).toHaveBeenCalledWith(
+      actor,
+      projectId,
+      memberId,
+      'TEAM_LEADER',
+    );
   });
 
   it('replaces one Project Leader only when the two target users differ', async () => {

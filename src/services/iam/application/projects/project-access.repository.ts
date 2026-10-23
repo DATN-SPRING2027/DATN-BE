@@ -92,6 +92,7 @@ export interface ProjectAccessRepository {
     actorId: string,
     projectId: string,
     userId: string,
+    role?: 'MEMBER' | 'TEAM_LEADER',
   ): Promise<ProjectMembershipRecord>;
   removeMember(
     organizationId: string,

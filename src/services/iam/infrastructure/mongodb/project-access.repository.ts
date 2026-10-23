@@ -640,6 +640,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     actorId: string,
     projectId: string,
     userId: string,
+    role: 'MEMBER' | 'TEAM_LEADER' = 'MEMBER',
   ): Promise<ProjectMembershipRecord> {
     this.assertIds(organizationId, actorId, projectId, userId);
     const connection = this.requireConnection();
@@ -684,14 +685,35 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           session,
         );
 
-        const memberRole = await this.currentRole('MEMBER', session);
-        if (!memberRole?.permissions.includes('project.read'))
-          throw new ConflictException({
-            code: 'PROJECT_MEMBER_ROLE_UNAVAILABLE',
-            message:
-              'The current MEMBER Role with project.read is not provisioned.',
-          });
-        await this.fenceRole(memberRole, 'MEMBER', ['project.read'], session);
+        const targetRole = await this.currentRole(role, session);
+        if (role === 'TEAM_LEADER') {
+          const leaderPermissions = PROJECT_LEADER_REQUIRED_PERMISSIONS;
+          if (
+            !targetRole ||
+            !leaderPermissions.every((permission) =>
+              targetRole.permissions.includes(permission),
+            )
+          )
+            throw new ConflictException({
+              code: 'PROJECT_LEADER_ROLE_UNAVAILABLE',
+              message:
+                'The current TEAM_LEADER Role is not provisioned with the approved Project permissions.',
+            });
+          await this.fenceRole(
+            targetRole,
+            'TEAM_LEADER',
+            leaderPermissions,
+            session,
+          );
+        } else {
+          if (!targetRole?.permissions.includes('project.read'))
+            throw new ConflictException({
+              code: 'PROJECT_MEMBER_ROLE_UNAVAILABLE',
+              message:
+                'The current MEMBER Role with project.read is not provisioned.',
+            });
+          await this.fenceRole(targetRole, 'MEMBER', ['project.read'], session);
+        }
 
         const user = new Types.ObjectId(userId);
         let membership = await this.model<MembershipDocument>(
@@ -754,8 +776,9 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
             .lean()
             .exec();
           if (
-            existingAssignment.roleCode === 'TEAM_LEADER' ||
-            currentRole?.code === 'TEAM_LEADER'
+            role === 'MEMBER' &&
+            (existingAssignment.roleCode === 'TEAM_LEADER' ||
+              currentRole?.code === 'TEAM_LEADER')
           )
             throw new ConflictException({
               code: 'PROJECT_LEADER_MUST_BE_REVOKED_FIRST',
@@ -763,8 +786,9 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
                 'A Project Leader appointment must be revoked by an ADMIN before removal or reactivation.',
             });
           if (
-            existingAssignment.roleCode !== currentRole?.code ||
-            currentRole?.code !== 'MEMBER'
+            role === 'MEMBER' &&
+            (existingAssignment.roleCode !== currentRole?.code ||
+              currentRole?.code !== 'MEMBER')
           )
             throw new ConflictException({
               code: 'PROJECT_ROLE_ASSIGNMENT_INVALID',
@@ -777,8 +801,8 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
             { _id: existingAssignment._id },
             {
               $set: {
-                roleId: memberRole._id,
-                roleCode: 'MEMBER',
+                roleId: targetRole._id,
+                roleCode: role,
                 assignedBy: new Types.ObjectId(actorId),
               },
             },
@@ -791,8 +815,8 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
                 organizationId: organization,
                 projectId: project,
                 userId: user,
-                roleId: memberRole._id,
-                roleCode: 'MEMBER',
+                roleId: targetRole._id,
+                roleCode: role,
                 assignedBy: new Types.ObjectId(actorId),
               },
             ],
