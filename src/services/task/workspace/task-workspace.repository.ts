@@ -826,6 +826,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
             organizationId: orgObjectId,
             updatedAt: now,
           },
+          $unset: { subtaskCounts: '' },
           $inc: { version: 1 },
         },
         {
