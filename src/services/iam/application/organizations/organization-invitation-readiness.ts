@@ -21,7 +21,7 @@ export interface OrganizationInvitationReadiness {
 @Injectable()
 export class UnconfiguredOrganizationInvitationReadiness implements OrganizationInvitationReadiness {
   isReady(): Promise<boolean> {
-    return Promise.resolve(true);
+    return Promise.resolve(false);
   }
 }
 
