@@ -54,6 +54,8 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       | 'lookupActiveUser'
       | 'listOrganizationMemberships'
       | 'suspendMembership'
+      | 'executePlatformInvitationCommand'
+      | 'listPlatformMemberships'
     >
   >;
 
@@ -119,6 +121,23 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     });
     listOperationalMetadata = jest.fn().mockResolvedValue([]);
     administration = {
+      executePlatformInvitationCommand: jest.fn().mockResolvedValue({
+        httpStatus: 201,
+        replayed: false,
+        body: {
+          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+          invitation: {
+            id: ADMIN_ID,
+            status: 'PENDING',
+            version: 1,
+            expiresAt: '2026-11-01T00:00:00.000Z',
+          },
+        },
+      }),
+      listPlatformMemberships: jest.fn().mockResolvedValue({
+        data: [],
+        pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+      }),
       listOrganizations: jest.fn().mockResolvedValue({
         data: [],
         pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
@@ -536,6 +555,142 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       reasonCode: 'ACCESS_REVIEW',
     });
   });
+
+  it('requires the exact read permission for the global membership directory', async () => {
+    const read = () =>
+      request(app.getHttpServer() as App)
+        .get('/api/v1/iam/platform/memberships')
+        .set('Authorization', `Bearer ${operatorToken()}`);
+    assignedPermission = 'platform.memberships.invitation.manage';
+    await read().expect(403);
+    expect(administration.listPlatformMemberships).not.toHaveBeenCalled();
+    assignedPermission = 'platform.memberships.membership.read';
+    await read().expect(200).expect('Cache-Control', 'no-store');
+    expect(administration.listPlatformMemberships).toHaveBeenCalledWith({
+      page: 1,
+      pageSize: 20,
+    });
+    await read().query({ pageSize: 101 }).expect(422);
+    await read().query({ organizationId: 'invalid' }).expect(422);
+    await read().query({ roleCode: 'PLATFORM_OPERATOR' }).expect(422);
+    expect(administration.listPlatformMemberships).toHaveBeenCalledTimes(1);
+  });
+
+  const platformInvitationCases = [
+    {
+      action: '',
+      body: { email: 'invitee@example.test', reasonCode: 'ACCESS_REQUEST' },
+      command: 'INVITE',
+    },
+    {
+      action: `/${ADMIN_ID}/resend`,
+      body: {
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        reasonCode: 'ACCESS_REVIEW',
+      },
+      command: 'RESEND',
+    },
+    {
+      action: `/${ADMIN_ID}/cancel`,
+      body: {
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        reasonCode: 'INVITATION_CANCELLED',
+      },
+      command: 'CANCEL',
+    },
+  ];
+
+  it.each(platformInvitationCases)(
+    'requires exact authority and CSRF for $command',
+    async ({ action, body, command }) => {
+      const post = () =>
+        request(app.getHttpServer() as App)
+          .post(
+            `/api/v1/iam/platform/organizations/${ADMIN_ID}/invitations${action}`,
+          )
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .set('Idempotency-Key', 'platform-invitation-http-test');
+      assignedPermission = 'platform.memberships.membership.read';
+      await post()
+        .set('Cookie', '__Host-csrf=csrf-value')
+        .set('X-CSRF-Token', 'csrf-value')
+        .send(body)
+        .expect(403);
+      assignedPermission = 'platform.memberships.invitation.manage';
+      await post().send(body).expect(403);
+      await post()
+        .set('Cookie', '__Host-csrf=csrf-value')
+        .set('X-CSRF-Token', 'wrong')
+        .send(body)
+        .expect(403);
+      expect(
+        administration.executePlatformInvitationCommand,
+      ).not.toHaveBeenCalled();
+      administration.executePlatformInvitationCommand.mockResolvedValueOnce({
+        httpStatus: command === 'INVITE' ? 201 : 200,
+        replayed: false,
+        body: {
+          operationId: '851a2b3c4d5e6f7a8b9c0d1f',
+          invitation: {
+            id: ADMIN_ID,
+            status: command === 'CANCEL' ? 'CANCELLED' : 'PENDING',
+            version: 1,
+            expiresAt: '2026-11-01T00:00:00.000Z',
+          },
+        },
+      });
+      const response = await post()
+        .set('Cookie', '__Host-csrf=csrf-value')
+        .set('X-CSRF-Token', 'csrf-value')
+        .send(body)
+        .expect(command === 'INVITE' ? 201 : 200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers['x-idempotent-replay']).toBe('false');
+      expect(
+        administration.executePlatformInvitationCommand,
+      ).toHaveBeenCalledWith({
+        actorUserId: USER_ID,
+        organizationId: ADMIN_ID,
+        idempotencyKey: 'platform-invitation-http-test',
+        command: {
+          ...body,
+          command,
+          ...(command === 'INVITE' ? {} : { invitationId: ADMIN_ID }),
+        },
+      });
+    },
+  );
+
+  it.each(platformInvitationCases)(
+    'rejects injected authority and invalid request IDs for $command',
+    async ({ action, body }) => {
+      assignedPermission = 'platform.memberships.invitation.manage';
+      const post = () =>
+        request(app.getHttpServer() as App)
+          .post(
+            `/api/v1/iam/platform/organizations/${ADMIN_ID}/invitations${action}`,
+          )
+          .set('Authorization', `Bearer ${operatorToken()}`)
+          .set('Cookie', '__Host-csrf=csrf-value')
+          .set('X-CSRF-Token', 'csrf-value')
+          .set('Idempotency-Key', 'platform-invitation-http-test');
+      await post()
+        .send({ ...body, roleCode: 'ADMIN' })
+        .expect(422);
+      await post()
+        .send({ ...body, actorUserId: ADMIN_ID })
+        .expect(422);
+      await post()
+        .set('X-Request-ID', 'invalid request id')
+        .send(body)
+        .expect(422);
+      expect(
+        administration.executePlatformInvitationCommand,
+      ).not.toHaveBeenCalled();
+    },
+  );
 
   it('denies audit access when the current assignment grants only health read', async () => {
     assignedPermission = 'platform.health.read';

@@ -1613,6 +1613,8 @@ describe('Platform administration Mongo projections and membership lifecycle', (
       organizationId: organizationId.toHexString(),
       actorUserId: actorId.toHexString(),
       reasonCode: 'ACCESS_REVIEW',
+      scope: 'PLATFORM',
+      result: 'SUCCESS',
     });
     expect(JSON.stringify(logs)).not.toContain('member@example.test');
     expect(JSON.stringify(logs)).not.toContain('password-secret');

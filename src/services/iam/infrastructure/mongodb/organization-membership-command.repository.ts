@@ -997,6 +997,8 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
             operationId: operationId.toHexString(),
             organizationId: input.organizationId,
             actorUserId: input.actorUserId,
+            scope: 'PLATFORM',
+            result: 'SUCCESS',
             occurredAt: input.now,
             reasonCode: input.reasonCode,
             targetResource: 'ORGANIZATION_MEMBERSHIP',
@@ -1084,6 +1086,14 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
           };
           return;
         }
+
+        if (prior)
+          await this.operations()
+            .deleteOne(
+              { _id: prior._id, expiresAt: { $lte: input.now } },
+              { session },
+            )
+            .exec();
 
         if (input.invitationReadinessReady !== true)
           throw new ServiceUnavailableException({
