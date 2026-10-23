@@ -656,6 +656,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           .lean()
           .exec();
         if (!project) return;
+        // Resolve ownership before any write, in the same transaction snapshot.
+        const organization = await this.organizations()
+          .exists({ _id: project.organizationId })
+          .session(session)
+          .exec();
+        if (!organization) return;
         if (!(project.updatedAt instanceof Date))
           throw new ConflictException({ code: 'PROJECT_VERSION_STALE' });
         const set: Record<string, unknown> = {};
