@@ -447,4 +447,204 @@ describe('MongoProjectRepository creation', () => {
       { code: 11000 },
     );
   });
+
+  it('supports PUBLIC visibility and initial memberUserIds in the creation transaction', async () => {
+    const memberHex = 'ffffffffffffffffffffffff';
+    const {
+      repository,
+      projects,
+      projectMemberships,
+      assignments,
+      roles,
+      memberships,
+    } = fixture({ projectVisibility: 'PUBLIC' });
+    (memberships as unknown as { find: jest.Mock }).find = jest
+      .fn()
+      .mockReturnValue(query([{ userId: new Types.ObjectId(memberHex) }]));
+    roles.findOne
+      .mockReturnValueOnce(
+        query({
+          _id: roleId,
+          code: 'TEAM_LEADER',
+          permissions: [
+            'project.read',
+            'project.members.list',
+            'project.members.add',
+            'project.members.remove',
+            'project.update',
+            'project.visibility.manage',
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        query({
+          _id: roleId,
+          code: 'MEMBER',
+          permissions: ['project.read'],
+        }),
+      );
+
+    const created = await repository.create(orgId, userId, {
+      name: 'Example',
+      code: 'EX',
+      visibility: 'PUBLIC',
+      memberUserIds: [memberHex, userId],
+    });
+    expect(created.visibility).toBe('PUBLIC');
+    expect(projects.create).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          visibility: 'PUBLIC',
+        }),
+      ],
+      expect.any(Object),
+    );
+    expect(projectMemberships.create).toHaveBeenCalledTimes(2);
+    expect(assignments.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('assigns TEAM_LEADER to leaderUserIds and fails closed when MEMBER role is missing for regular members', async () => {
+    const memberHex = 'ffffffffffffffffffffffff';
+    const leaderHex = '111111111111111111111111';
+    const { repository, roles, memberships, assignments, connection } =
+      fixture();
+    (memberships as unknown as { find: jest.Mock }).find = jest
+      .fn()
+      .mockReturnValue(
+        query([
+          { userId: new Types.ObjectId(memberHex) },
+          { userId: new Types.ObjectId(leaderHex) },
+        ]),
+      );
+    (connection.models as Record<string, unknown>).continuum_iam_users = {
+      find: jest
+        .fn()
+        .mockReturnValue(
+          query([
+            { _id: new Types.ObjectId(memberHex) },
+            { _id: new Types.ObjectId(leaderHex) },
+          ]),
+        ),
+    };
+    roles.findOne
+      .mockReturnValueOnce(
+        query({
+          _id: roleId,
+          code: 'TEAM_LEADER',
+          permissions: [
+            'project.read',
+            'project.members.list',
+            'project.members.add',
+            'project.members.remove',
+            'project.update',
+            'project.visibility.manage',
+          ],
+        }),
+      )
+      .mockReturnValueOnce(query(null));
+
+    await expect(
+      repository.create(orgId, userId, {
+        name: 'Example',
+        code: 'EX',
+        memberUserIds: [memberHex],
+        leaderUserIds: [leaderHex],
+      }),
+    ).rejects.toThrow('Project member bootstrap requires a MEMBER Role');
+
+    const memberRoleId = new Types.ObjectId('222222222222222222222222');
+    roles.findOne
+      .mockReturnValueOnce(
+        query({
+          _id: roleId,
+          code: 'TEAM_LEADER',
+          permissions: [
+            'project.read',
+            'project.members.list',
+            'project.members.add',
+            'project.members.remove',
+            'project.update',
+            'project.visibility.manage',
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        query({
+          _id: memberRoleId,
+          code: 'MEMBER',
+          permissions: ['project.read'],
+        }),
+      );
+    await repository.create(orgId, userId, {
+      name: 'Example',
+      code: 'EX',
+      memberUserIds: [memberHex],
+      leaderUserIds: [leaderHex],
+    });
+    expect(assignments.create).toHaveBeenLastCalledWith(
+      [
+        expect.objectContaining({
+          userId: new Types.ObjectId(memberHex),
+          roleId: memberRoleId,
+          roleCode: 'MEMBER',
+        }),
+        expect.objectContaining({
+          userId: new Types.ObjectId(leaderHex),
+          roleId,
+          roleCode: 'TEAM_LEADER',
+        }),
+      ],
+      expect.any(Object),
+    );
+  });
+
+  it('lists active organization member candidates excluding creator', async () => {
+    const candidateHex = 'ffffffffffffffffffffffff';
+    const { repository, memberships, assignments, connection } = fixture();
+    (memberships as unknown as { find: jest.Mock }).find = jest
+      .fn()
+      .mockReturnValue(
+        query([
+          { userId: new Types.ObjectId(userId) },
+          { userId: new Types.ObjectId(candidateHex) },
+        ]),
+      );
+    (connection.models as Record<string, unknown>).continuum_iam_users = {
+      find: jest.fn().mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockReturnThis(),
+        exec: jest.fn().mockResolvedValue([
+          {
+            _id: new Types.ObjectId(candidateHex),
+            email: 'grace@example.com',
+            fullName: 'Grace Hopper',
+            avatarUrl: null,
+          },
+        ]),
+      }),
+    };
+    assignments.find.mockReturnValue(
+      query([
+        {
+          userId: new Types.ObjectId(candidateHex),
+          roleCode: 'ADMIN',
+        },
+      ]),
+    );
+    const candidates = await repository.listOrganizationMemberCandidates(
+      orgId,
+      userId,
+      'grace',
+    );
+    expect(candidates).toEqual([
+      {
+        userId: candidateHex,
+        fullName: 'Grace Hopper',
+        email: 'grace@example.com',
+        avatarUrl: null,
+        roleCode: 'ADMIN',
+      },
+    ]);
+  });
 });

@@ -23,6 +23,7 @@ function fixture() {
     list: jest.fn().mockResolvedValue({ data: [] }),
     get: jest.fn().mockResolvedValue({ id: 'project' }),
     create: jest.fn().mockResolvedValue({ id: 'project' }),
+    listMemberCandidates: jest.fn().mockResolvedValue({ data: [] }),
   };
   const response = { setHeader: jest.fn() } as unknown as Response;
   const controller = new ProjectController(
@@ -56,6 +57,47 @@ describe('ProjectController trusted Organization boundary', () => {
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     }
     expect(projects.create).toHaveBeenCalledTimes(1);
+
+    await controller.create(
+      undefined,
+      undefined,
+      {
+        name: 'Public Project',
+        code: 'PUB1',
+        visibility: 'PUBLIC',
+        memberUserIds: ['dddddddddddddddddddddddd', 'DDDDDDDDDDDDDDDDDDDDDDDD'],
+        leaderUserIds: ['eeeeeeeeeeeeeeeeeeeeeeee'],
+      },
+      response,
+    );
+    expect(projects.create).toHaveBeenLastCalledWith(actor, {
+      name: 'Public Project',
+      code: 'PUB1',
+      visibility: 'PUBLIC',
+      memberUserIds: ['dddddddddddddddddddddddd'],
+      leaderUserIds: ['eeeeeeeeeeeeeeeeeeeeeeee'],
+    });
+  });
+
+  it('lists active organization member candidates for project creation', async () => {
+    const { controller, projects, response } = fixture();
+    await controller.listMemberCandidates(
+      undefined,
+      undefined,
+      actor.organizationId,
+      { search: ' alice ' },
+      response,
+    );
+    expect(projects.listMemberCandidates).toHaveBeenCalledWith(actor, 'alice');
+    await expect(
+      controller.listMemberCandidates(
+        undefined,
+        undefined,
+        actor.organizationId,
+        { search: 'x'.repeat(201) },
+        response,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 
   it('rejects unauthenticated list and detail before repository access', async () => {

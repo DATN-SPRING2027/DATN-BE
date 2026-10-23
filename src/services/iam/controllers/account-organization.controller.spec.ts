@@ -16,11 +16,13 @@ describe('AccountOrganizationController', () => {
   };
   const getCurrentSessionIdentity = jest.fn();
   const createSelfService = jest.fn();
+  const checkSlugAvailability = jest.fn();
   const auth = {
     getCurrentSessionIdentity,
   } as unknown as AuthenticationApplicationService;
   const organizations = {
     createSelfService,
+    checkSlugAvailability,
   } as unknown as OrganizationProvisioningService;
   const controller = new AccountOrganizationController(auth, organizations);
 
@@ -96,5 +98,34 @@ describe('AccountOrganizationController', () => {
       ),
     ).rejects.toThrow(UnprocessableEntityException);
     expect(createSelfService).not.toHaveBeenCalled();
+  });
+
+  it('checks slug availability for an authenticated caller', async () => {
+    const setHeader = jest.fn();
+    const response = { setHeader } as unknown as Response;
+    checkSlugAvailability.mockResolvedValue({
+      slug: 'acme-corp',
+      valid: true,
+      available: true,
+    });
+
+    const result = await controller.checkSlugAvailability(
+      undefined,
+      'continuum_access=session-token',
+      'acme-corp',
+      response,
+    );
+
+    expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(getCurrentSessionIdentity).toHaveBeenCalledWith(
+      undefined,
+      'continuum_access=session-token',
+    );
+    expect(checkSlugAvailability).toHaveBeenCalledWith('acme-corp');
+    expect(result).toEqual({
+      slug: 'acme-corp',
+      valid: true,
+      available: true,
+    });
   });
 });

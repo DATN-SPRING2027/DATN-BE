@@ -20,6 +20,7 @@ import type {
   ProjectCreateInput,
   ProjectListQuery,
   ProjectStatus,
+  ProjectVisibility,
 } from '../application/projects/project.repository';
 
 function invalid(): never {
@@ -66,7 +67,15 @@ function createInput(body: unknown): ProjectCreateInput {
   const record = body as Record<string, unknown>;
   if (
     Object.keys(record).some(
-      (key) => !['name', 'code', 'description'].includes(key),
+      (key) =>
+        ![
+          'name',
+          'code',
+          'description',
+          'visibility',
+          'memberUserIds',
+          'leaderUserIds',
+        ].includes(key),
     )
   )
     invalid();
@@ -86,12 +95,57 @@ function createInput(body: unknown): ProjectCreateInput {
     (typeof record.description !== 'string' || record.description.length > 2000)
   )
     invalid();
+  if (
+    record.visibility !== undefined &&
+    (typeof record.visibility !== 'string' ||
+      !['PRIVATE', 'PUBLIC'].includes(record.visibility))
+  )
+    invalid();
+  if (
+    record.memberUserIds !== undefined &&
+    (!Array.isArray(record.memberUserIds) ||
+      record.memberUserIds.length > 50 ||
+      record.memberUserIds.some(
+        (id) => typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id),
+      ))
+  )
+    invalid();
+  if (
+    record.leaderUserIds !== undefined &&
+    (!Array.isArray(record.leaderUserIds) ||
+      record.leaderUserIds.length > 50 ||
+      record.leaderUserIds.some(
+        (id) => typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id),
+      ))
+  )
+    invalid();
   return {
     name: record.name.trim(),
     code: record.code,
     ...(record.description === undefined
       ? {}
       : { description: record.description }),
+    ...(record.visibility === undefined
+      ? {}
+      : { visibility: record.visibility as ProjectVisibility }),
+    ...(record.memberUserIds === undefined
+      ? {}
+      : {
+          memberUserIds: [
+            ...new Set(
+              (record.memberUserIds as string[]).map((id) => id.toLowerCase()),
+            ),
+          ],
+        }),
+    ...(record.leaderUserIds === undefined
+      ? {}
+      : {
+          leaderUserIds: [
+            ...new Set(
+              (record.leaderUserIds as string[]).map((id) => id.toLowerCase()),
+            ),
+          ],
+        }),
   };
 }
 
@@ -153,6 +207,35 @@ export class ProjectController {
       false,
     );
     return this.projects.list(actor, listQuery(query));
+  }
+
+  @Get('member-candidates')
+  @UseGuards(ProjectCreateAuthorizationGuard)
+  async listMemberCandidates(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-organization-id') headerOrganizationId: string | undefined,
+    @Query() query: Record<string, unknown>,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    assertTrustedOrganization(
+      actor,
+      headerOrganizationId,
+      query.organizationId,
+      false,
+    );
+    if (
+      query.search !== undefined &&
+      (typeof query.search !== 'string' || query.search.length > 200)
+    )
+      invalid();
+    const search =
+      typeof query.search === 'string' && query.search.trim().length > 0
+        ? query.search.trim()
+        : undefined;
+    return this.projects.listMemberCandidates(actor, search);
   }
 
   @Get(':projectId')

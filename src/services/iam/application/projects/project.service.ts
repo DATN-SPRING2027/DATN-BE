@@ -54,4 +54,15 @@ export class ProjectService {
       });
     return project;
   }
+
+  async listMemberCandidates(actor: AuthenticatedIdentity, search?: string) {
+    const data = this.repository.listOrganizationMemberCandidates
+      ? await this.repository.listOrganizationMemberCandidates(
+          actor.organizationId,
+          actor.id,
+          search,
+        )
+      : [];
+    return { data };
+  }
 }

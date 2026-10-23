@@ -204,6 +204,17 @@ export class MongoOrganizationProvisioningRepository implements OrganizationProv
     }
   }
 
+  async isSlugAvailable(slug: string): Promise<boolean> {
+    if (!this.connection)
+      throw new Error('Organization provisioning persistence unavailable');
+    const normalized = slug.trim().toLowerCase();
+    if (!normalized) return false;
+    const existing = await this.model<OrganizationDocument>('organizations')
+      .exists({ slug: normalized })
+      .exec();
+    return !existing;
+  }
+
   private model<T>(collection: string): Model<T> {
     const model = this.connection?.models[modelName(collection)] as
       Model<T> | undefined;
