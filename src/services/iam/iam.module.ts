@@ -106,6 +106,16 @@ import {
 } from './application/organizations/organization-invitation-readiness';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
+import { TaskWorkspaceController } from '../task/workspace/task-workspace.controller';
+import {
+  TASK_WORKSPACE_IAM_BRIDGE,
+  TaskWorkspaceIamBridge,
+} from '../task/workspace/task-workspace-iam.bridge';
+import {
+  TASK_WORKSPACE_REPOSITORY,
+  TaskWorkspaceRepository,
+} from '../task/workspace/task-workspace.repository';
+import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
 
 // C-04 TQ-05/07/08 remain conditional. Keep Team runtime unwired until the
 // contract closes.
@@ -124,6 +134,7 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
     OrganizationMembershipCommandController,
     AccountInvitationController,
     ChatCandidateController,
+    TaskWorkspaceController,
   ],
   providers: [
     IamApplicationService,
@@ -266,7 +277,23 @@ import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/
       provide: PLATFORM_AUTHORITY_CHANGE_REPOSITORY,
       useClass: MongoPlatformAuthorityChangeRepository,
     },
+    TaskWorkspaceRepository,
+    {
+      provide: TASK_WORKSPACE_REPOSITORY,
+      useExisting: TaskWorkspaceRepository,
+    },
+    TaskWorkspaceIamBridge,
+    {
+      provide: TASK_WORKSPACE_IAM_BRIDGE,
+      useExisting: TaskWorkspaceIamBridge,
+    },
+    TaskWorkspaceService,
   ],
-  exports: [AuthenticationApplicationService, ProjectService],
+  exports: [
+    AuthenticationApplicationService,
+    ProjectService,
+    TaskWorkspaceService,
+    TaskWorkspaceRepository,
+  ],
 })
 export class IamModule {}
