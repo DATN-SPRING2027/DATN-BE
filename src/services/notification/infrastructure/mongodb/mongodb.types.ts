@@ -9,6 +9,7 @@ export interface CollectionIndex {
   fields: IndexFields;
   options?: {
     unique?: boolean;
+    sparse?: boolean;
     expireAfterSeconds?: number;
     name?: string;
   };

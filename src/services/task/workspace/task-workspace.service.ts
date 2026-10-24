@@ -7,6 +7,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
@@ -14,6 +15,8 @@ import {
   readCookie,
   validCsrfPair,
 } from '../../iam/application/authentication/authentication.application.service';
+import { NotificationService } from '../../notification/notification.service';
+import { TaskDeadlineNotificationScheduler } from '../../notification/task-deadline-notification.scheduler';
 import {
   TASK_WORKSPACE_IAM_BRIDGE,
   type TaskWorkspaceIamBridgePort,
@@ -66,6 +69,10 @@ export class TaskWorkspaceService {
     private readonly repository: TaskWorkspaceRepository,
     @Inject(TASK_WORKSPACE_IAM_BRIDGE)
     private readonly iamBridge: TaskWorkspaceIamBridgePort,
+    @Optional()
+    private readonly notificationService?: NotificationService,
+    @Optional()
+    private readonly deadlineScheduler?: TaskDeadlineNotificationScheduler,
   ) {}
 
   private assertValidCsrf(
@@ -1049,6 +1056,33 @@ export class TaskWorkspaceService {
       const etag = formatTaskETag(created._id.toHexString(), created.version);
       const location = `/api/v1/tasks/projects/${ctx.projectId}/tasks/${created._id.toHexString()}`;
 
+      if (created.assigneeId && this.notificationService) {
+        await this.notificationService
+          .notifyTaskAssigned({
+            actorId: ctx.actorId,
+            assigneeUserId: created.assigneeId.toHexString(),
+            organizationId: ctx.organizationId,
+            projectId: ctx.projectId,
+            taskId: created._id.toHexString(),
+            taskTitle: created.title,
+            eventId: `create:${created.version}`,
+          })
+          .catch(() => undefined);
+      }
+      if (created.assigneeId && created.dueDate && this.deadlineScheduler) {
+        await this.deadlineScheduler
+          .evaluateSingleTask({
+            id: created._id.toHexString(),
+            organizationId: ctx.organizationId,
+            projectId: ctx.projectId,
+            title: created.title,
+            status: created.status,
+            assigneeId: created.assigneeId.toHexString(),
+            dueDate: created.dueDate,
+          })
+          .catch(() => undefined);
+      }
+
       return {
         statusCode: 201,
         body: responseBody,
@@ -1377,6 +1411,41 @@ export class TaskWorkspaceService {
             [outcome.task._id],
           )
         : new Map<string, WorkspaceSubtaskCounts>();
+
+    if (
+      changedFields.includes('assigneeId') &&
+      outcome.task.assigneeId &&
+      this.notificationService
+    ) {
+      await this.notificationService
+        .notifyTaskAssigned({
+          actorId: ctx.actorId,
+          assigneeUserId: outcome.task.assigneeId.toHexString(),
+          organizationId: ctx.organizationId,
+          projectId: ctx.projectId,
+          taskId: outcome.task._id.toHexString(),
+          taskTitle: outcome.task.title,
+          eventId: `update:${outcome.task.version}`,
+        })
+        .catch(() => undefined);
+    }
+    if (
+      outcome.task.assigneeId &&
+      outcome.task.dueDate &&
+      this.deadlineScheduler
+    ) {
+      await this.deadlineScheduler
+        .evaluateSingleTask({
+          id: outcome.task._id.toHexString(),
+          organizationId: ctx.organizationId,
+          projectId: ctx.projectId,
+          title: outcome.task.title,
+          status: outcome.task.status,
+          assigneeId: outcome.task.assigneeId.toHexString(),
+          dueDate: outcome.task.dueDate,
+        })
+        .catch(() => undefined);
+    }
 
     return {
       statusCode: 200,

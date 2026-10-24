@@ -10,6 +10,9 @@ import { ChatRealtimeGateway } from './controllers/chat-realtime.gateway';
 import { ChatInfrastructureModule } from './infrastructure/chat.infrastructure.module';
 import { ChatIamClient } from './application/chat-iam.client';
 import { ChatRealtimeService } from './application/chat-realtime.service';
+import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
+import { NotificationRealtimeBus } from '../notification/notification-realtime.bus';
+import { NotificationService } from '../notification/notification.service';
 
 @Module({
   imports: [RuntimeConfigModule, ChatInfrastructureModule.register()],
@@ -21,6 +24,9 @@ import { ChatRealtimeService } from './application/chat-realtime.service';
     ChatIamClient,
     ChatRealtimeService,
     ChatRealtimeGateway,
+    NotificationCenterRepository,
+    NotificationRealtimeBus,
+    NotificationService,
   ],
 })
 export class ChatModule {}

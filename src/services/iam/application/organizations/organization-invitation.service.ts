@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   HttpException,
+  Optional,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
@@ -9,6 +10,7 @@ import type {
   AuthenticatedAccountIdentity,
   AuthenticatedIdentity,
 } from '../authentication/authentication.application.service';
+import { NotificationService } from '../../../notification/notification.service';
 import {
   ORGANIZATION_INVITATION_REPOSITORY,
   type OrganizationInvitationRepository,
@@ -50,6 +52,8 @@ export class OrganizationInvitationService {
     private readonly repository: OrganizationInvitationRepository,
     @Inject(ORGANIZATION_INVITATION_READINESS)
     private readonly invitationReadiness: OrganizationInvitationReadiness,
+    @Optional()
+    private readonly notificationService?: NotificationService,
   ) {}
 
   async listMine(actor: AccountActor, page = 1, pageSize = 20) {
@@ -124,15 +128,30 @@ export class OrganizationInvitationService {
       this.invitationReadiness,
       ['A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF', 'A8_COORDINATED_CUTOVER'],
     );
-    return this.repository.acceptForRecipient({
+    const result = await this.repository.acceptForRecipient({
       invitationId,
       actorUserId: actor.id,
-      authenticatedEmail,
+      authenticatedEmail: authenticatedEmail,
       expectedMembershipVersion,
       expectedInvitationVersion,
       readinessReady,
       idempotencyKey,
       now: new Date(),
     });
+
+    if (
+      !result.replayed &&
+      this.notificationService &&
+      result.acknowledgement.membership.status === 'ACTIVE'
+    ) {
+      await this.notificationService.notifyOrganizationMemberAdded({
+        actorId: actor.id,
+        recipientUserId: result.acknowledgement.membership.userId,
+        organizationId: result.acknowledgement.membership.organizationId,
+        eventId: `accept:${result.acknowledgement.invitation.id}`,
+      });
+    }
+
+    return result;
   }
 }

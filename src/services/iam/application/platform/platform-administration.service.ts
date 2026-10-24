@@ -2,8 +2,10 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { NotificationService } from '../../../notification/notification.service';
 import { normalizeMembershipEmail } from '../organizations/organization-membership-command.service';
 import {
   areInvitationReadinessGatesReady,
@@ -82,6 +84,8 @@ export class PlatformAdministrationService {
     private readonly membershipCommands: OrganizationMembershipCommandRepository,
     @Inject(ORGANIZATION_INVITATION_READINESS)
     private readonly invitationReadiness: OrganizationInvitationReadiness,
+    @Optional()
+    private readonly notificationService?: NotificationService,
   ) {}
 
   listOrganizations(page: number, pageSize: number) {
@@ -510,11 +514,28 @@ export class PlatformAdministrationService {
       this.invitationReadiness,
       gates,
     );
-    return this.membershipCommands.executePlatformInvitationCommand({
-      ...input,
-      now: new Date(),
-      invitationReadinessReady,
-    });
+    const result =
+      await this.membershipCommands.executePlatformInvitationCommand({
+        ...input,
+        now: new Date(),
+        invitationReadinessReady,
+      });
+    if (
+      !result.replayed &&
+      this.notificationService &&
+      (input.command.command === 'INVITE' ||
+        input.command.command === 'RESEND') &&
+      result.body.invitation?.id
+    ) {
+      await this.notificationService.notifyOrganizationMemberInvited({
+        actorId: input.actorUserId,
+        recipientEmail:
+          input.command.command === 'INVITE' ? input.command.email : null,
+        organizationId: input.organizationId,
+        invitationId: result.body.invitation.id,
+      });
+    }
+    return result;
   }
 
   listPlatformMemberships(input: PlatformMembershipListInput) {
@@ -564,16 +585,34 @@ export class PlatformAdministrationService {
       !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(input.reasonCode)
     )
       validationFailed();
-    return this.membershipCommands.executePlatformSuspend({
-      actorUserId: input.actorUserId,
-      organizationId: input.organizationId,
-      membershipId: input.membershipId,
-      idempotencyKey: input.idempotencyKey,
-      expectedMembershipVersion: input.expectedMembershipVersion,
-      reasonCode: input.reasonCode,
-      now: new Date(),
-      ...(input.correlationId ? { correlationId: input.correlationId } : {}),
-    });
+    return this.membershipCommands
+      .executePlatformSuspend({
+        actorUserId: input.actorUserId,
+        organizationId: input.organizationId,
+        membershipId: input.membershipId,
+        idempotencyKey: input.idempotencyKey,
+        expectedMembershipVersion: input.expectedMembershipVersion,
+        reasonCode: input.reasonCode,
+        now: new Date(),
+        ...(input.correlationId ? { correlationId: input.correlationId } : {}),
+      })
+      .then(async (result) => {
+        const bodyMembership =
+          'membership' in result.body ? result.body.membership : undefined;
+        if (
+          !result.replayed &&
+          this.notificationService &&
+          bodyMembership?.userId
+        ) {
+          await this.notificationService.notifyOrganizationMemberRemoved({
+            actorId: input.actorUserId,
+            recipientUserId: bodyMembership.userId,
+            organizationId: input.organizationId,
+            eventId: `platform_suspend:${bodyMembership.id}:${bodyMembership.version}`,
+          });
+        }
+        return result;
+      });
   }
 }
 
