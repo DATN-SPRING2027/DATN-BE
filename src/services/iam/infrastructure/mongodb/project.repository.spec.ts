@@ -20,6 +20,14 @@ function query<T>(value: T) {
   return result;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function fixture(
   options: {
     activeOrganization?: boolean;
@@ -109,6 +117,17 @@ function fixture(
     ),
   };
   const teams = { create: jest.fn().mockResolvedValue([]) };
+  const projectListQuery = {
+    sort: jest.fn(),
+    skip: jest.fn(),
+    limit: jest.fn(),
+    lean: jest.fn(),
+    exec: jest.fn().mockResolvedValue([project]),
+  };
+  projectListQuery.sort.mockReturnValue(projectListQuery);
+  projectListQuery.skip.mockReturnValue(projectListQuery);
+  projectListQuery.limit.mockReturnValue(projectListQuery);
+  projectListQuery.lean.mockReturnValue(projectListQuery);
   const projects = {
     create: jest.fn().mockResolvedValue([{ toObject: () => project }]),
     findOne: jest.fn((filter?: { visibility?: 'PRIVATE' | 'PUBLIC' }) =>
@@ -118,13 +137,7 @@ function fixture(
           : project,
       ),
     ),
-    find: jest.fn().mockReturnValue({
-      sort: jest.fn().mockReturnThis(),
-      skip: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockReturnThis(),
-      exec: jest.fn().mockResolvedValue([project]),
-    }),
+    find: jest.fn().mockReturnValue(projectListQuery),
     countDocuments: jest
       .fn()
       .mockReturnValue({ exec: jest.fn().mockResolvedValue(1) }),
@@ -160,6 +173,7 @@ function fixture(
     projectMemberships,
     teams,
     projects,
+    projectListQuery,
     audit,
     session,
     connection,
@@ -298,6 +312,119 @@ describe('MongoProjectRepository visibility', () => {
     };
     expect(projects.find).toHaveBeenCalledWith(expectedFilter);
     expect(projects.countDocuments).toHaveBeenCalledWith(expectedFilter);
+  });
+
+  it('uses one lookahead row instead of counting when total metadata is omitted', async () => {
+    const { repository, projects, projectListQuery } = fixture();
+    const result = await repository.listVisible(orgId, userId, {
+      page: 1,
+      pageSize: 2,
+      includeTotal: false,
+    });
+
+    expect(Array.isArray(result.data)).toBe(true);
+    expect('hasMore' in result && result.hasMore).toBe(false);
+    expect(result).not.toHaveProperty('totalItems');
+    expect(projects.countDocuments).not.toHaveBeenCalled();
+    expect(projectListQuery.limit).toHaveBeenCalledWith(3);
+  });
+
+  it('trims the lookahead row and reports hasMore for a full page', async () => {
+    const { repository, projects } = fixture();
+    const rows = [
+      {
+        _id: new Types.ObjectId(projectId),
+        organizationId: new Types.ObjectId(orgId),
+        name: 'One',
+        code: 'ONE',
+        visibility: 'PRIVATE',
+        status: 'ACTIVE',
+        createdBy: new Types.ObjectId(userId),
+        createdAt: new Date('2026-09-01T00:00:00Z'),
+        updatedAt: new Date('2026-09-01T00:00:00Z'),
+      },
+      {
+        _id: new Types.ObjectId(otherProjectId),
+        organizationId: new Types.ObjectId(orgId),
+        name: 'Two',
+        code: 'TWO',
+        visibility: 'PRIVATE',
+        status: 'ACTIVE',
+        createdBy: new Types.ObjectId(userId),
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        updatedAt: new Date('2026-08-01T00:00:00Z'),
+      },
+      {
+        _id: new Types.ObjectId('ffffffffffffffffffffffff'),
+        organizationId: new Types.ObjectId(orgId),
+        name: 'Three',
+        code: 'THREE',
+        visibility: 'PRIVATE',
+        status: 'ACTIVE',
+        createdBy: new Types.ObjectId(userId),
+        createdAt: new Date('2026-07-01T00:00:00Z'),
+        updatedAt: new Date('2026-07-01T00:00:00Z'),
+      },
+    ];
+    const listQuery = {
+      sort: jest.fn(),
+      skip: jest.fn(),
+      limit: jest.fn(),
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue(rows),
+    };
+    listQuery.sort.mockReturnValue(listQuery);
+    listQuery.skip.mockReturnValue(listQuery);
+    listQuery.limit.mockReturnValue(listQuery);
+    listQuery.lean.mockReturnValue(listQuery);
+    projects.find.mockReturnValueOnce(listQuery);
+
+    const result = await repository.listVisible(orgId, userId, {
+      page: 1,
+      pageSize: 2,
+      includeTotal: false,
+    });
+
+    expect(result.data.map((row) => row.id)).toEqual([
+      projectId,
+      otherProjectId,
+    ]);
+    expect(result).toMatchObject({ hasMore: true });
+    expect(projects.countDocuments).not.toHaveBeenCalled();
+    expect(listQuery.limit).toHaveBeenCalledWith(3);
+  });
+
+  it('loads role assignments and Project memberships concurrently for the read scope', async () => {
+    const { repository, assignments, projectMemberships } = fixture();
+    const pendingAssignments = deferred<unknown[]>();
+    const pendingProjectMemberships = deferred<unknown[]>();
+    const assignmentQuery = query<unknown[]>([]);
+    const membershipQuery = query<unknown[]>([]);
+    assignmentQuery.exec.mockReturnValue(pendingAssignments.promise);
+    membershipQuery.exec.mockReturnValue(pendingProjectMemberships.promise);
+    assignments.find.mockReturnValueOnce(assignmentQuery);
+    projectMemberships.find.mockReturnValueOnce(membershipQuery);
+
+    const result = repository.listVisible(orgId, userId, {
+      page: 1,
+      pageSize: 20,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(assignments.find).toHaveBeenCalledTimes(1);
+    expect(projectMemberships.find).toHaveBeenCalledTimes(1);
+    pendingAssignments.resolve([
+      {
+        roleId,
+        roleCode: 'MEMBER',
+        projectId: new Types.ObjectId(projectId),
+      },
+    ]);
+    pendingProjectMemberships.resolve([
+      { projectId: new Types.ObjectId(projectId) },
+    ]);
+    const page = await result;
+    expect(Array.isArray(page.data)).toBe(true);
   });
 
   it.each([

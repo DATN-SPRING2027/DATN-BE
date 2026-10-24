@@ -154,13 +154,28 @@ describe('ProjectController trusted Organization boundary', () => {
       undefined,
       undefined,
       actor.organizationId,
-      { page: '2', pageSize: '5', status: 'ACTIVE' },
+      {
+        page: '2',
+        pageSize: '5',
+        status: 'ACTIVE',
+        includeTotal: 'false',
+      },
       response,
     );
     expect(projects.list).toHaveBeenCalledWith(actor, {
       page: 2,
       pageSize: 5,
       status: 'ACTIVE',
+      includeTotal: false,
     });
+    await expect(
+      controller.list(
+        undefined,
+        undefined,
+        actor.organizationId,
+        { includeTotal: 'no' },
+        response,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });

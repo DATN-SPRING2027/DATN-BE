@@ -14,6 +14,28 @@ import {
   type ProjectRepository,
 } from './project.repository';
 
+export interface ProjectListPageWithTotals {
+  data: ProjectRecord[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+}
+
+export interface ProjectListPageWithoutTotals {
+  data: ProjectRecord[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+  };
+}
+
+export type ProjectListPage =
+  ProjectListPageWithTotals | ProjectListPageWithoutTotals;
+
 @Injectable()
 export class ProjectService {
   constructor(
@@ -66,7 +88,22 @@ export class ProjectService {
     return project;
   }
 
-  async list(actor: AuthenticatedIdentity, query: ProjectListQuery) {
+  list(
+    actor: AuthenticatedIdentity,
+    query: ProjectListQuery & { includeTotal?: true },
+  ): Promise<ProjectListPageWithTotals>;
+  list(
+    actor: AuthenticatedIdentity,
+    query: ProjectListQuery & { includeTotal: false },
+  ): Promise<ProjectListPageWithoutTotals>;
+  list(
+    actor: AuthenticatedIdentity,
+    query: ProjectListQuery,
+  ): Promise<ProjectListPage>;
+  async list(
+    actor: AuthenticatedIdentity,
+    query: ProjectListQuery,
+  ): Promise<ProjectListPage> {
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
@@ -93,6 +130,16 @@ export class ProjectService {
       actor.id,
       { ...query, includeTotal: false },
     );
+    if (result.totalItems === undefined) {
+      return {
+        data: result.data,
+        pagination: {
+          page: query.page,
+          pageSize: query.pageSize,
+          hasMore: result.hasMore ?? false,
+        },
+      };
+    }
     return {
       data: result.data,
       pagination: {

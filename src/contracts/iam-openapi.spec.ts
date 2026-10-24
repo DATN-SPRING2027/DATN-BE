@@ -96,6 +96,28 @@ describe('IAM OpenAPI contract', () => {
     }
   });
 
+  it('documents optional project-list totals with a lookahead pagination response', () => {
+    const operation = contract.paths['/api/v1/iam/projects']?.get;
+    const includeTotal = operation?.parameters?.find(
+      (parameter) => parameter.name === 'includeTotal',
+    );
+    const projectPagination = contract.components.schemas.ProjectPagination;
+
+    expect(includeTotal).toMatchObject({
+      in: 'query',
+      schema: { type: 'boolean', default: true },
+    });
+    expect(projectPagination).toMatchObject({
+      oneOf: [
+        { required: ['page', 'pageSize', 'totalItems', 'totalPages'] },
+        { required: ['page', 'pageSize', 'hasMore'] },
+      ],
+    });
+    expect(projectPagination.properties).toMatchObject({
+      hasMore: { type: 'boolean' },
+    });
+  });
+
   it('defines unique operation IDs', () => {
     const operationIds = operations(contract).map(
       (operation) => operation.operationId,
