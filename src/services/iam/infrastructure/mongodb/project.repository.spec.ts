@@ -180,18 +180,27 @@ describe('MongoProjectRepository visibility', () => {
       q: 'QA.*',
     });
 
-    expect(projects.find).toHaveBeenCalledWith(
-      expect.objectContaining({
-        $and: [
-          {
-            $or: [
-              { name: { $regex: 'QA\\.\\*', $options: 'i' } },
-              { code: { $regex: 'QA\\.\\*', $options: 'i' } },
-            ],
-          },
-        ],
-      }),
-    );
+    const findCalls = projects.find.mock.calls as unknown as Array<
+      [
+        {
+          $and: Array<{
+            $or: Array<{
+              name?: { $regex: string; $options: string };
+              code?: { $regex: string; $options: string };
+            }>;
+          }>;
+        },
+      ]
+    >;
+    const filter = findCalls[0]?.[0];
+    const byName = filter.$and[0]?.$or[0]?.name;
+    const byCode = filter.$and[0]?.$or[1]?.code;
+    expect(byName?.$options).toBe('i');
+    expect(byName?.$regex).toContain('á');
+    expect(byName?.$regex).toContain('\\x{0300}-\\x{036f}');
+    expect(byName?.$regex).toContain('\\.');
+    expect(byName?.$regex).toContain('\\*');
+    expect(byCode).toEqual(byName);
   });
 
   it('allows organization ADMIN to read metadata without ProjectMembership', async () => {
