@@ -59,7 +59,8 @@ for (const [start, end] of [
     const character = String.fromCodePoint(codePoint);
     const normalized = normalizeProjectSearch(character);
     if (!/^[a-z]$/.test(normalized)) continue;
-    const variants = projectSearchCharacterVariants.get(normalized) ?? new Set();
+    const variants =
+      projectSearchCharacterVariants.get(normalized) ?? new Set();
     variants.add(character);
     variants.add(character.toUpperCase());
     projectSearchCharacterVariants.set(normalized, variants);
