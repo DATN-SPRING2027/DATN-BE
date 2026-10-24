@@ -11,8 +11,12 @@ import { ChatInfrastructureModule } from './infrastructure/chat.infrastructure.m
 import { ChatIamClient } from './application/chat-iam.client';
 import { ChatRealtimeService } from './application/chat-realtime.service';
 import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
-import { NotificationRealtimeBus } from '../notification/notification-realtime.bus';
+import {
+  NOTIFICATION_REALTIME_PUBLISHER,
+  NotificationRealtimeBus,
+} from '../notification/notification-realtime.bus';
 import { NotificationService } from '../notification/notification.service';
+import { RedisService } from './infrastructure/redis/redis.service';
 
 @Module({
   imports: [RuntimeConfigModule, ChatInfrastructureModule.register()],
@@ -25,6 +29,7 @@ import { NotificationService } from '../notification/notification.service';
     ChatRealtimeService,
     ChatRealtimeGateway,
     NotificationCenterRepository,
+    { provide: NOTIFICATION_REALTIME_PUBLISHER, useExisting: RedisService },
     NotificationRealtimeBus,
     NotificationService,
   ],

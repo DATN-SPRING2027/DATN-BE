@@ -118,7 +118,10 @@ import {
 import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
 import { NotificationCenterController } from '../notification/notification.controller';
 import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
-import { NotificationRealtimeBus } from '../notification/notification-realtime.bus';
+import {
+  NOTIFICATION_REALTIME_PUBLISHER,
+  NotificationRealtimeBus,
+} from '../notification/notification-realtime.bus';
 import { NotificationService } from '../notification/notification.service';
 import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline-notification.scheduler';
 import { ProjectWorkNotesController } from '../capture/work-notes.controller';
@@ -298,6 +301,7 @@ import { ProjectWorkNotesService } from '../capture/work-notes.service';
     },
     TaskWorkspaceService,
     NotificationCenterRepository,
+    { provide: NOTIFICATION_REALTIME_PUBLISHER, useExisting: RedisService },
     NotificationRealtimeBus,
     NotificationService,
     TaskDeadlineNotificationScheduler,

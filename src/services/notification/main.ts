@@ -1,3 +1,4 @@
+import '../../common/observability/register-otel';
 import { NotificationModule } from './notification.module';
 import { bootstrapService } from '../service-bootstrap';
 import { NOTIFICATION_PERSISTENCE } from './infrastructure/persistence';

@@ -1,3 +1,4 @@
+import '../../common/observability/register-otel';
 import { CaptureModule } from './capture.module';
 import { bootstrapService } from '../service-bootstrap';
 import { CAPTURE_PERSISTENCE } from './infrastructure/persistence';

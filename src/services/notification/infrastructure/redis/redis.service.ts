@@ -45,6 +45,12 @@ export class RedisService implements OnModuleDestroy {
   revokeToken(tokenHash: string, ttlSeconds: number): Promise<void> {
     return this.set(`auth:blacklist:${tokenHash}`, '1', ttlSeconds);
   }
+
+  async publish(channel: string, value: string): Promise<void> {
+    await this.connect();
+    await this.client.publish(channel, value);
+  }
+
   async isTokenRevoked(tokenHash: string): Promise<boolean> {
     return (await this.get(`auth:blacklist:${tokenHash}`)) === '1';
   }

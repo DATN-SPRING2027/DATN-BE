@@ -36,6 +36,54 @@ interface ProjectDocument {
   createdAt: Date;
   updatedAt: Date;
 }
+
+function escapeProjectSearch(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeProjectSearch(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+const projectSearchCharacterVariants = new Map<string, Set<string>>();
+for (const [start, end] of [
+  [0x00c0, 0x024f],
+  [0x1e00, 0x1eff],
+] as const) {
+  for (let codePoint = start; codePoint <= end; codePoint += 1) {
+    const character = String.fromCodePoint(codePoint);
+    const normalized = normalizeProjectSearch(character);
+    if (!/^[a-z]$/.test(normalized)) continue;
+    const variants =
+      projectSearchCharacterVariants.get(normalized) ?? new Set();
+    variants.add(character);
+    variants.add(character.toUpperCase());
+    projectSearchCharacterVariants.set(normalized, variants);
+  }
+}
+projectSearchCharacterVariants.get('d')?.add('đ').add('Đ');
+
+function escapeProjectSearchCharacterClass(value: string): string {
+  return value.replace(/[\\\]^-]/g, '\\$&');
+}
+
+function projectSearchPattern(value: string): string {
+  return [...normalizeProjectSearch(value)]
+    .map((character) => {
+      const variants = projectSearchCharacterVariants.get(character);
+      if (!variants) return escapeProjectSearch(character);
+      const characterClass = [...variants]
+        .map(escapeProjectSearchCharacterClass)
+        .join('');
+      return `[${characterClass}][\\x{0300}-\\x{036f}]*`;
+    })
+    .join('');
+}
 interface MembershipDocument {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
@@ -335,14 +383,20 @@ export class MongoProjectRepository implements ProjectRepository {
     userId: string,
     query: ProjectListQuery,
   ) {
+    const includeTotal = query.includeTotal !== false;
     const scope = await this.visibleScope(organizationId, userId);
-    if (!scope) return { data: [], totalItems: 0 };
+    if (!scope)
+      return includeTotal
+        ? { data: [], totalItems: 0 }
+        : { data: [], hasMore: false };
     if (
       !scope.all &&
       !scope.includePublicProjects &&
       scope.projectIds.length === 0
     )
-      return { data: [], totalItems: 0 };
+      return includeTotal
+        ? { data: [], totalItems: 0 }
+        : { data: [], hasMore: false };
     const filter = {
       organizationId: new Types.ObjectId(organizationId),
       ...(scope.all
@@ -358,6 +412,28 @@ export class MongoProjectRepository implements ProjectRepository {
             ],
           }),
       ...(query.status ? { status: query.status } : {}),
+      ...(query.q
+        ? {
+            $and: [
+              {
+                $or: [
+                  {
+                    name: {
+                      $regex: projectSearchPattern(query.q),
+                      $options: 'i',
+                    },
+                  },
+                  {
+                    code: {
+                      $regex: projectSearchPattern(query.q),
+                      $options: 'i',
+                    },
+                  },
+                ],
+              },
+            ],
+          }
+        : {}),
     };
     const projects = this.model<ProjectDocument>('projects');
     const [rows, totalItems] = await Promise.all([
@@ -365,24 +441,32 @@ export class MongoProjectRepository implements ProjectRepository {
         .find(filter)
         .sort({ createdAt: -1, _id: -1 })
         .skip((query.page - 1) * query.pageSize)
-        .limit(query.pageSize)
+        .limit(query.pageSize + (includeTotal ? 0 : 1))
         .lean()
         .exec(),
-      projects.countDocuments(filter).exec(),
+      includeTotal
+        ? projects.countDocuments(filter).exec()
+        : Promise.resolve(undefined),
     ]);
-    const baseRecords = rows.map((row) => this.record(row));
+    const pageRows = rows.slice(0, query.pageSize);
+    const hasMore = !includeTotal && rows.length > query.pageSize;
+    const baseRecords = pageRows.map((row) => this.record(row));
     const usersModel = this.connection?.models[name('users')] as
       Model<UserSummaryDocument> | undefined;
-    if (!usersModel || rows.length === 0) {
-      return { data: baseRecords, totalItems };
+    if (!usersModel || pageRows.length === 0) {
+      return includeTotal
+        ? { data: baseRecords, totalItems: totalItems ?? 0 }
+        : { data: baseRecords, hasMore };
     }
     const enriched = await this.enrichProjectGovernanceSummaries(
       new Types.ObjectId(organizationId),
-      rows,
+      pageRows,
       baseRecords,
       usersModel,
     );
-    return { data: enriched, totalItems };
+    return includeTotal
+      ? { data: enriched, totalItems: totalItems ?? 0 }
+      : { data: enriched, hasMore };
   }
 
   private async enrichProjectGovernanceSummaries(

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './common/observability/register-otel';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
