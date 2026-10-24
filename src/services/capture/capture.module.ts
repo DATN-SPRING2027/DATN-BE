@@ -2,11 +2,28 @@ import { Module } from '@nestjs/common';
 import { RuntimeConfigModule } from '../../config/runtime-config.module';
 import { CaptureApplicationService } from './application/capture.service';
 import { CaptureController } from './controllers/capture.controller';
+import { WorkNotesController } from './controllers/work-notes.controller';
 import { CaptureInfrastructureModule } from './infrastructure/capture.infrastructure.module';
+import { WorkNotesAuthorizationService } from './application/work-notes-authorization.service';
+import { WorkNotesService } from './application/work-notes.service';
+import { WorkReportOverdueScheduler } from './application/work-report-overdue.scheduler';
+import { ProjectReportRosterService } from '../iam/application/projects/project-report-roster.service';
+import { IamInfrastructureModule } from '../iam/infrastructure/iam.infrastructure.module';
 
 @Module({
-  imports: [RuntimeConfigModule, CaptureInfrastructureModule.register()],
-  controllers: [CaptureController],
-  providers: [CaptureApplicationService],
+  imports: [
+    RuntimeConfigModule,
+    IamInfrastructureModule.register(),
+    CaptureInfrastructureModule.register(),
+  ],
+  controllers: [CaptureController, WorkNotesController],
+  providers: [
+    CaptureApplicationService,
+    WorkNotesAuthorizationService,
+    WorkNotesService,
+    ProjectReportRosterService,
+    WorkReportOverdueScheduler,
+  ],
+  exports: [WorkNotesService],
 })
 export class CaptureModule {}

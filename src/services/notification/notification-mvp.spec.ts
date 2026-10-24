@@ -11,7 +11,6 @@ import { OrganizationInvitationService } from '../iam/application/organizations/
 import { ProjectService } from '../iam/application/projects/project.service';
 import { ProjectAccessService } from '../iam/application/projects/project-access.service';
 import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
-import { ProjectWorkNotesService } from '../capture/work-notes.service';
 import { ChatApplicationService } from '../chat/application/chat.service';
 import type { ConfigService } from '@nestjs/config';
 
@@ -487,60 +486,95 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
     });
   });
 
-  describe('Work Note Mention & Chat Mention Rules', () => {
-    it('creates WORK_NOTE_MENTION for mentioned users (excluding author) and enforces deleted note state', async () => {
-      const mockIamBridge = {
-        resolveProjectContext: jest.fn(async () => ({
-          actorId: adminId,
-          actorName: 'Admin',
+  describe('Work Note target resolution & Chat Mention Rules', () => {
+    it('resolves only confirmed Task Notes with a Task association', async () => {
+      let taskNoteAvailable = true;
+      const noteId = new Types.ObjectId().toHexString();
+      const workNotes = {
+        findOne: jest.fn(async () =>
+          taskNoteAvailable
+            ? {
+                _id: new Types.ObjectId(noteId),
+                type: 'TASK_NOTE',
+                status: 'CONFIRMED',
+                taskId: new Types.ObjectId(taskId),
+                deletedAt: null,
+              }
+            : null,
+        ),
+      };
+      const collections: Record<string, { findOne: jest.Mock }> = {
+        projects: {
+          findOne: jest.fn(async () => ({
+            _id: new Types.ObjectId(projectId),
+            organizationId: new Types.ObjectId(orgId),
+            visibility: 'PRIVATE',
+            status: 'ACTIVE',
+            deletedAt: null,
+          })),
+        },
+        organization_memberships: {
+          findOne: jest.fn(async () => ({ status: 'ACTIVE' })),
+        },
+        role_assignments: { findOne: jest.fn(async () => null) },
+        user_role_assignments: { findOne: jest.fn(async () => null) },
+        project_memberships: {
+          findOne: jest.fn(async () => ({ status: 'ACTIVE' })),
+        },
+        work_notes: workNotes,
+      };
+      const connection = {
+        useDb: jest.fn(() => ({
+          models: {},
+          model: undefined,
+          db: { collection: (name: string) => collections[name] ?? null },
+        })),
+      };
+      const repository = new NotificationCenterRepository(connection as never);
+      const notification = {
+        id: new Types.ObjectId().toHexString(),
+        recipientId: userBId,
+        actorId: adminId,
+        organizationId: orgId,
+        projectId,
+        taskId,
+        noteId,
+        conversationId: null,
+        type: 'WORK_NOTE_MENTION',
+        title: 'Task Note mention',
+        message: 'A Task Note was mentioned.',
+        target: {
+          kind: 'WORK_NOTE',
+          url: `/projects/${projectId}/work-notes?noteId=${noteId}`,
           organizationId: orgId,
           projectId,
-          projectCode: 'PRJ',
-          projectName: 'Phoenix',
-          actorRole: 'ADMIN' as const,
-        })),
-        isActiveProjectMember: jest.fn(async () => true),
-        resolveUsersById: jest.fn(async () => new Map()),
-      };
-      const workNotesService = new ProjectWorkNotesService(
-        mockIamBridge as never,
-        service,
-      );
-
-      const note = await workNotesService.createProjectWorkNote({
-        authorizationHeader: `Bearer ${adminId}`,
-        projectId,
-        body: {
-          title: 'Architecture Sync Note',
-          content: 'Discussed notification center with team.',
-          summary: 'Notification MVP design',
-          mentionUserIds: [adminId, userBId, userBId],
+          taskId,
+          noteId,
         },
-      });
+        readAt: null,
+        createdAt: new Date().toISOString(),
+      } as never;
 
-      // Author (adminId) does not receive self-mention; userB receives exactly 1 WORK_NOTE_MENTION
-      expect((await service.listForUser(adminId)).items).toHaveLength(0);
-      const userBList = await service.listForUser(userBId);
-      expect(userBList.items).toHaveLength(1);
-      expect(userBList.items[0].type).toBe('WORK_NOTE_MENTION');
-      expect(userBList.items[0].target?.url).toBe(
-        `/projects/${projectId}/work-notes?noteId=${encodeURIComponent(note.id)}`,
+      const available = await repository.resolveTargetAccess(
+        userBId,
+        notification,
+      );
+      expect(available.available).toBe(true);
+      expect(workNotes.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'TASK_NOTE',
+          status: 'CONFIRMED',
+          taskId: { $type: 'objectId' },
+        }),
       );
 
-      // Delete the work note -> getProjectWorkNote throws 404 WORK_NOTE_NOT_FOUND with safe message
-      await workNotesService.deleteProjectWorkNote({
-        authorizationHeader: `Bearer ${adminId}`,
-        projectId,
-        noteId: note.id,
-      });
-
-      await expect(
-        workNotesService.getProjectWorkNote({
-          authorizationHeader: `Bearer ${userBId}`,
-          projectId,
-          noteId: note.id,
-        }),
-      ).rejects.toThrow(NotFoundException);
+      taskNoteAvailable = false;
+      const unavailable = await repository.resolveTargetAccess(
+        userBId,
+        notification,
+      );
+      expect(unavailable.available).toBe(false);
+      expect(unavailable.reason).toBe('DELETED');
     });
 
     it('creates CHAT_MENTION when a chat message mentions a user, and does NOT create notification for normal chat messages', async () => {

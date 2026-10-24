@@ -1055,6 +1055,9 @@ export class NotificationCenterRepository {
               notes.findOne({
                 _id: new Types.ObjectId(noteId),
                 projectId: new Types.ObjectId(projectId),
+                type: 'TASK_NOTE',
+                status: 'CONFIRMED',
+                taskId: { $type: 'objectId' },
               }),
           );
           if (

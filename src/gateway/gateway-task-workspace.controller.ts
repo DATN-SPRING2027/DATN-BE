@@ -1,6 +1,5 @@
 import {
   Controller,
-  Delete,
   GatewayTimeoutException,
   Get,
   Patch,
@@ -155,37 +154,10 @@ export class GatewayTaskWorkspaceController {
     return this.forward(request, response);
   }
 
-  @Get('projects/:projectId/work-notes')
-  listProjectWorkNotes(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
-  @Get('projects/:projectId/work-notes/:noteId')
-  getProjectWorkNote(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
-  @Post('projects/:projectId/work-notes')
-  createProjectWorkNote(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
-  @Patch('projects/:projectId/work-notes/:noteId')
-  updateProjectWorkNote(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
-  @Delete('projects/:projectId/work-notes/:noteId')
-  deleteProjectWorkNote(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
   private async forward(request: Request, response: Response): Promise<void> {
     response.setHeader('cache-control', 'no-store');
     const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
-    const isIamHostedRoute =
-      path.startsWith('/internal/notifications') ||
-      /^\/internal\/projects\/[^/]+\/work-notes(\/|$|\?)/.test(path);
+    const isIamHostedRoute = path.startsWith('/internal/notifications');
     const baseUrl = isIamHostedRoute
       ? this.config.getOrThrow<string>('IAM_SERVICE_URL')
       : ((typeof this.config.get === 'function'

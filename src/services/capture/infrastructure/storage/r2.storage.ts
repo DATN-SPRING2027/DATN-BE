@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -19,6 +20,42 @@ export class R2Storage {
     this.accessKeyId = config.get<string>('R2_ACCESS_KEY_ID');
     this.secretAccessKey = config.get<string>('R2_SECRET_ACCESS_KEY');
     this.bucket = config.get<string>('R2_BUCKET');
+  }
+
+  isConfigured(): boolean {
+    return Boolean(
+      this.endpoint && this.accessKeyId && this.secretAccessKey && this.bucket,
+    );
+  }
+
+  async putObject(
+    key: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    await this.client().send(
+      new PutObjectCommand({
+        Bucket: this.bucketName(),
+        Key: key,
+        Body: body,
+        ContentLength: body.length,
+        ContentType: contentType,
+      }),
+    );
+  }
+
+  async getObject(key: string): Promise<Buffer> {
+    const result = await this.client().send(
+      new GetObjectCommand({ Bucket: this.bucketName(), Key: key }),
+    );
+    if (!result.Body) throw new Error('File is unavailable');
+    return Buffer.from(await result.Body.transformToByteArray());
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    await this.client().send(
+      new DeleteObjectCommand({ Bucket: this.bucketName(), Key: key }),
+    );
   }
 
   createUploadUrl(

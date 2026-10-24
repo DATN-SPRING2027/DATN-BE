@@ -124,8 +124,6 @@ import {
 } from '../notification/notification-realtime.bus';
 import { NotificationService } from '../notification/notification.service';
 import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline-notification.scheduler';
-import { ProjectWorkNotesController } from '../capture/work-notes.controller';
-import { ProjectWorkNotesService } from '../capture/work-notes.service';
 
 // C-04 TQ-05/07/08 remain conditional. Keep Team runtime unwired until the
 // contract closes.
@@ -146,7 +144,6 @@ import { ProjectWorkNotesService } from '../capture/work-notes.service';
     ChatCandidateController,
     TaskWorkspaceController,
     NotificationCenterController,
-    ProjectWorkNotesController,
   ],
   providers: [
     IamApplicationService,
@@ -305,7 +302,6 @@ import { ProjectWorkNotesService } from '../capture/work-notes.service';
     NotificationRealtimeBus,
     NotificationService,
     TaskDeadlineNotificationScheduler,
-    ProjectWorkNotesService,
   ],
   exports: [
     AuthenticationApplicationService,
@@ -316,7 +312,6 @@ import { ProjectWorkNotesService } from '../capture/work-notes.service';
     NotificationCenterRepository,
     NotificationRealtimeBus,
     TaskDeadlineNotificationScheduler,
-    ProjectWorkNotesService,
   ],
 })
 export class IamModule {}
