@@ -149,6 +149,11 @@ function parseInvite(body: unknown): OrganizationMembershipCommand {
     (!projectIds || projectIds.length === 0)
   )
     return validationFailed();
+  if (
+    projectRoleCode === 'TEAM_LEADER' &&
+    (accessScope !== 'SPECIFIC_PROJECTS' || !projectIds?.length)
+  )
+    return validationFailed();
 
   let message: string | undefined;
   if (record.message !== undefined) {

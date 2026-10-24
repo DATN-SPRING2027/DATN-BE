@@ -234,6 +234,27 @@ describe('OrganizationMembershipCommandController', () => {
     );
   });
 
+  it('rejects a leader invitation without a specific project', async () => {
+    await expect(
+      controller.invite(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'stable-idempotency-key',
+        'request-id',
+        organizationId,
+        {
+          email: 'leader@example.test',
+          reasonCode: 'ACCESS_REQUEST',
+          projectRoleCode: 'TEAM_LEADER',
+          accessScope: 'ORGANIZATION',
+        },
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(commands.execute).not.toHaveBeenCalled();
+  });
+
   it('requires matching CSRF cookie and header before sending a command', async () => {
     await expect(
       controller.invite(

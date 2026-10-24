@@ -403,6 +403,12 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
         }
         const targetRoleCode: 'ADMIN' | 'MEMBER' =
           invitedRoleCode === 'ADMIN' ? 'ADMIN' : 'MEMBER';
+        if (
+          invitedProjectRoleCode === 'TEAM_LEADER' &&
+          (invitedAccessScope !== 'SPECIFIC_PROJECTS' ||
+            invitedProjectIds.length === 0)
+        )
+          throw new ConflictException({ code: 'INVITATION_NOT_ACCEPTABLE' });
         const targetRole = await this.model<RoleDocument>('roles')
           .findOne({ code: targetRoleCode, isSystem: true })
           .session(session)
@@ -471,8 +477,7 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
 
         const shouldProvisionProjects =
           invitedProjectIds.length > 0 ||
-          invitedAccessScope === 'SPECIFIC_PROJECTS' ||
-          invitedProjectRoleCode === 'TEAM_LEADER';
+          invitedAccessScope === 'SPECIFIC_PROJECTS';
         if (shouldProvisionProjects) {
           const candidateObjectIds = [
             ...new Set(invitedProjectIds.map((id) => id.toLowerCase())),
@@ -498,6 +503,17 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
               .lean()
               .exec();
             targetProjectIds = activeProjects.map((p) => p._id);
+            if (
+              candidateObjectIds.length > 0 &&
+              targetProjectIds.length !== candidateObjectIds.length
+            )
+              throw new ConflictException({
+                code: 'INVITATION_NOT_ACCEPTABLE',
+              });
+          } else if (invitedProjectRoleCode === 'TEAM_LEADER') {
+            throw new ServiceUnavailableException({
+              code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+            });
           } else {
             targetProjectIds = candidateObjectIds;
           }

@@ -346,6 +346,12 @@ export class OrganizationMembershipCommandService {
         (!normalizedProjectIds || normalizedProjectIds.length === 0)
       )
         validationFailed();
+      if (
+        command.projectRoleCode === 'TEAM_LEADER' &&
+        (command.accessScope !== 'SPECIFIC_PROJECTS' ||
+          !normalizedProjectIds?.length)
+      )
+        validationFailed();
       let normalizedMessage: string | undefined;
       if (command.message !== undefined) {
         if (typeof command.message !== 'string' || command.message.length > 500)

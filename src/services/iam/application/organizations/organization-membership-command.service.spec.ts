@@ -115,6 +115,25 @@ describe('OrganizationMembershipCommandService', () => {
     expect(readiness.isReady.mock.calls[1]?.[0]).toBe('A8_COORDINATED_CUTOVER');
   });
 
+  it.each([
+    { accessScope: 'ORGANIZATION' },
+    { accessScope: 'SPECIFIC_PROJECTS' },
+  ])(
+    'requires selected projects for a leader invitation: %o',
+    async (scope) => {
+      await expect(
+        service.execute(actor, organizationId, 'stable-idempotency-key', {
+          command: 'INVITE',
+          email: 'leader@example.test',
+          reasonCode: 'ACCESS_REQUEST',
+          projectRoleCode: 'TEAM_LEADER',
+          ...scope,
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(repository.execute).not.toHaveBeenCalled();
+    },
+  );
+
   it('checks only A8 for CANCEL and passes the fail-closed result to persistence', async () => {
     readiness.isReady.mockImplementation((gate) =>
       Promise.resolve(gate !== 'A8_COORDINATED_CUTOVER'),

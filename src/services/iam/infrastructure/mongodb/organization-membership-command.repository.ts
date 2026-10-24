@@ -6,6 +6,7 @@ import {
   InternalServerErrorException,
   Optional,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -1303,6 +1304,34 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       throw new ConflictException({ code: 'USE_RESUME' });
     if (existingMembership?.status === 'REMOVED')
       throw new ConflictException({ code: 'USE_REINVITE' });
+
+    if (command.projectRoleCode === 'TEAM_LEADER') {
+      const projectIds = command.projectIds;
+      if (!projectIds?.length || new Set(projectIds).size !== projectIds.length)
+        throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+      const projectsModel = this.optionalModel<ProjectDocument>('projects');
+      if (typeof projectsModel?.find !== 'function')
+        throw new ServiceUnavailableException({
+          code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+        });
+      const selectedProjects = await projectsModel
+        .find(
+          {
+            _id: {
+              $in: projectIds.map((id) => new Types.ObjectId(id)),
+            },
+            organizationId,
+            status: 'ACTIVE',
+            $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
+          },
+          { _id: 1 },
+        )
+        .session(session)
+        .lean()
+        .exec();
+      if (selectedProjects.length !== projectIds.length)
+        throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+    }
 
     const pending = await this.invitations()
       .findOne({ organizationId, email: command.email, status: 'PENDING' })
