@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import type { Connection } from 'mongoose';
+import type { ClientSession, Connection } from 'mongoose';
 import { CAPTURE_PERSISTENCE } from '../persistence';
 
 export interface OutboxEventInput {
@@ -17,11 +17,19 @@ export class OutboxService {
     private readonly connection: Connection,
   ) {}
 
-  async append(event: OutboxEventInput): Promise<void> {
-    await this.connection.collection('outbox_events').insertOne({
-      ...event,
-      status: 'PENDING',
-      occurredAt: new Date(),
-    });
+  async append(
+    event: OutboxEventInput,
+    session?: ClientSession,
+  ): Promise<void> {
+    await this.connection.collection('outbox_events').insertOne(
+      {
+        ...event,
+        status: 'PENDING',
+        occurredAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      session ? { session } : undefined,
+    );
   }
 }

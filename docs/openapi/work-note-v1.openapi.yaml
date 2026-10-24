@@ -1,0 +1,680 @@
+openapi: 3.1.0
+info:
+  title: Continuum AI Work Notes API
+  version: 1.0.0
+  description: |
+    Contract for Task Notes, Project Documents and Periodic Work Reports.
+    This contract implements the product decisions in the Work Note Full
+    Implementation request dated 2026-10-24. Public paths are served under
+    /api/v1/capture by the Capture service and Gateway.
+  x-approval-status: APPROVED_BY_PRODUCT_REQUEST
+  x-approval-reference: Work Note Full Implementation request, 2026-10-24
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+  - bearerSession: []
+tags:
+  - name: TaskNotes
+  - name: ProjectDocuments
+  - name: WorkReports
+paths:
+  /capture/projects/{projectId}/tasks/{taskId}/notes:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [TaskNotes]
+      operationId: listTaskNotes
+      summary: List notes for a task
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Notes visible to active Project members
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/TaskNote' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [TaskNotes]
+      operationId: createTaskNote
+      summary: Create an operational note for a task
+      description: Task Notes are confirmed on creation and do not require Leader review or enter official AI knowledge automatically.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/OrganizationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskNoteInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskNote' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/tasks/{taskId}/notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [TaskNotes]
+      operationId: getTaskNote
+      responses:
+        '200':
+          description: Task Note
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskNote' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-notes:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [TaskNotes]
+      operationId: listProjectTaskNotes
+      summary: List operational Task Notes in a Project
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: taskId
+          in: query
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200':
+          description: Project-scoped Task Notes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/TaskNote' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [ProjectDocuments]
+      operationId: listProjectDocuments
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DocumentStatus' }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Project Documents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProjectDocumentSummary' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [ProjectDocuments]
+      operationId: createProjectDocument
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectDocumentInput' }
+      responses:
+        '201':
+          description: Draft created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [ProjectDocuments]
+      operationId: getProjectDocument
+      responses:
+        '200':
+          description: Project Document and immutable version history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [ProjectDocuments]
+      operationId: updateProjectDocumentDraft
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectDocumentInput' }
+      responses:
+        '200':
+          description: Updated draft or a new draft version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}/submit:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [ProjectDocuments]
+      operationId: submitProjectDocument
+      responses:
+        '200': { $ref: '#/components/responses/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [ProjectDocuments]
+      operationId: approveProjectDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}/request-changes:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [ProjectDocuments]
+      operationId: requestProjectDocumentChanges
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}/reject:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [ProjectDocuments]
+      operationId: rejectProjectDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}/archive:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [ProjectDocuments]
+      operationId: archiveProjectDocument
+      responses:
+        '200': { $ref: '#/components/responses/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-report-settings:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [WorkReports]
+      operationId: getWorkReportSettings
+      responses:
+        '200':
+          description: Active reporting frequency and future schedule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkReportSettings' }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [WorkReports]
+      operationId: updateWorkReportSettings
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [frequency]
+              properties:
+                frequency: { $ref: '#/components/schemas/ReportFrequency' }
+      responses:
+        '200':
+          description: New frequency effective from the next period boundary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkReportSettings' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [WorkReports]
+      operationId: listWorkReports
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/WorkReportStatus' }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Reports in the actor's allowed Project scope
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkReport' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [WorkReports]
+      operationId: saveCurrentWorkReportDraft
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkReportInput' }
+      responses:
+        '200':
+          description: Current reporting period draft saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports/{reportId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ReportId'
+    get:
+      tags: [WorkReports]
+      operationId: getWorkReport
+      responses:
+        '200':
+          description: Work Report visible under Project policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [WorkReports]
+      operationId: updateWorkReportDraft
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkReportInput' }
+      responses:
+        '200': { $ref: '#/components/responses/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports/{reportId}/submit:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ReportId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [WorkReports]
+      operationId: submitWorkReport
+      responses:
+        '200': { $ref: '#/components/responses/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports/{reportId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ReportId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [WorkReports]
+      operationId: approveWorkReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports/{reportId}/request-changes:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ReportId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [WorkReports]
+      operationId: requestWorkReportChanges
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports/{reportId}/reject:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ReportId'
+      - $ref: '#/components/parameters/CsrfToken'
+    post:
+      tags: [WorkReports]
+      operationId: rejectWorkReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-session
+    bearerSession:
+      type: http
+      scheme: bearer
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    ReportId:
+      name: reportId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    OrganizationId:
+      name: x-organization-id
+      in: header
+      required: false
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    CsrfToken:
+      name: x-csrf-token
+      in: header
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 256 }
+  responses:
+    Error:
+      description: Structured API error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, message, details, requestId]
+            properties:
+              code: { type: string }
+              message: { type: string }
+              details: { type: object }
+              requestId: { type: [string, 'null'] }
+    ProjectDocument:
+      description: Project Document
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ProjectDocument' }
+    WorkReport:
+      description: Work Report
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WorkReport' }
+  schemas:
+    ObjectId:
+      type: string
+      pattern: '^[a-fA-F0-9]{24}$'
+    Pagination:
+      type: object
+      required: [page, pageSize, totalItems, totalPages]
+      properties:
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        totalItems: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+    Permissions:
+      type: object
+      required: [canCreate, canEdit, canSubmit, canReview, canConfigure]
+      properties:
+        canCreate: { type: boolean }
+        canEdit: { type: boolean }
+        canSubmit: { type: boolean }
+        canReview: { type: boolean }
+        canConfigure: { type: boolean }
+    TaskNoteInput:
+      type: object
+      additionalProperties: false
+      required: [title, accomplishments, approach, reason]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 160 }
+        accomplishments: { type: string, minLength: 1, maxLength: 10000 }
+        approach: { type: string, minLength: 1, maxLength: 10000 }
+        reason: { type: string, minLength: 1, maxLength: 5000 }
+    TaskNote:
+      allOf:
+        - $ref: '#/components/schemas/TaskNoteInput'
+        - type: object
+          required: [id, projectId, taskId, authorId, authorName, type, status, createdAt, updatedAt, permissions]
+          properties:
+            id: { $ref: '#/components/schemas/ObjectId' }
+            projectId: { $ref: '#/components/schemas/ObjectId' }
+            taskId: { $ref: '#/components/schemas/ObjectId' }
+            authorId: { $ref: '#/components/schemas/ObjectId' }
+            authorName: { type: string }
+            type: { const: TASK_NOTE }
+            status: { const: CONFIRMED }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            permissions: { $ref: '#/components/schemas/Permissions' }
+    DocumentType:
+      type: string
+      enum: [MVP, DATABASE_DESIGN, RSR, ARCHITECTURE, API_SPECIFICATION, RESEARCH, REQUIREMENT, DESIGN, TECHNICAL_SPECIFICATION, OTHER]
+    DocumentStatus:
+      type: string
+      enum: [DRAFT, PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED, ARCHIVED]
+    ProjectDocumentInput:
+      type: object
+      additionalProperties: false
+      required: [title, type, content]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 240 }
+        description: { type: string, maxLength: 2000 }
+        type: { $ref: '#/components/schemas/DocumentType' }
+        content: { type: string, minLength: 1, maxLength: 200000 }
+        taskId: { $ref: '#/components/schemas/ObjectId' }
+    ReviewInput:
+      type: object
+      additionalProperties: false
+      properties:
+        comment: { type: string, maxLength: 5000 }
+      description: A comment is required for request-changes and reject operations.
+    ProjectDocumentSummary:
+      type: object
+      required: [id, projectId, title, type, version, status, createdBy, createdAt, updatedAt, permissions]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectId' }
+        projectId: { $ref: '#/components/schemas/ObjectId' }
+        taskId: { $ref: '#/components/schemas/ObjectId' }
+        title: { type: string }
+        description: { type: string }
+        type: { $ref: '#/components/schemas/DocumentType' }
+        version: { type: integer, minimum: 1 }
+        status: { $ref: '#/components/schemas/DocumentStatus' }
+        createdBy: { $ref: '#/components/schemas/ObjectId' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        submittedAt: { type: [string, 'null'], format: date-time }
+        reviewedAt: { type: [string, 'null'], format: date-time }
+        reviewedBy: { type: [string, 'null'] }
+        reviewComment: { type: [string, 'null'] }
+        permissions: { $ref: '#/components/schemas/Permissions' }
+    ProjectDocument:
+      allOf:
+        - $ref: '#/components/schemas/ProjectDocumentSummary'
+        - type: object
+          required: [content, versions, reviewHistory]
+          properties:
+            content: { type: string }
+            versions:
+              type: array
+              items:
+                type: object
+                required: [version, status, createdAt, editedBy]
+                properties:
+                  version: { type: integer, minimum: 1 }
+                  status: { $ref: '#/components/schemas/DocumentStatus' }
+                  createdAt: { type: string, format: date-time }
+                  editedBy: { $ref: '#/components/schemas/ObjectId' }
+            reviewHistory:
+              type: array
+              items: { $ref: '#/components/schemas/ReviewEvent' }
+    ReviewEvent:
+      type: object
+      required: [action, reviewerId, at]
+      properties:
+        action: { type: string, enum: [APPROVED, CHANGES_REQUESTED, REJECTED] }
+        reviewerId: { $ref: '#/components/schemas/ObjectId' }
+        comment: { type: string }
+        at: { type: string, format: date-time }
+    ReportFrequency:
+      type: string
+      enum: [DAILY, EVERY_3_DAYS, WEEKLY]
+    WorkReportSettings:
+      type: object
+      required: [projectId, frequency, effectiveAt, updatedBy, history, permissions]
+      properties:
+        projectId: { $ref: '#/components/schemas/ObjectId' }
+        frequency: { $ref: '#/components/schemas/ReportFrequency' }
+        effectiveAt: { type: string, format: date-time }
+        nextEffectiveAt: { type: string, format: date-time }
+        updatedBy: { $ref: '#/components/schemas/ObjectId' }
+        history:
+          type: array
+          items:
+            type: object
+            required: [frequency, effectiveAt, updatedBy]
+            properties:
+              frequency: { $ref: '#/components/schemas/ReportFrequency' }
+              effectiveAt: { type: string, format: date-time }
+              updatedBy: { $ref: '#/components/schemas/ObjectId' }
+        permissions:
+          type: object
+          required: [canConfigure]
+          properties:
+            canConfigure: { type: boolean }
+    WorkReportStatus:
+      type: string
+      enum: [DRAFT, PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED, OVERDUE]
+    WorkReportInput:
+      type: object
+      additionalProperties: false
+      required: [accomplishments, approach, reason]
+      properties:
+        accomplishments: { type: string, minLength: 1, maxLength: 10000 }
+        approach: { type: string, minLength: 1, maxLength: 10000 }
+        reason: { type: string, minLength: 1, maxLength: 5000 }
+        blockers: { type: string, maxLength: 5000 }
+        nextSteps: { type: string, maxLength: 5000 }
+    WorkReport:
+      allOf:
+        - $ref: '#/components/schemas/WorkReportInput'
+        - type: object
+          required: [id, projectId, memberId, memberName, frequency, periodStart, periodEnd, dueAt, status, createdAt, updatedAt, permissions]
+          properties:
+            id: { $ref: '#/components/schemas/ObjectId' }
+            projectId: { $ref: '#/components/schemas/ObjectId' }
+            memberId: { $ref: '#/components/schemas/ObjectId' }
+            memberName: { type: string }
+            frequency: { $ref: '#/components/schemas/ReportFrequency' }
+            periodStart: { type: string, format: date-time }
+            periodEnd: { type: string, format: date-time }
+            dueAt: { type: string, format: date-time }
+            status: { $ref: '#/components/schemas/WorkReportStatus' }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            submittedAt: { type: [string, 'null'], format: date-time }
+            reviewedAt: { type: [string, 'null'], format: date-time }
+            reviewedBy: { type: [string, 'null'] }
+            reviewComment: { type: [string, 'null'] }
+            permissions: { $ref: '#/components/schemas/Permissions' }
+            reviewHistory:
+              type: array
+              items: { $ref: '#/components/schemas/ReviewEvent' }
