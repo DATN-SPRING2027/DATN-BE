@@ -70,19 +70,35 @@ export class ProjectService {
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
-      query,
+      { ...query, includeTotal: true },
+    );
+    const totalItems = result.totalItems ?? 0;
+    return {
+      data: result.data,
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        totalItems,
+        totalPages: Math.ceil(totalItems / query.pageSize),
+      },
+    };
+  }
+
+  async listSuggestions(
+    actor: AuthenticatedIdentity,
+    query: ProjectListQuery & { q: string },
+  ) {
+    const result = await this.repository.listVisible(
+      actor.organizationId,
+      actor.id,
+      { ...query, includeTotal: false },
     );
     return {
       data: result.data,
       pagination: {
         page: query.page,
         pageSize: query.pageSize,
-        ...(result.totalItems === undefined
-          ? { hasMore: result.hasMore ?? false }
-          : {
-              totalItems: result.totalItems,
-              totalPages: Math.ceil(result.totalItems / query.pageSize),
-            }),
+        hasMore: result.hasMore ?? false,
       },
     };
   }

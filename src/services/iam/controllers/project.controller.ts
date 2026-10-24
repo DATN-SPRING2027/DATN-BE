@@ -223,7 +223,17 @@ export class ProjectController {
       query.organizationId,
       false,
     );
-    return this.projects.list(actor, listQuery(query));
+    const parsedQuery = listQuery(query);
+    if (
+      parsedQuery.includeTotal === false &&
+      typeof parsedQuery.q === 'string'
+    ) {
+      return this.projects.listSuggestions(actor, {
+        ...parsedQuery,
+        q: parsedQuery.q,
+      });
+    }
+    return this.projects.list(actor, parsedQuery);
   }
 
   @Get('member-candidates')

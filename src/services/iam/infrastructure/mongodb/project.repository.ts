@@ -40,6 +40,49 @@ interface ProjectDocument {
 function escapeProjectSearch(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+function normalizeProjectSearch(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+const projectSearchCharacterVariants = new Map<string, Set<string>>();
+for (const [start, end] of [
+  [0x00c0, 0x024f],
+  [0x1e00, 0x1eff],
+] as const) {
+  for (let codePoint = start; codePoint <= end; codePoint += 1) {
+    const character = String.fromCodePoint(codePoint);
+    const normalized = normalizeProjectSearch(character);
+    if (!/^[a-z]$/.test(normalized)) continue;
+    const variants = projectSearchCharacterVariants.get(normalized) ?? new Set();
+    variants.add(character);
+    variants.add(character.toUpperCase());
+    projectSearchCharacterVariants.set(normalized, variants);
+  }
+}
+projectSearchCharacterVariants.get('d')?.add('đ').add('Đ');
+
+function escapeProjectSearchCharacterClass(value: string): string {
+  return value.replace(/[\\\]^-]/g, '\\$&');
+}
+
+function projectSearchPattern(value: string): string {
+  return [...normalizeProjectSearch(value)]
+    .map((character) => {
+      const variants = projectSearchCharacterVariants.get(character);
+      if (!variants) return escapeProjectSearch(character);
+      const characterClass = [...variants]
+        .map(escapeProjectSearchCharacterClass)
+        .join('');
+      return `[${characterClass}][\\x{0300}-\\x{036f}]*`;
+    })
+    .join('');
+}
 interface MembershipDocument {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
@@ -375,13 +418,13 @@ export class MongoProjectRepository implements ProjectRepository {
                 $or: [
                   {
                     name: {
-                      $regex: escapeProjectSearch(query.q),
+                      $regex: projectSearchPattern(query.q),
                       $options: 'i',
                     },
                   },
                   {
                     code: {
-                      $regex: escapeProjectSearch(query.q),
+                      $regex: projectSearchPattern(query.q),
                       $options: 'i',
                     },
                   },
