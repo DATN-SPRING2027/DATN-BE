@@ -6,6 +6,7 @@ import {
   createRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
+import { createBullMqTelemetry } from '../../../../common/observability/bullmq-telemetry';
 import { QUEUE_NAMES, QueueName } from './queue.names';
 import { DEFAULT_JOB_OPTIONS } from './queue.policy';
 
@@ -70,6 +71,7 @@ export class QueueRuntime implements OnModuleInit, OnModuleDestroy {
       connection: this.connection(),
       prefix: this.prefix(),
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
+      telemetry: createBullMqTelemetry(),
     });
     this.queues.set(name, queue);
     return queue;

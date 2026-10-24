@@ -170,6 +170,39 @@ function fixture(
 }
 
 describe('MongoProjectRepository visibility', () => {
+  it('applies bounded literal search to visible project names and codes', async () => {
+    const { repository, projects } = fixture();
+
+    await repository.listVisible(orgId, userId, {
+      page: 1,
+      pageSize: 20,
+      status: 'ACTIVE',
+      q: 'QA.*',
+    });
+
+    const findCalls = projects.find.mock.calls as unknown as Array<
+      [
+        {
+          $and: Array<{
+            $or: Array<{
+              name?: { $regex: string; $options: string };
+              code?: { $regex: string; $options: string };
+            }>;
+          }>;
+        },
+      ]
+    >;
+    const filter = findCalls[0]?.[0];
+    const byName = filter.$and[0]?.$or[0]?.name;
+    const byCode = filter.$and[0]?.$or[1]?.code;
+    expect(byName?.$options).toBe('i');
+    expect(byName?.$regex).toContain('á');
+    expect(byName?.$regex).toContain('\\x{0300}-\\x{036f}');
+    expect(byName?.$regex).toContain('\\.');
+    expect(byName?.$regex).toContain('\\*');
+    expect(byCode).toEqual(byName);
+  });
+
   it('allows organization ADMIN to read metadata without ProjectMembership', async () => {
     const { repository, projects, projectMemberships } = fixture({
       assignmentProjectId: null,

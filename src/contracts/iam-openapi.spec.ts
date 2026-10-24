@@ -805,6 +805,15 @@ describe('IAM OpenAPI contract', () => {
     expect(listProjects?.description).toContain(
       'ACTIVE Organization Membership',
     );
+    expect(listProjects?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'q',
+          in: 'query',
+          schema: { type: 'string', minLength: 2, maxLength: 80 },
+        }),
+      ]),
+    );
     expect(getProject?.description).toContain('PUBLIC Project metadata');
     expect(getProject?.description).toContain(
       'Nested Project resources are outside this endpoint contract',

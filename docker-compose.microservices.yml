@@ -1,3 +1,10 @@
+x-otel-environment: &otel-environment
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+  OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
+  OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+  OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
+
 services:
   redis:
     image: redis:7.2-alpine
@@ -9,6 +16,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    profiles: ["observability"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
 
   mongo1:
     image: mongo:7.0
@@ -62,7 +79,9 @@ services:
       env_file:
         - .env.example
       environment:
+        <<: *otel-environment
         REDIS_HOST: redis
+        OTEL_SERVICE_NAME: continuum-api-gateway
         GATEWAY_PORT: 3000
         IAM_SERVICE_URL: http://iam:3001
         CHAT_SERVICE_URL: http://chat:3005
@@ -100,6 +119,8 @@ services:
   iam:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-iam
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3001
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -125,6 +146,8 @@ services:
   capture:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-capture
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3002
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -139,6 +162,8 @@ services:
   jira:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-jira
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3003
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -154,6 +179,8 @@ services:
   lifecycle:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-lifecycle
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3004
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -168,6 +195,8 @@ services:
   chat:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-chat
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3005
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -194,6 +223,8 @@ services:
   handover:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-handover
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3006
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -208,6 +239,8 @@ services:
   ingestion:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-ingestion
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3007
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
@@ -222,6 +255,8 @@ services:
   notification:
     <<: *backend-service
     environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: continuum-notification
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3008
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0

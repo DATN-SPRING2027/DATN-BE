@@ -6,6 +6,63 @@ import {
 import { TaskWorkspaceRepository } from './task-workspace.repository';
 
 describe('TaskWorkspaceRepository', () => {
+  it('loads deadline candidates through the Task repository with stable bounded pagination', async () => {
+    const dueDate = new Date('2026-10-24T10:00:00.000Z');
+    const cursorId = new Types.ObjectId();
+    const expectedTasks = [
+      {
+        _id: new Types.ObjectId(),
+        projectId: new Types.ObjectId(),
+        organizationId: new Types.ObjectId(),
+        title: 'Task',
+        status: 'IN_PROGRESS',
+        assigneeId: new Types.ObjectId(),
+        dueDate,
+      },
+    ];
+    const cursor = {
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      toArray: jest.fn().mockResolvedValue(expectedTasks),
+    };
+    const find = jest.fn((...args: [Record<string, unknown>, unknown]) => {
+      void args;
+      return cursor;
+    });
+    const tasks = { find };
+    const db = { collection: jest.fn(() => tasks) };
+    const repository = new TaskWorkspaceRepository({
+      useDb: jest.fn(() => ({ db })),
+    } as unknown as Connection);
+
+    await expect(
+      repository.listTasksForDeadlineNotifications({
+        through: dueDate,
+        after: { dueDate, id: cursorId },
+        limit: 200,
+      }),
+    ).resolves.toEqual(expectedTasks);
+
+    const filter = tasks.find.mock.calls[0]?.[0];
+    expect(filter).toEqual(
+      expect.objectContaining({
+        dueDate: { $ne: null, $lte: dueDate },
+        assigneeId: { $ne: null },
+        status: { $nin: ['DONE', 'CANCELLED'] },
+      }),
+    );
+    expect(filter?.$and).toEqual([
+      expect.objectContaining({
+        $or: [
+          { dueDate: { $gt: dueDate } },
+          { dueDate, _id: { $gt: cursorId } },
+        ],
+      }),
+    ]);
+    expect(cursor.sort).toHaveBeenCalledWith({ dueDate: 1, _id: 1 });
+    expect(cursor.limit).toHaveBeenCalledWith(200);
+  });
+
   it('removes response-only subtask counts before updating a legacy task document', async () => {
     const taskId = new Types.ObjectId().toHexString();
     const organizationId = new Types.ObjectId().toHexString();

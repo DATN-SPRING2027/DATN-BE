@@ -4,16 +4,23 @@ import {
   OnModuleDestroy,
   OnModuleInit,
   Optional,
+  Inject,
 } from '@nestjs/common';
-import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, Types } from 'mongoose';
-import { IAM_PERSISTENCE } from '../iam/infrastructure/persistence';
-import { NOTIFICATION_PERSISTENCE } from './infrastructure/persistence';
+import { randomUUID } from 'node:crypto';
+import { RedisService } from '../iam/infrastructure/redis/redis.service';
+import {
+  TASK_WORKSPACE_REPOSITORY,
+  TaskWorkspaceRepository,
+  type DeadlineNotificationTaskCursor,
+} from '../task/workspace/task-workspace.repository';
 import { NotificationService } from './notification.service';
 
 export const DEADLINE_APPROACHING_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEADLINE_SCAN_BATCH_SIZE = 200;
 const SCHEDULER_INTERVAL_MS = 60 * 1000;
+const SCHEDULER_LOCK_TTL_SECONDS = 120;
+const SCHEDULER_LOCK_RENEW_MS = 30 * 1000;
+const SCHEDULER_LOCK_KEY = `${process.env.BULLMQ_PREFIX ?? 'continuum'}:notification:task-deadline-scan:v1`;
 
 export interface EvaluableTaskRecord {
   id: string;
@@ -30,36 +37,27 @@ export interface EvaluableTaskRecord {
 export class TaskDeadlineNotificationScheduler
   implements OnModuleInit, OnModuleDestroy
 {
-  private static activeInterval = false;
   private readonly logger = new Logger(TaskDeadlineNotificationScheduler.name);
   private intervalHandle?: NodeJS.Timeout;
+  private leaseRenewHandle?: NodeJS.Timeout;
+  private scanRunning = false;
+  private leaseLost = false;
 
   constructor(
     private readonly notificationService: NotificationService,
     @Optional()
-    @InjectConnection(IAM_PERSISTENCE.databaseName)
-    private readonly iamConnection?: Connection,
+    @Inject(TASK_WORKSPACE_REPOSITORY)
+    private readonly taskRepository?: TaskWorkspaceRepository,
     @Optional()
-    @InjectConnection(NOTIFICATION_PERSISTENCE.databaseName)
-    private readonly notificationConnection?: Connection,
+    private readonly redis?: RedisService,
   ) {}
 
   onModuleInit(): void {
-    if (
-      process.env.NODE_ENV === 'test' ||
-      TaskDeadlineNotificationScheduler.activeInterval
-    ) {
+    if (process.env.NODE_ENV === 'test' || !this.taskRepository) {
       return;
     }
-    TaskDeadlineNotificationScheduler.activeInterval = true;
     this.intervalHandle = setInterval(() => {
-      void this.evaluateTaskDeadlines().catch((err) => {
-        this.logger.warn(
-          `Deadline notification scan error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+      void this.runScheduledScan();
     }, SCHEDULER_INTERVAL_MS);
     this.intervalHandle.unref();
   }
@@ -67,16 +65,67 @@ export class TaskDeadlineNotificationScheduler
   onModuleDestroy(): void {
     if (this.intervalHandle) {
       clearInterval(this.intervalHandle);
-      TaskDeadlineNotificationScheduler.activeInterval = false;
     }
+    if (this.leaseRenewHandle) clearInterval(this.leaseRenewHandle);
   }
 
-  private tasksCollection() {
-    const conn = this.iamConnection ?? this.notificationConnection;
-    if (!conn || typeof conn.useDb !== 'function') return null;
-    const db = conn.useDb('continuum_task', { useCache: true }).db;
-    if (!db) return null;
-    return db.collection('tasks');
+  private async runScheduledScan(): Promise<void> {
+    if (this.scanRunning || !this.taskRepository) return;
+    this.scanRunning = true;
+    this.leaseLost = false;
+    const owner = randomUUID();
+    const distributedRuntime = process.env.INFRA_ENABLED === 'true';
+    let lockAcquired = false;
+
+    try {
+      if (distributedRuntime) {
+        if (!this.redis) return;
+        lockAcquired = await this.redis.acquireLock(
+          SCHEDULER_LOCK_KEY,
+          owner,
+          SCHEDULER_LOCK_TTL_SECONDS,
+        );
+        if (!lockAcquired) return;
+        this.leaseRenewHandle = setInterval(() => {
+          void this.redis
+            ?.extendLock(SCHEDULER_LOCK_KEY, owner, SCHEDULER_LOCK_TTL_SECONDS)
+            .then((extended) => {
+              if (!extended) this.leaseLost = true;
+            })
+            .catch(() => {
+              this.leaseLost = true;
+            });
+        }, SCHEDULER_LOCK_RENEW_MS);
+        this.leaseRenewHandle.unref();
+      }
+
+      await this.evaluateTaskDeadlines({
+        shouldContinue: () => !this.leaseLost,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Deadline notification scan error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      if (this.leaseRenewHandle) {
+        clearInterval(this.leaseRenewHandle);
+        this.leaseRenewHandle = undefined;
+      }
+      if (lockAcquired) {
+        await this.redis
+          ?.releaseLock(SCHEDULER_LOCK_KEY, owner)
+          .catch((error: unknown) => {
+            this.logger.warn(
+              `Deadline notification lease release failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+      }
+      this.scanRunning = false;
+    }
   }
 
   async evaluateSingleTask(
@@ -121,115 +170,53 @@ export class TaskDeadlineNotificationScheduler
   }
 
   async evaluateTaskDeadlines(options?: {
-    assigneeId?: string;
-    taskId?: string;
     now?: Date;
+    shouldContinue?: () => boolean;
   }): Promise<number> {
-    const collection = this.tasksCollection();
-    if (!collection) return 0;
+    if (!this.taskRepository) return 0;
 
     const now = options?.now ?? new Date();
     const horizon = new Date(now.getTime() + DEADLINE_APPROACHING_WINDOW_MS);
-
-    const filter: Record<string, unknown> = {
-      dueDate: { $ne: null, $lte: horizon },
-      status: { $nin: ['DONE', 'CANCELLED'] },
-      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-    };
-
-    if (options?.assigneeId && Types.ObjectId.isValid(options.assigneeId)) {
-      filter.assigneeId = new Types.ObjectId(options.assigneeId);
-    } else {
-      filter.assigneeId = { $ne: null };
-    }
-
-    const singleTaskMode = Boolean(
-      options?.taskId && Types.ObjectId.isValid(options.taskId),
-    );
-    if (singleTaskMode && options?.taskId) {
-      filter._id = new Types.ObjectId(options.taskId);
-    }
-
-    const projection = {
-      _id: 1,
-      organizationId: 1,
-      projectId: 1,
-      title: 1,
-      status: 1,
-      assigneeId: 1,
-      dueDate: 1,
-      deletedAt: 1,
-    };
-
-    const seenTaskIds = new Set<string>();
-    let lastCursorId: Types.ObjectId | null = null;
+    let cursor: DeadlineNotificationTaskCursor | undefined;
     let totalProcessed = 0;
 
     while (true) {
-      const pageFilter: Record<string, unknown> =
-        !singleTaskMode && lastCursorId
-          ? { ...filter, _id: { $gt: lastCursorId } }
-          : { ...filter };
-
-      const findCursor = collection.find(pageFilter, { projection });
-      const sortedCursor =
-        typeof (findCursor as { sort?: unknown }).sort === 'function'
-          ? (
-              findCursor as unknown as {
-                sort: (spec: Record<string, 1 | -1>) => typeof findCursor;
-              }
-            ).sort({ _id: 1 })
-          : findCursor;
-
-      const batch = await sortedCursor
-        .limit(DEADLINE_SCAN_BATCH_SIZE)
-        .toArray();
+      if (options?.shouldContinue?.() === false) break;
+      const batch = await this.taskRepository.listTasksForDeadlineNotifications(
+        {
+          through: horizon,
+          after: cursor,
+          limit: DEADLINE_SCAN_BATCH_SIZE,
+        },
+      );
       if (batch.length === 0) {
         break;
       }
 
-      let progressedInBatch = 0;
       for (const raw of batch) {
-        if (!raw._id) continue;
+        if (options?.shouldContinue?.() === false) break;
         const rawIdStr = String(raw._id);
-        if (seenTaskIds.has(rawIdStr)) {
-          continue;
-        }
-        seenTaskIds.add(rawIdStr);
-        progressedInBatch += 1;
-
-        if (Types.ObjectId.isValid(rawIdStr)) {
-          lastCursorId =
-            raw._id instanceof Types.ObjectId
-              ? raw._id
-              : new Types.ObjectId(rawIdStr);
-        }
-
         if (!raw.assigneeId || !raw.dueDate) continue;
         await this.evaluateSingleTask(
           {
             id: rawIdStr,
-            organizationId: String(raw.organizationId ?? ''),
-            projectId: String(raw.projectId ?? ''),
+            organizationId: String(raw.organizationId),
+            projectId: String(raw.projectId),
             title: typeof raw.title === 'string' ? raw.title : 'Task',
             status: typeof raw.status === 'string' ? raw.status : 'TODO',
             assigneeId: String(raw.assigneeId),
-            dueDate: raw.dueDate as Date,
-            deletedAt: (raw.deletedAt as Date | null | undefined) ?? null,
+            dueDate: raw.dueDate,
+            deletedAt: raw.deletedAt ?? null,
           },
           now,
         );
         totalProcessed += 1;
       }
 
-      if (
-        singleTaskMode ||
-        batch.length < DEADLINE_SCAN_BATCH_SIZE ||
-        progressedInBatch === 0 ||
-        !lastCursorId
-      ) {
-        break;
-      }
+      const last = batch.at(-1);
+      if (!last) break;
+      cursor = { dueDate: last.dueDate, id: last._id };
+      if (batch.length < DEADLINE_SCAN_BATCH_SIZE) break;
     }
 
     return totalProcessed;

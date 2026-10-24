@@ -1,3 +1,4 @@
+import '../../common/observability/register-otel';
 import { IamModule } from './iam.module';
 import { bootstrapService } from '../service-bootstrap';
 import { IAM_PERSISTENCE } from './infrastructure/persistence';
