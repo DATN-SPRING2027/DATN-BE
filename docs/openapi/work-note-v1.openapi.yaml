@@ -184,7 +184,8 @@ paths:
                 properties:
                   data:
                     type: array
-                    items: { $ref: '#/components/schemas/ProjectDocumentSummary' }
+                    items:
+                      { $ref: '#/components/schemas/ProjectDocumentSummary' }
                   pagination: { $ref: '#/components/schemas/Pagination' }
         default: { $ref: '#/components/responses/Error' }
     post:
@@ -616,7 +617,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/TaskNoteInput'
         - type: object
-          required: [id, projectId, taskId, authorId, authorName, type, status, createdAt, updatedAt, permissions]
+          required:
+            [
+              id,
+              projectId,
+              taskId,
+              authorId,
+              authorName,
+              type,
+              status,
+              createdAt,
+              updatedAt,
+              permissions,
+            ]
           properties:
             id: { $ref: '#/components/schemas/ObjectId' }
             projectId: { $ref: '#/components/schemas/ObjectId' }
@@ -630,10 +643,23 @@ components:
             permissions: { $ref: '#/components/schemas/Permissions' }
     DocumentType:
       type: string
-      enum: [MVP, DATABASE_DESIGN, RSR, ARCHITECTURE, API_SPECIFICATION, RESEARCH, REQUIREMENT, DESIGN, TECHNICAL_SPECIFICATION, OTHER]
+      enum:
+        [
+          MVP,
+          DATABASE_DESIGN,
+          RSR,
+          ARCHITECTURE,
+          API_SPECIFICATION,
+          RESEARCH,
+          REQUIREMENT,
+          DESIGN,
+          TECHNICAL_SPECIFICATION,
+          OTHER,
+        ]
     DocumentStatus:
       type: string
-      enum: [DRAFT, PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED, ARCHIVED]
+      enum:
+        [DRAFT, PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED, ARCHIVED]
     ProjectDocumentInput:
       type: object
       additionalProperties: false
@@ -651,7 +677,19 @@ components:
       description: A comment is required for request-changes and reject operations.
     ProjectDocumentSummary:
       type: object
-      required: [id, projectId, title, type, version, status, createdBy, createdAt, updatedAt, permissions]
+      required:
+        [
+          id,
+          projectId,
+          title,
+          type,
+          version,
+          status,
+          createdBy,
+          createdAt,
+          updatedAt,
+          permissions,
+        ]
       properties:
         id: { $ref: '#/components/schemas/ObjectId' }
         projectId: { $ref: '#/components/schemas/ObjectId' }
@@ -695,7 +733,15 @@ components:
       required: [name, contentType, size]
       properties:
         name: { type: string }
-        contentType: { type: string, enum: [application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document] }
+        contentType:
+          {
+            type: string,
+            enum:
+              [
+                application/pdf,
+                application/vnd.openxmlformats-officedocument.wordprocessingml.document,
+              ],
+          }
         size: { type: integer, minimum: 1, maximum: 20971520 }
     ReviewEvent:
       type: object
@@ -710,7 +756,8 @@ components:
       enum: [DAILY, EVERY_3_DAYS, WEEKLY]
     WorkReportSettings:
       type: object
-      required: [projectId, frequency, effectiveAt, updatedBy, history, permissions]
+      required:
+        [projectId, frequency, effectiveAt, updatedBy, history, permissions]
       properties:
         projectId: { $ref: '#/components/schemas/ObjectId' }
         frequency: { $ref: '#/components/schemas/ReportFrequency' }
@@ -733,7 +780,8 @@ components:
             canConfigure: { type: boolean }
     WorkReportStatus:
       type: string
-      enum: [DRAFT, PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED, OVERDUE]
+      enum:
+        [DRAFT, PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED, OVERDUE]
     WorkReportInput:
       type: object
       additionalProperties: false
@@ -748,7 +796,21 @@ components:
       allOf:
         - $ref: '#/components/schemas/WorkReportInput'
         - type: object
-          required: [id, projectId, memberId, memberName, frequency, periodStart, periodEnd, dueAt, status, createdAt, updatedAt, permissions]
+          required:
+            [
+              id,
+              projectId,
+              memberId,
+              memberName,
+              frequency,
+              periodStart,
+              periodEnd,
+              dueAt,
+              status,
+              createdAt,
+              updatedAt,
+              permissions,
+            ]
           properties:
             id: { $ref: '#/components/schemas/ObjectId' }
             projectId: { $ref: '#/components/schemas/ObjectId' }
