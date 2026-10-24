@@ -2269,17 +2269,14 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .exec();
     const projectMembershipsModel =
       this.optionalModel<ProjectMembershipDocument>('project_memberships');
-    if (!projectMembershipsModel)
-      throw new ServiceUnavailableException({
-        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
-      });
-    await projectMembershipsModel
-      .updateMany(
-        { organizationId, userId: membership.userId, status: 'ACTIVE' },
-        { $set: { status: 'INACTIVE' }, $currentDate: { updatedAt: true } },
-        { session },
-      )
-      .exec();
+    if (projectMembershipsModel)
+      await projectMembershipsModel
+        .updateMany(
+          { organizationId, userId: membership.userId, status: 'ACTIVE' },
+          { $set: { status: 'INACTIVE' }, $currentDate: { updatedAt: true } },
+          { session },
+        )
+        .exec();
     const mappedMembership = this.mapMembership(organizationIdText, updated);
     return {
       membership: mappedMembership,
