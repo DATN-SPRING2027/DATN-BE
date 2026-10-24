@@ -86,7 +86,11 @@ const pickReviewHistory = (value: unknown) =>
     ? value.map((entry) => {
         const item = entry as Record<string, unknown>;
         return {
-          action: item.action as 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
+          action: item.action as
+            | 'PENDING_REVIEW'
+            | 'APPROVED'
+            | 'CHANGES_REQUESTED'
+            | 'REJECTED',
           reviewerId: text(item.reviewerId),
           ...(typeof item.comment === 'string'
             ? { comment: item.comment }
@@ -1106,6 +1110,100 @@ export class WorkNotesService {
     const submitted = await this.readDocument(actor, id);
     if (!submitted) throw documentNotFound();
     return submitted;
+  }
+
+  async commentDocument(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    input: ReviewInput,
+  ): Promise<ProjectDocumentRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!actor.canReview) throw this.reviewPermissionDenied();
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const now = new Date();
+    const comment = input.comment?.trim() ?? '';
+    if (!comment) {
+      throw new BadRequestException({
+        code: 'REVIEW_COMMENT_REQUIRED',
+        message: 'A review comment is required.',
+      });
+    }
+    await this.transaction(async (db, session) => {
+      const documents = db.collection('project_documents');
+      const current = record(
+        await documents.findOne(
+          {
+            _id: id,
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            status: 'PENDING_REVIEW',
+          },
+          { session },
+        ),
+      );
+      if (!current) throw documentNotFound();
+      const authorId = String(current.createdByUserId);
+      assertReviewerCanReview(authorId, actor.userId, actor.canReview);
+      const sourceVersion = Number(current.currentVersionNumber);
+      const version = record(
+        await db.collection('project_document_versions').findOne(
+          {
+            documentId: id,
+            versionNumber: sourceVersion,
+            status: 'PENDING_REVIEW',
+          },
+          { session },
+        ),
+      );
+      if (!version)
+        throw conflict('The submitted Document version is unavailable.');
+      const history = pickReviewHistory(version.reviewHistory);
+      const update = await db.collection('project_document_versions').updateOne(
+        { _id: version._id, status: 'PENDING_REVIEW' },
+        {
+          $set: {
+            reviewedByUserId: objectId(actor.userId),
+            reviewedAt: now,
+            reviewComment: comment,
+            reviewHistory: [
+              ...history,
+              {
+                action: 'PENDING_REVIEW',
+                reviewerId: actor.userId,
+                comment,
+                at: now,
+              },
+            ],
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      if (update.modifiedCount !== 1)
+        throw conflict('The Document changed while saving the review comment.');
+      await documents.updateOne(
+        {
+          _id: id,
+          status: 'PENDING_REVIEW',
+          currentVersionNumber: sourceVersion,
+        },
+        { $set: { updatedAt: now } },
+        { session },
+      );
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_REVIEW_COMMENTED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        { version: sourceVersion },
+        session,
+      );
+    });
+    const commented = await this.readDocument(actor, id);
+    if (!commented) throw documentNotFound();
+    return commented;
   }
 
   async reviewDocument(

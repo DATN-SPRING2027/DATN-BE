@@ -127,7 +127,7 @@ export interface DocumentVersionRecord {
   reviewedAt?: string;
   reviewComment?: string;
   reviewHistory: Array<{
-    action: 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
+    action: 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
     reviewerId: string;
     comment?: string;
     at: string;

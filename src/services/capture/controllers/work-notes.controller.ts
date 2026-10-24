@@ -342,6 +342,22 @@ export class WorkNotesController {
     );
   }
 
+  @Post('documents/:documentId/comment')
+  @HttpCode(HttpStatus.OK)
+  commentDocument(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.commentDocument(
+      this.mutationHeaders(request),
+      projectId,
+      documentId,
+      validateReviewInput(body, true),
+    );
+  }
+
   @Post('documents/:documentId/approve')
   @HttpCode(HttpStatus.OK)
   approveDocument(
