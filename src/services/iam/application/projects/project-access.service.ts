@@ -1,5 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
+import { NotificationService } from '../../../notification/notification.service';
 import {
   PROJECT_ACCESS_REPOSITORY,
   type ProjectAccessRepository,
@@ -12,6 +13,8 @@ export class ProjectAccessService {
   constructor(
     @Inject(PROJECT_ACCESS_REPOSITORY)
     private readonly repository: ProjectAccessRepository,
+    @Optional()
+    private readonly notificationService?: NotificationService,
   ) {}
 
   updateSettings(
@@ -96,79 +99,149 @@ export class ProjectAccessService {
     return { data: candidates };
   }
 
-  addMember(
+  async addMember(
     actor: AuthenticatedIdentity,
     projectId: string,
     userId: string,
     role?: 'MEMBER' | 'TEAM_LEADER',
   ) {
-    return role
-      ? this.repository.addMember(
+    const result = role
+      ? await this.repository.addMember(
           actor.organizationId,
           actor.id,
           projectId,
           userId,
           role,
         )
-      : this.repository.addMember(
+      : await this.repository.addMember(
           actor.organizationId,
           actor.id,
           projectId,
           userId,
         );
+
+    if (this.notificationService) {
+      const eventId = `add:${result.id}:${Date.now()}`;
+      if (role === 'TEAM_LEADER') {
+        await this.notificationService.notifyProjectLeaderAssigned({
+          actorId: actor.id,
+          recipientUserIds: [userId],
+          organizationId: actor.organizationId,
+          projectId,
+          eventId,
+        });
+      } else {
+        await this.notificationService.notifyProjectMemberAdded({
+          actorId: actor.id,
+          recipientUserIds: [userId],
+          organizationId: actor.organizationId,
+          projectId,
+          eventId,
+        });
+      }
+    }
+
+    return result;
   }
 
-  removeMember(
+  async removeMember(
     actor: AuthenticatedIdentity,
     projectId: string,
     membershipId: string,
   ) {
-    return this.repository.removeMember(
+    await this.repository.removeMember(
       actor.organizationId,
       actor.id,
       projectId,
       membershipId,
     );
+
+    if (this.notificationService) {
+      await this.notificationService.notifyProjectMemberRemoved({
+        actorId: actor.id,
+        membershipId,
+        organizationId: actor.organizationId,
+        projectId,
+        eventId: `remove:${membershipId}:${Date.now()}`,
+      });
+    }
   }
 
-  assignLeader(
+  async assignLeader(
     actor: AuthenticatedIdentity,
     projectId: string,
     userId: string,
   ) {
-    return this.repository.assignLeader(
+    const result = await this.repository.assignLeader(
       actor.organizationId,
       actor.id,
       projectId,
       userId,
     );
+
+    if (this.notificationService) {
+      await this.notificationService.notifyProjectLeaderAssigned({
+        actorId: actor.id,
+        recipientUserIds: [userId],
+        organizationId: actor.organizationId,
+        projectId,
+        eventId: `assign:${userId}:${Date.now()}`,
+      });
+    }
+
+    return result;
   }
 
-  changeLeader(
+  async changeLeader(
     actor: AuthenticatedIdentity,
     projectId: string,
     previousUserId: string,
     nextUserId: string,
   ) {
-    return this.repository.changeLeader(
+    const result = await this.repository.changeLeader(
       actor.organizationId,
       actor.id,
       projectId,
       previousUserId,
       nextUserId,
     );
+
+    if (this.notificationService) {
+      await this.notificationService.notifyProjectLeaderChanged({
+        actorId: actor.id,
+        previousLeaderUserId: previousUserId,
+        nextLeaderUserId: nextUserId,
+        organizationId: actor.organizationId,
+        projectId,
+        eventId: `change:${previousUserId}:${nextUserId}:${Date.now()}`,
+      });
+    }
+
+    return result;
   }
 
-  revokeLeader(
+  async revokeLeader(
     actor: AuthenticatedIdentity,
     projectId: string,
     userId: string,
   ) {
-    return this.repository.revokeLeader(
+    const result = await this.repository.revokeLeader(
       actor.organizationId,
       actor.id,
       projectId,
       userId,
     );
+
+    if (this.notificationService) {
+      await this.notificationService.notifyProjectLeaderRevoked({
+        actorId: actor.id,
+        recipientUserId: userId,
+        organizationId: actor.organizationId,
+        projectId,
+        eventId: `revoke:${userId}:${Date.now()}`,
+      });
+    }
+
+    return result;
   }
 }

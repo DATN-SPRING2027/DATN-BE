@@ -1,10 +1,16 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import { RedisService } from '../infrastructure/redis/redis.service';
 import type { ChatActor } from './chat.repository';
+import { NotificationRealtimeBus } from '../../notification/notification-realtime.bus';
 
 const presenceLeaseMs = 75_000;
 const heartbeatMs = 20_000;
@@ -38,6 +44,14 @@ interface PresenceEvent {
   isOnline: boolean;
 }
 
+interface NotificationSocketEvent {
+  type: 'notification';
+  event: 'notification.created' | 'notification.read' | 'notification.read_all';
+  organizationId: string | null;
+  recipientIds: string[];
+  data: unknown;
+}
+
 interface SessionValidation {
   checkedAt: number;
   valid: boolean;
@@ -55,18 +69,33 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   private readonly presenceStates = new Map<string, boolean>();
   private readonly sessionValidations = new Map<string, SessionValidation>();
   private stopSubscriber?: () => void;
+  private stopNotificationBus?: () => void;
   private heartbeat?: NodeJS.Timeout;
 
   constructor(
     private readonly redis: RedisService,
     private readonly iam: ChatIamClient,
     private readonly config: ConfigService,
+    @Optional()
+    private readonly notificationBus?: NotificationRealtimeBus,
   ) {
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
     this.eventChannel = `${this.redisPrefix}:events:v1`;
   }
 
   async onModuleInit(): Promise<void> {
+    const bus = this.notificationBus ?? new NotificationRealtimeBus();
+    this.stopNotificationBus = bus.onRealtimeEvent((payload) => {
+      const event: NotificationSocketEvent = {
+        type: 'notification',
+        event: payload.event,
+        organizationId: payload.organizationId,
+        recipientIds: [...payload.recipientIds],
+        data: payload.data,
+      };
+      this.deliverNotificationEvent(event);
+      void this.publish(event);
+    });
     if (this.config.get<string>('INFRA_ENABLED') !== 'false') {
       try {
         this.stopSubscriber = await this.redis.subscribe(
@@ -88,6 +117,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   onModuleDestroy(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.stopSubscriber?.();
+    this.stopNotificationBus?.();
   }
 
   async register(
@@ -389,10 +419,15 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private receive(value: string): void {
-    let event: ConversationEvent | PresenceEvent;
+    let event: ConversationEvent | PresenceEvent | NotificationSocketEvent;
     try {
-      event = JSON.parse(value) as ConversationEvent | PresenceEvent;
+      event = JSON.parse(value) as
+        ConversationEvent | PresenceEvent | NotificationSocketEvent;
     } catch {
+      return;
+    }
+    if (event.type === 'notification') {
+      this.deliverNotificationEvent(event);
       return;
     }
     if (event.type === 'presence') {
@@ -439,8 +474,17 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private deliverNotificationEvent(event: NotificationSocketEvent): void {
+    if (!Array.isArray(event.recipientIds)) return;
+    const recipientSet = new Set(event.recipientIds);
+    for (const [socket, session] of this.sessions.entries()) {
+      if (!recipientSet.has(session.actor.id)) continue;
+      this.send(socket, event.event, event.data);
+    }
+  }
+
   private async publish(
-    event: ConversationEvent | PresenceEvent,
+    event: ConversationEvent | PresenceEvent | NotificationSocketEvent,
   ): Promise<void> {
     try {
       await this.redis.publish(this.eventChannel, JSON.stringify(event));

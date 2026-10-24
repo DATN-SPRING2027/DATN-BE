@@ -116,6 +116,13 @@ import {
   TaskWorkspaceRepository,
 } from '../task/workspace/task-workspace.repository';
 import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
+import { NotificationCenterController } from '../notification/notification.controller';
+import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
+import { NotificationRealtimeBus } from '../notification/notification-realtime.bus';
+import { NotificationService } from '../notification/notification.service';
+import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline-notification.scheduler';
+import { ProjectWorkNotesController } from '../capture/work-notes.controller';
+import { ProjectWorkNotesService } from '../capture/work-notes.service';
 
 // C-04 TQ-05/07/08 remain conditional. Keep Team runtime unwired until the
 // contract closes.
@@ -135,6 +142,8 @@ import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
     AccountInvitationController,
     ChatCandidateController,
     TaskWorkspaceController,
+    NotificationCenterController,
+    ProjectWorkNotesController,
   ],
   providers: [
     IamApplicationService,
@@ -288,12 +297,22 @@ import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
       useExisting: TaskWorkspaceIamBridge,
     },
     TaskWorkspaceService,
+    NotificationCenterRepository,
+    NotificationRealtimeBus,
+    NotificationService,
+    TaskDeadlineNotificationScheduler,
+    ProjectWorkNotesService,
   ],
   exports: [
     AuthenticationApplicationService,
     ProjectService,
     TaskWorkspaceService,
     TaskWorkspaceRepository,
+    NotificationService,
+    NotificationCenterRepository,
+    NotificationRealtimeBus,
+    TaskDeadlineNotificationScheduler,
+    ProjectWorkNotesService,
   ],
 })
 export class IamModule {}

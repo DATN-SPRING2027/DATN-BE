@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   GatewayTimeoutException,
   Get,
   Patch,
@@ -123,6 +124,59 @@ export class GatewayTaskWorkspaceController {
     @Req() request: Request,
     @Res() response: Response,
   ) {
+    return this.forward(request, response);
+  }
+
+  @Get('notifications')
+  listNotifications(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('notifications/unread-count')
+  getUnreadCount(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('notifications/read-all')
+  markAllNotificationsRead(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('notifications/:id/read')
+  markNotificationRead(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('notifications/:id/resolve')
+  resolveNotificationTarget(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Get('projects/:projectId/work-notes')
+  listProjectWorkNotes(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('projects/:projectId/work-notes/:noteId')
+  getProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('projects/:projectId/work-notes')
+  createProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('projects/:projectId/work-notes/:noteId')
+  updateProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('projects/:projectId/work-notes/:noteId')
+  deleteProjectWorkNote(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 

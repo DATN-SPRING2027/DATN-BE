@@ -13,7 +13,11 @@ export const NOTIFICATION_PERSISTENCE: ServicePersistenceDefinition = {
   collections: [
     {
       name: 'notifications',
-      indexes: [index({ recipientUserId: 1, isRead: 1, createdAt: 1 })],
+      indexes: [
+        index({ recipientId: 1, createdAt: -1 }),
+        index({ recipientId: 1, readAt: 1 }),
+        index({ recipientId: 1, eventKey: 1 }, { unique: true }),
+      ],
     },
     {
       name: 'notification_preferences',
