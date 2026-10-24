@@ -4,7 +4,11 @@ import type { QueueName } from './queues/queue.names';
 
 const index = (
   fields: Record<string, 1 | -1>,
-  options?: { unique?: boolean; expireAfterSeconds?: number },
+  options?: {
+    unique?: boolean;
+    expireAfterSeconds?: number;
+    name?: string;
+  },
 ) => ({ fields, options });
 
 export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
@@ -17,11 +21,78 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
         index({ organizationId: 1, projectId: 1, status: 1, createdAt: 1 }),
         index({ authorUserId: 1, status: 1, createdAt: 1 }),
         index({ projectId: 1, jiraIssueKey: 1 }),
+        index(
+          { organizationId: 1, projectId: 1, taskId: 1, createdAt: -1 },
+          { name: 'work_notes_project_task_created_at' },
+        ),
       ],
     },
     {
       name: 'work_note_versions',
       indexes: [index({ workNoteId: 1, versionNumber: 1 }, { unique: true })],
+    },
+    {
+      name: 'project_documents',
+      indexes: [
+        index(
+          { organizationId: 1, projectId: 1, status: 1, updatedAt: -1 },
+          { name: 'project_documents_project_status_updated_at' },
+        ),
+        index(
+          { projectId: 1, taskId: 1, updatedAt: -1 },
+          { name: 'project_documents_project_task_updated_at' },
+        ),
+      ],
+    },
+    {
+      name: 'project_document_versions',
+      indexes: [
+        index(
+          { documentId: 1, versionNumber: 1 },
+          {
+            unique: true,
+            name: 'project_document_versions_document_version_unique',
+          },
+        ),
+        index(
+          { organizationId: 1, projectId: 1, status: 1, updatedAt: -1 },
+          { name: 'project_document_versions_project_status_updated_at' },
+        ),
+      ],
+    },
+    {
+      name: 'work_reports',
+      indexes: [
+        index(
+          { projectId: 1, memberUserId: 1, periodStart: 1 },
+          { unique: true, name: 'work_reports_member_period_unique' },
+        ),
+        index(
+          { organizationId: 1, projectId: 1, status: 1, periodStart: -1 },
+          { name: 'work_reports_project_status_period' },
+        ),
+        index(
+          { memberUserId: 1, projectId: 1, periodStart: -1 },
+          { name: 'work_reports_member_period' },
+        ),
+        index({ status: 1, dueAt: 1 }, { name: 'work_reports_status_due_at' }),
+      ],
+    },
+    {
+      name: 'work_report_settings',
+      indexes: [
+        index(
+          { projectId: 1, effectiveAt: 1 },
+          {
+            unique: true,
+            name: 'work_report_settings_project_effective_unique',
+          },
+        ),
+        index(
+          { organizationId: 1, projectId: 1, effectiveAt: -1 },
+          { name: 'work_report_settings_project_history' },
+        ),
+      ],
     },
     {
       name: 'capture_drafts',
