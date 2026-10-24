@@ -41,7 +41,7 @@ const captureSchemas: Record<string, Schema> = {
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
-      taskId: Schema.Types.ObjectId,
+      taskId: { type: Schema.Types.ObjectId, required: true },
       teamId: Schema.Types.ObjectId,
       authorUserId: { type: Schema.Types.ObjectId, required: true },
       authorName: { type: String, maxlength: 200 },
@@ -128,7 +128,19 @@ const captureSchemas: Record<string, Schema> = {
       description: { type: String, maxlength: 2000 },
       documentType: { type: String, required: true },
       taskId: Schema.Types.ObjectId,
-      content: { type: String, required: true, maxlength: 200000 },
+      content: { type: String, default: '', maxlength: 200000 },
+      file: {
+        key: { type: String, maxlength: 300 },
+        name: { type: String, maxlength: 180 },
+        contentType: {
+          type: String,
+          enum: [
+            'application/pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          ],
+        },
+        size: { type: Number, min: 1, max: 20 * 1024 * 1024 },
+      },
       status: {
         type: String,
         enum: [

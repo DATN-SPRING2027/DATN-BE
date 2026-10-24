@@ -1,5 +1,46 @@
 # Task lifecycle contract
 
+## Work Note workflow indexes
+
+The `migrate:work-note-workflows` command uses the idempotent
+`20261024-work-note-workflows-v2.mjs` migration. It only targets
+`continuum_capture`, checks all required unique indexes for duplicate keys
+before creating any missing index, and recognizes an equivalent index even if
+MongoDB assigned a different name during development bootstrap. Conflicting
+keys or index options stop the migration. The migration does not rewrite or
+delete documents.
+
+The Capture persistence contract requires `taskId` on new `TASK_NOTE` records.
+The migration intentionally leaves existing `work_notes` documents unchanged;
+legacy unlinked records remain stored for recovery and classification, and are
+excluded from the three-type Work Note API. They must be reviewed before a
+separate data conversion because the old fields do not reliably identify a
+Task Note, Project Document, or Periodic Work Report.
+
+The default run is a dry run. Applying against a non-loopback MongoDB target
+requires `--allow-shared-database` and setting
+`WORK_NOTE_MIGRATION_CONFIRM_DATABASE=continuum_capture` in the invoking
+process after the database target has been reviewed:
+
+```powershell
+$env:SERVICE_DATABASE = 'continuum_capture'
+$env:MONGODB_URI = '<approved Capture database URI>'
+npm run migrate:work-note-workflows
+# Loopback-only apply; non-loopback apply uses the explicit command below.
+npm run migrate:work-note-workflows -- --apply
+```
+
+For a reviewed non-loopback target, use the explicit shared-database apply command:
+
+```powershell
+$env:WORK_NOTE_MIGRATION_CONFIRM_DATABASE = 'continuum_capture'
+npm run migrate:work-note-workflows -- --apply --allow-shared-database
+```
+
+Apply is additive and repeatable. Rollback leaves the added indexes and data in
+place; remove an index only after verifying it is not used by the running
+workflow and planning a maintenance window.
+
 DATN-100 adds the approved D-08 lifecycle fields and status-history contract to
 the dormant Task data foundation. The [D-13-R6 approval record (Document PR #48)](https://github.com/DATN-SPRING2027/Document/pull/48/files)
 scopes the five statuses, transition matrix, guards, version behavior, event,

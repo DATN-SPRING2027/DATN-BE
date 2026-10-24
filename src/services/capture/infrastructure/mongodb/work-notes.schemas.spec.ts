@@ -1,5 +1,6 @@
 import { CAPTURE_PERSISTENCE } from '../persistence';
 import { createCollectionSchema } from './mongodb.schemas';
+import { Mongoose, Types } from 'mongoose';
 
 describe('Work Notes persistence contract', () => {
   const collections = new Map(
@@ -47,6 +48,11 @@ describe('Work Notes persistence contract', () => {
         collections.get('project_document_versions')!,
       ).path('content'),
     ).toBeDefined();
+    expect(
+      createCollectionSchema(
+        collections.get('project_document_versions')!,
+      ).path('file.key'),
+    ).toBeDefined();
   });
 
   it('stores Task Notes with a Task association in the existing Work Notes collection', () => {
@@ -58,6 +64,31 @@ describe('Work Notes persistence contract', () => {
     );
     const schema = createCollectionSchema(definition!);
     expect(schema.path('taskId')).toBeDefined();
+    expect(schema.path('taskId')?.options.required).toBe(true);
     expect(schema.path('type')).toBeDefined();
+  });
+
+  it('accepts a file-only document draft while upload and submission remain separate steps', () => {
+    const schema = createCollectionSchema(collections.get('project_document_versions')!);
+    const Version = new Mongoose().model('FileOnlyDocumentVersion', schema);
+    const version = new Version({
+      organizationId: new Types.ObjectId(),
+      projectId: new Types.ObjectId(),
+      documentId: new Types.ObjectId(),
+      versionNumber: 1,
+      title: 'Database design',
+      documentType: 'DATABASE_DESIGN',
+      content: '',
+      status: 'DRAFT',
+      editedByUserId: new Types.ObjectId(),
+    });
+    expect(version.validateSync()).toBeUndefined();
+    version.set('file', {
+      key: 'work-notes/test-file',
+      name: 'database-design.pdf',
+      contentType: 'application/pdf',
+      size: 128,
+    });
+    expect(version.validateSync()).toBeUndefined();
   });
 });

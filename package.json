@@ -66,7 +66,7 @@
     "migrate:organization-invitation-token-index": "node scripts/migrations/20261020-organization-invitation-token-index.mjs",
     "migrate:organization-membership-admin-permissions": "node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs",
     "migrate:project-creator-leader": "node --env-file=.env scripts/migrations/20261019-project-creator-leader.mjs",
-    "migrate:work-note-workflows": "node scripts/migrations/20261024-work-note-workflows.mjs",
+    "migrate:work-note-workflows": "node scripts/migrations/20261024-work-note-workflows-v2.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",
     "check": "npm run lint && npm run typecheck && npm run test:organization-role-reconciliation && npm run test:dev-db-smoke-safety && npm test -- --runInBand && npm run test:e2e -- --runInBand && npm run build"
