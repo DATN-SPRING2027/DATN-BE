@@ -3,8 +3,8 @@ import {
   Controller,
   BadRequestException,
   Delete,
+  ForbiddenException,
   Get,
-  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -18,6 +18,10 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import {
+  readCookie,
+  validCsrfPair,
+} from '../../iam/application/authentication/authentication.application.service';
 import type {
   DocumentStatus,
   WorkReportStatus,
@@ -93,6 +97,7 @@ export class WorkNotesController {
     @Param('projectId') projectId: string,
     @Param('documentId') documentId: string,
   ) {
+    const headers = this.mutationHeaders(request);
     const limit = 20 * 1024 * 1024;
     const declaredLength = Number(request.headers['content-length']);
     if (Number.isFinite(declaredLength) && declaredLength > limit)
@@ -117,7 +122,7 @@ export class WorkNotesController {
       throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
     }
     return this.service.uploadDocumentFile(
-      this.requestHeaders(request),
+      headers,
       projectId,
       documentId,
       name,
@@ -179,7 +184,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.createTaskNote(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       taskId,
       validateTaskNoteInput(body),
@@ -210,7 +215,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.updateTaskNote(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       taskId,
       noteId,
@@ -227,7 +232,7 @@ export class WorkNotesController {
     @Param('noteId') noteId: string,
   ) {
     return this.service.deleteTaskNote(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       taskId,
       noteId,
@@ -288,7 +293,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.createDocument(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       validateProjectDocumentInput(body),
     );
@@ -315,7 +320,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.updateDocumentDraft(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       documentId,
       validateProjectDocumentInput(body),
@@ -330,7 +335,7 @@ export class WorkNotesController {
     @Param('documentId') documentId: string,
   ) {
     return this.service.submitDocument(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       documentId,
     );
@@ -345,7 +350,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.reviewDocument(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       documentId,
       'APPROVED',
@@ -362,7 +367,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.reviewDocument(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       documentId,
       'CHANGES_REQUESTED',
@@ -379,7 +384,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.reviewDocument(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       documentId,
       'REJECTED',
@@ -395,7 +400,7 @@ export class WorkNotesController {
     @Param('documentId') documentId: string,
   ) {
     return this.service.archiveDocument(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       documentId,
     );
@@ -418,10 +423,11 @@ export class WorkNotesController {
     @Param('projectId') projectId: string,
     @Body() body: unknown,
   ) {
+    const headers = this.mutationHeaders(request);
     const value = record(body);
     if (Object.keys(value).some((key) => key !== 'frequency')) invalid();
     return this.service.updateWorkReportSettings(
-      this.requestHeaders(request),
+      headers,
       projectId,
       validateReportFrequency(value.frequency),
     );
@@ -451,7 +457,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.saveCurrentWorkReportDraft(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       validateWorkReportInput(body),
     );
@@ -478,7 +484,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.updateWorkReportDraft(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       reportId,
       validateWorkReportInput(body),
@@ -493,7 +499,7 @@ export class WorkNotesController {
     @Param('reportId') reportId: string,
   ) {
     return this.service.submitWorkReport(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       reportId,
     );
@@ -508,7 +514,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.reviewWorkReport(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       reportId,
       'APPROVED',
@@ -525,7 +531,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.reviewWorkReport(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       reportId,
       'CHANGES_REQUESTED',
@@ -542,7 +548,7 @@ export class WorkNotesController {
     @Body() body: unknown,
   ) {
     return this.service.reviewWorkReport(
-      this.requestHeaders(request),
+      this.mutationHeaders(request),
       projectId,
       reportId,
       'REJECTED',
@@ -554,8 +560,35 @@ export class WorkNotesController {
     return {
       authorization: headerValue(request.headers.authorization),
       cookie: headerValue(request.headers.cookie),
+      csrfToken: headerValue(request.headers['x-csrf-token']),
       organizationId: headerValue(request.headers['x-organization-id']),
       requestId: headerValue(request.headers['x-request-id']),
     };
+  }
+
+  private mutationHeaders(request: Request) {
+    const headers = this.requestHeaders(request);
+    const hasBearer =
+      typeof headers.authorization === 'string' &&
+      /^bearer\s+\S+/i.test(headers.authorization.trim());
+    if (
+      !hasBearer &&
+      typeof headers.cookie === 'string' &&
+      headers.cookie.trim().length > 0
+    ) {
+      const cookieToken =
+        readCookie(headers.cookie, '__Host-csrf') ??
+        readCookie(headers.cookie, 'continuum_csrf') ??
+        readCookie(headers.cookie, 'csrf_token');
+      const csrfHeader =
+        typeof headers.csrfToken === 'string' ? headers.csrfToken.trim() : '';
+      if (!validCsrfPair(cookieToken, csrfHeader)) {
+        throw new ForbiddenException({
+          code: 'CSRF_INVALID',
+          message: 'CSRF token is missing or invalid.',
+        });
+      }
+    }
+    return headers;
   }
 }

@@ -83,12 +83,21 @@ describe('WorkNotesAuthorizationService', () => {
   });
 
   it('denies an unprivileged member a task from another Project', async () => {
+    const joinedAt = '2026-10-20T00:00:00.000Z';
     fetchSpy
       .mockResolvedValueOnce(
         response({ id: userId, organizationId, name: 'Mina Member' }),
       )
-      .mockResolvedValueOnce(response({ id: projectId, organizationId }))
+      .mockResolvedValueOnce(
+        response({ id: projectId, organizationId, status: 'ACTIVE' }),
+      )
       .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(
+        response({
+          data: [{ userId, joinedAt }],
+          pagination: { totalPages: 1 },
+        }),
+      )
       .mockResolvedValueOnce(
         response({
           id: taskId,
@@ -101,19 +110,34 @@ describe('WorkNotesAuthorizationService', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
-  it('resolves existing Tasks through the configured Task service route', async () => {
+  it('resolves existing Tasks through the configured Task service route and preserves member joinedAt', async () => {
+    const joinedAt = '2026-10-20T00:00:00.000Z';
     fetchSpy
       .mockResolvedValueOnce(
         response({ id: userId, organizationId, name: 'Mina Member' }),
       )
-      .mockResolvedValueOnce(response({ id: projectId, organizationId }))
+      .mockResolvedValueOnce(
+        response({ id: projectId, organizationId, status: 'ACTIVE' }),
+      )
       .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(
+        response({
+          data: [{ userId, joinedAt }],
+          pagination: { totalPages: 1 },
+        }),
+      )
       .mockResolvedValueOnce(response({ id: taskId, projectId }));
 
     const actor = await service.resolveTask({}, projectId, taskId);
 
-    expect(actor).toMatchObject({ userId, organizationId, projectId });
-    const taskCall = fetchSpy.mock.calls[3] as unknown as
+    expect(actor).toMatchObject({
+      userId,
+      organizationId,
+      projectId,
+      canReview: false,
+      joinedAt,
+    });
+    const taskCall = fetchSpy.mock.calls[4] as unknown as
       [unknown, RequestInit | undefined] | undefined;
     expect(String(taskCall?.[0])).toBe(
       `http://task.internal/internal/tasks/projects/${projectId}/tasks/${taskId}`,
@@ -121,6 +145,7 @@ describe('WorkNotesAuthorizationService', () => {
   });
 
   it('uses the versioned Task route when the modular monolith is the Task fallback', async () => {
+    const joinedAt = '2026-10-20T00:00:00.000Z';
     service = new WorkNotesAuthorizationService({
       getOrThrow: (key: string) =>
         key === 'IAM_SERVICE_URL' ? 'http://monolith.internal' : undefined,
@@ -130,17 +155,97 @@ describe('WorkNotesAuthorizationService', () => {
       .mockResolvedValueOnce(
         response({ id: userId, organizationId, name: 'Mina Member' }),
       )
-      .mockResolvedValueOnce(response({ id: projectId, organizationId }))
+      .mockResolvedValueOnce(
+        response({ id: projectId, organizationId, status: 'ACTIVE' }),
+      )
       .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(
+        response({
+          data: [{ userId, joinedAt }],
+          pagination: { totalPages: 1 },
+        }),
+      )
       .mockResolvedValueOnce(response({ id: taskId, projectId }));
 
     await service.resolveTask({}, projectId, taskId);
 
-    const taskCall = fetchSpy.mock.calls[3] as unknown as
+    const taskCall = fetchSpy.mock.calls[4] as unknown as
       [unknown, RequestInit | undefined] | undefined;
     expect(String(taskCall?.[0])).toBe(
       `http://monolith.internal/api/v1/internal/tasks/projects/${projectId}/tasks/${taskId}`,
     );
+  });
+
+  it('denies non-members of a PUBLIC project, non-member Organization ADMINs, and ARCHIVED projects', async () => {
+    // 1. Non-member of PUBLIC project: /projects/:id returns 200, /memberships returns 403
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Outsider' }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: projectId,
+          organizationId,
+          visibility: 'PUBLIC',
+          status: 'ACTIVE',
+        }),
+      )
+      .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(response({}, 403));
+
+    await expect(service.resolveProject({}, projectId)).rejects.toMatchObject({
+      status: 404,
+      response: { code: 'PROJECT_NOT_FOUND' },
+    });
+
+    // 2. Non-member Organization ADMIN on PRIVATE project: /memberships returns 200 without ADMIN in list
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Org Admin' }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: projectId,
+          organizationId,
+          visibility: 'PRIVATE',
+          status: 'ACTIVE',
+        }),
+      )
+      .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(
+        response({
+          data: [
+            {
+              userId: new Types.ObjectId().toHexString(),
+              joinedAt: '2026-10-20T00:00:00.000Z',
+            },
+          ],
+          pagination: { totalPages: 1 },
+        }),
+      );
+
+    await expect(service.resolveProject({}, projectId)).rejects.toMatchObject({
+      status: 404,
+      response: { code: 'PROJECT_NOT_FOUND' },
+    });
+
+    // 3. ARCHIVED project: rejected immediately with 404
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Mina Member' }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: projectId,
+          organizationId,
+          status: 'ARCHIVED',
+        }),
+      );
+
+    await expect(service.resolveProject({}, projectId)).rejects.toMatchObject({
+      status: 404,
+      response: { code: 'PROJECT_NOT_FOUND' },
+    });
   });
 
   it('fails closed if project authorization cannot reach IAM', async () => {

@@ -34,7 +34,7 @@ describe('Work Notes request validation', () => {
     ).toThrow();
   });
 
-  it('rejects oversized document content and invalid task associations', () => {
+  it('rejects oversized document content and task associations on Project Documents', () => {
     expect(() =>
       validateProjectDocumentInput({
         title: 'Architecture',
@@ -47,7 +47,7 @@ describe('Work Notes request validation', () => {
         title: 'Architecture',
         type: 'ARCHITECTURE',
         content: 'Markdown',
-        taskId: 'not-an-object-id',
+        taskId: '507f1f77bcf86cd799439011',
       }),
     ).toThrow();
   });

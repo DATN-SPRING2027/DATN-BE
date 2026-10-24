@@ -73,7 +73,8 @@ export class WorkNotesAuthorizationService {
     if (
       !project ||
       String(project.id).toLowerCase() !== normalizedProjectId ||
-      project.organizationId !== organizationId
+      project.organizationId !== organizationId ||
+      (typeof project.status === 'string' && project.status !== 'ACTIVE')
     ) {
       throw this.projectNotFound();
     }
@@ -84,6 +85,13 @@ export class WorkNotesAuthorizationService {
       { allowForbidden: true },
     );
     const canReview = settingsAccess?.canUpdateProject === true;
+    const joinedAt = canReview
+      ? undefined
+      : await this.resolveActiveMemberJoinedAt(
+          normalizedProjectId,
+          userId.toLowerCase(),
+          headers,
+        );
 
     return {
       userId,
@@ -92,6 +100,7 @@ export class WorkNotesAuthorizationService {
       projectId: normalizedProjectId,
       canReview,
       canConfigure: canReview,
+      ...(joinedAt ? { joinedAt } : {}),
     };
   }
 
@@ -181,13 +190,16 @@ export class WorkNotesAuthorizationService {
     } while (page <= totalPages);
 
     const leadersResponse = await this.request<{
-      data?: Array<{ userId?: string }>;
+      data?: Array<{ userId?: string; status?: string }>;
     }>(`/api/v1/iam/projects/${actor.projectId}/leaders`, headers);
     if (!Array.isArray(leadersResponse?.data)) {
       throw this.membersUnavailable();
     }
     const leaderIds = new Set(
       leadersResponse.data
+        .filter(
+          (leader) => leader.status === undefined || leader.status === 'ACTIVE',
+        )
         .map((leader) => leader.userId)
         .filter((id): id is string => typeof id === 'string')
         .map((id) => id.toLowerCase()),
@@ -196,6 +208,53 @@ export class WorkNotesAuthorizationService {
     return [...members.entries()]
       .filter(([userId]) => !leaderIds.has(userId))
       .map(([userId, membership]) => ({ userId, ...membership }));
+  }
+
+  private async resolveActiveMemberJoinedAt(
+    projectId: string,
+    normalizedUserId: string,
+    headers: CaptureRequestHeaders,
+  ): Promise<string> {
+    let page = 1;
+    let totalPages = 1;
+    do {
+      const result = await this.request<MembershipResponse>(
+        `/api/v1/iam/projects/${projectId}/memberships?page=${page}&pageSize=100&status=ACTIVE`,
+        headers,
+        { allowForbidden: true },
+      );
+      if (result === null) {
+        throw this.projectNotFound();
+      }
+      if (!Array.isArray(result?.data)) {
+        throw this.membersUnavailable();
+      }
+      for (const membership of result.data) {
+        if (
+          typeof membership.userId === 'string' &&
+          membership.userId.toLowerCase() === normalizedUserId
+        ) {
+          if (
+            !membership.joinedAt ||
+            !Number.isFinite(Date.parse(membership.joinedAt))
+          ) {
+            throw this.membersUnavailable();
+          }
+          return membership.joinedAt;
+        }
+      }
+      totalPages = result.pagination?.totalPages ?? 1;
+      if (
+        !Number.isSafeInteger(totalPages) ||
+        totalPages < 1 ||
+        totalPages > 1000
+      ) {
+        throw this.membersUnavailable();
+      }
+      page += 1;
+    } while (page <= totalPages);
+
+    throw this.projectNotFound();
   }
 
   private async request<T>(

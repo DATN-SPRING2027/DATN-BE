@@ -5,7 +5,10 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { WorkNotesService } from './work-notes.service';
-import { ProjectReportRosterService } from '../../iam/application/projects/project-report-roster.service';
+import {
+  ProjectReportRosterService,
+  type ReportingProjectMembers,
+} from '../../iam/application/projects/project-report-roster.service';
 
 @Injectable()
 export class WorkReportOverdueScheduler
@@ -37,19 +40,32 @@ export class WorkReportOverdueScheduler
     if (this.isSweeping) return;
     this.isSweeping = true;
     try {
+      const activeRosters: ReportingProjectMembers[] = [];
+      let rosterAvailable = true;
       try {
         for await (const project of this.roster.activeProjects()) {
-          if (project.members.length > 0)
-            await this.workNotes.ensureScheduledReportObligations(project);
+          activeRosters.push(project);
+          if (project.members.length > 0) {
+            try {
+              await this.workNotes.ensureScheduledReportObligations(project);
+            } catch (error) {
+              this.logger.error(
+                'Unable to create scheduled Work Report obligations.',
+                error instanceof Error ? error.stack : undefined,
+              );
+            }
+          }
         }
       } catch (error) {
+        rosterAvailable = false;
         this.logger.error(
-          'Unable to create scheduled Work Report obligations.',
+          'Unable to load active project rosters for Work Reports.',
           error instanceof Error ? error.stack : undefined,
         );
       }
+      if (!rosterAvailable) return;
       try {
-        await this.workNotes.sweepOverdueReports();
+        await this.workNotes.sweepOverdueReports(activeRosters);
       } catch (error) {
         this.logger.error(
           'Unable to update overdue Work Reports.',

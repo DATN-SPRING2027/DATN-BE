@@ -94,6 +94,7 @@ describe('Capture Work Notes Mongo workflows', () => {
       projectId,
       canReview: false,
       canConfigure: false,
+      joinedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     };
     authorization = {
       resolveProject: jest.fn(() => Promise.resolve(currentActor)),
@@ -603,5 +604,192 @@ describe('Capture Work Notes Mongo workflows', () => {
         eventName: 'WORK_REPORT_OVERDUE',
       }),
     ).toBe(1);
+  });
+
+  it('uses historical joinedAt for Member listWorkReports and blocks Leader draft creation', async () => {
+    const now = Date.now();
+    await connection.collection('work_report_settings').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      frequency: 'DAILY',
+      effectiveAt: new Date(now - 10 * 86_400_000),
+      createdByUserId: new Types.ObjectId(leaderId),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    currentActor = {
+      ...currentActor,
+      userId: memberId,
+      canReview: false,
+      canConfigure: false,
+      joinedAt: new Date(now - 2 * 86_400_000).toISOString(),
+    };
+
+    const memberReports = await service.listWorkReports({}, projectId, 1, 100);
+    expect(memberReports.data.length).toBeGreaterThanOrEqual(2);
+    expect(memberReports.data.length).toBeLessThanOrEqual(3);
+    expect(memberReports.data[0].permissions.canCreate).toBe(true);
+
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      canReview: true,
+      canConfigure: true,
+      joinedAt: undefined,
+    };
+    const leaderReports = await service.listWorkReports({}, projectId, 1, 100);
+    expect(leaderReports.data[0].permissions.canCreate).toBe(false);
+    await expect(
+      service.saveCurrentWorkReportDraft({}, projectId, {
+        accomplishments: 'Leader draft',
+        approach: 'Approach',
+        reason: 'Reason',
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'WORK_REPORT_MEMBER_ONLY' },
+    });
+  });
+
+  it('preserves APPROVED filter visibility and archive revocation when a newer version is DRAFT or REJECTED', async () => {
+    const created = await service.createDocument({}, projectId, {
+      title: 'Architecture Blueprint',
+      type: 'ARCHITECTURE',
+      content: '# v1 approved content',
+    });
+    await service.submitDocument({}, projectId, created.id);
+    currentActor = { ...currentActor, userId: leaderId, canReview: true };
+    await service.reviewDocument({}, projectId, created.id, 'APPROVED', {});
+
+    currentActor = { ...currentActor, userId: memberId, canReview: false };
+    const draftV2 = await service.updateDocumentDraft(
+      {},
+      projectId,
+      created.id,
+      {
+        title: 'Architecture Blueprint',
+        type: 'ARCHITECTURE',
+        content: '# v2 work in progress',
+      },
+    );
+    expect(draftV2.version).toBe(2);
+    expect(draftV2.status).toBe('DRAFT');
+
+    const approvedList = await service.listDocuments(
+      {},
+      projectId,
+      1,
+      20,
+      'APPROVED',
+    );
+    expect(approvedList.data).toEqual([
+      expect.objectContaining({ id: created.id }),
+    ]);
+
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      canReview: true,
+      canConfigure: true,
+    };
+    await service.archiveDocument({}, projectId, created.id);
+
+    const revokeEvent = await connection.collection('outbox_events').findOne({
+      eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+      aggregateId: created.id,
+    });
+    expect(revokeEvent?.payload).toMatchObject({
+      sourceId: created.id,
+      version: 1,
+    });
+  });
+
+  it('skips overdue transitions for members excluded from activeRosters', async () => {
+    const departedMemberId = new Types.ObjectId().toHexString();
+    const now = new Date();
+    await connection.collection('work_reports').insertMany([
+      {
+        _id: new Types.ObjectId(),
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        memberUserId: new Types.ObjectId(memberId),
+        frequency: 'DAILY',
+        periodStart: new Date(now.getTime() - 2 * 86_400_000),
+        periodEnd: new Date(now.getTime() - 86_400_000),
+        dueAt: new Date(now.getTime() - 86_400_000),
+        status: 'DRAFT',
+        reviewHistory: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        _id: new Types.ObjectId(),
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        memberUserId: new Types.ObjectId(departedMemberId),
+        frequency: 'DAILY',
+        periodStart: new Date(now.getTime() - 2 * 86_400_000),
+        periodEnd: new Date(now.getTime() - 86_400_000),
+        dueAt: new Date(now.getTime() - 86_400_000),
+        status: 'DRAFT',
+        reviewHistory: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const swept = await service.sweepOverdueReports([
+      {
+        organizationId,
+        projectId,
+        projectCreatedBy: leaderId,
+        members: [
+          {
+            userId: memberId,
+            joinedAt: new Date(now.getTime() - 5 * 86_400_000).toISOString(),
+          },
+        ],
+      },
+    ]);
+    expect(swept).toBe(1);
+    expect(
+      await connection.collection('work_reports').findOne({
+        memberUserId: new Types.ObjectId(departedMemberId),
+      }),
+    ).toMatchObject({ status: 'DRAFT' });
+  });
+
+  it('rolls back the mutation transaction when audit append fails', async () => {
+    const failingService = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      {
+        append: async (
+          event: Record<string, unknown>,
+          session?: mongoose.ClientSession,
+        ) => {
+          await connection
+            .collection('outbox_events')
+            .insertOne(event, session ? { session } : undefined);
+        },
+      } as unknown as OutboxService,
+      {
+        append: jest.fn().mockRejectedValue(new Error('Audit write failure')),
+      } as unknown as AuditService,
+    );
+
+    await expect(
+      failingService.createTaskNote({}, projectId, taskId, {
+        title: 'Transactional task note',
+        accomplishments: 'Done',
+        approach: 'Approach',
+        reason: 'Reason',
+      }),
+    ).rejects.toThrow('Audit write failure');
+
+    expect(await connection.collection('work_notes').countDocuments()).toBe(0);
+    expect(await connection.collection('outbox_events').countDocuments()).toBe(
+      0,
+    );
   });
 });

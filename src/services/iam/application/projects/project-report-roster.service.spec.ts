@@ -18,6 +18,7 @@ describe('Project Report roster', () => {
       const member = new Types.ObjectId();
       const leader = new Types.ObjectId();
       const inactive = new Types.ObjectId();
+      const suspended = new Types.ObjectId();
       const leaderRoleId = new Types.ObjectId();
       const joinedAt = new Date('2026-10-20T12:00:00.000Z');
       await db.collection('projects').insertOne({
@@ -27,7 +28,7 @@ describe('Project Report roster', () => {
         createdBy: author,
       });
       await db.collection('project_memberships').insertMany(
-        [member, leader, inactive].map((userId) => ({
+        [member, leader, inactive, suspended].map((userId) => ({
           organizationId,
           projectId,
           userId,
@@ -39,6 +40,11 @@ describe('Project Report roster', () => {
         { organizationId, userId: member, status: 'ACTIVE' },
         { organizationId, userId: leader, status: 'ACTIVE' },
         { organizationId, userId: inactive, status: 'INACTIVE' },
+        { organizationId, userId: suspended, status: 'ACTIVE' },
+      ]);
+      await db.collection('users').insertMany([
+        { _id: member, status: 'ACTIVE' },
+        { _id: suspended, status: 'SUSPENDED' },
       ]);
       await db
         .collection('roles')

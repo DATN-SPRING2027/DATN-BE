@@ -31,6 +31,7 @@ export type WorkReportStatus =
 export interface CaptureRequestHeaders {
   authorization?: string;
   cookie?: string;
+  csrfToken?: string;
   organizationId?: string;
   requestId?: string;
 }
@@ -42,6 +43,7 @@ export interface WorkNotesActor {
   projectId: string;
   canReview: boolean;
   canConfigure: boolean;
+  joinedAt?: string;
 }
 
 export interface TaskNoteInput {
@@ -56,7 +58,6 @@ export interface ProjectDocumentInput {
   description?: string;
   type: DocumentType;
   content: string;
-  taskId?: string;
 }
 
 export interface ProjectDocumentFileRecord {
@@ -116,7 +117,6 @@ export interface DocumentVersionRecord {
   title: string;
   description?: string;
   type: DocumentType;
-  taskId?: string;
   content: string;
   file?: ProjectDocumentFileRecord;
   status: DocumentStatus;
@@ -137,7 +137,6 @@ export interface DocumentVersionRecord {
 export interface ProjectDocumentSummaryRecord {
   id: string;
   projectId: string;
-  taskId?: string;
   title: string;
   description?: string;
   type: DocumentType;

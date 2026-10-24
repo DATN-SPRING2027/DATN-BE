@@ -49,33 +49,47 @@ export class ProjectReportRosterService {
         .toArray();
       if (memberships.length === 0) continue;
       const userIds = memberships.map((item) => item.userId as Types.ObjectId);
-      const [organizationMemberships, leaderAssignments] = await Promise.all([
-        db
-          .collection('organization_memberships')
-          .find(
-            {
-              organizationId,
-              userId: { $in: userIds },
-              status: 'ACTIVE',
-            },
-            { projection: { userId: 1 } },
-          )
-          .toArray(),
-        db
-          .collection('role_assignments')
-          .find(
-            {
-              organizationId,
-              projectId,
-              userId: { $in: userIds },
-              roleCode: 'TEAM_LEADER',
-            },
-            { projection: { userId: 1, roleId: 1 } },
-          )
-          .toArray(),
-      ]);
+      const [organizationMemberships, leaderAssignments, inactiveUsers] =
+        await Promise.all([
+          db
+            .collection('organization_memberships')
+            .find(
+              {
+                organizationId,
+                userId: { $in: userIds },
+                status: 'ACTIVE',
+              },
+              { projection: { userId: 1 } },
+            )
+            .toArray(),
+          db
+            .collection('role_assignments')
+            .find(
+              {
+                organizationId,
+                projectId,
+                userId: { $in: userIds },
+                roleCode: 'TEAM_LEADER',
+              },
+              { projection: { userId: 1, roleId: 1 } },
+            )
+            .toArray(),
+          db
+            .collection('users')
+            .find(
+              {
+                _id: { $in: userIds },
+                status: { $ne: 'ACTIVE' },
+              },
+              { projection: { _id: 1 } },
+            )
+            .toArray(),
+        ]);
       const activeOrganizationUsers = new Set(
         organizationMemberships.map((item) => String(item.userId)),
+      );
+      const inactiveUserIds = new Set(
+        inactiveUsers.map((item) => String(item._id)),
       );
       const currentLeaderRoles = await db
         .collection('roles')
@@ -107,6 +121,7 @@ export class ProjectReportRosterService {
           const userId = String(item.userId);
           const joinedAt = item.joinedAt as Date;
           return activeOrganizationUsers.has(userId) &&
+            !inactiveUserIds.has(userId) &&
             !leaders.has(userId) &&
             joinedAt instanceof Date
             ? [{ userId, joinedAt: joinedAt.toISOString() }]

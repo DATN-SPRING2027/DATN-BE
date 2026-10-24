@@ -45,13 +45,6 @@ function optionalText(value: unknown, maxLength: number): string | undefined {
   return value.trim();
 }
 
-function optionalId(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !/^[a-f\d]{24}$/i.test(value))
-    return invalid();
-  return value.toLowerCase();
-}
-
 export function validateTaskNoteInput(value: unknown): TaskNoteInput {
   const record = objectRecord(value);
   assertKeys(record, ['title', 'accomplishments', 'approach', 'reason']);
@@ -80,7 +73,7 @@ export function validateProjectDocumentInput(
   value: unknown,
 ): ProjectDocumentInput {
   const record = objectRecord(value);
-  assertKeys(record, ['title', 'description', 'type', 'content', 'taskId']);
+  assertKeys(record, ['title', 'description', 'type', 'content']);
   if (!documentTypes.includes(record.type as DocumentType)) return invalid();
   return {
     title: requiredText(record.title, 240),
@@ -89,9 +82,6 @@ export function validateProjectDocumentInput(
       : { description: optionalText(record.description, 2_000) ?? '' }),
     type: record.type as DocumentType,
     content: optionalText(record.content, 200_000) ?? invalid(),
-    ...(record.taskId === undefined
-      ? {}
-      : { taskId: optionalId(record.taskId) }),
   };
 }
 

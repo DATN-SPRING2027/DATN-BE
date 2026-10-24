@@ -123,7 +123,7 @@ paths:
           schema: { type: integer, minimum: 1, default: 1 }
         - name: pageSize
           in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
         - name: taskId
           in: query
           schema: { $ref: '#/components/schemas/ObjectId' }
@@ -172,7 +172,7 @@ paths:
           schema: { type: integer, minimum: 1, default: 1 }
         - name: pageSize
           in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         '200':
           description: Project Documents
@@ -395,7 +395,7 @@ paths:
           schema: { type: integer, minimum: 1, default: 1 }
         - name: pageSize
           in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         '200':
           description: Reports in the actor's allowed Project scope
@@ -643,7 +643,6 @@ components:
         description: { type: string, maxLength: 2000 }
         type: { $ref: '#/components/schemas/DocumentType' }
         content: { type: string, maxLength: 200000 }
-        taskId: { $ref: '#/components/schemas/ObjectId' }
     ReviewInput:
       type: object
       additionalProperties: false
@@ -656,7 +655,6 @@ components:
       properties:
         id: { $ref: '#/components/schemas/ObjectId' }
         projectId: { $ref: '#/components/schemas/ObjectId' }
-        taskId: { $ref: '#/components/schemas/ObjectId' }
         title: { type: string }
         description: { type: string }
         type: { $ref: '#/components/schemas/DocumentType' }
