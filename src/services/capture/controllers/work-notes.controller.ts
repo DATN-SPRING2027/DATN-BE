@@ -1,6 +1,8 @@
 import {
   Body,
   Controller,
+  BadRequestException,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -10,9 +12,12 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
+  Put,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import type {
   DocumentStatus,
   WorkReportStatus,
@@ -82,6 +87,73 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 export class WorkNotesController {
   constructor(private readonly service: WorkNotesService) {}
 
+  @Put('documents/:documentId/file')
+  async uploadDocumentFile(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+  ) {
+    const limit = 20 * 1024 * 1024;
+    const declaredLength = Number(request.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > limit)
+      throw new BadRequestException({ code: 'DOCUMENT_FILE_TOO_LARGE' });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const bytes = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk as Uint8Array);
+      size += bytes.length;
+      if (size > limit)
+        throw new BadRequestException({ code: 'DOCUMENT_FILE_TOO_LARGE' });
+      chunks.push(bytes);
+    }
+    let name: string;
+    try {
+      name = decodeURIComponent(
+        headerValue(request.headers['x-file-name']) ?? '',
+      );
+    } catch {
+      throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
+    }
+    return this.service.uploadDocumentFile(
+      this.requestHeaders(request),
+      projectId,
+      documentId,
+      name,
+      request.headers['content-type'] ?? '',
+      Buffer.concat(chunks),
+    );
+  }
+
+  @Get('documents/:documentId/file')
+  async downloadDocumentFile(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Query() rawQuery: Record<string, unknown>,
+  ) {
+    assertQueryKeys(rawQuery, ['version']);
+    const version =
+      rawQuery.version === undefined
+        ? undefined
+        : positiveInteger(rawQuery.version, 1, 100000);
+    const file = await this.service.downloadDocumentFile(
+      this.requestHeaders(request),
+      projectId,
+      documentId,
+      version,
+    );
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('Content-Type', file.contentType);
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    );
+    return new StreamableFile(file.bytes);
+  }
+
   @Get('tasks/:taskId/notes')
   listTaskNotes(
     @Req() request: Request,
@@ -129,6 +201,39 @@ export class WorkNotesController {
     );
   }
 
+  @Patch('tasks/:taskId/notes/:noteId')
+  updateTaskNote(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('taskId') taskId: string,
+    @Param('noteId') noteId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.updateTaskNote(
+      this.requestHeaders(request),
+      projectId,
+      taskId,
+      noteId,
+      validateTaskNoteInput(body),
+    );
+  }
+
+  @Delete('tasks/:taskId/notes/:noteId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteTaskNote(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('taskId') taskId: string,
+    @Param('noteId') noteId: string,
+  ) {
+    return this.service.deleteTaskNote(
+      this.requestHeaders(request),
+      projectId,
+      taskId,
+      noteId,
+    );
+  }
+
   @Get('work-notes')
   listProjectTaskNotes(
     @Req() request: Request,
@@ -144,6 +249,19 @@ export class WorkNotesController {
       positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
       positiveInteger(rawQuery.pageSize, 20, 100),
       rawQuery.taskId,
+    );
+  }
+
+  @Get('work-notes/:noteId')
+  getProjectTaskNote(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+  ) {
+    return this.service.getProjectTaskNote(
+      this.requestHeaders(request),
+      projectId,
+      noteId,
     );
   }
 

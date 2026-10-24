@@ -88,7 +88,7 @@ export function validateProjectDocumentInput(
       ? {}
       : { description: optionalText(record.description, 2_000) ?? '' }),
     type: record.type as DocumentType,
-    content: requiredText(record.content, 200_000),
+    content: optionalText(record.content, 200_000) ?? invalid(),
     ...(record.taskId === undefined
       ? {}
       : { taskId: optionalId(record.taskId) }),

@@ -5,6 +5,7 @@ import type { WorkNotesActor } from './work-notes.types';
 import { WorkNotesService } from './work-notes.service';
 import type { AuditService } from '../infrastructure/audit/audit.service';
 import type { OutboxService } from '../infrastructure/outbox/outbox.service';
+import type { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
 
 describe('Capture Work Notes Mongo workflows', () => {
   jest.setTimeout(120_000);
@@ -98,7 +99,13 @@ describe('Capture Work Notes Mongo workflows', () => {
       resolveProject: jest.fn(() => Promise.resolve(currentActor)),
       resolveTask: jest.fn(() => Promise.resolve(currentActor)),
       listActiveMembers: jest.fn(() =>
-        Promise.resolve([{ userId: memberId, fullName: 'Mina Member' }]),
+        Promise.resolve([
+          {
+            userId: memberId,
+            fullName: 'Mina Member',
+            joinedAt: new Date().toISOString(),
+          },
+        ]),
       ),
     };
     const outbox = {
@@ -160,6 +167,151 @@ describe('Capture Work Notes Mongo workflows', () => {
         created.id,
       ),
     ).rejects.toMatchObject({ status: 404 });
+    expect(
+      await service.getProjectTaskNote({}, projectId, created.id),
+    ).toMatchObject({
+      id: created.id,
+      taskId,
+      type: 'TASK_NOTE',
+    });
+    await expect(
+      service.getProjectTaskNote(
+        {},
+        new Types.ObjectId().toHexString(),
+        created.id,
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('excludes legacy unlinked records from the Task Note taxonomy', async () => {
+    await connection.collection('work_notes').insertOne({
+      _id: new Types.ObjectId(),
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      authorUserId: new Types.ObjectId(memberId),
+      type: 'TASK_NOTE',
+      title: 'Unlinked legacy note',
+      whatDone: 'Old generic content',
+      howSolved: 'Old generic content',
+      whyThisWay: 'Old generic content',
+      status: 'CONFIRMED',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await service.createTaskNote({}, projectId, taskId, {
+      title: 'Linked note',
+      accomplishments: 'Done',
+      approach: 'Approach',
+      reason: 'Reason',
+    });
+
+    const page = await service.listProjectTaskNotes({}, projectId, 1, 50);
+
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0].taskId).toBe(taskId);
+  });
+
+  it('allows the author or reviewer to edit and archive a Task Note', async () => {
+    const input = {
+      title: 'Original',
+      accomplishments: 'Done',
+      approach: 'Method',
+      reason: 'Reason',
+    };
+    const note = await service.createTaskNote({}, projectId, taskId, input);
+    const ownerEdit = await service.updateTaskNote(
+      {},
+      projectId,
+      taskId,
+      note.id,
+      { ...input, title: 'Owner edit' },
+    );
+    expect(ownerEdit.title).toBe('Owner edit');
+    currentActor = {
+      ...currentActor,
+      userId: new Types.ObjectId().toHexString(),
+    };
+    await expect(
+      service.updateTaskNote({}, projectId, taskId, note.id, input),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.deleteTaskNote({}, projectId, taskId, note.id),
+    ).rejects.toMatchObject({ status: 404 });
+    currentActor = { ...currentActor, userId: leaderId, canReview: true };
+    const edited = await service.updateTaskNote(
+      {},
+      projectId,
+      taskId,
+      note.id,
+      { ...input, title: 'Corrected' },
+    );
+    expect(edited.title).toBe('Corrected');
+    await service.deleteTaskNote({}, projectId, taskId, note.id);
+    await expect(
+      service.getTaskNote({}, projectId, taskId, note.id),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(
+      await connection
+        .collection('work_notes')
+        .findOne({ _id: new Types.ObjectId(note.id) }),
+    ).toMatchObject({ status: 'ARCHIVED' });
+  });
+
+  it('does not assign periods ending before a member joined', async () => {
+    currentActor = { ...currentActor, canReview: true };
+    const joinedAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    (authorization.listActiveMembers as jest.Mock).mockResolvedValue([
+      { userId: memberId, fullName: 'Mina Member', joinedAt },
+    ]);
+    await connection.collection('work_report_settings').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      frequency: 'DAILY',
+      effectiveAt: new Date(Date.now() - 10 * 86_400_000),
+      createdByUserId: new Types.ObjectId(leaderId),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await service.listWorkReports({}, projectId, 1, 100);
+    expect(
+      await connection.collection('work_reports').countDocuments(),
+    ).toBeLessThanOrEqual(3);
+  });
+
+  it('creates overdue obligations and events without a page request', async () => {
+    const now = Date.now();
+    await connection.collection('work_report_settings').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      frequency: 'DAILY',
+      effectiveAt: new Date(now - 4 * 86_400_000),
+      createdByUserId: new Types.ObjectId(leaderId),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const project = {
+      organizationId,
+      projectId,
+      projectCreatedBy: leaderId,
+      members: [
+        {
+          userId: memberId,
+          joinedAt: new Date(now - 2 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+    await service.ensureScheduledReportObligations(project);
+    expect(await connection.collection('work_reports').countDocuments()).toBe(
+      3,
+    );
+    expect(await service.sweepOverdueReports()).toBe(2);
+    await service.ensureScheduledReportObligations(project);
+    expect(await service.sweepOverdueReports()).toBe(0);
+    expect(
+      await connection
+        .collection('outbox_events')
+        .countDocuments({ eventName: 'WORK_REPORT_DUE' }),
+    ).toBe(2);
   });
 
   it('keeps approved Document versions immutable through review and follow-up edits', async () => {
@@ -253,6 +405,28 @@ describe('Capture Work Notes Mongo workflows', () => {
       }),
     ).toBe(1);
     expect(edited.content).toBe('# Submitted version');
+
+    await service.submitDocument({}, projectId, created.id);
+    currentActor = { ...currentActor, userId: leaderId, canReview: true };
+    const secondApproval = await service.reviewDocument(
+      {},
+      projectId,
+      created.id,
+      'APPROVED',
+      {},
+    );
+    expect(secondApproval.version).toBe(2);
+    expect(
+      await connection
+        .collection('outbox_events')
+        .countDocuments({ eventName: 'KNOWLEDGE_SOURCE_REPLACED' }),
+    ).toBe(1);
+    await service.archiveDocument({}, projectId, created.id);
+    expect(
+      await connection
+        .collection('outbox_events')
+        .countDocuments({ eventName: 'KNOWLEDGE_SOURCE_REVOKED' }),
+    ).toBe(1);
   });
 
   it('allows a Document owner to clear its optional description', async () => {
@@ -282,6 +456,75 @@ describe('Capture Work Notes Mongo workflows', () => {
         versionNumber: 1,
       }),
     ).toMatchObject({ description: '' });
+  });
+
+  it('stores a private PDF reference per Document version and enforces Project scope', async () => {
+    const objects = new Map<string, Buffer>();
+    const storage = {
+      put: jest.fn((key: string, bytes: Buffer) => {
+        objects.set(key, bytes);
+        return Promise.resolve();
+      }),
+      get: jest.fn((key: string) =>
+        Promise.resolve(objects.get(key) ?? Buffer.alloc(0)),
+      ),
+      delete: jest.fn((key: string) => {
+        objects.delete(key);
+        return Promise.resolve();
+      }),
+    } as unknown as ProjectDocumentStorage;
+    service = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      {
+        append: async (
+          event: Record<string, unknown>,
+          session?: mongoose.ClientSession,
+        ) => {
+          await connection
+            .collection('outbox_events')
+            .insertOne(event, session ? { session } : undefined);
+        },
+      } as unknown as OutboxService,
+      {
+        append: jest.fn().mockResolvedValue(undefined),
+      } as unknown as AuditService,
+      storage,
+    );
+    const document = await service.createDocument({}, projectId, {
+      title: 'RSR',
+      type: 'RSR',
+      content: '',
+    });
+    await expect(
+      service.submitDocument({}, projectId, document.id),
+    ).rejects.toMatchObject({ status: 409 });
+    const pdf = Buffer.from('%PDF-1.4 test');
+    const uploaded = await service.uploadDocumentFile(
+      {},
+      projectId,
+      document.id,
+      'rsr.pdf',
+      'application/pdf',
+      pdf,
+    );
+    expect(uploaded.file).toEqual({
+      name: 'rsr.pdf',
+      contentType: 'application/pdf',
+      size: pdf.length,
+    });
+    expect(JSON.stringify(uploaded)).not.toContain('work-notes/');
+    expect(
+      (await service.downloadDocumentFile({}, projectId, document.id)).bytes,
+    ).toEqual(pdf);
+    await expect(
+      service.downloadDocumentFile(
+        {},
+        new Types.ObjectId().toHexString(),
+        document.id,
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    await service.submitDocument({}, projectId, document.id);
   });
 
   it('creates one report per member period, reviews it, and emits overdue events once', async () => {

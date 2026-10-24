@@ -1,9 +1,11 @@
 import {
   Controller,
+  Delete,
   GatewayTimeoutException,
   Get,
   Patch,
   Post,
+  Put,
   Req,
   Res,
   ServiceUnavailableException,
@@ -17,6 +19,7 @@ const requestHeaders = [
   'content-type',
   'cookie',
   'x-csrf-token',
+  'x-file-name',
   'x-organization-id',
   'x-request-id',
 ] as const;
@@ -24,6 +27,7 @@ const requestHeaders = [
 const responseHeaders = [
   'cache-control',
   'content-type',
+  'content-disposition',
   'location',
   'retry-after',
   'www-authenticate',
@@ -44,6 +48,16 @@ export class GatewayCaptureController {
     return this.forward(request, response);
   }
 
+  @Patch('tasks/:taskId/notes/:noteId')
+  updateTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('tasks/:taskId/notes/:noteId')
+  deleteTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Get('tasks/:taskId/notes/:noteId')
   getTaskNote(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
@@ -51,6 +65,11 @@ export class GatewayCaptureController {
 
   @Get('work-notes')
   listProjectTaskNotes(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('work-notes/:noteId')
+  getProjectTaskNote(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 
@@ -71,6 +90,16 @@ export class GatewayCaptureController {
 
   @Patch('documents/:documentId')
   updateDocumentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Put('documents/:documentId/file')
+  uploadDocumentFile(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('documents/:documentId/file')
+  downloadDocumentFile(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 
@@ -162,16 +191,31 @@ export class GatewayCaptureController {
       if (typeof value === 'string') headers[name] = value;
     }
 
+    const fileTransfer =
+      /^\/api\/v1\/capture\/projects\/[^/]+\/documents\/[^/]+\/file(?:\?|$)/.test(
+        request.originalUrl,
+      );
+    const streamUpload = request.method === 'PUT' && fileTransfer;
+    const body =
+      request.method === 'GET' || request.method === 'HEAD'
+        ? undefined
+        : streamUpload
+          ? (request as unknown as BodyInit)
+          : request.body === undefined
+            ? undefined
+            : JSON.stringify(request.body);
+
     let upstream: globalThis.Response;
     try {
       upstream = await fetch(new URL(path, baseUrl), {
         method: request.method,
         headers,
-        ...(request.method === 'GET' || request.body === undefined
-          ? {}
-          : { body: JSON.stringify(request.body) }),
+        ...(body === undefined ? {} : { body }),
+        ...(streamUpload ? { duplex: 'half' } : {}),
         signal: AbortSignal.timeout(
-          this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
+          this.config.getOrThrow<number>(
+            fileTransfer ? 'CAPTURE_FILE_TIMEOUT_MS' : 'BACKEND_TIMEOUT_MS',
+          ),
         ),
       });
     } catch (error) {

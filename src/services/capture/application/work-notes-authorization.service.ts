@@ -19,6 +19,7 @@ interface IdentityResponse {
 interface MembershipResponse {
   data?: Array<{
     userId?: string;
+    joinedAt?: string;
     user?: { fullName?: string; email?: string } | null;
   }>;
   pagination?: { totalPages?: number };
@@ -132,7 +133,7 @@ export class WorkNotesAuthorizationService {
   async listActiveMembers(
     actor: WorkNotesActor,
     headers: CaptureRequestHeaders,
-  ): Promise<Array<{ userId: string; fullName: string }>> {
+  ): Promise<Array<{ userId: string; fullName: string; joinedAt: string }>> {
     if (!actor.canReview) {
       throw new ForbiddenException({
         code: 'PROJECT_REVIEW_PERMISSION_REQUIRED',
@@ -140,7 +141,7 @@ export class WorkNotesAuthorizationService {
       });
     }
 
-    const members = new Map<string, string>();
+    const members = new Map<string, { fullName: string; joinedAt: string }>();
     let page = 1;
     let totalPages = 1;
     do {
@@ -154,12 +155,18 @@ export class WorkNotesAuthorizationService {
       for (const membership of result.data) {
         if (validId(membership.userId ?? '')) {
           const userId = membership.userId!.toLowerCase();
-          members.set(
-            userId,
-            membership.user?.fullName?.trim() ||
+          if (
+            !membership.joinedAt ||
+            !Number.isFinite(Date.parse(membership.joinedAt))
+          )
+            throw this.membersUnavailable();
+          members.set(userId, {
+            fullName:
+              membership.user?.fullName?.trim() ||
               membership.user?.email?.trim() ||
               userId,
-          );
+            joinedAt: membership.joinedAt,
+          });
         }
       }
       totalPages = result.pagination?.totalPages ?? 1;
@@ -188,7 +195,7 @@ export class WorkNotesAuthorizationService {
 
     return [...members.entries()]
       .filter(([userId]) => !leaderIds.has(userId))
-      .map(([userId, fullName]) => ({ userId, fullName }));
+      .map(([userId, membership]) => ({ userId, ...membership }));
   }
 
   private async request<T>(

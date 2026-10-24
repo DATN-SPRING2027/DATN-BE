@@ -45,11 +45,13 @@ export interface EnvironmentVariables {
   R2_BUCKET?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
+  WORK_NOTE_LOCAL_STORAGE_DIR?: string;
   AWS_REGION?: string;
   CHAT_S3_BUCKET?: string;
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
   BACKEND_TIMEOUT_MS: number;
+  CAPTURE_FILE_TIMEOUT_MS: number;
   SAG_API_BASE_URL?: string;
   SAG_BFF_SERVICE_TOKEN?: string;
   CONTINUUM_WEB_BASE_URL?: string;
@@ -156,11 +158,17 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   R2_BUCKET: Joi.string().allow('').optional(),
   R2_ACCESS_KEY_ID: Joi.string().allow('').optional(),
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
+  WORK_NOTE_LOCAL_STORAGE_DIR: Joi.string().allow('').optional(),
   AWS_REGION: Joi.string().allow('').optional(),
   CHAT_S3_BUCKET: Joi.string().allow('').optional(),
   AWS_ACCESS_KEY_ID: Joi.string().allow('').optional(),
   AWS_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
   BACKEND_TIMEOUT_MS: Joi.number().integer().min(100).max(30000).default(5000),
+  CAPTURE_FILE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(600000)
+    .default(120000),
   SAG_API_BASE_URL: Joi.string()
     .trim()
     .uri({ scheme: ['http', 'https'] })

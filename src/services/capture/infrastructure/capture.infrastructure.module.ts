@@ -11,6 +11,7 @@ import { OutboxService } from './outbox/outbox.service';
 import { IdempotencyService } from './redis/idempotency.service';
 import { RedisService } from './redis/redis.service';
 import { R2Storage } from './storage/r2.storage';
+import { ProjectDocumentStorage } from './storage/project-document.storage';
 import { CAPTURE_PERSISTENCE, CAPTURE_QUEUES } from './persistence';
 import { DEFAULT_JOB_OPTIONS } from './queues/queue.policy';
 import { QueueRuntime } from './queues/queue-runtime';
@@ -23,6 +24,7 @@ export class CaptureInfrastructureModule {
       RedisService,
       IdempotencyService,
       R2Storage,
+      ProjectDocumentStorage,
       ...(enabled ? [AuditService, OutboxService] : []),
       ...(enabled
         ? [

@@ -7,6 +7,13 @@ import {
 } from './work-notes.validation';
 
 describe('Work Notes request validation', () => {
+  it('accepts explicit empty document text for file drafts but rejects an omitted field', () => {
+    const input = { title: 'Architecture', type: 'ARCHITECTURE' };
+    expect(() => validateProjectDocumentInput(input)).toThrow();
+    expect(
+      validateProjectDocumentInput({ ...input, content: '' }).content,
+    ).toBe('');
+  });
   it('requires all structured Task Note fields and rejects extra fields', () => {
     expect(() =>
       validateTaskNoteInput({

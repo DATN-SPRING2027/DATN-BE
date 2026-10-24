@@ -7,15 +7,23 @@ import { CaptureInfrastructureModule } from './infrastructure/capture.infrastruc
 import { WorkNotesAuthorizationService } from './application/work-notes-authorization.service';
 import { WorkNotesService } from './application/work-notes.service';
 import { WorkReportOverdueScheduler } from './application/work-report-overdue.scheduler';
+import { ProjectReportRosterService } from '../iam/application/projects/project-report-roster.service';
+import { IamInfrastructureModule } from '../iam/infrastructure/iam.infrastructure.module';
 
 @Module({
-  imports: [RuntimeConfigModule, CaptureInfrastructureModule.register()],
+  imports: [
+    RuntimeConfigModule,
+    IamInfrastructureModule.register(),
+    CaptureInfrastructureModule.register(),
+  ],
   controllers: [CaptureController, WorkNotesController],
   providers: [
     CaptureApplicationService,
     WorkNotesAuthorizationService,
     WorkNotesService,
+    ProjectReportRosterService,
     WorkReportOverdueScheduler,
   ],
+  exports: [WorkNotesService],
 })
 export class CaptureModule {}

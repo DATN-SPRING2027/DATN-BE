@@ -59,6 +59,12 @@ export interface ProjectDocumentInput {
   taskId?: string;
 }
 
+export interface ProjectDocumentFileRecord {
+  name: string;
+  contentType: string;
+  size: number;
+}
+
 export interface ReviewInput {
   comment?: string;
 }
@@ -86,6 +92,7 @@ export interface WorkNotesPage<T> {
 export interface WorkNotesPermissions {
   canCreate: boolean;
   canEdit: boolean;
+  canDelete?: boolean;
   canSubmit: boolean;
   canReview: boolean;
   canConfigure: boolean;
@@ -111,6 +118,7 @@ export interface DocumentVersionRecord {
   type: DocumentType;
   taskId?: string;
   content: string;
+  file?: ProjectDocumentFileRecord;
   status: DocumentStatus;
   editedBy: string;
   createdAt: string;
@@ -147,8 +155,12 @@ export interface ProjectDocumentSummaryRecord {
 
 export interface ProjectDocumentRecord extends ProjectDocumentSummaryRecord {
   content: string;
+  file?: ProjectDocumentFileRecord;
   versions: Array<
-    Pick<DocumentVersionRecord, 'version' | 'status' | 'createdAt' | 'editedBy'>
+    Pick<
+      DocumentVersionRecord,
+      'version' | 'status' | 'createdAt' | 'editedBy' | 'file'
+    >
   >;
   reviewHistory: DocumentVersionRecord['reviewHistory'];
 }

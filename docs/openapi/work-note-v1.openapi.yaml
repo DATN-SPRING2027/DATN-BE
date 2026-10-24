@@ -83,6 +83,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TaskNote' }
         default: { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [TaskNotes]
+      operationId: updateTaskNote
+      description: The author or an authorized Project reviewer may edit a confirmed Task Note.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskNoteInput' }
+      responses:
+        '200':
+          description: Updated Task Note
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskNote' }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [TaskNotes]
+      operationId: deleteTaskNote
+      description: Soft deletes a Task Note for its author or an authorized Project reviewer.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Task Note deleted }
+        default: { $ref: '#/components/responses/Error' }
   /capture/projects/{projectId}/work-notes:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -113,6 +140,22 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/TaskNote' }
                   pagination: { $ref: '#/components/schemas/Pagination' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [TaskNotes]
+      operationId: getProjectTaskNote
+      summary: Resolve a project-scoped Task Note notification target
+      description: Returns only a confirmed Task Note whose linked Task still belongs to the requested Project and is accessible to the caller.
+      responses:
+        '200':
+          description: Task Note
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskNote' }
         default: { $ref: '#/components/responses/Error' }
   /capture/projects/{projectId}/documents:
     parameters:
@@ -191,6 +234,46 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/documents/{documentId}/file:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/DocumentId'
+    put:
+      tags: [ProjectDocuments]
+      operationId: uploadProjectDocumentFile
+      description: Uploads one PDF or DOCX (maximum 20 MB) to an owned draft version.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - name: X-File-Name
+          in: header
+          required: true
+          schema: { type: string, maxLength: 540 }
+      requestBody:
+        required: true
+        content:
+          application/pdf:
+            schema: { type: string, format: binary }
+          application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+            schema: { type: string, format: binary }
+      responses:
+        '200': { $ref: '#/components/responses/ProjectDocument' }
+        default: { $ref: '#/components/responses/Error' }
+    get:
+      tags: [ProjectDocuments]
+      operationId: downloadProjectDocumentFile
+      parameters:
+        - name: version
+          in: query
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Private attachment download
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema: { type: string, format: binary }
         default: { $ref: '#/components/responses/Error' }
   /capture/projects/{projectId}/documents/{documentId}/submit:
     parameters:
@@ -516,6 +599,7 @@ components:
       properties:
         canCreate: { type: boolean }
         canEdit: { type: boolean }
+        canDelete: { type: boolean }
         canSubmit: { type: boolean }
         canReview: { type: boolean }
         canConfigure: { type: boolean }
@@ -558,7 +642,7 @@ components:
         title: { type: string, minLength: 1, maxLength: 240 }
         description: { type: string, maxLength: 2000 }
         type: { $ref: '#/components/schemas/DocumentType' }
-        content: { type: string, minLength: 1, maxLength: 200000 }
+        content: { type: string, maxLength: 200000 }
         taskId: { $ref: '#/components/schemas/ObjectId' }
     ReviewInput:
       type: object
@@ -593,6 +677,7 @@ components:
           required: [content, versions, reviewHistory]
           properties:
             content: { type: string }
+            file: { $ref: '#/components/schemas/ProjectDocumentFile' }
             versions:
               type: array
               items:
@@ -603,9 +688,17 @@ components:
                   status: { $ref: '#/components/schemas/DocumentStatus' }
                   createdAt: { type: string, format: date-time }
                   editedBy: { $ref: '#/components/schemas/ObjectId' }
+                  file: { $ref: '#/components/schemas/ProjectDocumentFile' }
             reviewHistory:
               type: array
               items: { $ref: '#/components/schemas/ReviewEvent' }
+    ProjectDocumentFile:
+      type: object
+      required: [name, contentType, size]
+      properties:
+        name: { type: string }
+        contentType: { type: string, enum: [application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document] }
+        size: { type: integer, minimum: 1, maximum: 20971520 }
     ReviewEvent:
       type: object
       required: [action, reviewerId, at]

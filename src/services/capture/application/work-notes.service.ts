@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -8,10 +9,12 @@ import {
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types, type ClientSession, type Connection } from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import type { Document, Db } from 'mongodb';
 import { CAPTURE_PERSISTENCE } from '../infrastructure/persistence';
 import { AuditService } from '../infrastructure/audit/audit.service';
 import { OutboxService } from '../infrastructure/outbox/outbox.service';
+import { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
 import {
   assertReviewerCanReview,
   calculateReportPeriod,
@@ -20,6 +23,7 @@ import {
   type WorkReportFrequency,
 } from './work-notes.domain';
 import { WorkNotesAuthorizationService } from './work-notes-authorization.service';
+import type { ReportingProjectMembers } from '../../iam/application/projects/project-report-roster.service';
 import type {
   CaptureRequestHeaders,
   DocumentStatus,
@@ -101,6 +105,7 @@ export class WorkNotesService {
     private readonly connection?: Connection,
     @Optional() private readonly outbox?: OutboxService,
     @Optional() private readonly audit?: AuditService,
+    @Optional() private readonly documentStorage?: ProjectDocumentStorage,
   ) {}
 
   async listTaskNotes(
@@ -155,6 +160,7 @@ export class WorkNotesService {
       projectId: objectId(projectId),
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
+      taskId: { $type: 'objectId' },
       ...(taskId ? { taskId: objectId(taskId) } : {}),
     };
     const collection = db.collection('work_notes');
@@ -196,6 +202,28 @@ export class WorkNotesService {
         status: 'CONFIRMED',
       });
     if (!row) throw this.taskNoteNotFound();
+    return this.taskNoteRecord(row, actor);
+  }
+
+  async getProjectTaskNote(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<TaskNoteRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(noteId)) throw this.taskNoteNotFound();
+    const row = await this.database()
+      .collection('work_notes')
+      .findOne({
+        _id: objectId(noteId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        type: 'TASK_NOTE',
+        status: 'CONFIRMED',
+      });
+    const taskId = row ? idText(row.taskId) : '';
+    if (!row || !validId(taskId)) throw this.taskNoteNotFound();
+    await this.authorization.resolveTask(headers, projectId, taskId);
     return this.taskNoteRecord(row, actor);
   }
 
@@ -246,8 +274,79 @@ export class WorkNotesService {
       ...input,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
-      permissions: this.permissions(actor, actor.userId, 'CONFIRMED'),
+      permissions: this.taskNotePermissions(actor, actor.userId),
     };
+  }
+
+  async updateTaskNote(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    taskId: string,
+    noteId: string,
+    input: TaskNoteInput,
+  ): Promise<TaskNoteRecord> {
+    const actor = await this.authorization.resolveTask(
+      headers,
+      projectId,
+      taskId,
+    );
+    if (!validId(noteId)) throw this.taskNoteNotFound();
+    const row = await this.database()
+      .collection('work_notes')
+      .findOneAndUpdate(
+        {
+          _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          taskId: objectId(taskId),
+          type: 'TASK_NOTE',
+          status: 'CONFIRMED',
+          ...(actor.canReview ? {} : { authorUserId: objectId(actor.userId) }),
+        },
+        {
+          $set: {
+            title: input.title,
+            whatDone: input.accomplishments,
+            howSolved: input.approach,
+            whyThisWay: input.reason,
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: 'after' },
+      );
+    if (!row) throw this.taskNoteNotFound();
+    await this.auditEvent(actor, 'TASK_NOTE_UPDATED', 'WORK_NOTE', noteId);
+    return this.taskNoteRecord(row, actor);
+  }
+
+  async deleteTaskNote(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    taskId: string,
+    noteId: string,
+  ): Promise<void> {
+    const actor = await this.authorization.resolveTask(
+      headers,
+      projectId,
+      taskId,
+    );
+    if (!validId(noteId)) throw this.taskNoteNotFound();
+    const result = await this.database()
+      .collection('work_notes')
+      .updateOne(
+        {
+          _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          taskId: objectId(taskId),
+          type: 'TASK_NOTE',
+          status: 'CONFIRMED',
+          ...(actor.canReview ? {} : { authorUserId: objectId(actor.userId) }),
+        },
+        { $set: { status: 'ARCHIVED', updatedAt: new Date() } },
+      );
+    if (result.modifiedCount !== 1) throw this.taskNoteNotFound();
+    await this.auditEvent(actor, 'TASK_NOTE_ARCHIVED', 'WORK_NOTE', noteId);
   }
 
   async listDocuments(
@@ -357,6 +456,152 @@ export class WorkNotesService {
     return result;
   }
 
+  async uploadDocumentFile(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    name: string,
+    contentType: string,
+    bytes: Buffer,
+  ): Promise<ProjectDocumentRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const cleanName = name.trim();
+    const supported =
+      contentType === 'application/pdf' ||
+      contentType ===
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const signatureValid =
+      contentType === 'application/pdf'
+        ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
+        : bytes.subarray(0, 2).toString('ascii') === 'PK';
+    if (
+      !supported ||
+      !signatureValid ||
+      bytes.length === 0 ||
+      bytes.length > 20 * 1024 * 1024 ||
+      cleanName.length > 180 ||
+      /[\\/]/.test(cleanName) ||
+      [...cleanName].some((character) => character.charCodeAt(0) < 32) ||
+      !cleanName
+        .toLowerCase()
+        .endsWith(contentType === 'application/pdf' ? '.pdf' : '.docx')
+    )
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_INVALID',
+        message: 'A PDF or DOCX file up to 20 MB is required.',
+      });
+    const id = objectId(documentId);
+    const documents = this.database().collection('project_documents');
+    const document = await documents.findOne({
+      _id: id,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      createdByUserId: objectId(actor.userId),
+    });
+    if (!document) throw documentNotFound();
+    const versionNumber = Number(document.currentVersionNumber);
+    const versions = this.database().collection('project_document_versions');
+    const previousVersion = await versions.findOne({
+      documentId: id,
+      versionNumber,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      editedByUserId: objectId(actor.userId),
+    });
+    if (!previousVersion) throw documentNotFound();
+    const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
+    if (!this.documentStorage)
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    await this.documentStorage.put(key, bytes, contentType);
+    try {
+      const result = await versions.updateOne(
+        {
+          documentId: id,
+          versionNumber,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          status: 'DRAFT',
+          editedByUserId: objectId(actor.userId),
+          updatedAt: previousVersion.updatedAt,
+        },
+        {
+          $set: {
+            file: { key, name: cleanName, contentType, size: bytes.length },
+            updatedAt: new Date(),
+          },
+        },
+      );
+      if (result.modifiedCount !== 1)
+        throw conflict('The Document changed during upload.');
+    } catch (error) {
+      await this.documentStorage.delete(key).catch(() => undefined);
+      throw error;
+    }
+    const oldKey = (previousVersion.file as { key?: string } | undefined)?.key;
+    if (
+      oldKey &&
+      oldKey !== key &&
+      (await versions.countDocuments({
+        'file.key': oldKey,
+        _id: { $ne: previousVersion._id },
+      })) === 0
+    )
+      await this.documentStorage.delete(oldKey).catch(() => undefined);
+    await this.auditEvent(
+      actor,
+      'DOCUMENT_FILE_UPLOADED',
+      'PROJECT_DOCUMENT',
+      documentId,
+      { version: versionNumber },
+    );
+    const updated = await this.readDocument(actor, id);
+    if (!updated) throw documentNotFound();
+    return updated;
+  }
+
+  async downloadDocumentFile(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    versionNumber?: number,
+  ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const document = await this.database()
+      .collection('project_documents')
+      .findOne({
+        _id: objectId(documentId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      });
+    if (!document) throw documentNotFound();
+    const version = await this.database()
+      .collection('project_document_versions')
+      .findOne({
+        documentId: objectId(documentId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        versionNumber: versionNumber ?? Number(document.currentVersionNumber),
+      });
+    const file = version?.file as
+      { key?: string; name?: string; contentType?: string } | undefined;
+    if (!file?.key || !file.name || !file.contentType) throw documentNotFound();
+    if (!this.documentStorage)
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    return {
+      bytes: await this.documentStorage.get(file.key),
+      name: file.name,
+      contentType: file.contentType,
+    };
+  }
+
   async updateDocumentDraft(
     headers: CaptureRequestHeaders,
     projectId: string,
@@ -436,6 +681,8 @@ export class WorkNotesService {
             'The Document version changed while it was being edited.',
           );
       } else {
+        const previous = await versions.findOne(versionFilter, { session });
+        if (!previous) throw documentNotFound();
         await versions.insertOne(
           {
             _id: new Types.ObjectId(),
@@ -448,6 +695,7 @@ export class WorkNotesService {
             documentType: input.type,
             ...(input.taskId ? { taskId: objectId(input.taskId) } : {}),
             content: input.content,
+            ...(previous.file ? { file: previous.file } : {}),
             status: 'DRAFT',
             editedByUserId: objectId(actor.userId),
             reviewHistory: [],
@@ -526,6 +774,24 @@ export class WorkNotesService {
         });
       }
       const versionNumber = Number(current.currentVersionNumber);
+      const submittedVersion = await db
+        .collection('project_document_versions')
+        .findOne(
+          {
+            documentId: id,
+            versionNumber,
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+          },
+          { session },
+        );
+      if (
+        !submittedVersion ||
+        (!text(submittedVersion.content).trim() && !submittedVersion.file)
+      )
+        throw conflict(
+          'A Document needs text or an uploaded file before submission.',
+        );
       const versionResult = await db
         .collection('project_document_versions')
         .updateOne(
@@ -686,6 +952,37 @@ export class WorkNotesService {
         session,
       );
       if (action === 'APPROVED') {
+        const previousApproved = await db
+          .collection('project_document_versions')
+          .find(
+            {
+              documentId: id,
+              versionNumber: { $lt: sourceVersion },
+              status: 'APPROVED',
+            },
+            { session },
+          )
+          .sort({ versionNumber: -1 })
+          .limit(1)
+          .next();
+        if (previousApproved) {
+          await this.appendOutbox(
+            {
+              eventName: 'KNOWLEDGE_SOURCE_REPLACED',
+              aggregateType: 'PROJECT_DOCUMENT',
+              aggregateId: documentId,
+              payload: {
+                sourceType: 'PROJECT_DOCUMENT',
+                sourceId: documentId,
+                organizationId: actor.organizationId,
+                projectId,
+                previousVersion: Number(previousApproved.versionNumber),
+                version: sourceVersion,
+              },
+            },
+            session,
+          );
+        }
         await this.appendOutbox(
           {
             eventName: 'KNOWLEDGE_SOURCE_APPROVED',
@@ -727,9 +1024,8 @@ export class WorkNotesService {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!actor.canReview) throw this.reviewPermissionDenied();
     if (!validId(documentId)) throw documentNotFound();
-    const result = await this.database()
-      .collection('project_documents')
-      .updateOne(
+    await this.transaction(async (db, session) => {
+      const result = await db.collection('project_documents').findOneAndUpdate(
         {
           _id: objectId(documentId),
           organizationId: objectId(actor.organizationId),
@@ -743,9 +1039,26 @@ export class WorkNotesService {
             updatedAt: new Date(),
           },
         },
+        { session, returnDocument: 'before' },
       );
-    if (result.matchedCount !== 1)
-      throw conflict('Only an approved Document can be archived.');
+      if (!result) throw conflict('Only an approved Document can be archived.');
+      await this.appendOutbox(
+        {
+          eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateId: documentId,
+          payload: {
+            sourceType: 'PROJECT_DOCUMENT',
+            sourceId: documentId,
+            organizationId: actor.organizationId,
+            projectId,
+            version: Number(result.currentVersionNumber),
+            reason: 'ARCHIVED',
+          },
+        },
+        session,
+      );
+    });
     await this.auditEvent(
       actor,
       'DOCUMENT_ARCHIVED',
@@ -846,14 +1159,15 @@ export class WorkNotesService {
     const actor = await this.authorization.resolveProject(headers, projectId);
     const members = actor.canReview
       ? await this.authorization.listActiveMembers(actor, headers)
-      : [{ userId: actor.userId, fullName: actor.userName }];
+      : [
+          {
+            userId: actor.userId,
+            fullName: actor.userName,
+            joinedAt: new Date().toISOString(),
+          },
+        ];
     const timeline = await this.settingsTimeline(actor);
-    await this.ensureReportObligations(
-      actor,
-      members.map((member) => member.userId),
-      timeline,
-      new Date(),
-    );
+    await this.ensureReportObligations(actor, members, timeline, new Date());
     await this.markOverdue(actor, projectId, new Date());
     const filter = {
       organizationId: objectId(actor.organizationId),
@@ -891,7 +1205,12 @@ export class WorkNotesService {
     const actor = await this.authorization.resolveProject(headers, projectId);
     const timeline = await this.settingsTimeline(actor);
     const now = new Date();
-    await this.ensureReportObligations(actor, [actor.userId], timeline, now);
+    await this.ensureReportObligations(
+      actor,
+      [{ userId: actor.userId, joinedAt: now.toISOString() }],
+      timeline,
+      now,
+    );
     await this.markOverdue(actor, projectId, now);
     const currentSetting = this.activeSetting(timeline, now);
     const period = calculateReportPeriod(
@@ -1187,6 +1506,26 @@ export class WorkNotesService {
     return transitioned;
   }
 
+  async ensureScheduledReportObligations(
+    project: ReportingProjectMembers,
+  ): Promise<void> {
+    const actor: WorkNotesActor = {
+      userId: project.projectCreatedBy,
+      userName: '',
+      organizationId: project.organizationId,
+      projectId: project.projectId,
+      canReview: true,
+      canConfigure: true,
+    };
+    const timeline = await this.settingsTimeline(actor);
+    await this.ensureReportObligations(
+      actor,
+      project.members,
+      timeline,
+      new Date(),
+    );
+  }
+
   private async saveReportDraft(
     actor: WorkNotesActor,
     reportId: Types.ObjectId,
@@ -1314,7 +1653,7 @@ export class WorkNotesService {
 
   private async ensureReportObligations(
     actor: WorkNotesActor,
-    memberIds: string[],
+    members: Array<{ userId: string; joinedAt: string }>,
     settings: MongoRecord[],
     now: Date,
   ): Promise<void> {
@@ -1355,8 +1694,15 @@ export class WorkNotesService {
         if (segmentEnd && end.getTime() > segmentEnd.getTime())
           end = segmentEnd;
         if (end.getTime() <= start.getTime()) break;
-        for (const memberId of memberIds) {
+        for (const member of members) {
+          const memberId = member.userId;
           if (!validId(memberId)) continue;
+          const joinedAt = new Date(member.joinedAt);
+          if (
+            !Number.isFinite(joinedAt.getTime()) ||
+            joinedAt.getTime() >= end.getTime()
+          )
+            continue;
           const count = (periodStartByUser.get(memberId) ?? 0) + 1;
           if (count > maxPeriodsPerMember) {
             throw new ServiceUnavailableException({
@@ -1544,7 +1890,7 @@ export class WorkNotesService {
       reason: text(value.whyThisWay),
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
-      permissions: this.permissions(actor, authorId, 'CONFIRMED'),
+      permissions: this.taskNotePermissions(actor, authorId),
     };
   }
 
@@ -1618,12 +1964,14 @@ export class WorkNotesService {
       reviewedAt: current.reviewedAt,
       reviewComment: current.reviewComment,
       content: current.content,
+      ...(current.file ? { file: current.file } : {}),
       versions: versionRecords.map(
-        ({ version, status, createdAt, editedBy }) => ({
+        ({ version, status, createdAt, editedBy, file }) => ({
           version,
           status,
           createdAt,
           editedBy,
+          ...(file ? { file } : {}),
         }),
       ),
       reviewHistory: versionRecords
@@ -1643,6 +1991,17 @@ export class WorkNotesService {
       type: text(value.documentType) as ProjectDocumentRecord['type'],
       ...(value.taskId ? { taskId: idText(value.taskId) } : {}),
       content: text(value.content),
+      ...(value.file && typeof value.file === 'object'
+        ? {
+            file: {
+              name: text((value.file as Record<string, unknown>).name),
+              contentType: text(
+                (value.file as Record<string, unknown>).contentType,
+              ),
+              size: Number((value.file as Record<string, unknown>).size),
+            },
+          }
+        : {}),
       status: text(value.status) as DocumentStatus,
       editedBy: String(value.editedByUserId),
       createdAt: iso(value.createdAt) ?? '',
@@ -1674,6 +2033,21 @@ export class WorkNotesService {
         authorId !== actor.userId &&
         status === 'PENDING_REVIEW',
       canConfigure: actor.canConfigure,
+    };
+  }
+
+  private taskNotePermissions(
+    actor: WorkNotesActor,
+    authorId: string,
+  ): WorkNotesPermissions {
+    const canManage = actor.userId === authorId || actor.canReview;
+    return {
+      canCreate: true,
+      canEdit: canManage,
+      canDelete: canManage,
+      canSubmit: false,
+      canReview: false,
+      canConfigure: false,
     };
   }
 

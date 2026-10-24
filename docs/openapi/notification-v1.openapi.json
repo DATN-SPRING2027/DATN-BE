@@ -167,6 +167,7 @@
       },
       "NotificationTargetKind": {
         "type": "string",
+        "description": "WORK_NOTE currently resolves only to a confirmed Task Note with a mandatory Task association. Project Documents and Periodic Work Reports are Project-level resources, not WORK_NOTE targets.",
         "enum": [
           "ORGANIZATION",
           "PROJECT",
