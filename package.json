@@ -56,6 +56,7 @@
     "migrate:platform-authority-change-hardening": "node scripts/migrations/20261016-platform-authority-change-hardening.mjs",
     "migrate:platform-operator-v1-expansion-index": "node scripts/migrations/20261016-platform-operator-v1-expansion-index.mjs",
     "test:platform-operator-v1-expansion-index-plan": "node --test scripts/migrations/platform-operator-v1-expansion-index.plan.test.mjs",
+    "test:work-note-workflows:plan": "node --test scripts/migrations/work-note-workflows.plan.test.mjs scripts/migrations/work-note-workflows-v2.test.mjs",
     "migrate:team-foundation-runtime": "node scripts/migrations/20261015-team-foundation-runtime.mjs",
     "test:team-foundation-runtime-plan": "node --test scripts/migrations/team-foundation-runtime.plan.test.mjs",
     "test:team-foundation-transactions": "node scripts/tests/team-foundation-transactions.integration.mjs",
@@ -69,6 +70,7 @@
     "migrate:organization-invitation-token-index": "node scripts/migrations/20261020-organization-invitation-token-index.mjs",
     "migrate:organization-membership-admin-permissions": "node --env-file=.env scripts/migrations/20261019-organization-membership-admin-permissions.mjs",
     "migrate:project-creator-leader": "node --env-file=.env scripts/migrations/20261019-project-creator-leader.mjs",
+    "migrate:work-note-workflows": "node scripts/migrations/20261024-work-note-workflows-v2.mjs",
     "test:migrations:integration": "node --test scripts/migrations/20261002-database-per-service-split.integration.test.mjs",
     "test:capture-drafts-ttl:integration": "node --test scripts/migrations/20261003-capture-drafts-ttl.mongodb.test.mjs",
     "check": "npm run lint && npm run typecheck && npm run test:organization-role-reconciliation && npm run test:dev-db-smoke-safety && npm test -- --runInBand && npm run test:e2e -- --runInBand && npm run build"
