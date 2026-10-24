@@ -514,15 +514,17 @@ export class PlatformAdministrationService {
       this.invitationReadiness,
       gates,
     );
-    const result = await this.membershipCommands.executePlatformInvitationCommand({
-      ...input,
-      now: new Date(),
-      invitationReadinessReady,
-    });
+    const result =
+      await this.membershipCommands.executePlatformInvitationCommand({
+        ...input,
+        now: new Date(),
+        invitationReadinessReady,
+      });
     if (
       !result.replayed &&
       this.notificationService &&
-      (input.command.command === 'INVITE' || input.command.command === 'RESEND') &&
+      (input.command.command === 'INVITE' ||
+        input.command.command === 'RESEND') &&
       result.body.invitation?.id
     ) {
       await this.notificationService.notifyOrganizationMemberInvited({
@@ -597,7 +599,11 @@ export class PlatformAdministrationService {
       .then(async (result) => {
         const bodyMembership =
           'membership' in result.body ? result.body.membership : undefined;
-        if (!result.replayed && this.notificationService && bodyMembership?.userId) {
+        if (
+          !result.replayed &&
+          this.notificationService &&
+          bodyMembership?.userId
+        ) {
           await this.notificationService.notifyOrganizationMemberRemoved({
             actorId: input.actorUserId,
             recipientUserId: bodyMembership.userId,

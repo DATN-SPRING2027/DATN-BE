@@ -588,7 +588,10 @@ export class NotificationCenterRepository {
         notification.type === 'ORGANIZATION_MEMBER_REMOVED'
       ) {
         if (orgId && Types.ObjectId.isValid(orgId)) {
-          const orgs = this.dbCollection(SERVICE_DATABASES.iam, 'organizations');
+          const orgs = this.dbCollection(
+            SERVICE_DATABASES.iam,
+            'organizations',
+          );
           if (orgs) {
             const org = await orgs.findOne({ _id: new Types.ObjectId(orgId) });
             if (
@@ -908,8 +911,8 @@ export class NotificationCenterRepository {
             });
             isMember = Boolean(
               memberDoc &&
-                (memberDoc.deletedAt === null ||
-                  memberDoc.deletedAt === undefined),
+              (memberDoc.deletedAt === null ||
+                memberDoc.deletedAt === undefined),
             );
           } else {
             isMember = true;

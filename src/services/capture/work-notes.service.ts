@@ -137,7 +137,9 @@ export class ProjectWorkNotesService {
     }
 
     // Parse @[Name](userId) or @[userId] tokens from textContent
-    const idTokenMatches = textContent.matchAll(/@\[[^\]]*\]\(([0-9a-fA-F]{24})\)|@\[([0-9a-fA-F]{24})\]/g);
+    const idTokenMatches = textContent.matchAll(
+      /@\[[^\]]*\]\(([0-9a-fA-F]{24})\)|@\[([0-9a-fA-F]{24})\]/g,
+    );
     for (const match of idTokenMatches) {
       const matchedId = (match[1] ?? match[2] ?? '').trim().toLowerCase();
       if (OBJECT_ID_REGEX.test(matchedId)) {
@@ -431,9 +433,13 @@ export class ProjectWorkNotesService {
     const nextCategory =
       parsed.category ?? existing.category ?? existing.whyThisWay ?? 'Decision';
     const nextTaskKey =
-      parsed.taskKey !== undefined ? parsed.taskKey : (existing.taskKey ?? null);
+      parsed.taskKey !== undefined
+        ? parsed.taskKey
+        : (existing.taskKey ?? null);
     const nextBlocker =
-      parsed.blocker !== undefined ? parsed.blocker : (existing.blocker ?? null);
+      parsed.blocker !== undefined
+        ? parsed.blocker
+        : (existing.blocker ?? null);
     const nextUnfinished =
       parsed.unfinished !== undefined
         ? parsed.unfinished
