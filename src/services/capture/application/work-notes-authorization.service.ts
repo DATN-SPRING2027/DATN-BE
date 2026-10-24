@@ -108,8 +108,11 @@ export class WorkNotesAuthorizationService {
     }
 
     const normalizedTaskId = taskId.toLowerCase();
+    const taskServiceConfigured = Boolean(
+      this.config.get<string>('TASK_SERVICE_URL'),
+    );
     const task = await this.request<Record<string, unknown>>(
-      `/internal/tasks/projects/${actor.projectId}/tasks/${normalizedTaskId}`,
+      `${taskServiceConfigured ? '' : '/api/v1'}/internal/tasks/projects/${actor.projectId}/tasks/${normalizedTaskId}`,
       headers,
       { service: 'task' },
     );

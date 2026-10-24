@@ -120,6 +120,29 @@ describe('WorkNotesAuthorizationService', () => {
     );
   });
 
+  it('uses the versioned Task route when the modular monolith is the Task fallback', async () => {
+    service = new WorkNotesAuthorizationService({
+      getOrThrow: (key: string) =>
+        key === 'IAM_SERVICE_URL' ? 'http://monolith.internal' : undefined,
+      get: (key: string) => (key === 'BACKEND_TIMEOUT_MS' ? 2_000 : undefined),
+    } as unknown as ConfigService);
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Mina Member' }),
+      )
+      .mockResolvedValueOnce(response({ id: projectId, organizationId }))
+      .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(response({ id: taskId, projectId }));
+
+    await service.resolveTask({}, projectId, taskId);
+
+    const taskCall = fetchSpy.mock.calls[3] as unknown as
+      [unknown, RequestInit | undefined] | undefined;
+    expect(String(taskCall?.[0])).toBe(
+      `http://monolith.internal/api/v1/internal/tasks/projects/${projectId}/tasks/${taskId}`,
+    );
+  });
+
   it('fails closed if project authorization cannot reach IAM', async () => {
     fetchSpy.mockRejectedValue(new Error('connection refused'));
     await expect(service.resolveProject({}, projectId)).rejects.toMatchObject({
