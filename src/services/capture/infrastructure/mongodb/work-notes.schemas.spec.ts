@@ -69,7 +69,9 @@ describe('Work Notes persistence contract', () => {
   });
 
   it('accepts a file-only document draft while upload and submission remain separate steps', () => {
-    const schema = createCollectionSchema(collections.get('project_document_versions')!);
+    const schema = createCollectionSchema(
+      collections.get('project_document_versions')!,
+    );
     const Version = new Mongoose().model('FileOnlyDocumentVersion', schema);
     const version = new Version({
       organizationId: new Types.ObjectId(),
