@@ -4912,6 +4912,12 @@
             "name": "status",
             "in": "query",
             "schema": { "$ref": "#/components/schemas/ProjectStatus" }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Optional case-insensitive literal search over visible Project names and codes. Requires at least 2 characters and is limited to 80 characters.",
+            "schema": { "type": "string", "minLength": 2, "maxLength": 80 }
           }
         ],
         "responses": {

@@ -52,12 +52,20 @@ function listQuery(query: Record<string, unknown>): ProjectListQuery {
       !['ACTIVE', 'ARCHIVED'].includes(query.status))
   )
     invalid();
+  if (
+    query.q !== undefined &&
+    (typeof query.q !== 'string' ||
+      query.q.trim().length < 2 ||
+      query.q.trim().length > 80)
+  )
+    invalid();
   return {
     page,
     pageSize,
     ...(query.status === undefined
       ? {}
       : { status: query.status as ProjectStatus }),
+    ...(typeof query.q === 'string' ? { q: query.q.trim() } : {}),
   };
 }
 

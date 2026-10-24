@@ -49,11 +49,30 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
         };
       }),
     };
-    controller = new NotificationCenterController(
-      service,
-      mockAuth as never,
-      scheduler,
-    );
+    controller = new NotificationCenterController(service, mockAuth as never);
+  });
+
+  describe('Read endpoints', () => {
+    it('delegates list and unread reads without mutating notification state', async () => {
+      const listForUser = jest.spyOn(service, 'listForUser');
+      const getUnreadCount = jest.spyOn(service, 'getUnreadCount');
+
+      await controller.listNotifications(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      await controller.getUnreadCount(`Bearer ${userBId}`, undefined);
+
+      expect(listForUser).toHaveBeenCalledWith(userBId, {
+        cursor: undefined,
+        limit: 20,
+        unreadOnly: false,
+      });
+      expect(getUnreadCount).toHaveBeenCalledWith(userBId);
+    });
   });
 
   describe('Rule 1 & Rule 2: No self-notification and recipient deduplication', () => {
@@ -792,7 +811,12 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
         eventId: 'acl-test-1',
       });
 
-      const aclRepo = new NotificationCenterRepository(mockConn as never);
+      const aclRepo = new NotificationCenterRepository(
+        mockConn as never,
+        undefined,
+        undefined,
+        { isTaskAvailableForNotificationTarget: async () => true } as never,
+      );
 
       // 1. User B was removed from the PRIVATE project -> FORBIDDEN ("This content is no longer available")
       userHasProjectMembership = false;
@@ -899,7 +923,12 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
         })),
       };
 
-      const aclRepo = new NotificationCenterRepository(mockConn as never);
+      const aclRepo = new NotificationCenterRepository(
+        mockConn as never,
+        undefined,
+        undefined,
+        { isTaskAvailableForNotificationTarget: async () => true } as never,
+      );
 
       const [chatNotif] = await service.notifyChatMention({
         actorId: adminId,
@@ -1026,6 +1055,11 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
 
       const sanitizingRepo = new NotificationCenterRepository(
         mockConn as never,
+        undefined,
+        undefined,
+        {
+          isTaskAvailableForNotificationTarget: async () => !taskDeleted,
+        } as never,
       );
       const sanitizingService = new NotificationService(
         sanitizingRepo,
@@ -1076,34 +1110,33 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
         };
       });
 
-      const paginatedTasksCollection = {
-        find: jest.fn((filter: Record<string, unknown>) => {
-          const idFilter = filter._id as { $gt?: Types.ObjectId } | undefined;
-          const gtHex = idFilter?.$gt?.toHexString();
-          const matching = gtHex
-            ? allOverdueTasks.filter((t) => t._id.toHexString() > gtHex)
-            : allOverdueTasks;
-          return {
-            sort: () => ({
-              limit: (n: number) => ({
-                toArray: async () => matching.slice(0, n),
-              }),
-            }),
-          };
-        }),
-      };
+      const listTasksForDeadlineNotifications = jest.fn(
+        async (input: {
+          after?: { dueDate: Date; id: Types.ObjectId };
+          limit: number;
+        }) => {
+          const startIndex = input.after
+            ? allOverdueTasks.findIndex(
+                (task) =>
+                  task._id.toHexString() === input.after?.id.toHexString(),
+              ) + 1
+            : 0;
+          return allOverdueTasks.slice(startIndex, startIndex + input.limit);
+        },
+      );
 
       const pagedScheduler = new TaskDeadlineNotificationScheduler(service, {
-        useDb: () => ({
-          db: { collection: () => paginatedTasksCollection },
-        }),
+        listTasksForDeadlineNotifications,
       } as never);
 
       const processedCount = await pagedScheduler.evaluateTaskDeadlines({
         now,
       });
       expect(processedCount).toBe(250);
-      expect(paginatedTasksCollection.find).toHaveBeenCalledTimes(2);
+      expect(listTasksForDeadlineNotifications).toHaveBeenCalledTimes(2);
+      expect(
+        listTasksForDeadlineNotifications.mock.calls[1]?.[0].after?.id,
+      ).toStrictEqual(new Types.ObjectId('0000000000000000000000c8'));
     });
   });
 });

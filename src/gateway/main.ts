@@ -1,3 +1,4 @@
+import '../common/observability/register-otel';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { GatewayModule } from './gateway.module';

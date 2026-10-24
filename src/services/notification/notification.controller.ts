@@ -17,7 +17,6 @@ import {
   validCsrfPair,
 } from '../iam/application/authentication/authentication.application.service';
 import { NotificationService } from './notification.service';
-import { TaskDeadlineNotificationScheduler } from './task-deadline-notification.scheduler';
 
 @Controller(['notifications', 'internal/notifications'])
 export class NotificationCenterController {
@@ -25,8 +24,6 @@ export class NotificationCenterController {
     private readonly notificationService: NotificationService,
     @Optional()
     private readonly auth?: AuthenticationApplicationService,
-    @Optional()
-    private readonly deadlineScheduler?: TaskDeadlineNotificationScheduler,
   ) {}
 
   @Get('health')
@@ -90,11 +87,6 @@ export class NotificationCenterController {
   ) {
     response?.setHeader('Cache-Control', 'no-store');
     const actor = await this.resolveAuthenticatedUser(authorization, cookie);
-    if (this.deadlineScheduler) {
-      await this.deadlineScheduler
-        .evaluateTaskDeadlines({ assigneeId: actor.id })
-        .catch(() => undefined);
-    }
     const parsedLimit = limit ? Number(limit) : 20;
     const isUnreadOnly = unreadOnly === 'true' || unreadOnly === '1';
     return this.notificationService.listForUser(actor.id, {
@@ -113,11 +105,6 @@ export class NotificationCenterController {
   ) {
     response?.setHeader('Cache-Control', 'no-store');
     const actor = await this.resolveAuthenticatedUser(authorization, cookie);
-    if (this.deadlineScheduler) {
-      await this.deadlineScheduler
-        .evaluateTaskDeadlines({ assigneeId: actor.id })
-        .catch(() => undefined);
-    }
     return this.notificationService.getUnreadCount(actor.id);
   }
 

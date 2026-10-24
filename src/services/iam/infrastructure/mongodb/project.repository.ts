@@ -36,6 +36,10 @@ interface ProjectDocument {
   createdAt: Date;
   updatedAt: Date;
 }
+
+function escapeProjectSearch(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 interface MembershipDocument {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
@@ -358,6 +362,28 @@ export class MongoProjectRepository implements ProjectRepository {
             ],
           }),
       ...(query.status ? { status: query.status } : {}),
+      ...(query.q
+        ? {
+            $and: [
+              {
+                $or: [
+                  {
+                    name: {
+                      $regex: escapeProjectSearch(query.q),
+                      $options: 'i',
+                    },
+                  },
+                  {
+                    code: {
+                      $regex: escapeProjectSearch(query.q),
+                      $options: 'i',
+                    },
+                  },
+                ],
+              },
+            ],
+          }
+        : {}),
     };
     const projects = this.model<ProjectDocument>('projects');
     const [rows, totalItems] = await Promise.all([

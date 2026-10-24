@@ -7,14 +7,14 @@ import type { RedisService } from '../infrastructure/redis/redis.service';
 
 describe('ChatRealtimeService', () => {
   it('does not relay room typing to sockets outside the active member list', async () => {
-    let receive: ((value: string) => void) | undefined;
+    const subscribers = new Map<string, (value: string) => void>();
     const redis = {
-      subscribe: (_channel: string, handler: (value: string) => void) => {
-        receive = handler;
+      subscribe: (channel: string, handler: (value: string) => void) => {
+        subscribers.set(channel, handler);
         return Promise.resolve(() => undefined);
       },
-      publish: (_channel: string, value: string) => {
-        receive?.(value);
+      publish: (channel: string, value: string) => {
+        subscribers.get(channel)?.(value);
         return Promise.resolve();
       },
       touchPresenceSession: () => Promise.resolve(false),
@@ -22,7 +22,9 @@ describe('ChatRealtimeService', () => {
     const realtime = new ChatRealtimeService(
       redis,
       {} as ChatIamClient,
-      { get: () => 'test' } as unknown as ConfigService,
+      {
+        get: (key: string) => (key === 'INFRA_ENABLED' ? 'true' : 'test'),
+      } as unknown as ConfigService,
     );
     const sentToActiveMember = jest.fn();
     const sentToRemovedMember = jest.fn();
@@ -71,6 +73,27 @@ describe('ChatRealtimeService', () => {
       JSON.stringify({
         event: 'typing',
         data: { conversationId: 'room-id', userId: 'sender', isTyping: true },
+      }),
+    );
+    expect(sentToRemovedMember).not.toHaveBeenCalled();
+
+    await redis.publish(
+      'test:notification.realtime.v1',
+      JSON.stringify({
+        version: 1,
+        payload: {
+          event: 'notification.created',
+          organizationId: actor('active-user').organizationId,
+          recipientIds: ['active-user'],
+          data: { id: 'notification-1' },
+        },
+        traceContext: {},
+      }),
+    );
+    expect(sentToActiveMember).toHaveBeenLastCalledWith(
+      JSON.stringify({
+        event: 'notification.created',
+        data: { id: 'notification-1' },
       }),
     );
     expect(sentToRemovedMember).not.toHaveBeenCalled();

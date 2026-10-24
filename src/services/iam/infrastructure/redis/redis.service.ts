@@ -82,6 +82,27 @@ export class RedisService implements OnModuleDestroy {
     return result === 1;
   }
 
+  async extendLock(
+    key: string,
+    owner: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    await this.connect();
+    const result = await this.client.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end",
+      1,
+      `lock:${key}`,
+      owner,
+      ttlSeconds * 1000,
+    );
+    return result === 1;
+  }
+
+  async publish(channel: string, value: string): Promise<void> {
+    await this.connect();
+    await this.client.publish(channel, value);
+  }
+
   onModuleDestroy(): void {
     if (this.client.status !== 'end') {
       this.client.disconnect();

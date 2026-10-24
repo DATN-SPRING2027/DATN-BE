@@ -7,10 +7,20 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import {
+  propagation,
+  ROOT_CONTEXT,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from '@opentelemetry/api';
 import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import { RedisService } from '../infrastructure/redis/redis.service';
 import type { ChatActor } from './chat.repository';
-import { NotificationRealtimeBus } from '../../notification/notification-realtime.bus';
+import {
+  notificationRealtimeChannel,
+  NotificationRealtimeBus,
+} from '../../notification/notification-realtime.bus';
 
 const presenceLeaseMs = 75_000;
 const heartbeatMs = 20_000;
@@ -62,6 +72,7 @@ interface SessionValidation {
 export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   private readonly redisPrefix: string;
   private readonly eventChannel: string;
+  private readonly notificationChannel: string;
   private readonly sessions = new Map<WebSocket, SocketSession>();
   private readonly userSockets = new Map<string, Set<WebSocket>>();
   private readonly conversationSockets = new Map<string, Set<WebSocket>>();
@@ -69,6 +80,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   private readonly presenceStates = new Map<string, boolean>();
   private readonly sessionValidations = new Map<string, SessionValidation>();
   private stopSubscriber?: () => void;
+  private stopNotificationSubscriber?: () => void;
   private stopNotificationBus?: () => void;
   private heartbeat?: NodeJS.Timeout;
 
@@ -81,24 +93,27 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   ) {
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
     this.eventChannel = `${this.redisPrefix}:events:v1`;
+    this.notificationChannel = notificationRealtimeChannel(
+      config.get<string>('BULLMQ_PREFIX') ?? 'continuum',
+    );
   }
 
   async onModuleInit(): Promise<void> {
-    const bus = this.notificationBus ?? new NotificationRealtimeBus();
-    this.stopNotificationBus = bus.onRealtimeEvent((payload) => {
-      const event: NotificationSocketEvent = {
-        type: 'notification',
-        event: payload.event,
-        organizationId: payload.organizationId,
-        recipientIds: [...payload.recipientIds],
-        data: payload.data,
-      };
-      if (!this.stopSubscriber) {
-        this.deliverNotificationEvent(event);
-      }
-      void this.publish(event);
-    });
-    if (this.config.get<string>('INFRA_ENABLED') !== 'false') {
+    const useRedis = this.config.get<string>('INFRA_ENABLED') === 'true';
+    if (!useRedis) {
+      const bus = this.notificationBus ?? new NotificationRealtimeBus();
+      this.stopNotificationBus = bus.onRealtimeEvent((payload) => {
+        const event: NotificationSocketEvent = {
+          type: 'notification',
+          event: payload.event,
+          organizationId: payload.organizationId,
+          recipientIds: [...payload.recipientIds],
+          data: payload.data,
+        };
+        if (!this.stopSubscriber) this.deliverNotificationEvent(event);
+        void this.publish(event);
+      });
+    } else {
       try {
         this.stopSubscriber = await this.redis.subscribe(
           this.eventChannel,
@@ -108,6 +123,14 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         );
       } catch {
         // Realtime pub/sub degrades gracefully when Redis is unavailable at startup.
+      }
+      try {
+        this.stopNotificationSubscriber = await this.redis.subscribe(
+          this.notificationChannel,
+          (value) => this.receiveNotification(value),
+        );
+      } catch {
+        // Notification polling remains the source of truth while Redis is unavailable.
       }
     }
     this.heartbeat = setInterval(() => {
@@ -119,6 +142,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   onModuleDestroy(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.stopSubscriber?.();
+    this.stopNotificationSubscriber?.();
     this.stopNotificationBus?.();
   }
 
@@ -481,7 +505,109 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     const recipientSet = new Set(event.recipientIds);
     for (const [socket, session] of this.sessions.entries()) {
       if (!recipientSet.has(session.actor.id)) continue;
+      if (
+        event.organizationId !== null &&
+        event.organizationId !== session.actor.organizationId
+      )
+        continue;
       this.send(socket, event.event, event.data);
+    }
+  }
+
+  private receiveNotification(value: string): void {
+    try {
+      const decoded = JSON.parse(value) as
+        | Partial<NotificationSocketEvent>
+        | {
+            version?: number;
+            payload?: Partial<NotificationSocketEvent>;
+            traceContext?: Record<string, unknown>;
+          };
+      const isEnvelope =
+        typeof decoded === 'object' && decoded !== null && 'payload' in decoded;
+      const payload = isEnvelope
+        ? decoded.payload
+        : (decoded as Partial<NotificationSocketEvent>);
+      const carrier = isEnvelope ? decoded.traceContext : undefined;
+      const traceCarrier: Record<string, string> = {};
+      if (carrier && typeof carrier === 'object') {
+        for (const key of ['traceparent', 'tracestate'] as const) {
+          const value = carrier[key];
+          if (typeof value === 'string' && value.length <= 512) {
+            traceCarrier[key] = value;
+          }
+        }
+      }
+      const parentContext = propagation.extract(ROOT_CONTEXT, traceCarrier);
+      const supportedEvents: readonly string[] = [
+        'notification.created',
+        'notification.read',
+        'notification.read_all',
+      ];
+      if (
+        payload &&
+        typeof payload.event === 'string' &&
+        supportedEvents.includes(payload.event) &&
+        Array.isArray(payload.recipientIds)
+      ) {
+        const event: NotificationSocketEvent = {
+          type: 'notification',
+          event: payload.event,
+          organizationId:
+            typeof payload.organizationId === 'string'
+              ? payload.organizationId
+              : null,
+          recipientIds: Array.isArray(payload.recipientIds)
+            ? payload.recipientIds.filter(
+                (recipientId): recipientId is string =>
+                  typeof recipientId === 'string',
+              )
+            : [],
+          data: payload.data,
+        };
+        if (
+          event.recipientIds.length > 0 &&
+          [
+            'notification.created',
+            'notification.read',
+            'notification.read_all',
+          ].includes(event.event)
+        ) {
+          trace.getTracer('continuum-notifications').startActiveSpan(
+            'notification.realtime.consume',
+            {
+              kind: SpanKind.CONSUMER,
+              attributes: {
+                'messaging.system': 'redis',
+                'messaging.destination.name': this.notificationChannel,
+                'messaging.operation.name': 'process',
+                'app.notification.event': event.event,
+              },
+            },
+            parentContext,
+            (span) => {
+              try {
+                this.deliverNotificationEvent(event);
+                span.setAttribute(
+                  'app.notification.recipient_count',
+                  event.recipientIds.length,
+                );
+              } catch (error) {
+                span.setStatus({
+                  code: SpanStatusCode.ERROR,
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                });
+                throw error;
+              } finally {
+                span.end();
+              }
+            },
+          );
+        }
+      }
+    } catch {
+      // Ignore malformed cross-process messages; polling rehydrates persisted state.
     }
   }
 

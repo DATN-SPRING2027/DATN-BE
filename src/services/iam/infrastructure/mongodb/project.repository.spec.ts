@@ -170,6 +170,30 @@ function fixture(
 }
 
 describe('MongoProjectRepository visibility', () => {
+  it('applies bounded literal search to visible project names and codes', async () => {
+    const { repository, projects } = fixture();
+
+    await repository.listVisible(orgId, userId, {
+      page: 1,
+      pageSize: 20,
+      status: 'ACTIVE',
+      q: 'QA.*',
+    });
+
+    expect(projects.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        $and: [
+          {
+            $or: [
+              { name: { $regex: 'QA\\.\\*', $options: 'i' } },
+              { code: { $regex: 'QA\\.\\*', $options: 'i' } },
+            ],
+          },
+        ],
+      }),
+    );
+  });
+
   it('allows organization ADMIN to read metadata without ProjectMembership', async () => {
     const { repository, projects, projectMemberships } = fixture({
       assignmentProjectId: null,

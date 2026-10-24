@@ -69,6 +69,8 @@ export interface WorkspaceTaskDocument {
   createdAt: Date;
   updatedAt: Date;
   version: number;
+  deletedAt?: Date | null;
+  isDeleted?: boolean;
 }
 
 export interface WorkspaceTaskCommentDocument {
@@ -330,6 +332,7 @@ export interface WorkspaceIndexSpec {
 
 export const WORKSPACE_INDEX_CATALOGUE: Record<string, WorkspaceIndexSpec[]> = {
   [WORKSPACE_TASKS_COLLECTION]: [
+    { key: { dueDate: 1, _id: 1 }, name: 'deadline_scan_due_cursor' },
     { key: { projectId: 1, _id: 1 }, name: 'task_project_cursor' },
     {
       key: { projectId: 1, status: 1, _id: 1 },

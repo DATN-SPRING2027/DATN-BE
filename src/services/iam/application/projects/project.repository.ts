@@ -32,6 +32,7 @@ export interface ProjectListQuery {
   page: number;
   pageSize: number;
   status?: ProjectStatus;
+  q?: string;
 }
 
 export interface ProjectCreateInput {
