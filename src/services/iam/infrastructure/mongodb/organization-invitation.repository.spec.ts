@@ -951,6 +951,27 @@ describe('MongoOrganizationInvitationRepository', () => {
       cipher,
     );
 
+    projects.find.mockReturnValueOnce(queryChain([]));
+    await expect(
+      commandRepo.execute({
+        actorUserId: actorId.toHexString(),
+        organizationId: organizationId.toHexString(),
+        idempotencyKey: 'invite-leader-invalid-project-key-1234',
+        command: {
+          command: 'INVITE',
+          email: 'leader@example.test',
+          roleCode: 'MEMBER',
+          projectRoleCode: 'TEAM_LEADER',
+          accessScope: 'SPECIFIC_PROJECTS',
+          projectIds: [projectId.toHexString()],
+          reasonCode: 'ACCESS_REQUEST',
+        },
+        invitationReadinessReady: true,
+        now,
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(createdInvitations).toHaveLength(0);
+
     const inviteResult = await commandRepo.execute({
       actorUserId: actorId.toHexString(),
       organizationId: organizationId.toHexString(),
@@ -976,6 +997,27 @@ describe('MongoOrganizationInvitationRepository', () => {
     const invitationRepo = new MongoOrganizationInvitationRepository(
       connection as never,
     );
+    const invitationOutbox = createdOutboxEvents.find(
+      (event) => event.aggregateId === createdInvitationId,
+    );
+    const invitationPayload = invitationOutbox?.payload as
+      Record<string, unknown> | undefined;
+    expect(invitationPayload?.projectIds).toEqual([projectId.toHexString()]);
+    delete invitationPayload?.projectIds;
+    await expect(
+      invitationRepo.acceptForRecipient({
+        actorUserId: userId.toHexString(),
+        authenticatedEmail: 'leader@example.test',
+        invitationId: createdInvitationId,
+        expectedMembershipVersion: 0,
+        expectedInvitationVersion: 1,
+        readinessReady: true,
+        idempotencyKey: 'accept-leader-without-projects-key-1234',
+        now,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(createdProjectMemberships).toHaveLength(0);
+    invitationPayload!.projectIds = [projectId.toHexString()];
     const acceptResult = await invitationRepo.acceptForRecipient({
       actorUserId: userId.toHexString(),
       authenticatedEmail: 'leader@example.test',

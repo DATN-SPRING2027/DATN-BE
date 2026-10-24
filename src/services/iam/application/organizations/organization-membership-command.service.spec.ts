@@ -115,6 +115,25 @@ describe('OrganizationMembershipCommandService', () => {
     expect(readiness.isReady.mock.calls[1]?.[0]).toBe('A8_COORDINATED_CUTOVER');
   });
 
+  it.each([
+    { accessScope: 'ORGANIZATION' },
+    { accessScope: 'SPECIFIC_PROJECTS' },
+  ])(
+    'requires selected projects for a leader invitation: %o',
+    async (scope) => {
+      await expect(
+        service.execute(actor, organizationId, 'stable-idempotency-key', {
+          command: 'INVITE',
+          email: 'leader@example.test',
+          reasonCode: 'ACCESS_REQUEST',
+          projectRoleCode: 'TEAM_LEADER',
+          ...scope,
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(repository.execute).not.toHaveBeenCalled();
+    },
+  );
+
   it('checks only A8 for CANCEL and passes the fail-closed result to persistence', async () => {
     readiness.isReady.mockImplementation((gate) =>
       Promise.resolve(gate !== 'A8_COORDINATED_CUTOVER'),
@@ -193,6 +212,34 @@ describe('OrganizationMembershipCommandService', () => {
         expectedMembershipVersion: 3,
         ...fields,
       } as never),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(repository.execute).not.toHaveBeenCalled();
+  });
+
+  it('accepts project handovers for suspension and rejects duplicate project mappings', async () => {
+    const base = {
+      command: 'SUSPEND' as const,
+      membershipId: '951a2b3c4d5e6f7a8b9c0d1f',
+      expectedMembershipVersion: 1,
+      reasonCode: 'ACCESS_REVIEW' as const,
+    };
+    const handover = {
+      projectId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+      replacementUserId: 'b51a2b3c4d5e6f7a8b9c0d1f',
+    };
+    await service.execute(actor, organizationId, 'stable-idempotency-key', {
+      ...base,
+      handovers: [handover],
+    });
+    expect(repository.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ command: { ...base, handovers: [handover] } }),
+    );
+    repository.execute.mockClear();
+    await expect(
+      service.execute(actor, organizationId, 'another-idempotency-key', {
+        ...base,
+        handovers: [handover, handover],
+      }),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(repository.execute).not.toHaveBeenCalled();
   });

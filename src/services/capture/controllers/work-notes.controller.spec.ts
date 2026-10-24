@@ -24,6 +24,7 @@ describe('WorkNotesController CSRF enforcement', () => {
       createDocument: jest.fn().mockResolvedValue({ id: documentId }),
       updateDocumentDraft: jest.fn().mockResolvedValue({ id: documentId }),
       submitDocument: jest.fn().mockResolvedValue({ id: documentId }),
+      commentDocument: jest.fn().mockResolvedValue({ id: documentId }),
       reviewDocument: jest.fn().mockResolvedValue({ id: documentId }),
       archiveDocument: jest.fn().mockResolvedValue({ id: documentId }),
       updateWorkReportSettings: jest
@@ -89,6 +90,11 @@ describe('WorkNotesController CSRF enforcement', () => {
       ).toThrow(ForbiddenException);
       expect(() =>
         controller.submitDocument(req, projectId, documentId),
+      ).toThrow(ForbiddenException);
+      expect(() =>
+        controller.commentDocument(req, projectId, documentId, {
+          comment: 'Note',
+        }),
       ).toThrow(ForbiddenException);
       expect(() =>
         controller.approveDocument(req, projectId, documentId, {}),

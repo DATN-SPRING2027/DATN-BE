@@ -86,7 +86,8 @@ const pickReviewHistory = (value: unknown) =>
     ? value.map((entry) => {
         const item = entry as Record<string, unknown>;
         return {
-          action: item.action as 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
+          action: item.action as
+            'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
           reviewerId: text(item.reviewerId),
           ...(typeof item.comment === 'string'
             ? { comment: item.comment }
@@ -95,6 +96,234 @@ const pickReviewHistory = (value: unknown) =>
         };
       })
     : [];
+
+const OLE2_SIGNATURE = Buffer.from([
+  0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1,
+]);
+const PNG_SIGNATURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+
+function isTextBuffer(bytes: Buffer): boolean {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 8192));
+  return !sample.includes(0);
+}
+
+const isZipBuffer = (bytes: Buffer) =>
+  bytes.subarray(0, 2).toString('ascii') === 'PK';
+const isOle2Buffer = (bytes: Buffer) =>
+  bytes.length >= 8 && bytes.subarray(0, 8).equals(OLE2_SIGNATURE);
+const isRtfBuffer = (bytes: Buffer) =>
+  bytes.subarray(0, 5).toString('ascii') === '{\\rtf';
+
+type DocumentFileFormatRule = Readonly<{
+  extensions: readonly string[];
+  canonicalContentType: string;
+  acceptedContentTypes: readonly string[];
+  validateBytes: (bytes: Buffer) => boolean;
+}>;
+
+const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
+  {
+    extensions: ['.pdf'],
+    canonicalContentType: 'application/pdf',
+    acceptedContentTypes: ['application/pdf'],
+    validateBytes: (bytes) =>
+      bytes.subarray(0, 5).toString('ascii') === '%PDF-',
+  },
+  {
+    extensions: ['.docx'],
+    canonicalContentType:
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    acceptedContentTypes: [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+    validateBytes: isZipBuffer,
+  },
+  {
+    extensions: ['.doc'],
+    canonicalContentType: 'application/msword',
+    acceptedContentTypes: ['application/msword', 'application/vnd.ms-word'],
+    validateBytes: (bytes) => isOle2Buffer(bytes) || isRtfBuffer(bytes),
+  },
+  {
+    extensions: ['.xlsx'],
+    canonicalContentType:
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    acceptedContentTypes: [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+    validateBytes: isZipBuffer,
+  },
+  {
+    extensions: ['.xls'],
+    canonicalContentType: 'application/vnd.ms-excel',
+    acceptedContentTypes: ['application/vnd.ms-excel'],
+    validateBytes: isOle2Buffer,
+  },
+  {
+    extensions: ['.pptx'],
+    canonicalContentType:
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    acceptedContentTypes: [
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+    validateBytes: isZipBuffer,
+  },
+  {
+    extensions: ['.ppt'],
+    canonicalContentType: 'application/vnd.ms-powerpoint',
+    acceptedContentTypes: ['application/vnd.ms-powerpoint'],
+    validateBytes: isOle2Buffer,
+  },
+  {
+    extensions: ['.odt'],
+    canonicalContentType: 'application/vnd.oasis.opendocument.text',
+    acceptedContentTypes: [
+      'application/vnd.oasis.opendocument.text',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+    validateBytes: isZipBuffer,
+  },
+  {
+    extensions: ['.ods'],
+    canonicalContentType: 'application/vnd.oasis.opendocument.spreadsheet',
+    acceptedContentTypes: [
+      'application/vnd.oasis.opendocument.spreadsheet',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+    validateBytes: isZipBuffer,
+  },
+  {
+    extensions: ['.odp'],
+    canonicalContentType: 'application/vnd.oasis.opendocument.presentation',
+    acceptedContentTypes: [
+      'application/vnd.oasis.opendocument.presentation',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+    validateBytes: isZipBuffer,
+  },
+  {
+    extensions: ['.rtf'],
+    canonicalContentType: 'application/rtf',
+    acceptedContentTypes: ['application/rtf', 'text/rtf', 'text/plain'],
+    validateBytes: isRtfBuffer,
+  },
+  {
+    extensions: ['.txt'],
+    canonicalContentType: 'text/plain',
+    acceptedContentTypes: ['text/plain'],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.md', '.markdown'],
+    canonicalContentType: 'text/markdown',
+    acceptedContentTypes: ['text/markdown', 'text/x-markdown', 'text/plain'],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.csv'],
+    canonicalContentType: 'text/csv',
+    acceptedContentTypes: [
+      'text/csv',
+      'application/csv',
+      'application/vnd.ms-excel',
+      'text/plain',
+    ],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.tsv'],
+    canonicalContentType: 'text/tab-separated-values',
+    acceptedContentTypes: ['text/tab-separated-values', 'text/plain'],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.json'],
+    canonicalContentType: 'application/json',
+    acceptedContentTypes: ['application/json', 'text/json', 'text/plain'],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.yaml', '.yml'],
+    canonicalContentType: 'application/yaml',
+    acceptedContentTypes: [
+      'application/yaml',
+      'application/x-yaml',
+      'text/yaml',
+      'text/x-yaml',
+      'text/plain',
+    ],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.xml', '.drawio'],
+    canonicalContentType: 'application/xml',
+    acceptedContentTypes: ['application/xml', 'text/xml', 'text/plain'],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.sql'],
+    canonicalContentType: 'application/sql',
+    acceptedContentTypes: ['application/sql', 'text/x-sql', 'text/plain'],
+    validateBytes: isTextBuffer,
+  },
+  {
+    extensions: ['.png'],
+    canonicalContentType: 'image/png',
+    acceptedContentTypes: ['image/png'],
+    validateBytes: (bytes) =>
+      bytes.length >= 8 && bytes.subarray(0, 8).equals(PNG_SIGNATURE),
+  },
+  {
+    extensions: ['.jpg', '.jpeg'],
+    canonicalContentType: 'image/jpeg',
+    acceptedContentTypes: ['image/jpeg', 'image/pjpeg'],
+    validateBytes: (bytes) =>
+      bytes.length >= 3 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff,
+  },
+  {
+    extensions: ['.webp'],
+    canonicalContentType: 'image/webp',
+    acceptedContentTypes: ['image/webp'],
+    validateBytes: (bytes) =>
+      bytes.length >= 12 &&
+      bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      bytes.subarray(8, 12).toString('ascii') === 'WEBP',
+  },
+];
+
+function resolveValidatedDocumentContentType(
+  cleanName: string,
+  rawContentType: string,
+  bytes: Buffer,
+): string | null {
+  const lowerName = cleanName.toLowerCase();
+  const rule = DOCUMENT_FILE_FORMAT_RULES.find((candidate) =>
+    candidate.extensions.some((ext) => lowerName.endsWith(ext)),
+  );
+  if (!rule) return null;
+  const baseContentType =
+    rawContentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  const contentTypeAllowed =
+    baseContentType === '' ||
+    baseContentType === 'application/octet-stream' ||
+    rule.acceptedContentTypes.includes(baseContentType);
+  if (!contentTypeAllowed || !rule.validateBytes(bytes)) return null;
+  return rule.canonicalContentType;
+}
 
 @Injectable()
 export class WorkNotesService {
@@ -501,29 +730,20 @@ export class WorkNotesService {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(documentId)) throw documentNotFound();
     const cleanName = name.trim();
-    const supported =
-      contentType === 'application/pdf' ||
-      contentType ===
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    const signatureValid =
-      contentType === 'application/pdf'
-        ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
-        : bytes.subarray(0, 2).toString('ascii') === 'PK';
-    if (
-      !supported ||
-      !signatureValid ||
-      bytes.length === 0 ||
-      bytes.length > 20 * 1024 * 1024 ||
-      cleanName.length > 180 ||
-      /[\\/]/.test(cleanName) ||
-      [...cleanName].some((character) => character.charCodeAt(0) < 32) ||
-      !cleanName
-        .toLowerCase()
-        .endsWith(contentType === 'application/pdf' ? '.pdf' : '.docx')
-    )
+    const resolvedContentType =
+      bytes.length > 0 &&
+      bytes.length <= 20 * 1024 * 1024 &&
+      cleanName.length > 0 &&
+      cleanName.length <= 180 &&
+      !/[\\/]/.test(cleanName) &&
+      ![...cleanName].some((character) => character.charCodeAt(0) < 32)
+        ? resolveValidatedDocumentContentType(cleanName, contentType, bytes)
+        : null;
+    if (!resolvedContentType)
       throw new BadRequestException({
         code: 'DOCUMENT_FILE_INVALID',
-        message: 'A PDF or DOCX file up to 20 MB is required.',
+        message:
+          'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
       });
     const id = objectId(documentId);
     const documents = this.database().collection('project_documents');
@@ -551,7 +771,7 @@ export class WorkNotesService {
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
       );
-    await this.documentStorage.put(key, bytes, contentType);
+    await this.documentStorage.put(key, bytes, resolvedContentType);
     try {
       await this.transaction(async (db, session) => {
         const result = await db
@@ -568,7 +788,12 @@ export class WorkNotesService {
             },
             {
               $set: {
-                file: { key, name: cleanName, contentType, size: bytes.length },
+                file: {
+                  key,
+                  name: cleanName,
+                  contentType: resolvedContentType,
+                  size: bytes.length,
+                },
                 updatedAt: new Date(),
               },
             },
@@ -883,6 +1108,100 @@ export class WorkNotesService {
     const submitted = await this.readDocument(actor, id);
     if (!submitted) throw documentNotFound();
     return submitted;
+  }
+
+  async commentDocument(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    input: ReviewInput,
+  ): Promise<ProjectDocumentRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!actor.canReview) throw this.reviewPermissionDenied();
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const now = new Date();
+    const comment = input.comment?.trim() ?? '';
+    if (!comment) {
+      throw new BadRequestException({
+        code: 'REVIEW_COMMENT_REQUIRED',
+        message: 'A review comment is required.',
+      });
+    }
+    await this.transaction(async (db, session) => {
+      const documents = db.collection('project_documents');
+      const current = record(
+        await documents.findOne(
+          {
+            _id: id,
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            status: 'PENDING_REVIEW',
+          },
+          { session },
+        ),
+      );
+      if (!current) throw documentNotFound();
+      const authorId = String(current.createdByUserId);
+      assertReviewerCanReview(authorId, actor.userId, actor.canReview);
+      const sourceVersion = Number(current.currentVersionNumber);
+      const version = record(
+        await db.collection('project_document_versions').findOne(
+          {
+            documentId: id,
+            versionNumber: sourceVersion,
+            status: 'PENDING_REVIEW',
+          },
+          { session },
+        ),
+      );
+      if (!version)
+        throw conflict('The submitted Document version is unavailable.');
+      const history = pickReviewHistory(version.reviewHistory);
+      const update = await db.collection('project_document_versions').updateOne(
+        { _id: version._id, status: 'PENDING_REVIEW' },
+        {
+          $set: {
+            reviewedByUserId: objectId(actor.userId),
+            reviewedAt: now,
+            reviewComment: comment,
+            reviewHistory: [
+              ...history,
+              {
+                action: 'PENDING_REVIEW',
+                reviewerId: actor.userId,
+                comment,
+                at: now,
+              },
+            ],
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      if (update.modifiedCount !== 1)
+        throw conflict('The Document changed while saving the review comment.');
+      await documents.updateOne(
+        {
+          _id: id,
+          status: 'PENDING_REVIEW',
+          currentVersionNumber: sourceVersion,
+        },
+        { $set: { updatedAt: now } },
+        { session },
+      );
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_REVIEW_COMMENTED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        { version: sourceVersion },
+        session,
+      );
+    });
+    const commented = await this.readDocument(actor, id);
+    if (!commented) throw documentNotFound();
+    return commented;
   }
 
   async reviewDocument(

@@ -151,6 +151,7 @@ export class WorkNotesController {
       version,
     );
     response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Type', file.contentType);
     response.setHeader(
       'Content-Disposition',
@@ -338,6 +339,22 @@ export class WorkNotesController {
       this.mutationHeaders(request),
       projectId,
       documentId,
+    );
+  }
+
+  @Post('documents/:documentId/comment')
+  @HttpCode(HttpStatus.OK)
+  commentDocument(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.commentDocument(
+      this.mutationHeaders(request),
+      projectId,
+      documentId,
+      validateReviewInput(body, true),
     );
   }
 

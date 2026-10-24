@@ -518,6 +518,32 @@ describe('Capture Work Notes Mongo workflows', () => {
     expect(
       (await service.downloadDocumentFile({}, projectId, document.id)).bytes,
     ).toEqual(pdf);
+    const markdown = Buffer.from(
+      '# RSR Specification\n\nDetailed requirements.',
+    );
+    const uploadedMarkdown = await service.uploadDocumentFile(
+      {},
+      projectId,
+      document.id,
+      'rsr-spec.md',
+      '',
+      markdown,
+    );
+    expect(uploadedMarkdown.file).toEqual({
+      name: 'rsr-spec.md',
+      contentType: 'text/markdown',
+      size: markdown.length,
+    });
+    await expect(
+      service.uploadDocumentFile(
+        {},
+        projectId,
+        document.id,
+        'malicious-binary.md',
+        'text/markdown',
+        Buffer.from([0x4d, 0x5a, 0x00, 0x90]),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
     await expect(
       service.downloadDocumentFile(
         {},

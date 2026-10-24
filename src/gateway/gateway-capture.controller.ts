@@ -31,6 +31,7 @@ const responseHeaders = [
   'location',
   'retry-after',
   'www-authenticate',
+  'x-content-type-options',
   'x-request-id',
 ] as const;
 

@@ -36,6 +36,31 @@ export const auditSchema = new Schema(
   { collection: 'audit_logs', timestamps: true },
 );
 
+export const SUPPORTED_DOCUMENT_CONTENT_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/rtf',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/json',
+  'application/yaml',
+  'application/xml',
+  'application/sql',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+] as const;
+
 const captureSchemas: Record<string, Schema> = {
   work_notes: new Schema(
     {
@@ -141,10 +166,7 @@ const captureSchemas: Record<string, Schema> = {
         name: { type: String, maxlength: 180 },
         contentType: {
           type: String,
-          enum: [
-            'application/pdf',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          ],
+          enum: SUPPORTED_DOCUMENT_CONTENT_TYPES,
         },
         size: { type: Number, min: 1, max: 20 * 1024 * 1024 },
       },
