@@ -109,8 +109,9 @@ export class WorkNotesAuthorizationService {
 
     const normalizedTaskId = taskId.toLowerCase();
     const task = await this.request<Record<string, unknown>>(
-      `/api/v1/tasks/projects/${actor.projectId}/tasks/${normalizedTaskId}`,
+      `/internal/tasks/projects/${actor.projectId}/tasks/${normalizedTaskId}`,
       headers,
+      { service: 'task' },
     );
     if (
       !task ||
@@ -190,9 +191,13 @@ export class WorkNotesAuthorizationService {
   private async request<T>(
     path: string,
     incoming: CaptureRequestHeaders,
-    options: { allowForbidden?: boolean } = {},
+    options: { allowForbidden?: boolean; service?: 'iam' | 'task' } = {},
   ): Promise<T | null> {
-    const baseUrl = this.config.getOrThrow<string>('IAM_SERVICE_URL');
+    const baseUrl =
+      options.service === 'task'
+        ? (this.config.get<string>('TASK_SERVICE_URL') ??
+          this.config.getOrThrow<string>('IAM_SERVICE_URL'))
+        : this.config.getOrThrow<string>('IAM_SERVICE_URL');
     const headers = new Headers({ accept: 'application/json' });
     if (incoming.authorization)
       headers.set('authorization', incoming.authorization);

@@ -20,7 +20,8 @@ describe('WorkNotesAuthorizationService', () => {
   beforeEach(() => {
     service = new WorkNotesAuthorizationService({
       getOrThrow: () => 'http://iam.internal',
-      get: () => 2_000,
+      get: (key: string) =>
+        key === 'BACKEND_TIMEOUT_MS' ? 2_000 : 'http://task.internal',
     } as unknown as ConfigService);
     fetchSpy = jest.spyOn(global, 'fetch');
   });
@@ -98,6 +99,25 @@ describe('WorkNotesAuthorizationService', () => {
     await expect(
       service.resolveTask({}, projectId, taskId),
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('resolves existing Tasks through the configured Task service route', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Mina Member' }),
+      )
+      .mockResolvedValueOnce(response({ id: projectId, organizationId }))
+      .mockResolvedValueOnce(response({}, 403))
+      .mockResolvedValueOnce(response({ id: taskId, projectId }));
+
+    const actor = await service.resolveTask({}, projectId, taskId);
+
+    expect(actor).toMatchObject({ userId, organizationId, projectId });
+    const taskCall = fetchSpy.mock.calls[3] as unknown as
+      [unknown, RequestInit | undefined] | undefined;
+    expect(String(taskCall?.[0])).toBe(
+      `http://task.internal/internal/tasks/projects/${projectId}/tasks/${taskId}`,
+    );
   });
 
   it('fails closed if project authorization cannot reach IAM', async () => {
