@@ -9,12 +9,14 @@ import { WorkNotesService } from './application/work-notes.service';
 import { WorkReportOverdueScheduler } from './application/work-report-overdue.scheduler';
 import { ProjectReportRosterService } from '../iam/application/projects/project-report-roster.service';
 import { IamInfrastructureModule } from '../iam/infrastructure/iam.infrastructure.module';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
     RuntimeConfigModule,
     IamInfrastructureModule.register(),
     CaptureInfrastructureModule.register(),
+    NotificationModule,
   ],
   controllers: [CaptureController, WorkNotesController],
   providers: [

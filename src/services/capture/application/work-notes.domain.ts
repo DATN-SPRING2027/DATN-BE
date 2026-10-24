@@ -5,7 +5,11 @@ import {
 
 export const WORK_REPORT_FREQUENCIES = [
   'DAILY',
+  'EVERY_2_DAYS',
   'EVERY_3_DAYS',
+  'EVERY_4_DAYS',
+  'EVERY_5_DAYS',
+  'EVERY_6_DAYS',
   'WEEKLY',
 ] as const;
 
@@ -22,8 +26,16 @@ export function getFrequencyDays(frequency: WorkReportFrequency): number {
   switch (frequency) {
     case 'DAILY':
       return 1;
+    case 'EVERY_2_DAYS':
+      return 2;
     case 'EVERY_3_DAYS':
       return 3;
+    case 'EVERY_4_DAYS':
+      return 4;
+    case 'EVERY_5_DAYS':
+      return 5;
+    case 'EVERY_6_DAYS':
+      return 6;
     case 'WEEKLY':
       return 7;
     default:

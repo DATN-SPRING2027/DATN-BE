@@ -6,6 +6,7 @@ import type {
   ReviewInput,
   TaskNoteInput,
   WorkReportInput,
+  WorkReportScope,
 } from './work-notes.types';
 
 const objectRecord = (value: unknown): Record<string, unknown> => {
@@ -93,7 +94,20 @@ export function validateWorkReportInput(value: unknown): WorkReportInput {
     'reason',
     'blockers',
     'nextSteps',
+    'documentIds',
   ]);
+  let documentIds: string[] | undefined;
+  if (record.documentIds !== undefined) {
+    if (!Array.isArray(record.documentIds) || record.documentIds.length > 20)
+      return invalid();
+    documentIds = [];
+    for (const id of record.documentIds) {
+      if (typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id.trim()))
+        return invalid();
+      const normalized = id.trim().toLowerCase();
+      if (!documentIds.includes(normalized)) documentIds.push(normalized);
+    }
+  }
   return {
     accomplishments: requiredText(record.accomplishments, 10_000),
     approach: requiredText(record.approach, 10_000),
@@ -104,7 +118,16 @@ export function validateWorkReportInput(value: unknown): WorkReportInput {
     ...(record.nextSteps === undefined
       ? {}
       : { nextSteps: optionalText(record.nextSteps, 5_000) ?? '' }),
+    ...(documentIds === undefined ? {} : { documentIds }),
   };
+}
+
+export function validateReportScope(
+  value: unknown,
+): WorkReportScope | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'MEMBER' && value !== 'LEADER') return invalid();
+  return value;
 }
 
 export function validateReviewInput(

@@ -52,7 +52,7 @@ describe('Work Notes request validation', () => {
     ).toThrow();
   });
 
-  it('requires the three core report fields and limits cadence to 1, 3, or 7 days', () => {
+  it('requires the three core report fields and supports 1 to 7 day cadences', () => {
     expect(() =>
       validateWorkReportInput({
         accomplishments: 'Shipped feature',
@@ -62,7 +62,13 @@ describe('Work Notes request validation', () => {
       }),
     ).toThrow();
     expect(() => validateReportFrequency('EVERY_30_DAYS')).toThrow();
+    expect(validateReportFrequency('DAILY')).toBe('DAILY');
+    expect(validateReportFrequency('EVERY_2_DAYS')).toBe('EVERY_2_DAYS');
     expect(validateReportFrequency('EVERY_3_DAYS')).toBe('EVERY_3_DAYS');
+    expect(validateReportFrequency('EVERY_4_DAYS')).toBe('EVERY_4_DAYS');
+    expect(validateReportFrequency('EVERY_5_DAYS')).toBe('EVERY_5_DAYS');
+    expect(validateReportFrequency('EVERY_6_DAYS')).toBe('EVERY_6_DAYS');
+    expect(validateReportFrequency('WEEKLY')).toBe('WEEKLY');
   });
 
   it('requires a reason for change requests and rejections', () => {

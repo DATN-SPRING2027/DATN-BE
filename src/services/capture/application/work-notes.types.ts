@@ -28,6 +28,8 @@ export type WorkReportStatus =
   | 'REJECTED'
   | 'OVERDUE';
 
+export type WorkReportScope = 'MEMBER' | 'LEADER';
+
 export interface CaptureRequestHeaders {
   authorization?: string;
   cookie?: string;
@@ -43,6 +45,8 @@ export interface WorkNotesActor {
   projectId: string;
   canReview: boolean;
   canConfigure: boolean;
+  isManager?: boolean;
+  isLeader?: boolean;
   joinedAt?: string;
 }
 
@@ -76,6 +80,7 @@ export interface WorkReportInput {
   reason: string;
   blockers?: string;
   nextSteps?: string;
+  documentIds?: string[];
 }
 
 export interface WorkNotesPagination {
@@ -169,11 +174,14 @@ export interface WorkReportRecord extends WorkReportInput {
   projectId: string;
   memberId: string;
   memberName: string;
+  reportScope?: WorkReportScope;
   frequency: WorkReportFrequency;
   periodStart: string;
   periodEnd: string;
   dueAt: string;
   status: WorkReportStatus;
+  file?: ProjectDocumentFileRecord;
+  documentIds?: string[];
   createdAt: string;
   updatedAt: string;
   submittedAt?: string;
@@ -186,8 +194,11 @@ export interface WorkReportRecord extends WorkReportInput {
 
 export interface WorkReportSettingsRecord {
   projectId: string;
+  scope?: WorkReportScope;
+  actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';
   frequency: WorkReportFrequency;
   effectiveAt: string;
+  nextFrequency?: WorkReportFrequency;
   nextEffectiveAt?: string;
   updatedBy: string;
   history: Array<{
@@ -196,4 +207,15 @@ export interface WorkReportSettingsRecord {
     updatedBy: string;
   }>;
   permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
+  leaderSettings?: {
+    frequency: WorkReportFrequency;
+    effectiveAt: string;
+    updatedBy: string;
+    history: Array<{
+      frequency: WorkReportFrequency;
+      effectiveAt: string;
+      updatedBy: string;
+    }>;
+    permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
+  };
 }

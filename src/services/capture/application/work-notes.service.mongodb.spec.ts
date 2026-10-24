@@ -127,6 +127,7 @@ describe('Capture Work Notes Mongo workflows', () => {
           );
       },
     };
+    const objects = new Map<string, Buffer>();
     service = new WorkNotesService(
       authorization as WorkNotesAuthorizationService,
       connection,
@@ -134,6 +135,19 @@ describe('Capture Work Notes Mongo workflows', () => {
       {
         append: jest.fn().mockResolvedValue(undefined),
       } as unknown as AuditService,
+      {
+        put: jest.fn((key: string, bytes: Buffer) => {
+          objects.set(key, bytes);
+          return Promise.resolve();
+        }),
+        get: jest.fn((key: string) =>
+          Promise.resolve(objects.get(key) ?? Buffer.alloc(0)),
+        ),
+        delete: jest.fn((key: string) => {
+          objects.delete(key);
+          return Promise.resolve();
+        }),
+      } as unknown as ProjectDocumentStorage,
     );
   });
 
@@ -817,5 +831,140 @@ describe('Capture Work Notes Mongo workflows', () => {
     expect(await connection.collection('outbox_events').countDocuments()).toBe(
       0,
     );
+  });
+
+  it('supports flexible 1-7 day reporting cadences, Leader-to-Manager reporting, and report file uploads', async () => {
+    const managerId = new Types.ObjectId().toHexString();
+    const linkedDocId = new Types.ObjectId().toHexString();
+
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+      joinedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    };
+
+    const updatedTwoDays = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_2_DAYS',
+      'MEMBER',
+    );
+    expect(updatedTwoDays.frequency).toBe('EVERY_2_DAYS');
+
+    const updatedFiveDays = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_5_DAYS',
+      'MEMBER',
+    );
+    expect(updatedFiveDays.frequency).toBe('EVERY_5_DAYS');
+
+    await expect(
+      service.updateWorkReportSettings({}, projectId, 'EVERY_4_DAYS', 'LEADER'),
+    ).rejects.toMatchObject({ status: 403 });
+
+    currentActor = {
+      ...currentActor,
+      userId: managerId,
+      userName: 'Morgan Manager',
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: false,
+    };
+
+    const leaderSettings = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_4_DAYS',
+      'LEADER',
+    );
+    expect(leaderSettings.frequency).toBe('EVERY_4_DAYS');
+    expect(leaderSettings.permissions.canConfigure).toBe(true);
+
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+      joinedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    };
+
+    const leaderDraft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Delivered sprint milestone and reviewed PRs.',
+        approach: 'Coordinated FE and BE contracts.',
+        reason: 'Keep release on track.',
+        blockers: 'None.',
+        nextSteps: 'Prepare UAT.',
+        documentIds: [linkedDocId],
+      },
+      'LEADER',
+    );
+    expect(leaderDraft.reportScope).toBe('LEADER');
+    expect(leaderDraft.documentIds).toEqual([linkedDocId]);
+
+    const pdfBytes = Buffer.from('%PDF-1.4\nLeader report attachment');
+    const withFile = await service.uploadWorkReportFile(
+      {},
+      projectId,
+      leaderDraft.id,
+      'leader-sprint-summary.pdf',
+      'application/pdf',
+      pdfBytes,
+    );
+    expect(withFile.file).toEqual({
+      name: 'leader-sprint-summary.pdf',
+      contentType: 'application/pdf',
+      size: pdfBytes.length,
+    });
+
+    const submittedLeaderReport = await service.submitWorkReport(
+      {},
+      projectId,
+      leaderDraft.id,
+    );
+    expect(submittedLeaderReport.status).toBe('PENDING_REVIEW');
+
+    await expect(
+      service.reviewWorkReport({}, projectId, leaderDraft.id, 'APPROVED', {}),
+    ).rejects.toMatchObject({ status: 403 });
+
+    currentActor = {
+      ...currentActor,
+      userId: managerId,
+      userName: 'Morgan Manager',
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: false,
+    };
+    const downloaded = await service.downloadWorkReportFile(
+      {},
+      projectId,
+      leaderDraft.id,
+    );
+    expect(downloaded.name).toBe('leader-sprint-summary.pdf');
+    expect(downloaded.bytes.equals(pdfBytes)).toBe(true);
+
+    const approvedLeaderReport = await service.reviewWorkReport(
+      {},
+      projectId,
+      leaderDraft.id,
+      'APPROVED',
+      { comment: 'Great sprint summary.' },
+    );
+    expect(approvedLeaderReport.status).toBe('APPROVED');
+    expect(approvedLeaderReport.reviewComment).toBe('Great sprint summary.');
   });
 });

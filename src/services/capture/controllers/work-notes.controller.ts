@@ -31,6 +31,7 @@ import {
   positiveInteger,
   validateProjectDocumentInput,
   validateReportFrequency,
+  validateReportScope,
   validateReviewInput,
   validateTaskNoteInput,
   validateWorkReportInput,
@@ -427,11 +428,20 @@ export class WorkNotesController {
   getWorkReportSettings(
     @Req() request: Request,
     @Param('projectId') projectId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
   ) {
-    return this.service.getWorkReportSettings(
-      this.requestHeaders(request),
-      projectId,
-    );
+    assertQueryKeys(rawQuery, ['scope']);
+    const scope = validateReportScope(rawQuery.scope);
+    return scope
+      ? this.service.getWorkReportSettings(
+          this.requestHeaders(request),
+          projectId,
+          scope,
+        )
+      : this.service.getWorkReportSettings(
+          this.requestHeaders(request),
+          projectId,
+        );
   }
 
   @Patch('work-report-settings')
@@ -439,31 +449,54 @@ export class WorkNotesController {
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Body() body: unknown,
+    @Query() rawQuery: Record<string, unknown> = {},
   ) {
     const headers = this.mutationHeaders(request);
+    assertQueryKeys(rawQuery, ['scope']);
     const value = record(body);
-    if (Object.keys(value).some((key) => key !== 'frequency')) invalid();
-    return this.service.updateWorkReportSettings(
-      headers,
-      projectId,
-      validateReportFrequency(value.frequency),
-    );
+    if (
+      Object.keys(value).some((key) => key !== 'frequency' && key !== 'scope')
+    )
+      invalid();
+    const scope = validateReportScope(value.scope ?? rawQuery.scope);
+    return scope
+      ? this.service.updateWorkReportSettings(
+          headers,
+          projectId,
+          validateReportFrequency(value.frequency),
+          scope,
+        )
+      : this.service.updateWorkReportSettings(
+          headers,
+          projectId,
+          validateReportFrequency(value.frequency),
+        );
   }
 
   @Get('work-reports')
   listWorkReports(
     @Req() request: Request,
     @Param('projectId') projectId: string,
-    @Query() rawQuery: Record<string, unknown>,
+    @Query() rawQuery: Record<string, unknown> = {},
   ) {
-    assertQueryKeys(rawQuery, ['page', 'pageSize', 'status']);
-    return this.service.listWorkReports(
-      this.requestHeaders(request),
-      projectId,
-      positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
-      positiveInteger(rawQuery.pageSize, 20, 100),
-      optionalStatus(rawQuery.status, workReportStatuses),
-    );
+    assertQueryKeys(rawQuery, ['page', 'pageSize', 'status', 'scope']);
+    const scope = validateReportScope(rawQuery.scope);
+    return scope
+      ? this.service.listWorkReports(
+          this.requestHeaders(request),
+          projectId,
+          positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
+          positiveInteger(rawQuery.pageSize, 20, 100),
+          optionalStatus(rawQuery.status, workReportStatuses),
+          scope,
+        )
+      : this.service.listWorkReports(
+          this.requestHeaders(request),
+          projectId,
+          positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
+          positiveInteger(rawQuery.pageSize, 20, 100),
+          optionalStatus(rawQuery.status, workReportStatuses),
+        );
   }
 
   @Post('work-reports')
@@ -472,12 +505,84 @@ export class WorkNotesController {
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Body() body: unknown,
+    @Query() rawQuery: Record<string, unknown> = {},
   ) {
-    return this.service.saveCurrentWorkReportDraft(
-      this.mutationHeaders(request),
+    assertQueryKeys(rawQuery, ['scope']);
+    const scope = validateReportScope(rawQuery.scope);
+    return scope
+      ? this.service.saveCurrentWorkReportDraft(
+          this.mutationHeaders(request),
+          projectId,
+          validateWorkReportInput(body),
+          scope,
+        )
+      : this.service.saveCurrentWorkReportDraft(
+          this.mutationHeaders(request),
+          projectId,
+          validateWorkReportInput(body),
+        );
+  }
+
+  @Put('work-reports/:reportId/file')
+  async uploadWorkReportFile(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+  ) {
+    const headers = this.mutationHeaders(request);
+    const limit = 20 * 1024 * 1024;
+    const declaredLength = Number(request.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > limit)
+      throw new BadRequestException({ code: 'DOCUMENT_FILE_TOO_LARGE' });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const bytes = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk as Uint8Array);
+      size += bytes.length;
+      if (size > limit)
+        throw new BadRequestException({ code: 'DOCUMENT_FILE_TOO_LARGE' });
+      chunks.push(bytes);
+    }
+    let name: string;
+    try {
+      name = decodeURIComponent(
+        headerValue(request.headers['x-file-name']) ?? '',
+      );
+    } catch {
+      throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
+    }
+    return this.service.uploadWorkReportFile(
+      headers,
       projectId,
-      validateWorkReportInput(body),
+      reportId,
+      name,
+      request.headers['content-type'] ?? '',
+      Buffer.concat(chunks),
     );
+  }
+
+  @Get('work-reports/:reportId/file')
+  async downloadWorkReportFile(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+  ) {
+    const file = await this.service.downloadWorkReportFile(
+      this.requestHeaders(request),
+      projectId,
+      reportId,
+    );
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Type', file.contentType);
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    );
+    return new StreamableFile(file.bytes);
   }
 
   @Get('work-reports/:reportId')
