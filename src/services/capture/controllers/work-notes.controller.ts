@@ -151,6 +151,7 @@ export class WorkNotesController {
       version,
     );
     response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Type', file.contentType);
     response.setHeader(
       'Content-Disposition',
