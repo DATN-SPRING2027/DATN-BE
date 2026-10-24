@@ -38,10 +38,6 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
           { organizationId: 1, projectId: 1, status: 1, updatedAt: -1 },
           { name: 'project_documents_project_status_updated_at' },
         ),
-        index(
-          { projectId: 1, taskId: 1, updatedAt: -1 },
-          { name: 'project_documents_project_task_updated_at' },
-        ),
       ],
     },
     {

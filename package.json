@@ -56,7 +56,7 @@
     "migrate:platform-authority-change-hardening": "node scripts/migrations/20261016-platform-authority-change-hardening.mjs",
     "migrate:platform-operator-v1-expansion-index": "node scripts/migrations/20261016-platform-operator-v1-expansion-index.mjs",
     "test:platform-operator-v1-expansion-index-plan": "node --test scripts/migrations/platform-operator-v1-expansion-index.plan.test.mjs",
-    "test:work-note-workflows:plan": "node --test scripts/migrations/work-note-workflows.plan.test.mjs",
+    "test:work-note-workflows:plan": "node --test scripts/migrations/work-note-workflows.plan.test.mjs scripts/migrations/work-note-workflows-v2.test.mjs",
     "migrate:team-foundation-runtime": "node scripts/migrations/20261015-team-foundation-runtime.mjs",
     "test:team-foundation-runtime-plan": "node --test scripts/migrations/team-foundation-runtime.plan.test.mjs",
     "test:team-foundation-transactions": "node scripts/tests/team-foundation-transactions.integration.mjs",

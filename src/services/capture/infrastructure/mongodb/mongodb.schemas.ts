@@ -89,7 +89,6 @@ const captureSchemas: Record<string, Schema> = {
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
-      taskId: Schema.Types.ObjectId,
       title: { type: String, required: true, trim: true, maxlength: 240 },
       description: { type: String, maxlength: 2000 },
       documentType: {
@@ -110,6 +109,7 @@ const captureSchemas: Record<string, Schema> = {
       },
       createdByUserId: { type: Schema.Types.ObjectId, required: true },
       currentVersionNumber: { type: Number, required: true, min: 1 },
+      latestApprovedVersionNumber: { type: Number, min: 1 },
       status: {
         type: String,
         enum: [
@@ -135,7 +135,6 @@ const captureSchemas: Record<string, Schema> = {
       title: { type: String, required: true, trim: true, maxlength: 240 },
       description: { type: String, maxlength: 2000 },
       documentType: { type: String, required: true },
-      taskId: Schema.Types.ObjectId,
       content: { type: String, default: '', maxlength: 200000 },
       file: {
         key: { type: String, maxlength: 300 },

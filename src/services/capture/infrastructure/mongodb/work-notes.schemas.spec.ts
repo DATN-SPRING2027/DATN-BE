@@ -68,6 +68,21 @@ describe('Work Notes persistence contract', () => {
     expect(schema.path('type')).toBeDefined();
   });
 
+  it('keeps Project Documents project-scoped without a Task association and tracks latest approved version', () => {
+    const documentDefinition = collections.get('project_documents')!;
+    const versionDefinition = collections.get('project_document_versions')!;
+    const documentSchema = createCollectionSchema(documentDefinition);
+    const versionSchema = createCollectionSchema(versionDefinition);
+    expect(documentSchema.path('taskId')).toBeUndefined();
+    expect(versionSchema.path('taskId')).toBeUndefined();
+    expect(documentSchema.path('latestApprovedVersionNumber')).toBeDefined();
+    expect(
+      (documentDefinition.indexes ?? []).some(
+        (index) => 'taskId' in index.fields,
+      ),
+    ).toBe(false);
+  });
+
   it('accepts a file-only document draft while upload and submission remain separate steps', () => {
     const schema = createCollectionSchema(
       collections.get('project_document_versions')!,

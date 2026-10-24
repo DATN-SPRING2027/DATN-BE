@@ -12,10 +12,6 @@ export const WORK_NOTE_WORKFLOW_INDEXES = Object.freeze({
       key: { organizationId: 1, projectId: 1, status: 1, updatedAt: -1 },
       name: 'project_documents_project_status_updated_at',
     },
-    {
-      key: { projectId: 1, taskId: 1, updatedAt: -1 },
-      name: 'project_documents_project_task_updated_at',
-    },
   ],
   project_document_versions: [
     {

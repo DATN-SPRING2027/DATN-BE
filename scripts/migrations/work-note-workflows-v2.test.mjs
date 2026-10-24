@@ -58,14 +58,14 @@ function database({
 test('skips equivalent keys with a different index name and remains repeatable', async () => {
   const db = database({ existingWorkNotesIndex: true });
   const first = await applyWorkNoteWorkflowIndexesV2(db);
-  assert.equal(first.filter((item) => item.action === 'created').length, 10);
+  assert.equal(first.filter((item) => item.action === 'created').length, 9);
   assert.equal(
     first.find((item) => item.collection === 'work_notes')?.name,
     'generated_key_name',
   );
   const second = await applyWorkNoteWorkflowIndexesV2(db);
-  assert.equal(second.filter((item) => item.action === 'skipped').length, 11);
-  assert.equal(db.calls.length, 10);
+  assert.equal(second.filter((item) => item.action === 'skipped').length, 10);
+  assert.equal(db.calls.length, 9);
 });
 
 test('preflights every unique key before creating any index', async () => {

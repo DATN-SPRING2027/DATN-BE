@@ -8,8 +8,14 @@ import {
 
 test('plans only the Capture-owned Work Note workflow indexes', () => {
   const plan = buildWorkNoteWorkflowIndexPlan('continuum_capture');
-  assert.ok(plan.length >= 10);
+  assert.equal(plan.length, 10);
   assert.ok(plan.every((item) => item.databaseName === 'continuum_capture'));
+  assert.equal(
+    plan.some(
+      (item) => item.collection === 'project_documents' && 'taskId' in item.key,
+    ),
+    false,
+  );
   assert.ok(
     plan.some(
       (item) =>
@@ -49,7 +55,10 @@ test('preflights unique keys and applies indexes without changing records', asyn
   assert.equal(result.length, calls.length);
   assert.ok(result.every((item) => item.name));
   assert.equal(calls.filter((item) => item.options.unique).length, 3);
-  assert.equal(calls.some((item) => item.collection === 'work_notes'), true);
+  assert.equal(
+    calls.some((item) => item.collection === 'work_notes'),
+    true,
+  );
 });
 
 test('groups duplicate preflight rows by stored field values', async () => {
