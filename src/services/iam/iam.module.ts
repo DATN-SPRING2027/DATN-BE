@@ -102,7 +102,7 @@ import { MongoOrganizationMembershipCommandRepository } from './infrastructure/m
 import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
 import {
   ORGANIZATION_INVITATION_READINESS,
-  UnconfiguredOrganizationInvitationReadiness,
+  ConfiguredOrganizationInvitationReadiness,
 } from './application/organizations/organization-invitation-readiness';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
@@ -235,7 +235,7 @@ import { ProjectWorkNotesService } from '../capture/work-notes.service';
     },
     {
       provide: ORGANIZATION_INVITATION_READINESS,
-      useClass: UnconfiguredOrganizationInvitationReadiness,
+      useClass: ConfiguredOrganizationInvitationReadiness,
     },
     {
       provide: ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,

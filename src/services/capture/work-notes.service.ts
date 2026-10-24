@@ -136,7 +136,16 @@ export class ProjectWorkNotesService {
       }
     }
 
-    // Parse @email or @[userId] tokens from textContent
+    // Parse @[Name](userId) or @[userId] tokens from textContent
+    const idTokenMatches = textContent.matchAll(/@\[[^\]]*\]\(([0-9a-fA-F]{24})\)|@\[([0-9a-fA-F]{24})\]/g);
+    for (const match of idTokenMatches) {
+      const matchedId = (match[1] ?? match[2] ?? '').trim().toLowerCase();
+      if (OBJECT_ID_REGEX.test(matchedId)) {
+        candidateIds.add(matchedId);
+      }
+    }
+
+    // Parse @email tokens from textContent
     const emailMatches = textContent.match(
       /@([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g,
     );
@@ -666,8 +675,13 @@ export class ProjectWorkNotesService {
           .filter(Boolean)
       : undefined;
 
-    const mentionUserIds = Array.isArray(raw.mentionUserIds)
+    const rawMentions = Array.isArray(raw.mentionUserIds)
       ? raw.mentionUserIds
+      : Array.isArray(raw.mentionedUserIds)
+        ? raw.mentionedUserIds
+        : undefined;
+    const mentionUserIds = rawMentions
+      ? rawMentions
           .filter((id): id is string => typeof id === 'string')
           .map((id) => id.trim())
           .filter(Boolean)
