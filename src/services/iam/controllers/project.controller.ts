@@ -47,6 +47,12 @@ function listQuery(query: Record<string, unknown>): ProjectListQuery {
   const page = positiveInteger(query.page, 1);
   const pageSize = positiveInteger(query.pageSize, 20, 100);
   if (
+    query.includeTotal !== undefined &&
+    (typeof query.includeTotal !== 'string' ||
+      !['true', 'false'].includes(query.includeTotal))
+  )
+    invalid();
+  if (
     query.status !== undefined &&
     (typeof query.status !== 'string' ||
       !['ACTIVE', 'ARCHIVED'].includes(query.status))
@@ -59,6 +65,8 @@ function listQuery(query: Record<string, unknown>): ProjectListQuery {
       query.q.trim().length > 80)
   )
     invalid();
+  const includeTotal = query.includeTotal !== 'false';
+  if (!includeTotal && typeof query.q !== 'string') invalid();
   return {
     page,
     pageSize,
@@ -66,6 +74,7 @@ function listQuery(query: Record<string, unknown>): ProjectListQuery {
       ? {}
       : { status: query.status as ProjectStatus }),
     ...(typeof query.q === 'string' ? { q: query.q.trim() } : {}),
+    ...(!includeTotal ? { includeTotal: false } : {}),
   };
 }
 

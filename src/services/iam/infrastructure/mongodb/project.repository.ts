@@ -339,14 +339,20 @@ export class MongoProjectRepository implements ProjectRepository {
     userId: string,
     query: ProjectListQuery,
   ) {
+    const includeTotal = query.includeTotal !== false;
     const scope = await this.visibleScope(organizationId, userId);
-    if (!scope) return { data: [], totalItems: 0 };
+    if (!scope)
+      return includeTotal
+        ? { data: [], totalItems: 0 }
+        : { data: [], hasMore: false };
     if (
       !scope.all &&
       !scope.includePublicProjects &&
       scope.projectIds.length === 0
     )
-      return { data: [], totalItems: 0 };
+      return includeTotal
+        ? { data: [], totalItems: 0 }
+        : { data: [], hasMore: false };
     const filter = {
       organizationId: new Types.ObjectId(organizationId),
       ...(scope.all
@@ -391,24 +397,32 @@ export class MongoProjectRepository implements ProjectRepository {
         .find(filter)
         .sort({ createdAt: -1, _id: -1 })
         .skip((query.page - 1) * query.pageSize)
-        .limit(query.pageSize)
+        .limit(query.pageSize + (includeTotal ? 0 : 1))
         .lean()
         .exec(),
-      projects.countDocuments(filter).exec(),
+      includeTotal
+        ? projects.countDocuments(filter).exec()
+        : Promise.resolve(undefined),
     ]);
-    const baseRecords = rows.map((row) => this.record(row));
+    const pageRows = rows.slice(0, query.pageSize);
+    const hasMore = !includeTotal && rows.length > query.pageSize;
+    const baseRecords = pageRows.map((row) => this.record(row));
     const usersModel = this.connection?.models[name('users')] as
       Model<UserSummaryDocument> | undefined;
-    if (!usersModel || rows.length === 0) {
-      return { data: baseRecords, totalItems };
+    if (!usersModel || pageRows.length === 0) {
+      return includeTotal
+        ? { data: baseRecords, totalItems: totalItems ?? 0 }
+        : { data: baseRecords, hasMore };
     }
     const enriched = await this.enrichProjectGovernanceSummaries(
       new Types.ObjectId(organizationId),
-      rows,
+      pageRows,
       baseRecords,
       usersModel,
     );
-    return { data: enriched, totalItems };
+    return includeTotal
+      ? { data: enriched, totalItems: totalItems ?? 0 }
+      : { data: enriched, hasMore };
   }
 
   private async enrichProjectGovernanceSummaries(

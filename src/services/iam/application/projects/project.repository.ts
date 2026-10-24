@@ -33,6 +33,7 @@ export interface ProjectListQuery {
   pageSize: number;
   status?: ProjectStatus;
   q?: string;
+  includeTotal?: boolean;
 }
 
 export interface ProjectCreateInput {
@@ -64,7 +65,11 @@ export interface ProjectRepository {
     organizationId: string,
     userId: string,
     query: ProjectListQuery,
-  ): Promise<{ data: ProjectRecord[]; totalItems: number }>;
+  ): Promise<{
+    data: ProjectRecord[];
+    totalItems?: number;
+    hasMore?: boolean;
+  }>;
   findVisible(
     organizationId: string,
     userId: string,

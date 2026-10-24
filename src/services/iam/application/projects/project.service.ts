@@ -77,8 +77,12 @@ export class ProjectService {
       pagination: {
         page: query.page,
         pageSize: query.pageSize,
-        totalItems: result.totalItems,
-        totalPages: Math.ceil(result.totalItems / query.pageSize),
+        ...(result.totalItems === undefined
+          ? { hasMore: result.hasMore ?? false }
+          : {
+              totalItems: result.totalItems,
+              totalPages: Math.ceil(result.totalItems / query.pageSize),
+            }),
       },
     };
   }
