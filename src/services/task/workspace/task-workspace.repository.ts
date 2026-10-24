@@ -80,6 +80,22 @@ export interface ListTasksFilter {
   q?: string;
 }
 
+export interface DeadlineNotificationTaskCandidate {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  title: string;
+  status: string;
+  assigneeId: Types.ObjectId;
+  dueDate: Date;
+  deletedAt?: Date | null;
+}
+
+export interface DeadlineNotificationTaskCursor {
+  dueDate: Date;
+  id: Types.ObjectId;
+}
+
 @Injectable()
 export class TaskWorkspaceRepository implements OnModuleInit {
   private indexesEnsured = false;
@@ -518,6 +534,75 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
     const items = await cursor.toArray();
     return { items, isDateRange };
+  }
+
+  async listTasksForDeadlineNotifications(input: {
+    through: Date;
+    after?: DeadlineNotificationTaskCursor;
+    limit: number;
+  }): Promise<DeadlineNotificationTaskCandidate[]> {
+    const filter: Record<string, unknown> = {
+      dueDate: { $ne: null, $lte: input.through },
+      assigneeId: { $ne: null },
+      status: { $nin: ['DONE', 'CANCELLED'] },
+      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+    };
+    if (input.after) {
+      filter.$and = [
+        {
+          $or: [
+            { dueDate: { $gt: input.after.dueDate } },
+            {
+              dueDate: input.after.dueDate,
+              _id: { $gt: input.after.id },
+            },
+          ],
+        },
+      ];
+    }
+
+    return this.db
+      .collection<DeadlineNotificationTaskCandidate>(WORKSPACE_TASKS_COLLECTION)
+      .find(filter, {
+        projection: {
+          _id: 1,
+          organizationId: 1,
+          projectId: 1,
+          title: 1,
+          status: 1,
+          assigneeId: 1,
+          dueDate: 1,
+          deletedAt: 1,
+        },
+      })
+      .sort({ dueDate: 1, _id: 1 })
+      .limit(input.limit)
+      .toArray();
+  }
+
+  async isTaskAvailableForNotificationTarget(
+    taskId: string,
+    projectId: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(taskId) || !Types.ObjectId.isValid(projectId)) {
+      return false;
+    }
+    const task = await this.db
+      .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
+      .findOne(
+        {
+          _id: new Types.ObjectId(taskId),
+          projectId: new Types.ObjectId(projectId),
+        },
+        { projection: { _id: 1, status: 1, deletedAt: 1, isDeleted: 1 } },
+      );
+    const taskRecord = task;
+    return Boolean(
+      taskRecord &&
+      taskRecord.status !== 'CANCELLED' &&
+      taskRecord.deletedAt == null &&
+      taskRecord.isDeleted !== true,
+    );
   }
 
   async getSubtaskCountsMap(

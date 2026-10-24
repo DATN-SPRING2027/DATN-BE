@@ -1,10 +1,12 @@
 import 'dotenv/config';
+import '../common/observability/register-otel';
 import { ConfigService } from '@nestjs/config';
 import { Job, Worker } from 'bullmq';
 import {
   bullmqPrefix,
   createRedisConnection,
 } from '../common/redis/redis-connection';
+import { createBullMqTelemetry } from '../common/observability/bullmq-telemetry';
 
 const queue = process.env.WORKER_QUEUE;
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 2);
@@ -27,6 +29,7 @@ const worker = new Worker(
     connection: redis,
     prefix: bullmqPrefix(config),
     concurrency,
+    telemetry: createBullMqTelemetry(),
   },
 );
 

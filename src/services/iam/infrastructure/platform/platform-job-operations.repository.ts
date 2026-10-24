@@ -17,6 +17,7 @@ import {
   createRedisConnection,
   type RedisConnection,
 } from '../../../../common/redis/redis-connection';
+import { createBullMqTelemetry } from '../../../../common/observability/bullmq-telemetry';
 import {
   AUDIT_DATABASE_NAME,
   AUDIT_DATABASE_NAME_TOKEN,
@@ -101,6 +102,7 @@ export class BullMqPlatformQueueClientFactory
     const queue = new Queue(id, {
       connection: this.redis,
       prefix: bullmqPrefix(this.config),
+      telemetry: createBullMqTelemetry(),
     });
     this.queues.set(id, queue);
     return queue;

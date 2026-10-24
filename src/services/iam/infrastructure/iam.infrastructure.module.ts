@@ -1,4 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
+import { createBullMqTelemetry } from '../../../common/observability/bullmq-telemetry';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import {
@@ -77,6 +78,7 @@ export class IamInfrastructureModule {
           useFactory: (config: ConfigService) => ({
             connection: createRedisConnection(config),
             prefix: bullmqPrefix(config),
+            telemetry: createBullMqTelemetry(),
           }),
         }),
         BullModule.registerQueue(

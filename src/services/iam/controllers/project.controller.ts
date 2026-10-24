@@ -47,17 +47,34 @@ function listQuery(query: Record<string, unknown>): ProjectListQuery {
   const page = positiveInteger(query.page, 1);
   const pageSize = positiveInteger(query.pageSize, 20, 100);
   if (
+    query.includeTotal !== undefined &&
+    (typeof query.includeTotal !== 'string' ||
+      !['true', 'false'].includes(query.includeTotal))
+  )
+    invalid();
+  if (
     query.status !== undefined &&
     (typeof query.status !== 'string' ||
       !['ACTIVE', 'ARCHIVED'].includes(query.status))
   )
     invalid();
+  if (
+    query.q !== undefined &&
+    (typeof query.q !== 'string' ||
+      query.q.trim().length < 2 ||
+      query.q.trim().length > 80)
+  )
+    invalid();
+  const includeTotal = query.includeTotal !== 'false';
+  if (!includeTotal && typeof query.q !== 'string') invalid();
   return {
     page,
     pageSize,
     ...(query.status === undefined
       ? {}
       : { status: query.status as ProjectStatus }),
+    ...(typeof query.q === 'string' ? { q: query.q.trim() } : {}),
+    ...(!includeTotal ? { includeTotal: false } : {}),
   };
 }
 
@@ -206,7 +223,17 @@ export class ProjectController {
       query.organizationId,
       false,
     );
-    return this.projects.list(actor, listQuery(query));
+    const parsedQuery = listQuery(query);
+    if (
+      parsedQuery.includeTotal === false &&
+      typeof parsedQuery.q === 'string'
+    ) {
+      return this.projects.listSuggestions(actor, {
+        ...parsedQuery,
+        q: parsedQuery.q,
+      });
+    }
+    return this.projects.list(actor, parsedQuery);
   }
 
   @Get('member-candidates')

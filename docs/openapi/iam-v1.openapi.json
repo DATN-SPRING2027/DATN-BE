@@ -4912,6 +4912,18 @@
             "name": "status",
             "in": "query",
             "schema": { "$ref": "#/components/schemas/ProjectStatus" }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Optional case-insensitive literal search over visible Project names and codes. Requires at least 2 characters and is limited to 80 characters.",
+            "schema": { "type": "string", "minLength": 2, "maxLength": 80 }
+          },
+          {
+            "name": "includeTotal",
+            "in": "query",
+            "description": "Defaults to true. Set false with q to skip the exact total count and return pagination.hasMore for search suggestions.",
+            "schema": { "type": "boolean", "default": true }
           }
         ],
         "responses": {
@@ -8262,7 +8274,23 @@
             "type": "array",
             "items": { "$ref": "#/components/schemas/Project" }
           },
-          "pagination": { "$ref": "#/components/schemas/Pagination" }
+          "pagination": { "$ref": "#/components/schemas/ProjectListPagination" }
+        }
+      },
+      "ProjectListPagination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["page", "pageSize"],
+        "oneOf": [
+          { "required": ["page", "pageSize", "totalItems", "totalPages"] },
+          { "required": ["page", "pageSize", "hasMore"] }
+        ],
+        "properties": {
+          "page": { "type": "integer", "minimum": 1 },
+          "pageSize": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "totalItems": { "type": "integer", "minimum": 0 },
+          "totalPages": { "type": "integer", "minimum": 0 },
+          "hasMore": { "type": "boolean" }
         }
       },
       "ProjectMemberCandidate": {

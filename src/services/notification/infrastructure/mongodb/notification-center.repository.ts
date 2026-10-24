@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
 import { SERVICE_DATABASES } from '../../../../common/mongodb/database-names';
@@ -6,6 +6,10 @@ import { IAM_PERSISTENCE } from '../../../iam/infrastructure/persistence';
 import { CHAT_PERSISTENCE } from '../../../chat/infrastructure/persistence';
 import { NOTIFICATION_PERSISTENCE } from '../persistence';
 import { createCollectionSchema } from './mongodb.schemas';
+import {
+  TASK_WORKSPACE_REPOSITORY,
+  TaskWorkspaceRepository,
+} from '../../../task/workspace/task-workspace.repository';
 import type {
   NotificationItemDto,
   NotificationListQuery,
@@ -68,6 +72,9 @@ export class NotificationCenterRepository {
     @Optional()
     @InjectConnection(CHAT_PERSISTENCE.databaseName)
     private readonly chatConnection?: Connection,
+    @Optional()
+    @Inject(TASK_WORKSPACE_REPOSITORY)
+    private readonly taskWorkspaceRepository?: TaskWorkspaceRepository,
   ) {}
 
   private activeConnection(): Connection | null {
@@ -82,6 +89,19 @@ export class NotificationCenterRepository {
       }
     }
     return null;
+  }
+
+  private cachedAccessLookup<T>(
+    cache: Map<string, Promise<unknown>> | undefined,
+    key: string,
+    lookup: () => Promise<T>,
+  ): Promise<T> {
+    if (!cache) return lookup();
+    const existing = cache.get(key);
+    if (existing) return existing as Promise<T>;
+    const pending = lookup();
+    cache.set(key, pending);
+    return pending;
   }
 
   private notificationsModel(): Model<NotificationDocumentRecord> | null {
@@ -233,31 +253,76 @@ export class NotificationCenterRepository {
       return items;
     }
 
-    return Promise.all(
-      items.map(async (item) => {
-        try {
-          const resolution = await this.resolveTargetAccess(recipientId, item);
-          if (resolution.available) {
-            return item;
+    const targetKey = (item: NotificationItemDto) =>
+      JSON.stringify([
+        item.type,
+        item.organizationId,
+        item.projectId,
+        item.taskId,
+        item.noteId,
+        item.conversationId,
+        item.target,
+      ]);
+    const uniqueTargets = new Map<
+      string,
+      { item: NotificationItemDto; key: string }
+    >();
+    for (const item of items) {
+      const key = targetKey(item);
+      if (!uniqueTargets.has(key)) uniqueTargets.set(key, { item, key });
+    }
+
+    const resolutions = new Map<
+      string,
+      NotificationResolveResponseDto | null
+    >();
+    const accessLookupCache = new Map<string, Promise<unknown>>();
+    const targets = [...uniqueTargets.values()];
+    const maxConcurrentAclChecks = 12;
+    for (
+      let offset = 0;
+      offset < targets.length;
+      offset += maxConcurrentAclChecks
+    ) {
+      const batch = targets.slice(offset, offset + maxConcurrentAclChecks);
+      const batchResults = await Promise.all(
+        batch.map(async ({ item, key }) => {
+          try {
+            return [
+              key,
+              await this.resolveTargetAccess(
+                recipientId,
+                item,
+                accessLookupCache,
+              ),
+            ] as const;
+          } catch {
+            return [key, null] as const;
           }
-          return {
-            ...item,
-            message:
-              resolution.reason === 'DELETED'
-                ? 'Content is no longer available.'
-                : 'This content is no longer available',
-            target: item.target
-              ? {
-                  ...item.target,
-                  url: '/notifications',
-                }
-              : null,
-          };
-        } catch {
-          return item;
-        }
-      }),
-    );
+        }),
+      );
+      for (const [key, result] of batchResults) resolutions.set(key, result);
+    }
+
+    return items.map((item) => {
+      const resolution = resolutions.get(targetKey(item));
+      if (resolution?.available) return item;
+      return {
+        ...item,
+        message:
+          resolution === null || resolution === undefined
+            ? 'Content is temporarily unavailable.'
+            : resolution.reason === 'DELETED'
+              ? 'Content is no longer available.'
+              : 'This content is no longer available',
+        target: item.target
+          ? {
+              ...item.target,
+              url: '/notifications',
+            }
+          : null,
+      };
+    });
   }
 
   async listByRecipient(
@@ -672,6 +737,7 @@ export class NotificationCenterRepository {
   async resolveTargetAccess(
     actorUserId: string,
     notification: NotificationItemDto,
+    accessLookupCache?: Map<string, Promise<unknown>>,
   ): Promise<NotificationResolveResponseDto> {
     const target = notification.target;
     if (!target) {
@@ -704,7 +770,11 @@ export class NotificationCenterRepository {
             'organizations',
           );
           if (orgs) {
-            const org = await orgs.findOne({ _id: new Types.ObjectId(orgId) });
+            const org = await this.cachedAccessLookup(
+              accessLookupCache,
+              `organization:${orgId}`,
+              () => orgs.findOne({ _id: new Types.ObjectId(orgId) }),
+            );
             if (
               !org ||
               (org.deletedAt !== null && org.deletedAt !== undefined) ||
@@ -736,12 +806,21 @@ export class NotificationCenterRepository {
       );
       if (orgs && memberships && Types.ObjectId.isValid(actorUserId)) {
         const [org, membership] = await Promise.all([
-          orgs.findOne({ _id: new Types.ObjectId(orgId) }),
-          memberships.findOne({
-            organizationId: new Types.ObjectId(orgId),
-            userId: new Types.ObjectId(actorUserId),
-            status: 'ACTIVE',
-          }),
+          this.cachedAccessLookup(
+            accessLookupCache,
+            `organization:${orgId}`,
+            () => orgs.findOne({ _id: new Types.ObjectId(orgId) }),
+          ),
+          this.cachedAccessLookup(
+            accessLookupCache,
+            `organization-membership:${orgId}:${actorUserId}`,
+            () =>
+              memberships.findOne({
+                organizationId: new Types.ObjectId(orgId),
+                userId: new Types.ObjectId(actorUserId),
+                status: 'ACTIVE',
+              }),
+          ),
         ]);
         if (
           !org ||
@@ -789,12 +868,17 @@ export class NotificationCenterRepository {
 
       const projects = this.dbCollection(SERVICE_DATABASES.iam, 'projects');
       if (projects) {
-        const project = await projects.findOne({
-          _id: new Types.ObjectId(projectId),
-          ...(orgId && Types.ObjectId.isValid(orgId)
-            ? { organizationId: new Types.ObjectId(orgId) }
-            : {}),
-        });
+        const project = await this.cachedAccessLookup(
+          accessLookupCache,
+          `project:${orgId ?? ''}:${projectId}`,
+          () =>
+            projects.findOne({
+              _id: new Types.ObjectId(projectId),
+              ...(orgId && Types.ObjectId.isValid(orgId)
+                ? { organizationId: new Types.ObjectId(orgId) }
+                : {}),
+            }),
+        );
         if (
           !project ||
           (project.deletedAt !== null && project.deletedAt !== undefined) ||
@@ -840,24 +924,51 @@ export class NotificationCenterRepository {
           adminAssignmentLegacy,
           projectMembership,
         ] = await Promise.all([
-          memberships?.findOne({
-            organizationId: projectOrgId,
-            userId: new Types.ObjectId(actorUserId),
-            status: 'ACTIVE',
-          }),
-          roleAssignments?.findOne(adminFilter),
-          legacyRoleAssignments?.findOne({
-            organizationId: projectOrgId,
-            projectId: null,
-            userId: new Types.ObjectId(actorUserId),
-            roleCode: 'ADMIN',
-          }),
-          projectMemberships?.findOne({
-            organizationId: projectOrgId,
-            projectId: new Types.ObjectId(projectId),
-            userId: new Types.ObjectId(actorUserId),
-            status: 'ACTIVE',
-          }),
+          memberships
+            ? this.cachedAccessLookup(
+                accessLookupCache,
+                `organization-membership:${String(projectOrgId)}:${actorUserId}`,
+                () =>
+                  memberships.findOne({
+                    organizationId: projectOrgId,
+                    userId: new Types.ObjectId(actorUserId),
+                    status: 'ACTIVE',
+                  }),
+              )
+            : null,
+          roleAssignments
+            ? this.cachedAccessLookup(
+                accessLookupCache,
+                `admin-role:${String(projectOrgId)}:${actorUserId}`,
+                () => roleAssignments.findOne(adminFilter),
+              )
+            : null,
+          legacyRoleAssignments
+            ? this.cachedAccessLookup(
+                accessLookupCache,
+                `legacy-admin-role:${String(projectOrgId)}:${actorUserId}`,
+                () =>
+                  legacyRoleAssignments.findOne({
+                    organizationId: projectOrgId,
+                    projectId: null,
+                    userId: new Types.ObjectId(actorUserId),
+                    roleCode: 'ADMIN',
+                  }),
+              )
+            : null,
+          projectMemberships
+            ? this.cachedAccessLookup(
+                accessLookupCache,
+                `project-membership:${String(projectOrgId)}:${projectId}:${actorUserId}`,
+                () =>
+                  projectMemberships.findOne({
+                    organizationId: projectOrgId,
+                    projectId: new Types.ObjectId(projectId),
+                    userId: new Types.ObjectId(actorUserId),
+                    status: 'ACTIVE',
+                  }),
+              )
+            : null,
         ]);
         const adminAssignment =
           adminAssignmentPrimary ?? adminAssignmentLegacy ?? null;
@@ -901,24 +1012,24 @@ export class NotificationCenterRepository {
             target: null,
           };
         }
-        const tasks = this.dbCollection('continuum_task', 'tasks');
-        if (tasks) {
-          const task = await tasks.findOne({
-            _id: new Types.ObjectId(taskId),
-            projectId: new Types.ObjectId(projectId),
-          });
-          if (
-            !task ||
-            (task.deletedAt !== null && task.deletedAt !== undefined) ||
-            task.status === 'CANCELLED'
-          ) {
-            return {
-              available: false,
-              reason: 'DELETED',
-              message: 'Content is no longer available.',
-              target: null,
-            };
-          }
+        const taskAvailable = this.taskWorkspaceRepository
+          ? await this.cachedAccessLookup(
+              accessLookupCache,
+              `task:${projectId}:${taskId}`,
+              () =>
+                this.taskWorkspaceRepository!.isTaskAvailableForNotificationTarget(
+                  taskId,
+                  projectId,
+                ),
+            )
+          : false;
+        if (!taskAvailable) {
+          return {
+            available: false,
+            reason: 'DELETED',
+            message: 'Content is no longer available.',
+            target: null,
+          };
         }
       }
 
@@ -937,13 +1048,18 @@ export class NotificationCenterRepository {
           'work_notes',
         );
         if (notes) {
-          const note = await notes.findOne({
-            _id: new Types.ObjectId(noteId),
-            projectId: new Types.ObjectId(projectId),
-            type: 'TASK_NOTE',
-            status: 'CONFIRMED',
-            taskId: { $type: 'objectId' },
-          });
+          const note = await this.cachedAccessLookup(
+            accessLookupCache,
+            `work-note:${projectId}:${noteId}`,
+            () =>
+              notes.findOne({
+                _id: new Types.ObjectId(noteId),
+                projectId: new Types.ObjectId(projectId),
+                type: 'TASK_NOTE',
+                status: 'CONFIRMED',
+                taskId: { $type: 'objectId' },
+              }),
+          );
           if (
             !note ||
             (note.deletedAt !== null && note.deletedAt !== undefined) ||
@@ -978,9 +1094,12 @@ export class NotificationCenterRepository {
         'chat_conversations',
       );
       if (conversations) {
-        const conv = await conversations.findOne({
-          _id: new Types.ObjectId(conversationId),
-        });
+        const conv = await this.cachedAccessLookup(
+          accessLookupCache,
+          `conversation:${conversationId}`,
+          () =>
+            conversations.findOne({ _id: new Types.ObjectId(conversationId) }),
+        );
         if (
           !conv ||
           (conv.deletedAt !== null && conv.deletedAt !== undefined) ||
@@ -1008,11 +1127,16 @@ export class NotificationCenterRepository {
             'organization_memberships',
           );
           if (orgMemberships) {
-            const orgMembership = await orgMemberships.findOne({
-              organizationId: new Types.ObjectId(chatOrgId),
-              userId: new Types.ObjectId(actorUserId),
-              status: 'ACTIVE',
-            });
+            const orgMembership = await this.cachedAccessLookup(
+              accessLookupCache,
+              `organization-membership:${chatOrgId}:${actorUserId}`,
+              () =>
+                orgMemberships.findOne({
+                  organizationId: new Types.ObjectId(chatOrgId),
+                  userId: new Types.ObjectId(actorUserId),
+                  status: 'ACTIVE',
+                }),
+            );
             if (!orgMembership) {
               return {
                 available: false,
@@ -1054,23 +1178,28 @@ export class NotificationCenterRepository {
             'chat_members',
           );
           if (chatMembers) {
-            const memberDoc = await chatMembers.findOne({
-              conversationId: new Types.ObjectId(conversationId),
-              userId: Types.ObjectId.isValid(actorUserId)
-                ? {
-                    $in: [
-                      actorUserId,
-                      normalizedActorId,
-                      new Types.ObjectId(actorUserId),
-                    ],
-                  }
-                : actorUserId,
-              $or: [
-                { status: 'ACTIVE' },
-                { status: { $exists: false } },
-                { status: null },
-              ],
-            });
+            const memberDoc = await this.cachedAccessLookup(
+              accessLookupCache,
+              `chat-member:${conversationId}:${actorUserId}`,
+              () =>
+                chatMembers.findOne({
+                  conversationId: new Types.ObjectId(conversationId),
+                  userId: Types.ObjectId.isValid(actorUserId)
+                    ? {
+                        $in: [
+                          actorUserId,
+                          normalizedActorId,
+                          new Types.ObjectId(actorUserId),
+                        ],
+                      }
+                    : actorUserId,
+                  $or: [
+                    { status: 'ACTIVE' },
+                    { status: { $exists: false } },
+                    { status: null },
+                  ],
+                }),
+            );
             const statusOk =
               memberDoc &&
               (memberDoc.status === undefined ||

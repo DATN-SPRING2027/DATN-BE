@@ -1,3 +1,4 @@
+import '../../common/observability/register-otel';
 import { LifecycleModule } from './lifecycle.module';
 import { bootstrapService } from '../service-bootstrap';
 import { LIFECYCLE_PERSISTENCE } from './infrastructure/persistence';
