@@ -87,10 +87,7 @@ const pickReviewHistory = (value: unknown) =>
         const item = entry as Record<string, unknown>;
         return {
           action: item.action as
-            | 'PENDING_REVIEW'
-            | 'APPROVED'
-            | 'CHANGES_REQUESTED'
-            | 'REJECTED',
+            'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
           reviewerId: text(item.reviewerId),
           ...(typeof item.comment === 'string'
             ? { comment: item.comment }
@@ -318,7 +315,8 @@ function resolveValidatedDocumentContentType(
     candidate.extensions.some((ext) => lowerName.endsWith(ext)),
   );
   if (!rule) return null;
-  const baseContentType = rawContentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  const baseContentType =
+    rawContentType.split(';')[0]?.trim().toLowerCase() ?? '';
   const contentTypeAllowed =
     baseContentType === '' ||
     baseContentType === 'application/octet-stream' ||

@@ -518,7 +518,9 @@ describe('Capture Work Notes Mongo workflows', () => {
     expect(
       (await service.downloadDocumentFile({}, projectId, document.id)).bytes,
     ).toEqual(pdf);
-    const markdown = Buffer.from('# RSR Specification\n\nDetailed requirements.');
+    const markdown = Buffer.from(
+      '# RSR Specification\n\nDetailed requirements.',
+    );
     const uploadedMarkdown = await service.uploadDocumentFile(
       {},
       projectId,
