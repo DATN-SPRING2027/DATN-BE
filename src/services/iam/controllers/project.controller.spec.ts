@@ -21,6 +21,7 @@ function fixture() {
   const auth = { getCurrentIdentity: jest.fn().mockResolvedValue(actor) };
   const projects = {
     list: jest.fn().mockResolvedValue({ data: [] }),
+    listSuggestions: jest.fn().mockResolvedValue({ data: [] }),
     get: jest.fn().mockResolvedValue({ id: 'project' }),
     create: jest.fn().mockResolvedValue({ id: 'project' }),
     listMemberCandidates: jest.fn().mockResolvedValue({ data: [] }),
@@ -158,14 +159,16 @@ describe('ProjectController trusted Organization boundary', () => {
         page: '2',
         pageSize: '5',
         status: 'ACTIVE',
+        q: 'Apollo',
         includeTotal: 'false',
       },
       response,
     );
-    expect(projects.list).toHaveBeenCalledWith(actor, {
+    expect(projects.listSuggestions).toHaveBeenCalledWith(actor, {
       page: 2,
       pageSize: 5,
       status: 'ACTIVE',
+      q: 'Apollo',
       includeTotal: false,
     });
     await expect(

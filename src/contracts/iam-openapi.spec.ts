@@ -101,7 +101,7 @@ describe('IAM OpenAPI contract', () => {
     const includeTotal = operation?.parameters?.find(
       (parameter) => parameter.name === 'includeTotal',
     );
-    const projectPagination = contract.components.schemas.ProjectPagination;
+    const projectPagination = contract.components.schemas.ProjectListPagination;
 
     expect(includeTotal).toMatchObject({
       in: 'query',

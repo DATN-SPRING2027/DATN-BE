@@ -88,22 +88,10 @@ export class ProjectService {
     return project;
   }
 
-  list(
-    actor: AuthenticatedIdentity,
-    query: ProjectListQuery & { includeTotal?: true },
-  ): Promise<ProjectListPageWithTotals>;
-  list(
-    actor: AuthenticatedIdentity,
-    query: ProjectListQuery & { includeTotal: false },
-  ): Promise<ProjectListPageWithoutTotals>;
-  list(
-    actor: AuthenticatedIdentity,
-    query: ProjectListQuery,
-  ): Promise<ProjectListPage>;
   async list(
     actor: AuthenticatedIdentity,
     query: ProjectListQuery,
-  ): Promise<ProjectListPage> {
+  ): Promise<ProjectListPageWithTotals> {
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
@@ -124,22 +112,12 @@ export class ProjectService {
   async listSuggestions(
     actor: AuthenticatedIdentity,
     query: ProjectListQuery & { q: string },
-  ) {
+  ): Promise<ProjectListPageWithoutTotals> {
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
       { ...query, includeTotal: false },
     );
-    if (result.totalItems === undefined) {
-      return {
-        data: result.data,
-        pagination: {
-          page: query.page,
-          pageSize: query.pageSize,
-          hasMore: result.hasMore ?? false,
-        },
-      };
-    }
     return {
       data: result.data,
       pagination: {

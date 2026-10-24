@@ -751,15 +751,22 @@ export class MongoProjectRepository implements ProjectRepository {
     });
     if (!membership) return null;
 
-    const assignments = await this.model<RoleAssignmentDocument>(
-      'role_assignments',
-    )
-      .find(
-        { organizationId: organization, userId: user },
-        { roleId: 1, roleCode: 1, projectId: 1 },
-      )
-      .lean()
-      .exec();
+    const [assignments, active] = await Promise.all([
+      this.model<RoleAssignmentDocument>('role_assignments')
+        .find(
+          { organizationId: organization, userId: user },
+          { roleId: 1, roleCode: 1, projectId: 1 },
+        )
+        .lean()
+        .exec(),
+      this.model<MembershipDocument>('project_memberships')
+        .find(
+          { organizationId: organization, userId: user, status: 'ACTIVE' },
+          { projectId: 1 },
+        )
+        .lean()
+        .exec(),
+    ]);
     const roleIds = assignments
       .map((row) => row.roleId)
       .filter((value) => value instanceof Types.ObjectId);
@@ -770,13 +777,6 @@ export class MongoProjectRepository implements ProjectRepository {
           .exec()
       : [];
     const rolesById = new Map(roles.map((role) => [String(role._id), role]));
-    const active = await this.model<MembershipDocument>('project_memberships')
-      .find(
-        { organizationId: organization, userId: user, status: 'ACTIVE' },
-        { projectId: 1 },
-      )
-      .lean()
-      .exec();
     const scope = this.policy.projectReadScope({
       subject: { userId, organizationId, status: 'ACTIVE' },
       requestedOrganizationId: organizationId,

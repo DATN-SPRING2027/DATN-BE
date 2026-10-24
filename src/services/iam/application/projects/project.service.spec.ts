@@ -36,7 +36,12 @@ describe('ProjectService list pagination', () => {
     const service = fixture(listVisible);
 
     await expect(
-      service.list(actor, { page: 1, pageSize: 20, includeTotal: false }),
+      service.listSuggestions(actor, {
+        page: 1,
+        pageSize: 20,
+        q: 'Apollo',
+        includeTotal: false,
+      }),
     ).resolves.toEqual({
       data: [],
       pagination: { page: 1, pageSize: 20, hasMore: true },
