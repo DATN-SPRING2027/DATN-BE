@@ -14,6 +14,28 @@ import {
   type ProjectRepository,
 } from './project.repository';
 
+export interface ProjectListPageWithTotals {
+  data: ProjectRecord[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+}
+
+export interface ProjectListPageWithoutTotals {
+  data: ProjectRecord[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+  };
+}
+
+export type ProjectListPage =
+  ProjectListPageWithTotals | ProjectListPageWithoutTotals;
+
 @Injectable()
 export class ProjectService {
   constructor(
@@ -66,7 +88,10 @@ export class ProjectService {
     return project;
   }
 
-  async list(actor: AuthenticatedIdentity, query: ProjectListQuery) {
+  async list(
+    actor: AuthenticatedIdentity,
+    query: ProjectListQuery,
+  ): Promise<ProjectListPageWithTotals> {
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
@@ -87,7 +112,7 @@ export class ProjectService {
   async listSuggestions(
     actor: AuthenticatedIdentity,
     query: ProjectListQuery & { q: string },
-  ) {
+  ): Promise<ProjectListPageWithoutTotals> {
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
