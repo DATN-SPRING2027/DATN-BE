@@ -9,6 +9,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
+import { PROJECT_LEADER_REQUIRED_PERMISSIONS } from '../../application/projects/project-permissions';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
@@ -2229,6 +2230,13 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       eligibleAdminIds.length <= 1
     )
       throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
+    await this.handoverProjectLeadership(
+      organizationId,
+      membership.userId,
+      actorUserId,
+      command.handovers,
+      session,
+    );
     await this.assertNoActiveProjectLeadership(
       organizationId,
       membership.userId,
@@ -2253,6 +2261,25 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       .exec();
     if (!updated)
       throw new ConflictException({ code: 'MEMBERSHIP_VERSION_CONFLICT' });
+    await this.assignments()
+      .deleteMany(
+        { organizationId, userId: membership.userId, projectId: { $ne: null } },
+        { session },
+      )
+      .exec();
+    const projectMembershipsModel =
+      this.optionalModel<ProjectMembershipDocument>('project_memberships');
+    if (!projectMembershipsModel)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    await projectMembershipsModel
+      .updateMany(
+        { organizationId, userId: membership.userId, status: 'ACTIVE' },
+        { $set: { status: 'INACTIVE' }, $currentDate: { updatedAt: true } },
+        { session },
+      )
+      .exec();
     const mappedMembership = this.mapMembership(organizationIdText, updated);
     return {
       membership: mappedMembership,
@@ -2383,6 +2410,191 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     };
   }
 
+  private async handoverProjectLeadership(
+    organizationId: Types.ObjectId,
+    departingUserId: Types.ObjectId,
+    actorUserId: Types.ObjectId,
+    handovers:
+      readonly { projectId: string; replacementUserId: string }[] | undefined,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!handovers?.length) return;
+    const projects = this.optionalModel<ProjectDocument>('projects');
+    const projectMemberships = this.optionalModel<ProjectMembershipDocument>(
+      'project_memberships',
+    );
+    if (!projects || !projectMemberships)
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    if (
+      !(await this.hasPermissionAt(
+        organizationId,
+        actorUserId,
+        'project.leader.manage',
+        session,
+      ))
+    )
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_MEMBERSHIP_FORBIDDEN',
+      });
+    const leaderRole = await this.roles()
+      .findOne({ code: 'TEAM_LEADER', isSystem: true })
+      .session(session)
+      .lean()
+      .exec();
+    if (
+      !leaderRole ||
+      !PROJECT_LEADER_REQUIRED_PERMISSIONS.every((permission) =>
+        leaderRole.permissions.includes(permission),
+      )
+    )
+      throw new ServiceUnavailableException({
+        code: 'IAM_MEMBERSHIP_DEPENDENCY_UNAVAILABLE',
+      });
+    for (const handover of handovers) {
+      const projectId = new Types.ObjectId(handover.projectId);
+      const replacementUserId = new Types.ObjectId(handover.replacementUserId);
+      if (replacementUserId.equals(departingUserId))
+        throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+      const [
+        project,
+        departingAssignment,
+        departingProjectMembership,
+        replacementMembership,
+        replacementUser,
+      ] = await Promise.all([
+        projects
+          .findOne({
+            _id: projectId,
+            organizationId,
+            status: 'ACTIVE',
+            deletedAt: null,
+          })
+          .session(session)
+          .lean()
+          .exec(),
+        this.assignments()
+          .findOne({
+            organizationId,
+            projectId,
+            userId: departingUserId,
+            roleCode: 'TEAM_LEADER',
+          })
+          .session(session)
+          .lean()
+          .exec(),
+        projectMemberships
+          .findOne({
+            organizationId,
+            projectId,
+            userId: departingUserId,
+            status: 'ACTIVE',
+          })
+          .session(session)
+          .lean()
+          .exec(),
+        this.memberships()
+          .findOne({
+            organizationId,
+            userId: replacementUserId,
+            status: 'ACTIVE',
+          })
+          .session(session)
+          .lean()
+          .exec(),
+        this.users()
+          .findOne({ _id: replacementUserId, status: 'ACTIVE' })
+          .session(session)
+          .lean()
+          .exec(),
+      ]);
+      if (
+        !project ||
+        !departingAssignment ||
+        !departingProjectMembership ||
+        !replacementMembership ||
+        !replacementUser
+      )
+        throw new ConflictException({
+          code: 'PROJECT_LEADER_HANDOVER_INVALID',
+        });
+      const replacementAssignment = await this.assignments()
+        .findOne({ organizationId, projectId, userId: replacementUserId })
+        .session(session)
+        .lean()
+        .exec();
+      if (
+        replacementAssignment &&
+        !['MEMBER', 'TEAM_LEADER'].includes(replacementAssignment.roleCode)
+      )
+        throw new ConflictException({
+          code: 'PROJECT_LEADER_HANDOVER_INVALID',
+        });
+      const replacementProjectMembership = await projectMemberships
+        .findOneAndUpdate(
+          { organizationId, projectId, userId: replacementUserId },
+          {
+            $set: { status: 'ACTIVE' },
+            $setOnInsert: { joinedAt: new Date() },
+          },
+          { upsert: true, new: true, session },
+        )
+        .lean()
+        .exec();
+      if (!replacementProjectMembership)
+        throw new ConflictException({
+          code: 'PROJECT_LEADER_HANDOVER_INVALID',
+        });
+      if (replacementAssignment) {
+        const promoted = await this.assignments()
+          .updateOne(
+            {
+              _id: replacementAssignment._id,
+              roleCode: replacementAssignment.roleCode,
+            },
+            {
+              $set: {
+                roleId: leaderRole._id,
+                roleCode: 'TEAM_LEADER',
+                assignedBy: actorUserId,
+              },
+            },
+            { session },
+          )
+          .exec();
+        if (promoted.matchedCount !== 1)
+          throw new ConflictException({
+            code: 'PROJECT_LEADER_HANDOVER_INVALID',
+          });
+      } else {
+        await this.assignments().create(
+          [
+            {
+              organizationId,
+              projectId,
+              userId: replacementUserId,
+              roleId: leaderRole._id,
+              roleCode: 'TEAM_LEADER',
+              assignedBy: actorUserId,
+            },
+          ],
+          { session },
+        );
+      }
+      const departed = await this.assignments()
+        .deleteOne(
+          { _id: departingAssignment._id, roleCode: 'TEAM_LEADER' },
+          { session },
+        )
+        .exec();
+      if (departed.deletedCount !== 1)
+        throw new ConflictException({
+          code: 'PROJECT_LEADER_HANDOVER_INVALID',
+        });
+    }
+  }
+
   private async assertNoActiveProjectLeadership(
     organizationId: Types.ObjectId,
     userId: Types.ObjectId,
@@ -2511,6 +2723,13 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
       throw new ConflictException({ code: 'LAST_ELIGIBLE_ADMIN' });
     }
 
+    await this.handoverProjectLeadership(
+      organizationId,
+      membership.userId,
+      actorUserId,
+      command.handovers,
+      session,
+    );
     await this.assertNoActiveProjectLeadership(
       organizationId,
       membership.userId,
@@ -2700,6 +2919,7 @@ export class MongoOrganizationMembershipCommandRepository implements Organizatio
     actorUserId: Types.ObjectId,
     permission:
       | 'organization.memberships.read'
+      | 'project.leader.manage'
       | typeof organizationMembershipManagePermission,
     session?: ClientSession,
   ): Promise<boolean> {

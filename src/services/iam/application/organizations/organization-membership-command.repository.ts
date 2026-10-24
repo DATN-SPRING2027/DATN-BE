@@ -13,6 +13,11 @@ export type OrganizationInvitationAccessScope =
 
 export type OrganizationInvitationExpiryDays = 7 | 14 | 30;
 
+export type ProjectLeaderHandover = Readonly<{
+  projectId: string;
+  replacementUserId: string;
+}>;
+
 export type OrganizationMembershipCommand =
   | {
       command: 'INVITE';
@@ -45,6 +50,7 @@ export type OrganizationMembershipCommand =
       membershipId: string;
       expectedMembershipVersion: number;
       reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW';
+      handovers?: readonly ProjectLeaderHandover[];
     }
   | {
       command: 'RESUME';
@@ -57,6 +63,7 @@ export type OrganizationMembershipCommand =
       membershipId: string;
       expectedMembershipVersion: number;
       reasonCode: 'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST';
+      handovers?: readonly ProjectLeaderHandover[];
     }
   | {
       command: 'SET_ORGANIZATION_ROLE';

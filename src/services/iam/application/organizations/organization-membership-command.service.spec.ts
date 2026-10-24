@@ -216,6 +216,34 @@ describe('OrganizationMembershipCommandService', () => {
     expect(repository.execute).not.toHaveBeenCalled();
   });
 
+  it('accepts project handovers for suspension and rejects duplicate project mappings', async () => {
+    const base = {
+      command: 'SUSPEND' as const,
+      membershipId: '951a2b3c4d5e6f7a8b9c0d1f',
+      expectedMembershipVersion: 1,
+      reasonCode: 'ACCESS_REVIEW' as const,
+    };
+    const handover = {
+      projectId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+      replacementUserId: 'b51a2b3c4d5e6f7a8b9c0d1f',
+    };
+    await service.execute(actor, organizationId, 'stable-idempotency-key', {
+      ...base,
+      handovers: [handover],
+    });
+    expect(repository.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ command: { ...base, handovers: [handover] } }),
+    );
+    repository.execute.mockClear();
+    await expect(
+      service.execute(actor, organizationId, 'another-idempotency-key', {
+        ...base,
+        handovers: [handover, handover],
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(repository.execute).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed and reused-short idempotency keys before persistence', async () => {
     await expect(
       service.execute(actor, organizationId, 'short', {

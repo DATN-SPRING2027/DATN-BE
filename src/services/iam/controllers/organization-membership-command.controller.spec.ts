@@ -468,6 +468,81 @@ describe('OrganizationMembershipCommandController', () => {
     },
   );
 
+  it('passes exact handovers for removal and rejects malformed mappings', async () => {
+    const membershipId = '951a2b3c4d5e6f7a8b9c0d1f';
+    const handovers = [
+      {
+        projectId: 'a51a2b3c4d5e6f7a8b9c0d1f',
+        replacementUserId: 'b51a2b3c4d5e6f7a8b9c0d1f',
+      },
+    ];
+    await controller.remove(
+      'Bearer token',
+      '__Host-csrf=csrf-token',
+      'csrf-token',
+      'stable-idempotency-key',
+      'request-id',
+      organizationId,
+      membershipId,
+      { expectedMembershipVersion: 1, reasonCode: 'ACCESS_REVIEW', handovers },
+      response as never,
+    );
+    expect(commands.execute).toHaveBeenCalledWith(
+      actor,
+      organizationId,
+      'stable-idempotency-key',
+      {
+        command: 'REMOVE',
+        membershipId,
+        expectedMembershipVersion: 1,
+        reasonCode: 'ACCESS_REVIEW',
+        handovers,
+      },
+      'request-id',
+    );
+    commands.execute.mockClear();
+    await expect(
+      controller.remove(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'stable-idempotency-key',
+        'request-id',
+        organizationId,
+        membershipId,
+        {
+          expectedMembershipVersion: 1,
+          reasonCode: 'ACCESS_REVIEW',
+          handovers: [...handovers, ...handovers],
+        },
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(commands.execute).not.toHaveBeenCalled();
+    await expect(
+      controller.remove(
+        'Bearer token',
+        '__Host-csrf=csrf-token',
+        'csrf-token',
+        'stable-idempotency-key',
+        'request-id',
+        organizationId,
+        membershipId,
+        {
+          expectedMembershipVersion: 1,
+          reasonCode: 'ACCESS_REVIEW',
+          handovers: [
+            {
+              projectId: Number('123456789012345678901234'),
+              replacementUserId: handovers[0].replacementUserId,
+            },
+          ],
+        },
+        response as never,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
   it('returns organization overview and enforces strict allowlist on settings update', async () => {
     const overview = await controller.getOverview(
       'Bearer token',

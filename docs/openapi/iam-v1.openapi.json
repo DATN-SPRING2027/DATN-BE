@@ -1311,7 +1311,7 @@
       "post": {
         "tags": ["Organization Memberships"],
         "summary": "Suspend an active Organization Membership",
-        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-suspension, checks ACTIVE membership and expected version, resolves eligible ADMIN through the current Role permission, serializes through the shared Organization ADMIN fence, protects the last eligible ADMIN, and writes one atomic operation/audit record.",
+        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-suspension, checks ACTIVE membership and expected version, protects the last eligible ADMIN, and optionally hands over every active Project Leader appointment (requiring project.leader.manage). Suspension revokes Project assignments and active Project memberships in the same transaction. Missing or ineligible replacements reject the entire command.",
         "operationId": "suspendOrganizationMembership",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1623,7 +1623,7 @@
       "post": {
         "tags": ["Organization Memberships"],
         "summary": "Remove an active or suspended Organization Membership",
-        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-removal, protects the last eligible ADMIN (LAST_ELIGIBLE_ADMIN), blocks removal if the member holds active Project Leadership (MEMBER_HAS_ACTIVE_PROJECT_LEADERSHIP), deactivates non-leader project memberships, removes organization-scoped role assignments, and transitions the membership to REMOVED atomically with audit.",
+        "description": "Requires current Organization membership manage authority and matching CSRF. Rejects self-removal, protects the last eligible ADMIN (LAST_ELIGIBLE_ADMIN), and optionally hands over every active Project Leader appointment (requiring project.leader.manage). Missing handovers block removal (MEMBER_HAS_ACTIVE_PROJECT_LEADERSHIP). All Project and Organization assignments are revoked and active Project memberships deactivated in the same transaction as the REMOVED transition and audit.",
         "operationId": "removeOrganizationMembership",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "parameters": [
@@ -1668,7 +1668,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/C02LifecycleMembershipRequest"
+                "$ref": "#/components/schemas/C02RemoveMembershipRequest"
               }
             }
           }
@@ -8885,7 +8885,31 @@
           "reasonCode": {
             "type": "string",
             "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW"]
+          },
+          "handovers": { "$ref": "#/components/schemas/C02ProjectLeaderHandovers" }
+        }
+      },
+      "C02ProjectLeaderHandovers": {
+        "type": "array",
+        "maxItems": 1000,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "replacementUserId"],
+          "properties": {
+            "projectId": { "$ref": "#/components/schemas/ResourceId" },
+            "replacementUserId": { "$ref": "#/components/schemas/ResourceId" }
           }
+        }
+      },
+      "C02RemoveMembershipRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedMembershipVersion", "reasonCode"],
+        "properties": {
+          "expectedMembershipVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "reasonCode": { "type": "string", "enum": ["SECURITY_INCIDENT", "ACCESS_REVIEW", "ACCESS_REQUEST"] },
+          "handovers": { "$ref": "#/components/schemas/C02ProjectLeaderHandovers" }
         }
       },
       "C02LifecycleMembershipRequest": {

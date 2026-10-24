@@ -239,7 +239,44 @@ function parseLifecycleAction(
 ): OrganizationMembershipCommand {
   if (!objectIdPattern.test(membershipId)) return validationFailed();
   const record = parseObject(body);
-  if (!exactKeys(record, ['expectedMembershipVersion', 'reasonCode']))
+  if (
+    !exactKeys(record, [
+      'expectedMembershipVersion',
+      'reasonCode',
+      ...(command !== 'RESUME' && record.handovers !== undefined
+        ? ['handovers']
+        : []),
+    ])
+  )
+    return validationFailed();
+  const handovers = record.handovers;
+  if (
+    handovers !== undefined &&
+    (!Array.isArray(handovers) ||
+      handovers.length > 1000 ||
+      handovers.some(
+        (item) =>
+          !item ||
+          typeof item !== 'object' ||
+          Array.isArray(item) ||
+          !exactKeys(item as Record<string, unknown>, [
+            'projectId',
+            'replacementUserId',
+          ]) ||
+          typeof (item as Record<string, unknown>).projectId !== 'string' ||
+          typeof (item as Record<string, unknown>).replacementUserId !==
+            'string' ||
+          !objectIdPattern.test((item as { projectId: string }).projectId) ||
+          !objectIdPattern.test(
+            (item as { replacementUserId: string }).replacementUserId,
+          ),
+      ) ||
+      new Set(
+        handovers.map((item: { projectId: string }) =>
+          item.projectId.toLowerCase(),
+        ),
+      ).size !== handovers.length)
+  )
     return validationFailed();
   const reasonCode = parseReason(record.reasonCode);
   const expectedMembershipVersion = parseVersion(
@@ -253,6 +290,7 @@ function parseLifecycleAction(
       membershipId,
       expectedMembershipVersion,
       reasonCode: reasonCode as 'SECURITY_INCIDENT' | 'ACCESS_REVIEW',
+      ...(handovers ? { handovers } : {}),
     };
   }
   if (
@@ -267,6 +305,7 @@ function parseLifecycleAction(
     expectedMembershipVersion,
     reasonCode: reasonCode as
       'SECURITY_INCIDENT' | 'ACCESS_REVIEW' | 'ACCESS_REQUEST',
+    ...(command === 'REMOVE' && handovers ? { handovers } : {}),
   };
 }
 

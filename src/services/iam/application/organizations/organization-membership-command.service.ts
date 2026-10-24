@@ -282,6 +282,28 @@ export class OrganizationMembershipCommandService {
     return undefined;
   }
 
+  private validHandovers(handovers: unknown): boolean {
+    if (handovers === undefined) return true;
+    if (!Array.isArray(handovers) || handovers.length > 1000) return false;
+    const projectIds = new Set<string>();
+    for (const entry of handovers as unknown[]) {
+      const item = entry as Record<string, unknown> | null;
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        Array.isArray(item) ||
+        Object.keys(item).length !== 2 ||
+        typeof item.projectId !== 'string' ||
+        typeof item.replacementUserId !== 'string' ||
+        !resourceIdPattern.test(item.projectId) ||
+        !resourceIdPattern.test(item.replacementUserId)
+      )
+        return false;
+      projectIds.add(item.projectId.toLowerCase());
+    }
+    return projectIds.size === handovers.length;
+  }
+
   private validateCommand(
     command: OrganizationMembershipCommand,
   ): OrganizationMembershipCommand {
@@ -413,25 +435,30 @@ export class OrganizationMembershipCommandService {
       return command;
     }
     if (command.command === 'SUSPEND') {
+      const handovers = command.handovers;
       if (
-        Object.keys(command).length !== 4 ||
+        Object.keys(command).length !== (handovers === undefined ? 4 : 5) ||
         !resourceIdPattern.test(command.membershipId) ||
         !Number.isSafeInteger(command.expectedMembershipVersion) ||
         command.expectedMembershipVersion < 1 ||
-        !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(command.reasonCode)
+        !['SECURITY_INCIDENT', 'ACCESS_REVIEW'].includes(command.reasonCode) ||
+        !this.validHandovers(handovers)
       )
         validationFailed();
       return command;
     }
     if (command.command === 'RESUME' || command.command === 'REMOVE') {
+      const handovers =
+        command.command === 'REMOVE' ? command.handovers : undefined;
       if (
-        Object.keys(command).length !== 4 ||
+        Object.keys(command).length !== (handovers === undefined ? 4 : 5) ||
         !resourceIdPattern.test(command.membershipId) ||
         !Number.isSafeInteger(command.expectedMembershipVersion) ||
         command.expectedMembershipVersion < 1 ||
         !['SECURITY_INCIDENT', 'ACCESS_REVIEW', 'ACCESS_REQUEST'].includes(
           command.reasonCode,
-        )
+        ) ||
+        !this.validHandovers(handovers)
       )
         validationFailed();
       return command;
