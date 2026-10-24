@@ -182,40 +182,49 @@ export class NotificationService {
     organizationName?: string;
     invitationId: string;
   }): Promise<NotificationItemDto[]> {
-    let recipientId = input.recipientUserId ?? null;
-    if (!recipientId && input.recipientEmail) {
-      const user = await this.repository.findActiveUserByEmail(
-        input.recipientEmail,
-      );
-      recipientId = user?.id ?? null;
-    }
-    if (!recipientId) {
-      const ctx = await this.repository.findInvitationContext(
-        input.organizationId,
-        input.invitationId,
-      );
-      recipientId = ctx?.recipientUserId ?? null;
-    }
-    if (!recipientId) return [];
+    try {
+      let recipientId = input.recipientUserId ?? null;
+      if (!recipientId && input.recipientEmail) {
+        const user = await this.repository.findActiveUserByEmail(
+          input.recipientEmail,
+        );
+        recipientId = user?.id ?? null;
+      }
+      if (!recipientId) {
+        const ctx = await this.repository.findInvitationContext(
+          input.organizationId,
+          input.invitationId,
+        );
+        recipientId = ctx?.recipientUserId ?? null;
+      }
+      if (!recipientId) return [];
 
-    const orgName =
-      input.organizationName ??
-      (await this.repository.findOrganizationName(input.organizationId));
+      const orgName =
+        input.organizationName ??
+        (await this.repository.findOrganizationName(input.organizationId));
 
-    return this.emitSafe({
-      type: 'ORGANIZATION_MEMBER_INVITED',
-      actorId: input.actorId,
-      recipients: [recipientId],
-      title: 'Organization invitation',
-      message: `You have been invited to join Organization ${orgName}`,
-      organizationId: input.organizationId,
-      target: {
-        kind: 'ORGANIZATION',
-        url: '/select-organization',
+      return await this.emitSafe({
+        type: 'ORGANIZATION_MEMBER_INVITED',
+        actorId: input.actorId,
+        recipients: [recipientId],
+        title: 'Organization invitation',
+        message: `You have been invited to join Organization ${orgName}`,
         organizationId: input.organizationId,
-      },
-      eventKey: `org_member_invited:${input.organizationId}:${input.invitationId}`,
-    });
+        target: {
+          kind: 'ORGANIZATION',
+          url: '/select-organization',
+          organizationId: input.organizationId,
+        },
+        eventKey: `org_member_invited:${input.organizationId}:${input.invitationId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare ORGANIZATION_MEMBER_INVITED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyOrganizationMemberAdded(input: {
@@ -225,24 +234,33 @@ export class NotificationService {
     organizationName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const orgName =
-      input.organizationName ??
-      (await this.repository.findOrganizationName(input.organizationId));
+    try {
+      const orgName =
+        input.organizationName ??
+        (await this.repository.findOrganizationName(input.organizationId));
 
-    return this.emitSafe({
-      type: 'ORGANIZATION_MEMBER_ADDED',
-      actorId: input.actorId ?? null,
-      recipients: [input.recipientUserId],
-      title: 'Added to organization',
-      message: `You were added to Organization ${orgName}`,
-      organizationId: input.organizationId,
-      target: {
-        kind: 'ORGANIZATION',
-        url: '/organization/members',
+      return await this.emitSafe({
+        type: 'ORGANIZATION_MEMBER_ADDED',
+        actorId: input.actorId ?? null,
+        recipients: [input.recipientUserId],
+        title: 'Added to organization',
+        message: `You were added to Organization ${orgName}`,
         organizationId: input.organizationId,
-      },
-      eventKey: `org_member_added:${input.organizationId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'ORGANIZATION',
+          url: '/organization/members',
+          organizationId: input.organizationId,
+        },
+        eventKey: `org_member_added:${input.organizationId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare ORGANIZATION_MEMBER_ADDED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyOrganizationMemberRemoved(input: {
@@ -252,24 +270,33 @@ export class NotificationService {
     organizationName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const orgName =
-      input.organizationName ??
-      (await this.repository.findOrganizationName(input.organizationId));
+    try {
+      const orgName =
+        input.organizationName ??
+        (await this.repository.findOrganizationName(input.organizationId));
 
-    return this.emitSafe({
-      type: 'ORGANIZATION_MEMBER_REMOVED',
-      actorId: input.actorId,
-      recipients: [input.recipientUserId],
-      title: 'Removed from organization',
-      message: `You were removed from Organization ${orgName}`,
-      organizationId: input.organizationId,
-      target: {
-        kind: 'ORGANIZATION',
-        url: '/select-organization',
+      return await this.emitSafe({
+        type: 'ORGANIZATION_MEMBER_REMOVED',
+        actorId: input.actorId,
+        recipients: [input.recipientUserId],
+        title: 'Removed from organization',
+        message: `You were removed from Organization ${orgName}`,
         organizationId: input.organizationId,
-      },
-      eventKey: `org_member_removed:${input.organizationId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'ORGANIZATION',
+          url: '/select-organization',
+          organizationId: input.organizationId,
+        },
+        eventKey: `org_member_removed:${input.organizationId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare ORGANIZATION_MEMBER_REMOVED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyProjectMemberAdded(input: {
@@ -280,29 +307,45 @@ export class NotificationService {
     projectName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const projectName =
-      input.projectName ??
-      (await this.repository.findProjectName(
-        input.organizationId,
-        input.projectId,
-      ));
+    try {
+      const verifiedRecipients =
+        await this.repository.filterActiveOrganizationRecipients(
+          input.organizationId,
+          input.recipientUserIds,
+        );
+      if (verifiedRecipients.length === 0) return [];
 
-    return this.emitSafe({
-      type: 'PROJECT_MEMBER_ADDED',
-      actorId: input.actorId,
-      recipients: input.recipientUserIds,
-      title: 'Added to project',
-      message: `You were added to Project ${projectName}`,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      target: {
-        kind: 'PROJECT',
-        url: `/projects/${input.projectId}`,
+      const projectName =
+        input.projectName ??
+        (await this.repository.findProjectName(
+          input.organizationId,
+          input.projectId,
+        ));
+
+      return await this.emitSafe({
+        type: 'PROJECT_MEMBER_ADDED',
+        actorId: input.actorId,
+        recipients: verifiedRecipients,
+        title: 'Added to project',
+        message: `You were added to Project ${projectName}`,
         organizationId: input.organizationId,
         projectId: input.projectId,
-      },
-      eventKey: `project_member_added:${input.projectId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'PROJECT',
+          url: `/projects/${input.projectId}`,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+        },
+        eventKey: `project_member_added:${input.projectId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare PROJECT_MEMBER_ADDED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyProjectMemberRemoved(input: {
@@ -314,40 +357,49 @@ export class NotificationService {
     projectName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const resolvedRecipientId =
-      input.recipientUserId ??
-      (input.membershipId
-        ? await this.repository.findProjectMembershipUserId(
-            input.organizationId,
-            input.projectId,
-            input.membershipId,
-          )
-        : null);
-    if (!resolvedRecipientId) return [];
+    try {
+      const resolvedRecipientId =
+        input.recipientUserId ??
+        (input.membershipId
+          ? await this.repository.findProjectMembershipUserId(
+              input.organizationId,
+              input.projectId,
+              input.membershipId,
+            )
+          : null);
+      if (!resolvedRecipientId) return [];
 
-    const projectName =
-      input.projectName ??
-      (await this.repository.findProjectName(
-        input.organizationId,
-        input.projectId,
-      ));
+      const projectName =
+        input.projectName ??
+        (await this.repository.findProjectName(
+          input.organizationId,
+          input.projectId,
+        ));
 
-    return this.emitSafe({
-      type: 'PROJECT_MEMBER_REMOVED',
-      actorId: input.actorId,
-      recipients: [resolvedRecipientId],
-      title: 'Removed from project',
-      message: `You were removed from Project ${projectName}`,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      target: {
-        kind: 'PROJECT',
-        url: `/projects/${input.projectId}`,
+      return await this.emitSafe({
+        type: 'PROJECT_MEMBER_REMOVED',
+        actorId: input.actorId,
+        recipients: [resolvedRecipientId],
+        title: 'Removed from project',
+        message: `You were removed from Project ${projectName}`,
         organizationId: input.organizationId,
         projectId: input.projectId,
-      },
-      eventKey: `project_member_removed:${input.projectId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'PROJECT',
+          url: `/projects/${input.projectId}`,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+        },
+        eventKey: `project_member_removed:${input.projectId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare PROJECT_MEMBER_REMOVED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyProjectLeaderAssigned(input: {
@@ -358,29 +410,45 @@ export class NotificationService {
     projectName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const projectName =
-      input.projectName ??
-      (await this.repository.findProjectName(
-        input.organizationId,
-        input.projectId,
-      ));
+    try {
+      const verifiedRecipients =
+        await this.repository.filterActiveOrganizationRecipients(
+          input.organizationId,
+          input.recipientUserIds,
+        );
+      if (verifiedRecipients.length === 0) return [];
 
-    return this.emitSafe({
-      type: 'PROJECT_LEADER_ASSIGNED',
-      actorId: input.actorId,
-      recipients: input.recipientUserIds,
-      title: 'Assigned as Project Leader',
-      message: `You were assigned as Project Leader of Project ${projectName}`,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      target: {
-        kind: 'PROJECT',
-        url: `/projects/${input.projectId}`,
+      const projectName =
+        input.projectName ??
+        (await this.repository.findProjectName(
+          input.organizationId,
+          input.projectId,
+        ));
+
+      return await this.emitSafe({
+        type: 'PROJECT_LEADER_ASSIGNED',
+        actorId: input.actorId,
+        recipients: verifiedRecipients,
+        title: 'Assigned as Project Leader',
+        message: `You were assigned as Project Leader of Project ${projectName}`,
         organizationId: input.organizationId,
         projectId: input.projectId,
-      },
-      eventKey: `project_leader_assigned:${input.projectId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'PROJECT',
+          url: `/projects/${input.projectId}`,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+        },
+        eventKey: `project_leader_assigned:${input.projectId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare PROJECT_LEADER_ASSIGNED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyProjectLeaderChanged(input: {
@@ -392,40 +460,49 @@ export class NotificationService {
     projectName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const projectName =
-      input.projectName ??
-      (await this.repository.findProjectName(
-        input.organizationId,
-        input.projectId,
-      ));
+    try {
+      const projectName =
+        input.projectName ??
+        (await this.repository.findProjectName(
+          input.organizationId,
+          input.projectId,
+        ));
 
-    return this.emitSafe({
-      type: 'PROJECT_LEADER_CHANGED',
-      actorId: input.actorId,
-      recipients: [
-        {
-          userId: input.nextLeaderUserId,
-          title: 'Project Leader updated',
-          message: `You were appointed Project Leader of Project ${projectName}`,
-        },
-        {
-          userId: input.previousLeaderUserId,
-          title: 'Project Leader updated',
-          message: `You are no longer Project Leader of Project ${projectName}`,
-        },
-      ],
-      title: 'Project Leader updated',
-      message: `Project Leader of Project ${projectName} was updated`,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      target: {
-        kind: 'PROJECT',
-        url: `/projects/${input.projectId}`,
+      return await this.emitSafe({
+        type: 'PROJECT_LEADER_CHANGED',
+        actorId: input.actorId,
+        recipients: [
+          {
+            userId: input.nextLeaderUserId,
+            title: 'Project Leader updated',
+            message: `You were appointed Project Leader of Project ${projectName}`,
+          },
+          {
+            userId: input.previousLeaderUserId,
+            title: 'Project Leader updated',
+            message: `You are no longer Project Leader of Project ${projectName}`,
+          },
+        ],
+        title: 'Project Leader updated',
+        message: `Project Leader of Project ${projectName} was updated`,
         organizationId: input.organizationId,
         projectId: input.projectId,
-      },
-      eventKey: `project_leader_changed:${input.projectId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'PROJECT',
+          url: `/projects/${input.projectId}`,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+        },
+        eventKey: `project_leader_changed:${input.projectId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare PROJECT_LEADER_CHANGED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyProjectLeaderRevoked(input: {
@@ -436,29 +513,38 @@ export class NotificationService {
     projectName?: string;
     eventId: string;
   }): Promise<NotificationItemDto[]> {
-    const projectName =
-      input.projectName ??
-      (await this.repository.findProjectName(
-        input.organizationId,
-        input.projectId,
-      ));
+    try {
+      const projectName =
+        input.projectName ??
+        (await this.repository.findProjectName(
+          input.organizationId,
+          input.projectId,
+        ));
 
-    return this.emitSafe({
-      type: 'PROJECT_LEADER_REVOKED',
-      actorId: input.actorId,
-      recipients: [input.recipientUserId],
-      title: 'Project Leader role revoked',
-      message: `You are no longer Project Leader of Project ${projectName}`,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      target: {
-        kind: 'PROJECT',
-        url: `/projects/${input.projectId}`,
+      return await this.emitSafe({
+        type: 'PROJECT_LEADER_REVOKED',
+        actorId: input.actorId,
+        recipients: [input.recipientUserId],
+        title: 'Project Leader role revoked',
+        message: `You are no longer Project Leader of Project ${projectName}`,
         organizationId: input.organizationId,
         projectId: input.projectId,
-      },
-      eventKey: `project_leader_revoked:${input.projectId}:${input.eventId}`,
-    });
+        target: {
+          kind: 'PROJECT',
+          url: `/projects/${input.projectId}`,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+        },
+        eventKey: `project_leader_revoked:${input.projectId}:${input.eventId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to prepare PROJECT_LEADER_REVOKED notification: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
   }
 
   async notifyTaskAssigned(input: {

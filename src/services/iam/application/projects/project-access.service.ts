@@ -162,7 +162,7 @@ export class ProjectAccessService {
         membershipId,
         organizationId: actor.organizationId,
         projectId,
-        eventId: `remove:${membershipId}:${Date.now()}`,
+        eventId: `remove:${membershipId}`,
       });
     }
   }

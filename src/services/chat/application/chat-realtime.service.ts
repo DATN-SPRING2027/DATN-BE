@@ -93,7 +93,9 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         recipientIds: [...payload.recipientIds],
         data: payload.data,
       };
-      this.deliverNotificationEvent(event);
+      if (!this.stopSubscriber) {
+        this.deliverNotificationEvent(event);
+      }
       void this.publish(event);
     });
     if (this.config.get<string>('INFRA_ENABLED') !== 'false') {
@@ -489,6 +491,9 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.redis.publish(this.eventChannel, JSON.stringify(event));
     } catch {
+      if (event.type === 'notification' && this.stopSubscriber) {
+        this.deliverNotificationEvent(event);
+      }
       // Persisted messages remain readable by cursor after a missed realtime event.
     }
   }

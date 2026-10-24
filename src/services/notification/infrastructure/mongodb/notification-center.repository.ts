@@ -392,90 +392,106 @@ export class NotificationCenterRepository {
   }
 
   async findOrganizationName(organizationId: string): Promise<string> {
-    if (!Types.ObjectId.isValid(organizationId)) return 'Organization';
-    const orgs = this.dbCollection(SERVICE_DATABASES.iam, 'organizations');
-    if (!orgs) return 'Organization';
-    const doc = await orgs.findOne(
-      { _id: new Types.ObjectId(organizationId) },
-      { projection: { name: 1 } },
-    );
-    return typeof doc?.name === 'string' && doc.name.trim()
-      ? doc.name.trim()
-      : 'Organization';
+    try {
+      if (!Types.ObjectId.isValid(organizationId)) return 'Organization';
+      const orgs = this.dbCollection(SERVICE_DATABASES.iam, 'organizations');
+      if (!orgs) return 'Organization';
+      const doc = await orgs.findOne(
+        { _id: new Types.ObjectId(organizationId) },
+        { projection: { name: 1 } },
+      );
+      return typeof doc?.name === 'string' && doc.name.trim()
+        ? doc.name.trim()
+        : 'Organization';
+    } catch {
+      return 'Organization';
+    }
   }
 
   async findActiveUserByEmail(
     email: string,
   ): Promise<{ id: string; email: string; fullName: string } | null> {
-    const normalized = email.trim().toLowerCase();
-    if (!normalized) return null;
-    const users = this.dbCollection(SERVICE_DATABASES.iam, 'users');
-    if (!users) return null;
-    const doc = await users.findOne(
-      { email: normalized, status: 'ACTIVE' },
-      { projection: { _id: 1, email: 1, fullName: 1 } },
-    );
-    if (!doc?._id) return null;
-    return {
-      id: String(doc._id),
-      email: typeof doc.email === 'string' ? doc.email : normalized,
-      fullName: typeof doc.fullName === 'string' ? doc.fullName : normalized,
-    };
+    try {
+      const normalized = email.trim().toLowerCase();
+      if (!normalized) return null;
+      const users = this.dbCollection(SERVICE_DATABASES.iam, 'users');
+      if (!users) return null;
+      const doc = await users.findOne(
+        { email: normalized, status: 'ACTIVE' },
+        { projection: { _id: 1, email: 1, fullName: 1 } },
+      );
+      if (!doc?._id) return null;
+      return {
+        id: String(doc._id),
+        email: typeof doc.email === 'string' ? doc.email : normalized,
+        fullName: typeof doc.fullName === 'string' ? doc.fullName : normalized,
+      };
+    } catch {
+      return null;
+    }
   }
 
   async findInvitationContext(
     organizationId: string,
     invitationId: string,
   ): Promise<{ email: string; recipientUserId: string | null } | null> {
-    if (
-      !Types.ObjectId.isValid(organizationId) ||
-      !Types.ObjectId.isValid(invitationId)
-    ) {
+    try {
+      if (
+        !Types.ObjectId.isValid(organizationId) ||
+        !Types.ObjectId.isValid(invitationId)
+      ) {
+        return null;
+      }
+      const invitations = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'organization_invitations',
+      );
+      if (!invitations) return null;
+      const inv = await invitations.findOne(
+        {
+          _id: new Types.ObjectId(invitationId),
+          organizationId: new Types.ObjectId(organizationId),
+        },
+        { projection: { email: 1, targetUserId: 1 } },
+      );
+      if (!inv) return null;
+      const email = typeof inv.email === 'string' ? inv.email : '';
+      if (inv.targetUserId) {
+        return { email, recipientUserId: String(inv.targetUserId) };
+      }
+      const user = email ? await this.findActiveUserByEmail(email) : null;
+      return { email, recipientUserId: user?.id ?? null };
+    } catch {
       return null;
     }
-    const invitations = this.dbCollection(
-      SERVICE_DATABASES.iam,
-      'organization_invitations',
-    );
-    if (!invitations) return null;
-    const inv = await invitations.findOne(
-      {
-        _id: new Types.ObjectId(invitationId),
-        organizationId: new Types.ObjectId(organizationId),
-      },
-      { projection: { email: 1, targetUserId: 1 } },
-    );
-    if (!inv) return null;
-    const email = typeof inv.email === 'string' ? inv.email : '';
-    if (inv.targetUserId) {
-      return { email, recipientUserId: String(inv.targetUserId) };
-    }
-    const user = email ? await this.findActiveUserByEmail(email) : null;
-    return { email, recipientUserId: user?.id ?? null };
   }
 
   async findProjectName(
     organizationId: string,
     projectId: string,
   ): Promise<string> {
-    if (
-      !Types.ObjectId.isValid(organizationId) ||
-      !Types.ObjectId.isValid(projectId)
-    ) {
+    try {
+      if (
+        !Types.ObjectId.isValid(organizationId) ||
+        !Types.ObjectId.isValid(projectId)
+      ) {
+        return 'Project';
+      }
+      const projects = this.dbCollection(SERVICE_DATABASES.iam, 'projects');
+      if (!projects) return 'Project';
+      const doc = await projects.findOne(
+        {
+          _id: new Types.ObjectId(projectId),
+          organizationId: new Types.ObjectId(organizationId),
+        },
+        { projection: { name: 1 } },
+      );
+      return typeof doc?.name === 'string' && doc.name.trim()
+        ? doc.name.trim()
+        : 'Project';
+    } catch {
       return 'Project';
     }
-    const projects = this.dbCollection(SERVICE_DATABASES.iam, 'projects');
-    if (!projects) return 'Project';
-    const doc = await projects.findOne(
-      {
-        _id: new Types.ObjectId(projectId),
-        organizationId: new Types.ObjectId(organizationId),
-      },
-      { projection: { name: 1 } },
-    );
-    return typeof doc?.name === 'string' && doc.name.trim()
-      ? doc.name.trim()
-      : 'Project';
   }
 
   async findProjectMembershipUserId(
@@ -483,27 +499,63 @@ export class NotificationCenterRepository {
     projectId: string,
     membershipId: string,
   ): Promise<string | null> {
-    const memberships = this.dbCollection(
-      SERVICE_DATABASES.iam,
-      'project_memberships',
-    );
-    if (!memberships) return membershipId;
-    if (
-      !Types.ObjectId.isValid(organizationId) ||
-      !Types.ObjectId.isValid(projectId) ||
-      !Types.ObjectId.isValid(membershipId)
-    ) {
+    try {
+      const memberships = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'project_memberships',
+      );
+      if (!memberships) return membershipId;
+      if (
+        !Types.ObjectId.isValid(organizationId) ||
+        !Types.ObjectId.isValid(projectId) ||
+        !Types.ObjectId.isValid(membershipId)
+      ) {
+        return null;
+      }
+      const doc = await memberships.findOne(
+        {
+          _id: new Types.ObjectId(membershipId),
+          organizationId: new Types.ObjectId(organizationId),
+          projectId: new Types.ObjectId(projectId),
+        },
+        { projection: { userId: 1 } },
+      );
+      return doc?.userId ? String(doc.userId) : null;
+    } catch {
       return null;
     }
-    const doc = await memberships.findOne(
-      {
-        _id: new Types.ObjectId(membershipId),
-        organizationId: new Types.ObjectId(organizationId),
-        projectId: new Types.ObjectId(projectId),
-      },
-      { projection: { userId: 1 } },
-    );
-    return doc?.userId ? String(doc.userId) : null;
+  }
+
+  async filterActiveOrganizationRecipients(
+    organizationId: string,
+    userIds: readonly string[],
+  ): Promise<string[]> {
+    try {
+      const memberships = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'organization_memberships',
+      );
+      if (!memberships) return [...userIds];
+      if (!Types.ObjectId.isValid(organizationId)) return [];
+      const validObjectIds = userIds
+        .map((id) => String(id ?? '').trim())
+        .filter((id) => Types.ObjectId.isValid(id))
+        .map((id) => new Types.ObjectId(id));
+      if (validObjectIds.length === 0) return [];
+      const docs = await memberships
+        .find(
+          {
+            organizationId: new Types.ObjectId(organizationId),
+            userId: { $in: validObjectIds },
+            status: 'ACTIVE',
+          },
+          { projection: { userId: 1 } },
+        )
+        .toArray();
+      return docs.map((d) => String(d.userId));
+    } catch {
+      return [];
+    }
   }
 
   async resolveTargetAccess(
@@ -530,13 +582,31 @@ export class NotificationCenterRepository {
     }
 
     if (target.kind === 'ORGANIZATION') {
+      const orgId = target.organizationId ?? notification.organizationId;
       if (
         notification.type === 'ORGANIZATION_MEMBER_INVITED' ||
         notification.type === 'ORGANIZATION_MEMBER_REMOVED'
       ) {
+        if (orgId && Types.ObjectId.isValid(orgId)) {
+          const orgs = this.dbCollection(SERVICE_DATABASES.iam, 'organizations');
+          if (orgs) {
+            const org = await orgs.findOne({ _id: new Types.ObjectId(orgId) });
+            if (
+              !org ||
+              (org.deletedAt !== null && org.deletedAt !== undefined) ||
+              org.status === 'DELETED'
+            ) {
+              return {
+                available: false,
+                reason: 'DELETED',
+                message: 'Content is no longer available.',
+                target: null,
+              };
+            }
+          }
+        }
         return { available: true, reason: 'OK', target };
       }
-      const orgId = target.organizationId ?? notification.organizationId;
       if (!orgId || !Types.ObjectId.isValid(orgId)) {
         return {
           available: false,
@@ -559,7 +629,11 @@ export class NotificationCenterRepository {
             status: 'ACTIVE',
           }),
         ]);
-        if (!org) {
+        if (
+          !org ||
+          (org.deletedAt !== null && org.deletedAt !== undefined) ||
+          org.status === 'DELETED'
+        ) {
           return {
             available: false,
             reason: 'DELETED',
@@ -610,7 +684,8 @@ export class NotificationCenterRepository {
         if (
           !project ||
           (project.deletedAt !== null && project.deletedAt !== undefined) ||
-          project.status === 'DELETED'
+          project.status === 'DELETED' ||
+          project.status === 'ARCHIVED'
         ) {
           return {
             available: false,
@@ -625,7 +700,11 @@ export class NotificationCenterRepository {
           SERVICE_DATABASES.iam,
           'organization_memberships',
         );
-        const assignments = this.dbCollection(
+        const roleAssignments = this.dbCollection(
+          SERVICE_DATABASES.iam,
+          'role_assignments',
+        );
+        const legacyRoleAssignments = this.dbCollection(
           SERVICE_DATABASES.iam,
           'user_role_assignments',
         );
@@ -634,26 +713,40 @@ export class NotificationCenterRepository {
           'project_memberships',
         );
 
-        const [orgMembership, adminAssignment, projectMembership] =
-          await Promise.all([
-            memberships?.findOne({
-              organizationId: projectOrgId,
-              userId: new Types.ObjectId(actorUserId),
-              status: 'ACTIVE',
-            }),
-            assignments?.findOne({
-              organizationId: projectOrgId,
-              projectId: null,
-              userId: new Types.ObjectId(actorUserId),
-              roleCode: 'ADMIN',
-            }),
-            projectMemberships?.findOne({
-              organizationId: projectOrgId,
-              projectId: new Types.ObjectId(projectId),
-              userId: new Types.ObjectId(actorUserId),
-              status: 'ACTIVE',
-            }),
-          ]);
+        const adminFilter = {
+          organizationId: projectOrgId,
+          userId: new Types.ObjectId(actorUserId),
+          roleCode: 'ADMIN',
+          $or: [{ projectId: { $exists: false } }, { projectId: null }],
+        };
+
+        const [
+          orgMembership,
+          adminAssignmentPrimary,
+          adminAssignmentLegacy,
+          projectMembership,
+        ] = await Promise.all([
+          memberships?.findOne({
+            organizationId: projectOrgId,
+            userId: new Types.ObjectId(actorUserId),
+            status: 'ACTIVE',
+          }),
+          roleAssignments?.findOne(adminFilter),
+          legacyRoleAssignments?.findOne({
+            organizationId: projectOrgId,
+            projectId: null,
+            userId: new Types.ObjectId(actorUserId),
+            roleCode: 'ADMIN',
+          }),
+          projectMemberships?.findOne({
+            organizationId: projectOrgId,
+            projectId: new Types.ObjectId(projectId),
+            userId: new Types.ObjectId(actorUserId),
+            status: 'ACTIVE',
+          }),
+        ]);
+        const adminAssignment =
+          adminAssignmentPrimary ?? adminAssignmentLegacy ?? null;
 
         if (!orgMembership) {
           return {
@@ -666,7 +759,15 @@ export class NotificationCenterRepository {
 
         const isPublic =
           project.visibility === 'PUBLIC' || project.visibility === 'INTERNAL';
-        if (!isPublic && !adminAssignment && !projectMembership) {
+        const requiresExplicitProjectMembership =
+          notification.type === 'PROJECT_MEMBER_REMOVED' ||
+          target.kind === 'TASK' ||
+          target.kind === 'WORK_NOTE';
+        if (
+          (requiresExplicitProjectMembership || !isPublic) &&
+          !adminAssignment &&
+          !projectMembership
+        ) {
           return {
             available: false,
             reason: 'FORBIDDEN',
@@ -694,7 +795,8 @@ export class NotificationCenterRepository {
           });
           if (
             !task ||
-            (task.deletedAt !== null && task.deletedAt !== undefined)
+            (task.deletedAt !== null && task.deletedAt !== undefined) ||
+            task.status === 'CANCELLED'
           ) {
             return {
               available: false,
@@ -723,10 +825,12 @@ export class NotificationCenterRepository {
         if (notes) {
           const note = await notes.findOne({
             _id: new Types.ObjectId(noteId),
+            projectId: new Types.ObjectId(projectId),
           });
           if (
             !note ||
-            (note.deletedAt !== null && note.deletedAt !== undefined)
+            (note.deletedAt !== null && note.deletedAt !== undefined) ||
+            note.status === 'ARCHIVED'
           ) {
             return {
               available: false,
@@ -760,7 +864,11 @@ export class NotificationCenterRepository {
         const conv = await conversations.findOne({
           _id: new Types.ObjectId(conversationId),
         });
-        if (!conv) {
+        if (
+          !conv ||
+          (conv.deletedAt !== null && conv.deletedAt !== undefined) ||
+          conv.status === 'ARCHIVED'
+        ) {
           return {
             available: false,
             reason: 'DELETED',
@@ -768,16 +876,45 @@ export class NotificationCenterRepository {
             target: null,
           };
         }
-        const members = Array.isArray(conv.members) ? conv.members : [];
-        const isMember = members.some((m: { userId?: unknown }) => {
-          const id =
-            typeof m?.userId === 'string'
-              ? m.userId.toLowerCase()
-              : m?.userId instanceof Types.ObjectId
-                ? m.userId.toHexString().toLowerCase()
-                : '';
-          return id === actorUserId;
-        });
+        const normalizedActorId = actorUserId.toLowerCase();
+        let isMember = false;
+        if (Array.isArray(conv.members)) {
+          isMember = conv.members.some((m: { userId?: unknown }) => {
+            const id =
+              typeof m?.userId === 'string'
+                ? m.userId.toLowerCase()
+                : m?.userId instanceof Types.ObjectId
+                  ? m.userId.toHexString().toLowerCase()
+                  : '';
+            return id === normalizedActorId;
+          });
+        } else {
+          const chatMembers = this.dbCollection(
+            SERVICE_DATABASES.chat,
+            'chat_members',
+          );
+          if (chatMembers) {
+            const memberDoc = await chatMembers.findOne({
+              conversationId: new Types.ObjectId(conversationId),
+              userId: Types.ObjectId.isValid(actorUserId)
+                ? {
+                    $in: [
+                      actorUserId,
+                      normalizedActorId,
+                      new Types.ObjectId(actorUserId),
+                    ],
+                  }
+                : actorUserId,
+            });
+            isMember = Boolean(
+              memberDoc &&
+                (memberDoc.deletedAt === null ||
+                  memberDoc.deletedAt === undefined),
+            );
+          } else {
+            isMember = true;
+          }
+        }
         if (!isMember) {
           return {
             available: false,
@@ -788,22 +925,33 @@ export class NotificationCenterRepository {
         }
       }
       if (target.messageId && Types.ObjectId.isValid(target.messageId)) {
-        const messages = this.dbCollection(
+        const messageObjectId = new Types.ObjectId(target.messageId);
+        const convMessages = this.dbCollection(
+          SERVICE_DATABASES.chat,
+          'chat_conversation_messages',
+        );
+        const legacyMessages = this.dbCollection(
           SERVICE_DATABASES.chat,
           'chat_messages',
         );
-        if (messages) {
-          const msg = await messages.findOne({
-            _id: new Types.ObjectId(target.messageId),
+        let msg = convMessages
+          ? await convMessages.findOne({
+              _id: messageObjectId,
+              conversationId: new Types.ObjectId(conversationId),
+            })
+          : null;
+        if (!msg && legacyMessages) {
+          msg = await legacyMessages.findOne({
+            _id: messageObjectId,
           });
-          if (!msg || (msg.deletedAt !== null && msg.deletedAt !== undefined)) {
-            return {
-              available: false,
-              reason: 'DELETED',
-              message: 'Content is no longer available.',
-              target: null,
-            };
-          }
+        }
+        if (!msg || (msg.deletedAt !== null && msg.deletedAt !== undefined)) {
+          return {
+            available: false,
+            reason: 'DELETED',
+            message: 'Content is no longer available.',
+            target: null,
+          };
         }
       }
       return { available: true, reason: 'OK', target };

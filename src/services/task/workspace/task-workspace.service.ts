@@ -1057,15 +1057,17 @@ export class TaskWorkspaceService {
       const location = `/api/v1/tasks/projects/${ctx.projectId}/tasks/${created._id.toHexString()}`;
 
       if (created.assigneeId && this.notificationService) {
-        await this.notificationService.notifyTaskAssigned({
-          actorId: ctx.actorId,
-          assigneeUserId: created.assigneeId.toHexString(),
-          organizationId: ctx.organizationId,
-          projectId: ctx.projectId,
-          taskId: created._id.toHexString(),
-          taskTitle: created.title,
-          eventId: `create:${created.version}`,
-        });
+        await this.notificationService
+          .notifyTaskAssigned({
+            actorId: ctx.actorId,
+            assigneeUserId: created.assigneeId.toHexString(),
+            organizationId: ctx.organizationId,
+            projectId: ctx.projectId,
+            taskId: created._id.toHexString(),
+            taskTitle: created.title,
+            eventId: `create:${created.version}`,
+          })
+          .catch(() => undefined);
       }
       if (created.assigneeId && created.dueDate && this.deadlineScheduler) {
         await this.deadlineScheduler
@@ -1415,15 +1417,17 @@ export class TaskWorkspaceService {
       outcome.task.assigneeId &&
       this.notificationService
     ) {
-      await this.notificationService.notifyTaskAssigned({
-        actorId: ctx.actorId,
-        assigneeUserId: outcome.task.assigneeId.toHexString(),
-        organizationId: ctx.organizationId,
-        projectId: ctx.projectId,
-        taskId: outcome.task._id.toHexString(),
-        taskTitle: outcome.task.title,
-        eventId: `update:${outcome.task.version}`,
-      });
+      await this.notificationService
+        .notifyTaskAssigned({
+          actorId: ctx.actorId,
+          assigneeUserId: outcome.task.assigneeId.toHexString(),
+          organizationId: ctx.organizationId,
+          projectId: ctx.projectId,
+          taskId: outcome.task._id.toHexString(),
+          taskTitle: outcome.task.title,
+          eventId: `update:${outcome.task.version}`,
+        })
+        .catch(() => undefined);
     }
     if (
       outcome.task.assigneeId &&

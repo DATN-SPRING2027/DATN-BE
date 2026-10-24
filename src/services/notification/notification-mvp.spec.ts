@@ -811,5 +811,122 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
       expect(deletedResolution.message).toBe('Content is no longer available.');
       expect(deletedResolution.target).toBeNull();
     });
+
+    it('Rule 4 & Rule 5: resolves CHAT_MENTION against chat_members and chat_conversation_messages and blocks removed members on PUBLIC project tasks', async () => {
+      let isChatMember = true;
+      let chatMessageDeleted = false;
+      const mockChatCollections: Record<string, { findOne: jest.Mock }> = {
+        chat_conversations: {
+          findOne: jest.fn(async () => ({
+            _id: new Types.ObjectId(conversationId),
+            organizationId: new Types.ObjectId(orgId),
+            deletedAt: null,
+          })),
+        },
+        chat_members: {
+          findOne: jest.fn(async () =>
+            isChatMember
+              ? {
+                  conversationId: new Types.ObjectId(conversationId),
+                  organizationId: new Types.ObjectId(orgId),
+                  userId: new Types.ObjectId(userBId),
+                }
+              : null,
+          ),
+        },
+        chat_conversation_messages: {
+          findOne: jest.fn(async () =>
+            chatMessageDeleted
+              ? {
+                  _id: new Types.ObjectId(messageId),
+                  conversationId: new Types.ObjectId(conversationId),
+                  deletedAt: new Date(),
+                }
+              : {
+                  _id: new Types.ObjectId(messageId),
+                  conversationId: new Types.ObjectId(conversationId),
+                  deletedAt: null,
+                },
+          ),
+        },
+        projects: {
+          findOne: jest.fn(async () => ({
+            _id: new Types.ObjectId(projectId),
+            organizationId: new Types.ObjectId(orgId),
+            visibility: 'PUBLIC',
+            status: 'ACTIVE',
+            deletedAt: null,
+          })),
+        },
+        organization_memberships: {
+          findOne: jest.fn(async () => ({
+            organizationId: new Types.ObjectId(orgId),
+            userId: new Types.ObjectId(userBId),
+            status: 'ACTIVE',
+          })),
+        },
+        role_assignments: {
+          findOne: jest.fn(async () => null),
+        },
+        project_memberships: {
+          findOne: jest.fn(async () => null),
+        },
+      };
+
+      const mockConn = {
+        useDb: jest.fn(() => ({
+          models: {},
+          model: undefined,
+          db: {
+            collection: (name: string) => mockChatCollections[name] ?? null,
+          },
+        })),
+      };
+
+      const aclRepo = new NotificationCenterRepository(mockConn as never);
+
+      const [chatNotif] = await service.notifyChatMention({
+        actorId: adminId,
+        mentionedUserIds: [userBId],
+        organizationId: orgId,
+        conversationId,
+        messageId,
+      });
+
+      const okChat = await aclRepo.resolveTargetAccess(userBId, chatNotif);
+      expect(okChat.available).toBe(true);
+      expect(okChat.reason).toBe('OK');
+
+      isChatMember = false;
+      const forbiddenChat = await aclRepo.resolveTargetAccess(
+        userBId,
+        chatNotif,
+      );
+      expect(forbiddenChat.available).toBe(false);
+      expect(forbiddenChat.reason).toBe('FORBIDDEN');
+
+      isChatMember = true;
+      chatMessageDeleted = true;
+      const deletedChat = await aclRepo.resolveTargetAccess(userBId, chatNotif);
+      expect(deletedChat.available).toBe(false);
+      expect(deletedChat.reason).toBe('DELETED');
+
+      // Removed project member on a PUBLIC project cannot resolve TASK notification
+      const [taskNotif] = await service.notifyTaskAssigned({
+        actorId: adminId,
+        assigneeUserId: userBId,
+        organizationId: orgId,
+        projectId,
+        taskId,
+        taskTitle: 'Public Project Task',
+        eventId: 'pub-proj-task-1',
+      });
+      const removedFromPublicProject = await aclRepo.resolveTargetAccess(
+        userBId,
+        taskNotif,
+      );
+      expect(removedFromPublicProject.available).toBe(false);
+      expect(removedFromPublicProject.reason).toBe('FORBIDDEN');
+    });
   });
 });

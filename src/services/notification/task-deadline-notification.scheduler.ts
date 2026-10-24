@@ -29,6 +29,7 @@ export interface EvaluableTaskRecord {
 export class TaskDeadlineNotificationScheduler
   implements OnModuleInit, OnModuleDestroy
 {
+  private static activeInterval = false;
   private readonly logger = new Logger(TaskDeadlineNotificationScheduler.name);
   private intervalHandle?: NodeJS.Timeout;
 
@@ -43,7 +44,13 @@ export class TaskDeadlineNotificationScheduler
   ) {}
 
   onModuleInit(): void {
-    if (process.env.NODE_ENV === 'test') return;
+    if (
+      process.env.NODE_ENV === 'test' ||
+      TaskDeadlineNotificationScheduler.activeInterval
+    ) {
+      return;
+    }
+    TaskDeadlineNotificationScheduler.activeInterval = true;
     this.intervalHandle = setInterval(() => {
       void this.evaluateTaskDeadlines().catch((err) => {
         this.logger.warn(
@@ -59,6 +66,7 @@ export class TaskDeadlineNotificationScheduler
   onModuleDestroy(): void {
     if (this.intervalHandle) {
       clearInterval(this.intervalHandle);
+      TaskDeadlineNotificationScheduler.activeInterval = false;
     }
   }
 

@@ -31,6 +31,10 @@ export interface WorkNoteDto {
   category: string;
   summary: string;
   content: string;
+  taskKey?: string | null;
+  blocker?: string | null;
+  unfinished?: string | null;
+  nextStep?: string | null;
   tags: string[];
   pinned: boolean;
   mentionUserIds: string[];
@@ -50,6 +54,10 @@ interface StoredWorkNoteRecord {
   status: 'DRAFT' | 'CONFIRMED' | 'ARCHIVED';
   tags: string[];
   category?: string;
+  taskKey?: string | null;
+  blocker?: string | null;
+  unfinished?: string | null;
+  nextStep?: string | null;
   pinned?: boolean;
   mentionUserIds?: string[];
   deletedAt?: Date | null;
@@ -152,11 +160,12 @@ export class ProjectWorkNotesService {
       }
     }
 
+    const hasDatabase = Boolean(this.notesCollection());
     const validMemberIds: string[] = [];
     for (const userId of candidateIds) {
       const isMember = await this.iamBridge
         .isActiveProjectMember(organizationId, projectId, userId)
-        .catch(() => true);
+        .catch(() => !hasDatabase);
       if (isMember) {
         validMemberIds.push(userId);
       }
@@ -318,6 +327,10 @@ export class ProjectWorkNotesService {
       status: 'CONFIRMED',
       tags: parsed.tags ?? [],
       category: parsed.category ?? 'Decision',
+      taskKey: parsed.taskKey ?? null,
+      blocker: parsed.blocker ?? null,
+      unfinished: parsed.unfinished ?? null,
+      nextStep: parsed.nextStep ?? null,
       pinned: parsed.pinned ?? false,
       mentionUserIds,
       deletedAt: null,
@@ -378,7 +391,17 @@ export class ProjectWorkNotesService {
 
     const col = this.notesCollection();
     const existing = !col
-      ? (this.memoryNotes.get(input.noteId.toLowerCase()) ?? null)
+      ? (() => {
+          const mem = this.memoryNotes.get(input.noteId.toLowerCase()) ?? null;
+          if (
+            mem &&
+            mem.projectId.toHexString() === ctx.projectId &&
+            mem.organizationId.toHexString() === ctx.organizationId
+          ) {
+            return mem;
+          }
+          return null;
+        })()
       : await col.findOne({
           _id: new Types.ObjectId(input.noteId),
           organizationId: new Types.ObjectId(ctx.organizationId),
@@ -398,6 +421,18 @@ export class ProjectWorkNotesService {
     const nextSummary = parsed.summary ?? existing.howSolved;
     const nextCategory =
       parsed.category ?? existing.category ?? existing.whyThisWay ?? 'Decision';
+    const nextTaskKey =
+      parsed.taskKey !== undefined ? parsed.taskKey : (existing.taskKey ?? null);
+    const nextBlocker =
+      parsed.blocker !== undefined ? parsed.blocker : (existing.blocker ?? null);
+    const nextUnfinished =
+      parsed.unfinished !== undefined
+        ? parsed.unfinished
+        : (existing.unfinished ?? null);
+    const nextNextStep =
+      parsed.nextStep !== undefined
+        ? parsed.nextStep
+        : (existing.nextStep ?? null);
     const nextTags = parsed.tags ?? existing.tags;
     const nextPinned =
       parsed.pinned !== undefined ? parsed.pinned : Boolean(existing.pinned);
@@ -422,6 +457,10 @@ export class ProjectWorkNotesService {
       howSolved: nextSummary,
       whyThisWay: nextCategory,
       category: nextCategory,
+      taskKey: nextTaskKey,
+      blocker: nextBlocker,
+      unfinished: nextUnfinished,
+      nextStep: nextNextStep,
       tags: nextTags,
       pinned: nextPinned,
       mentionUserIds,
@@ -440,6 +479,10 @@ export class ProjectWorkNotesService {
             howSolved: nextSummary,
             whyThisWay: nextCategory,
             category: nextCategory,
+            taskKey: nextTaskKey,
+            blocker: nextBlocker,
+            unfinished: nextUnfinished,
+            nextStep: nextNextStep,
             tags: nextTags,
             pinned: nextPinned,
             mentionUserIds,
@@ -461,7 +504,15 @@ export class ProjectWorkNotesService {
       });
     }
 
-    return this.toDto(updatedRecord, ctx.actorName);
+    const authorsById = await this.iamBridge
+      .resolveUsersById([updatedRecord.authorUserId.toHexString()])
+      .catch(() => new Map<string, { id: string; fullName: string }>());
+
+    return this.toDto(
+      updatedRecord,
+      authorsById.get(updatedRecord.authorUserId.toHexString())?.fullName ??
+        ctx.actorName,
+    );
   }
 
   async deleteProjectWorkNote(input: {
@@ -495,7 +546,12 @@ export class ProjectWorkNotesService {
     const col = this.notesCollection();
     if (!col) {
       const existing = this.memoryNotes.get(input.noteId.toLowerCase());
-      if (!existing || existing.deletedAt) {
+      if (
+        !existing ||
+        existing.deletedAt ||
+        existing.projectId.toHexString() !== ctx.projectId ||
+        existing.organizationId.toHexString() !== ctx.organizationId
+      ) {
         throw new NotFoundException({
           code: 'WORK_NOTE_NOT_FOUND',
           message: 'Content is no longer available.',
@@ -534,6 +590,10 @@ export class ProjectWorkNotesService {
     summary?: string;
     content?: string;
     category?: string;
+    taskKey?: string | null;
+    blocker?: string | null;
+    unfinished?: string | null;
+    nextStep?: string | null;
     tags?: string[];
     pinned?: boolean;
     mentionUserIds?: string[];
@@ -549,9 +609,11 @@ export class ProjectWorkNotesService {
     const content =
       typeof raw.content === 'string'
         ? raw.content.trim()
-        : typeof raw.whatDone === 'string'
-          ? raw.whatDone.trim()
-          : undefined;
+        : typeof raw.body === 'string'
+          ? raw.body.trim()
+          : typeof raw.whatDone === 'string'
+            ? raw.whatDone.trim()
+            : undefined;
     const summary =
       typeof raw.summary === 'string'
         ? raw.summary.trim()
@@ -559,7 +621,35 @@ export class ProjectWorkNotesService {
           ? raw.howSolved.trim()
           : undefined;
     const category =
-      typeof raw.category === 'string' ? raw.category.trim() : undefined;
+      typeof raw.category === 'string'
+        ? raw.category.trim()
+        : typeof raw.kind === 'string'
+          ? raw.kind.trim()
+          : undefined;
+    const taskKey =
+      raw.taskKey === null
+        ? null
+        : typeof raw.taskKey === 'string'
+          ? raw.taskKey.trim() || null
+          : undefined;
+    const blocker =
+      raw.blocker === null
+        ? null
+        : typeof raw.blocker === 'string'
+          ? raw.blocker.trim() || null
+          : undefined;
+    const unfinished =
+      raw.unfinished === null
+        ? null
+        : typeof raw.unfinished === 'string'
+          ? raw.unfinished.trim() || null
+          : undefined;
+    const nextStep =
+      raw.nextStep === null
+        ? null
+        : typeof raw.nextStep === 'string'
+          ? raw.nextStep.trim() || null
+          : undefined;
     const pinned = typeof raw.pinned === 'boolean' ? raw.pinned : undefined;
 
     if (requireTitleAndContent && (!title || !content)) {
@@ -588,6 +678,10 @@ export class ProjectWorkNotesService {
       summary,
       content,
       category,
+      taskKey,
+      blocker,
+      unfinished,
+      nextStep,
       tags,
       pinned,
       mentionUserIds,
@@ -605,6 +699,10 @@ export class ProjectWorkNotesService {
       category: record.category ?? record.whyThisWay ?? 'Decision',
       summary: record.howSolved || record.whatDone.slice(0, 180),
       content: record.whatDone,
+      taskKey: record.taskKey ?? null,
+      blocker: record.blocker ?? null,
+      unfinished: record.unfinished ?? null,
+      nextStep: record.nextStep ?? null,
       tags: Array.isArray(record.tags) ? record.tags : [],
       pinned: Boolean(record.pinned),
       mentionUserIds: Array.isArray(record.mentionUserIds)
