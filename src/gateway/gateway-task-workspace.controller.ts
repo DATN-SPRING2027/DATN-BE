@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   GatewayTimeoutException,
   Get,
   Patch,
@@ -126,13 +127,70 @@ export class GatewayTaskWorkspaceController {
     return this.forward(request, response);
   }
 
+  @Get('notifications')
+  listNotifications(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('notifications/unread-count')
+  getUnreadCount(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('notifications/read-all')
+  markAllNotificationsRead(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('notifications/:id/read')
+  markNotificationRead(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('notifications/:id/resolve')
+  resolveNotificationTarget(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Get('projects/:projectId/work-notes')
+  listProjectWorkNotes(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('projects/:projectId/work-notes/:noteId')
+  getProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('projects/:projectId/work-notes')
+  createProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('projects/:projectId/work-notes/:noteId')
+  updateProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('projects/:projectId/work-notes/:noteId')
+  deleteProjectWorkNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   private async forward(request: Request, response: Response): Promise<void> {
     response.setHeader('cache-control', 'no-store');
-    const baseUrl =
-      (typeof this.config.get === 'function'
-        ? this.config.get<string>('TASK_SERVICE_URL')
-        : undefined) ?? this.config.getOrThrow<string>('IAM_SERVICE_URL');
     const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
+    const isIamHostedRoute =
+      path.startsWith('/internal/notifications') ||
+      /^\/internal\/projects\/[^/]+\/work-notes(\/|$|\?)/.test(path);
+    const baseUrl = isIamHostedRoute
+      ? this.config.getOrThrow<string>('IAM_SERVICE_URL')
+      : ((typeof this.config.get === 'function'
+          ? this.config.get<string>('TASK_SERVICE_URL')
+          : undefined) ?? this.config.getOrThrow<string>('IAM_SERVICE_URL'));
     const headers: Record<string, string> = {};
     for (const name of requestHeaders) {
       const value = request.headers[name];

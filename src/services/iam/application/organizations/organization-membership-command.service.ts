@@ -2,10 +2,12 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
+import { NotificationService } from '../../../notification/notification.service';
 import {
   areInvitationReadinessGatesReady,
   ORGANIZATION_INVITATION_READINESS,
@@ -49,6 +51,8 @@ export class OrganizationMembershipCommandService {
     private readonly repository: OrganizationMembershipCommandRepository,
     @Inject(ORGANIZATION_INVITATION_READINESS)
     private readonly invitationReadiness: OrganizationInvitationReadiness,
+    @Optional()
+    private readonly notificationService?: NotificationService,
   ) {}
 
   async getOverview(
@@ -219,7 +223,7 @@ export class OrganizationMembershipCommandService {
         readinessGates,
       );
     }
-    return this.repository.execute({
+    const result = await this.repository.execute({
       actorUserId: actor.id,
       organizationId,
       idempotencyKey,
@@ -230,6 +234,43 @@ export class OrganizationMembershipCommandService {
         : { invitationReadinessReady }),
       ...(correlationId ? { correlationId } : {}),
     });
+
+    if (!result.replayed && this.notificationService) {
+      const bodyMembership =
+        'membership' in result.body ? result.body.membership : undefined;
+      if (
+        (normalized.command === 'INVITE' || normalized.command === 'RESEND') &&
+        result.body.invitation?.id
+      ) {
+        await this.notificationService.notifyOrganizationMemberInvited({
+          actorId: actor.id,
+          recipientUserId: bodyMembership?.userId ?? null,
+          recipientEmail:
+            normalized.command === 'INVITE' ? normalized.email : null,
+          organizationId,
+          invitationId: result.body.invitation.id,
+        });
+      } else if (normalized.command === 'RESUME' && bodyMembership?.userId) {
+        await this.notificationService.notifyOrganizationMemberAdded({
+          actorId: actor.id,
+          recipientUserId: bodyMembership.userId,
+          organizationId,
+          eventId: `resume:${bodyMembership.id}:${bodyMembership.version}`,
+        });
+      } else if (
+        (normalized.command === 'REMOVE' || normalized.command === 'SUSPEND') &&
+        bodyMembership?.userId
+      ) {
+        await this.notificationService.notifyOrganizationMemberRemoved({
+          actorId: actor.id,
+          recipientUserId: bodyMembership.userId,
+          organizationId,
+          eventId: `${normalized.command.toLowerCase()}:${bodyMembership.id}:${bodyMembership.version}`,
+        });
+      }
+    }
+
+    return result;
   }
 
   private readinessGatesFor(

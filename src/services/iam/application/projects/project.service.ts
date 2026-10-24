@@ -1,5 +1,11 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
+import { NotificationService } from '../../../notification/notification.service';
 import {
   PROJECT_REPOSITORY,
   type ProjectCreateInput,
@@ -12,13 +18,52 @@ import {
 export class ProjectService {
   constructor(
     @Inject(PROJECT_REPOSITORY) private readonly repository: ProjectRepository,
+    @Optional()
+    private readonly notificationService?: NotificationService,
   ) {}
 
   async create(
     actor: AuthenticatedIdentity,
     input: ProjectCreateInput,
   ): Promise<ProjectRecord> {
-    return this.repository.create(actor.organizationId, actor.id, input);
+    const project = await this.repository.create(
+      actor.organizationId,
+      actor.id,
+      input,
+    );
+
+    if (this.notificationService) {
+      const leaderSet = new Set<string>([
+        ...(input.leaderUserIds ?? []),
+        ...(input.initialLeaderUserIds ?? []),
+      ]);
+      const memberIds = [
+        ...(input.memberUserIds ?? []),
+        ...(input.initialMemberUserIds ?? []),
+      ].filter((id: string) => !leaderSet.has(id));
+      if (leaderSet.size > 0) {
+        await this.notificationService.notifyProjectLeaderAssigned({
+          actorId: actor.id,
+          recipientUserIds: [...leaderSet],
+          organizationId: actor.organizationId,
+          projectId: project.id,
+          projectName: project.name,
+          eventId: `create_leaders:${project.id}`,
+        });
+      }
+      if (memberIds.length > 0) {
+        await this.notificationService.notifyProjectMemberAdded({
+          actorId: actor.id,
+          recipientUserIds: memberIds,
+          organizationId: actor.organizationId,
+          projectId: project.id,
+          projectName: project.name,
+          eventId: `create_members:${project.id}`,
+        });
+      }
+    }
+
+    return project;
   }
 
   async list(actor: AuthenticatedIdentity, query: ProjectListQuery) {

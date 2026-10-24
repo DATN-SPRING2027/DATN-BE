@@ -180,13 +180,19 @@ export class MongoProjectRepository implements ProjectRepository {
         );
 
         const requestedLeaderSet = new Set(
-          (input.leaderUserIds ?? [])
+          [
+            ...(input.leaderUserIds ?? []),
+            ...(input.initialLeaderUserIds ?? []),
+          ]
             .map((id) => id.toLowerCase())
             .filter((id) => validId(id) && id !== creatorId.toLowerCase()),
         );
         const requestedMemberIds = [
           ...new Set([
-            ...(input.memberUserIds ?? [])
+            ...[
+              ...(input.memberUserIds ?? []),
+              ...(input.initialMemberUserIds ?? []),
+            ]
               .map((id) => id.toLowerCase())
               .filter((id) => validId(id) && id !== creatorId.toLowerCase()),
             ...requestedLeaderSet,

@@ -1,0 +1,275 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Continuum AI Notification Center API",
+    "version": "1.0.0",
+    "description": "In-app Notification Center MVP contract for Organization, Project, Work Task, Work Note, and Chat events."
+  },
+  "paths": {
+    "/api/v1/notifications": {
+      "get": {
+        "operationId": "listNotifications",
+        "summary": "List notifications for the authenticated user",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+          },
+          {
+            "name": "unreadOnly",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "boolean", "default": false }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated notification list and unread count",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotificationListResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" }
+        }
+      }
+    },
+    "/api/v1/notifications/unread-count": {
+      "get": {
+        "operationId": "getUnreadNotificationCount",
+        "summary": "Get unread notification count for the authenticated user",
+        "responses": {
+          "200": {
+            "description": "Unread notification count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["count"],
+                  "properties": {
+                    "count": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" }
+        }
+      }
+    },
+    "/api/v1/notifications/{id}/read": {
+      "patch": {
+        "operationId": "markNotificationAsRead",
+        "summary": "Mark a single notification as read (idempotent)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated notification item",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotificationItem" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/CsrfForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/api/v1/notifications/read-all": {
+      "patch": {
+        "operationId": "markAllNotificationsAsRead",
+        "summary": "Mark all unread notifications as read for the authenticated user",
+        "responses": {
+          "200": {
+            "description": "Summary of updated notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["updatedCount", "readAt"],
+                  "properties": {
+                    "updatedCount": { "type": "integer", "minimum": 0 },
+                    "readAt": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/CsrfForbiddenError" }
+        }
+      }
+    },
+    "/api/v1/notifications/{id}/resolve": {
+      "get": {
+        "operationId": "resolveNotificationTarget",
+        "summary": "Re-evaluate current ACL and target existence before deep-link navigation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Target availability and deep-link metadata",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotificationResolveResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "NotificationMvpType": {
+        "type": "string",
+        "enum": [
+          "ORGANIZATION_MEMBER_INVITED",
+          "ORGANIZATION_MEMBER_ADDED",
+          "ORGANIZATION_MEMBER_REMOVED",
+          "PROJECT_MEMBER_ADDED",
+          "PROJECT_MEMBER_REMOVED",
+          "PROJECT_LEADER_ASSIGNED",
+          "PROJECT_LEADER_CHANGED",
+          "PROJECT_LEADER_REVOKED",
+          "TASK_ASSIGNED",
+          "TASK_DEADLINE_APPROACHING",
+          "TASK_DEADLINE_OVERDUE",
+          "WORK_NOTE_MENTION",
+          "CHAT_MENTION"
+        ]
+      },
+      "NotificationTargetKind": {
+        "type": "string",
+        "enum": [
+          "ORGANIZATION",
+          "PROJECT",
+          "TASK",
+          "WORK_NOTE",
+          "CHAT"
+        ]
+      },
+      "NotificationTarget": {
+        "type": "object",
+        "required": ["kind", "url"],
+        "properties": {
+          "kind": { "$ref": "#/components/schemas/NotificationTargetKind" },
+          "url": { "type": "string" },
+          "organizationId": { "type": ["string", "null"] },
+          "projectId": { "type": ["string", "null"] },
+          "taskId": { "type": ["string", "null"] },
+          "noteId": { "type": ["string", "null"] },
+          "conversationId": { "type": ["string", "null"] },
+          "messageId": { "type": ["string", "null"] }
+        }
+      },
+      "NotificationItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "recipientId",
+          "actorId",
+          "organizationId",
+          "projectId",
+          "taskId",
+          "noteId",
+          "conversationId",
+          "type",
+          "title",
+          "message",
+          "target",
+          "readAt",
+          "createdAt"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "recipientId": { "type": "string" },
+          "actorId": { "type": ["string", "null"] },
+          "organizationId": { "type": ["string", "null"] },
+          "projectId": { "type": ["string", "null"] },
+          "taskId": { "type": ["string", "null"] },
+          "noteId": { "type": ["string", "null"] },
+          "conversationId": { "type": ["string", "null"] },
+          "type": { "$ref": "#/components/schemas/NotificationMvpType" },
+          "title": { "type": "string" },
+          "message": { "type": "string" },
+          "target": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/NotificationTarget" },
+              { "type": "null" }
+            ]
+          },
+          "readAt": { "type": ["string", "null"], "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "NotificationListResponse": {
+        "type": "object",
+        "required": ["items", "nextCursor", "unreadCount"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/NotificationItem" }
+          },
+          "nextCursor": { "type": ["string", "null"] },
+          "unreadCount": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "NotificationResolveResponse": {
+        "type": "object",
+        "required": ["available", "reason", "target"],
+        "properties": {
+          "available": { "type": "boolean" },
+          "reason": {
+            "type": "string",
+            "enum": ["OK", "DELETED", "FORBIDDEN"]
+          },
+          "message": { "type": "string" },
+          "target": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/NotificationTarget" },
+              { "type": "null" }
+            ]
+          }
+        }
+      }
+    },
+    "responses": {
+      "UnauthorizedError": {
+        "description": "Missing or invalid session credentials"
+      },
+      "CsrfForbiddenError": {
+        "description": "Missing or mismatched CSRF token on cookie-authenticated mutation"
+      },
+      "NotFoundError": {
+        "description": "Notification not found or does not belong to authenticated recipient"
+      }
+    }
+  }
+}

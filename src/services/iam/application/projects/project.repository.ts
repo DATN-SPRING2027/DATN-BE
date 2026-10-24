@@ -41,6 +41,8 @@ export interface ProjectCreateInput {
   visibility?: ProjectVisibility;
   memberUserIds?: string[];
   leaderUserIds?: string[];
+  initialMemberUserIds?: string[];
+  initialLeaderUserIds?: string[];
 }
 
 export interface ProjectOrganizationMemberCandidate {

@@ -36,15 +36,67 @@ export const auditSchema = new Schema(
   { collection: 'audit_logs', timestamps: true },
 );
 
+export const NOTIFICATION_MVP_TYPES = [
+  'ORGANIZATION_MEMBER_INVITED',
+  'ORGANIZATION_MEMBER_ADDED',
+  'ORGANIZATION_MEMBER_REMOVED',
+  'PROJECT_MEMBER_ADDED',
+  'PROJECT_MEMBER_REMOVED',
+  'PROJECT_LEADER_ASSIGNED',
+  'PROJECT_LEADER_CHANGED',
+  'PROJECT_LEADER_REVOKED',
+  'TASK_ASSIGNED',
+  'TASK_DEADLINE_APPROACHING',
+  'TASK_DEADLINE_OVERDUE',
+  'WORK_NOTE_MENTION',
+  'CHAT_MENTION',
+] as const;
+
+export type NotificationMvpType = (typeof NOTIFICATION_MVP_TYPES)[number];
+
+export const NOTIFICATION_TARGET_KINDS = [
+  'ORGANIZATION',
+  'PROJECT',
+  'TASK',
+  'WORK_NOTE',
+  'CHAT',
+] as const;
+
+export type NotificationTargetKind = (typeof NOTIFICATION_TARGET_KINDS)[number];
+
+const notificationTargetSchema = new Schema(
+  {
+    kind: {
+      type: String,
+      enum: [...NOTIFICATION_TARGET_KINDS],
+      required: true,
+    },
+    url: { type: String, required: true },
+    organizationId: { type: String, default: null },
+    projectId: { type: String, default: null },
+    taskId: { type: String, default: null },
+    noteId: { type: String, default: null },
+    conversationId: { type: String, default: null },
+    messageId: { type: String, default: null },
+  },
+  { _id: false, strict: true },
+);
+
 const notificationSchemas: Record<string, Schema> = {
   notifications: new Schema(
     {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      projectId: Schema.Types.ObjectId,
-      recipientUserId: { type: String, required: true },
+      recipientId: { type: String, required: true },
+      recipientUserId: { type: String, default: null },
+      actorId: { type: String, default: null },
+      organizationId: { type: String, default: null },
+      projectId: { type: String, default: null },
+      taskId: { type: String, default: null },
+      noteId: { type: String, default: null },
+      conversationId: { type: String, default: null },
       type: {
         type: String,
         enum: [
+          ...NOTIFICATION_MVP_TYPES,
           'VERIFICATION_REQUEST',
           'VERIFICATION_APPROVED',
           'VERIFICATION_REJECTED',
@@ -56,10 +108,13 @@ const notificationSchemas: Record<string, Schema> = {
         required: true,
       },
       title: { type: String, required: true },
-      body: { type: String, required: true },
-      actionUrl: { type: String, required: true },
+      message: { type: String, required: true },
+      body: { type: String, default: '' },
+      actionUrl: { type: String, default: '' },
+      target: { type: notificationTargetSchema, default: null },
+      eventKey: { type: String, required: true },
       isRead: { type: Boolean, default: false },
-      readAt: Date,
+      readAt: { type: Date, default: null },
     },
     { collection: 'notifications', timestamps: true, strict: true },
   ),

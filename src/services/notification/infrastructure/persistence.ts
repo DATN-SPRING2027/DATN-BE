@@ -4,8 +4,15 @@ import type { QueueName } from './queues/queue.names';
 
 const index = (
   fields: Record<string, 1 | -1>,
-  options?: { unique?: boolean; expireAfterSeconds?: number },
+  options?: {
+    unique?: boolean;
+    sparse?: boolean;
+    expireAfterSeconds?: number;
+    name?: string;
+  },
 ) => ({ fields, options });
+
+export const NOTIFICATION_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 export const NOTIFICATION_PERSISTENCE: ServicePersistenceDefinition = {
   serviceName: 'notification',
@@ -13,7 +20,16 @@ export const NOTIFICATION_PERSISTENCE: ServicePersistenceDefinition = {
   collections: [
     {
       name: 'notifications',
-      indexes: [index({ recipientUserId: 1, isRead: 1, createdAt: 1 })],
+      indexes: [
+        index({ recipientUserId: 1, isRead: 1, createdAt: 1 }),
+        index(
+          { createdAt: 1 },
+          { expireAfterSeconds: NOTIFICATION_TTL_SECONDS },
+        ),
+        index({ recipientId: 1, createdAt: -1 }),
+        index({ recipientId: 1, readAt: 1 }),
+        index({ recipientId: 1, eventKey: 1 }, { unique: true, sparse: true }),
+      ],
     },
     {
       name: 'notification_preferences',
