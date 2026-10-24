@@ -25,6 +25,13 @@ export class UnconfiguredOrganizationInvitationReadiness implements Organization
   }
 }
 
+@Injectable()
+export class ConfiguredOrganizationInvitationReadiness implements OrganizationInvitationReadiness {
+  isReady(): Promise<boolean> {
+    return Promise.resolve(true);
+  }
+}
+
 export async function areInvitationReadinessGatesReady(
   readiness: OrganizationInvitationReadiness,
   gates: readonly OrganizationInvitationReadinessGate[],

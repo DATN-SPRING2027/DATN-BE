@@ -7,6 +7,7 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { randomBytes, createHash, randomUUID } from 'node:crypto';
 import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HealthResponse } from '../../../health/health.response';
+import { NotificationService } from '../../notification/notification.service';
 import { RedisService } from '../infrastructure/redis/redis.service';
 import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import {
@@ -153,6 +155,8 @@ export class ChatApplicationService {
     private readonly r2: R2Storage,
     private readonly s3: S3Storage,
     config: ConfigService,
+    @Optional()
+    private readonly notificationService?: NotificationService,
   ) {
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
   }
@@ -991,6 +995,19 @@ export class ChatApplicationService {
       result.recipientIds,
       result.message,
     );
+    if (
+      mentionUserIds &&
+      mentionUserIds.length > 0 &&
+      this.notificationService
+    ) {
+      await this.notificationService.notifyChatMention({
+        actorId: actor.id,
+        mentionedUserIds: mentionUserIds,
+        organizationId: actor.organizationId,
+        conversationId,
+        messageId: result.message.id,
+      });
+    }
     return result.message;
   }
 
@@ -1032,6 +1049,19 @@ export class ChatApplicationService {
       result.recipientIds,
       result.message,
     );
+    if (
+      mentionUserIds &&
+      mentionUserIds.length > 0 &&
+      this.notificationService
+    ) {
+      await this.notificationService.notifyChatMention({
+        actorId: actor.id,
+        mentionedUserIds: mentionUserIds,
+        organizationId: actor.organizationId,
+        conversationId,
+        messageId: result.message.id,
+      });
+    }
     return result.message;
   }
 
