@@ -17,10 +17,13 @@ export async function applyWorkNoteWorkflowIndexes(db) {
   validateWorkNoteDatabaseName(db.databaseName);
 
   for (const [collectionName, key] of Object.entries(duplicateKeys)) {
+    const groupKey = Object.fromEntries(
+      Object.keys(key).map((field) => [field, `$${field}`]),
+    );
     const duplicates = await db
       .collection(collectionName)
       .aggregate([
-        { $group: { _id: key, count: { $sum: 1 } } },
+        { $group: { _id: groupKey, count: { $sum: 1 } } },
         { $match: { count: { $gt: 1 } } },
         { $limit: 5 },
       ])

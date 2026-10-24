@@ -52,6 +52,42 @@ test('preflights unique keys and applies indexes without changing records', asyn
   assert.equal(calls.some((item) => item.collection === 'work_notes'), true);
 });
 
+test('groups duplicate preflight rows by stored field values', async () => {
+  const pipelines = [];
+  const db = {
+    databaseName: 'continuum_capture',
+    collection(name) {
+      return {
+        aggregate(pipeline) {
+          pipelines.push({ collection: name, pipeline });
+          const groupFields = Object.values(pipeline[0].$group._id);
+          const groupsByStoredValues = groupFields.every(
+            (value) => typeof value === 'string' && value.startsWith('$'),
+          );
+          return {
+            toArray: async () =>
+              groupsByStoredValues ? [] : [{ _id: {}, count: 2 }],
+          };
+        },
+        async createIndex(_key, options) {
+          return options.name;
+        },
+      };
+    },
+  };
+
+  await applyWorkNoteWorkflowIndexes(db);
+
+  const reportCheck = pipelines.find(
+    (item) => item.collection === 'work_reports',
+  );
+  assert.deepEqual(reportCheck.pipeline[0].$group._id, {
+    projectId: '$projectId',
+    memberUserId: '$memberUserId',
+    periodStart: '$periodStart',
+  });
+});
+
 test('does not create any index when existing report periods duplicate', async () => {
   let createIndexCalls = 0;
   const db = {
