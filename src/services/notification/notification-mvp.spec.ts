@@ -185,7 +185,7 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
         'ORGANIZATION_MEMBER_INVITED',
       ]);
 
-      // Also verify invitation acceptance creates ORGANIZATION_MEMBER_ADDED
+      // Verify self-acceptance of invitation passes actor.id and blocks self-notification (Business Rule 1)
       const acceptInvitationId = new Types.ObjectId().toHexString();
       const mockInvitationRepo = {
         acceptForRecipient: jest.fn(async () => ({
@@ -224,6 +224,22 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
         0,
         1,
         'idem-accept-invitation-001',
+      );
+      const userCSelfAcceptList = await service.listForUser(userCId);
+      expect(userCSelfAcceptList.items).toHaveLength(0);
+
+      // When another actor activates/accepts membership for userCId, userCId receives ORGANIZATION_MEMBER_ADDED
+      await invitationService.accept(
+        {
+          id: adminId,
+          email: 'admin@example.test',
+          name: 'Admin',
+          context: 'ACCOUNT',
+        },
+        acceptInvitationId,
+        0,
+        1,
+        'idem-accept-invitation-002',
       );
       const userCList = await service.listForUser(userCId);
       expect(userCList.items).toHaveLength(1);
@@ -927,6 +943,167 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
       );
       expect(removedFromPublicProject.available).toBe(false);
       expect(removedFromPublicProject.reason).toBe('FORBIDDEN');
+
+      // Chat member with status LEFT or removed organization membership is FORBIDDEN
+      chatMessageDeleted = false;
+      mockChatCollections.chat_members.findOne.mockResolvedValueOnce({
+        conversationId: new Types.ObjectId(conversationId),
+        organizationId: new Types.ObjectId(orgId),
+        userId: new Types.ObjectId(userBId),
+        status: 'LEFT',
+      });
+      const leftChatMember = await aclRepo.resolveTargetAccess(
+        userBId,
+        chatNotif,
+      );
+      expect(leftChatMember.available).toBe(false);
+      expect(leftChatMember.reason).toBe('FORBIDDEN');
+
+      mockChatCollections.organization_memberships.findOne.mockResolvedValueOnce(
+        null,
+      );
+      const removedOrgChatMember = await aclRepo.resolveTargetAccess(
+        userBId,
+        chatNotif,
+      );
+      expect(removedOrgChatMember.available).toBe(false);
+      expect(removedOrgChatMember.reason).toBe('FORBIDDEN');
+    });
+
+    it('redacts deleted or forbidden resource titles in listByRecipient and paginates >200 tasks in deadline scheduler', async () => {
+      let taskDeleted = true;
+      const mockCollections: Record<string, { findOne: jest.Mock }> = {
+        projects: {
+          findOne: jest.fn(async () => ({
+            _id: new Types.ObjectId(projectId),
+            organizationId: new Types.ObjectId(orgId),
+            visibility: 'PRIVATE',
+            status: 'ACTIVE',
+            deletedAt: null,
+          })),
+        },
+        organization_memberships: {
+          findOne: jest.fn(async () => ({
+            organizationId: new Types.ObjectId(orgId),
+            userId: new Types.ObjectId(userBId),
+            status: 'ACTIVE',
+          })),
+        },
+        project_memberships: {
+          findOne: jest.fn(async () => ({
+            organizationId: new Types.ObjectId(orgId),
+            projectId: new Types.ObjectId(projectId),
+            userId: new Types.ObjectId(userBId),
+            status: 'ACTIVE',
+          })),
+        },
+        tasks: {
+          findOne: jest.fn(async () =>
+            taskDeleted
+              ? {
+                  _id: new Types.ObjectId(taskId),
+                  projectId: new Types.ObjectId(projectId),
+                  deletedAt: new Date(),
+                }
+              : {
+                  _id: new Types.ObjectId(taskId),
+                  projectId: new Types.ObjectId(projectId),
+                  deletedAt: null,
+                },
+          ),
+        },
+      };
+
+      const mockConn = {
+        useDb: jest.fn(() => ({
+          models: {},
+          model: undefined,
+          db: {
+            collection: (name: string) => mockCollections[name] ?? null,
+          },
+        })),
+      };
+
+      const sanitizingRepo = new NotificationCenterRepository(
+        mockConn as never,
+      );
+      const sanitizingService = new NotificationService(
+        sanitizingRepo,
+        realtimeBus,
+      );
+
+      await sanitizingService.notifyTaskAssigned({
+        actorId: adminId,
+        assigneeUserId: userBId,
+        organizationId: orgId,
+        projectId,
+        taskId,
+        taskTitle: 'Top Secret Deleted Task Name',
+        eventId: 'redact-test-1',
+      });
+
+      const redactedList = await sanitizingService.listForUser(userBId);
+      expect(redactedList.items).toHaveLength(1);
+      expect(redactedList.items[0].message).toBe(
+        'Content is no longer available.',
+      );
+      expect(redactedList.items[0].message).not.toContain(
+        'Top Secret Deleted Task Name',
+      );
+      expect(redactedList.items[0].target?.url).toBe('/notifications');
+
+      // When task is active, original title is shown
+      taskDeleted = false;
+      const activeList = await sanitizingService.listForUser(userBId);
+      expect(activeList.items[0].message).toContain(
+        'Top Secret Deleted Task Name',
+      );
+
+      // Scheduler cursor pagination over 250 overdue tasks (>200 batch size)
+      const now = new Date('2026-10-24T10:00:00.000Z');
+      const totalTasks = 250;
+      const allOverdueTasks = Array.from({ length: totalTasks }, (_, idx) => {
+        const hex = (idx + 1).toString(16).padStart(24, '0');
+        return {
+          _id: new Types.ObjectId(hex),
+          organizationId: new Types.ObjectId(orgId),
+          projectId: new Types.ObjectId(projectId),
+          title: `Overdue Task #${idx + 1}`,
+          status: 'IN_PROGRESS',
+          assigneeId: new Types.ObjectId(userCId),
+          dueDate: new Date(now.getTime() - 3600_000),
+          deletedAt: null,
+        };
+      });
+
+      const paginatedTasksCollection = {
+        find: jest.fn((filter: Record<string, unknown>) => {
+          const idFilter = filter._id as { $gt?: Types.ObjectId } | undefined;
+          const gtHex = idFilter?.$gt?.toHexString();
+          const matching = gtHex
+            ? allOverdueTasks.filter((t) => t._id.toHexString() > gtHex)
+            : allOverdueTasks;
+          return {
+            sort: () => ({
+              limit: (n: number) => ({
+                toArray: async () => matching.slice(0, n),
+              }),
+            }),
+          };
+        }),
+      };
+
+      const pagedScheduler = new TaskDeadlineNotificationScheduler(service, {
+        useDb: () => ({
+          db: { collection: () => paginatedTasksCollection },
+        }),
+      } as never);
+
+      const processedCount = await pagedScheduler.evaluateTaskDeadlines({
+        now,
+      });
+      expect(processedCount).toBe(250);
+      expect(paginatedTasksCollection.find).toHaveBeenCalledTimes(2);
     });
   });
 });

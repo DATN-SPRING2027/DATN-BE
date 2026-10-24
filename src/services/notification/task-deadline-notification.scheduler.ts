@@ -12,6 +12,7 @@ import { NOTIFICATION_PERSISTENCE } from './infrastructure/persistence';
 import { NotificationService } from './notification.service';
 
 export const DEADLINE_APPROACHING_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const DEADLINE_SCAN_BATCH_SIZE = 200;
 const SCHEDULER_INTERVAL_MS = 60 * 1000;
 
 export interface EvaluableTaskRecord {
@@ -142,43 +143,95 @@ export class TaskDeadlineNotificationScheduler
       filter.assigneeId = { $ne: null };
     }
 
-    if (options?.taskId && Types.ObjectId.isValid(options.taskId)) {
+    const singleTaskMode = Boolean(
+      options?.taskId && Types.ObjectId.isValid(options.taskId),
+    );
+    if (singleTaskMode && options?.taskId) {
       filter._id = new Types.ObjectId(options.taskId);
     }
 
-    const tasks = await collection
-      .find(filter, {
-        projection: {
-          _id: 1,
-          organizationId: 1,
-          projectId: 1,
-          title: 1,
-          status: 1,
-          assigneeId: 1,
-          dueDate: 1,
-          deletedAt: 1,
-        },
-      })
-      .limit(200)
-      .toArray();
+    const projection = {
+      _id: 1,
+      organizationId: 1,
+      projectId: 1,
+      title: 1,
+      status: 1,
+      assigneeId: 1,
+      dueDate: 1,
+      deletedAt: 1,
+    };
 
-    for (const raw of tasks) {
-      if (!raw._id || !raw.assigneeId || !raw.dueDate) continue;
-      await this.evaluateSingleTask(
-        {
-          id: String(raw._id),
-          organizationId: String(raw.organizationId ?? ''),
-          projectId: String(raw.projectId ?? ''),
-          title: typeof raw.title === 'string' ? raw.title : 'Task',
-          status: typeof raw.status === 'string' ? raw.status : 'TODO',
-          assigneeId: String(raw.assigneeId),
-          dueDate: raw.dueDate as Date,
-          deletedAt: (raw.deletedAt as Date | null | undefined) ?? null,
-        },
-        now,
-      );
+    const seenTaskIds = new Set<string>();
+    let lastCursorId: Types.ObjectId | null = null;
+    let totalProcessed = 0;
+
+    while (true) {
+      const pageFilter: Record<string, unknown> =
+        !singleTaskMode && lastCursorId
+          ? { ...filter, _id: { $gt: lastCursorId } }
+          : { ...filter };
+
+      const findCursor = collection.find(pageFilter, { projection });
+      const sortedCursor =
+        typeof (findCursor as { sort?: unknown }).sort === 'function'
+          ? (
+              findCursor as unknown as {
+                sort: (spec: Record<string, 1 | -1>) => typeof findCursor;
+              }
+            ).sort({ _id: 1 })
+          : findCursor;
+
+      const batch = await sortedCursor
+        .limit(DEADLINE_SCAN_BATCH_SIZE)
+        .toArray();
+      if (batch.length === 0) {
+        break;
+      }
+
+      let progressedInBatch = 0;
+      for (const raw of batch) {
+        if (!raw._id) continue;
+        const rawIdStr = String(raw._id);
+        if (seenTaskIds.has(rawIdStr)) {
+          continue;
+        }
+        seenTaskIds.add(rawIdStr);
+        progressedInBatch += 1;
+
+        if (Types.ObjectId.isValid(rawIdStr)) {
+          lastCursorId =
+            raw._id instanceof Types.ObjectId
+              ? raw._id
+              : new Types.ObjectId(rawIdStr);
+        }
+
+        if (!raw.assigneeId || !raw.dueDate) continue;
+        await this.evaluateSingleTask(
+          {
+            id: rawIdStr,
+            organizationId: String(raw.organizationId ?? ''),
+            projectId: String(raw.projectId ?? ''),
+            title: typeof raw.title === 'string' ? raw.title : 'Task',
+            status: typeof raw.status === 'string' ? raw.status : 'TODO',
+            assigneeId: String(raw.assigneeId),
+            dueDate: raw.dueDate as Date,
+            deletedAt: (raw.deletedAt as Date | null | undefined) ?? null,
+          },
+          now,
+        );
+        totalProcessed += 1;
+      }
+
+      if (
+        singleTaskMode ||
+        batch.length < DEADLINE_SCAN_BATCH_SIZE ||
+        progressedInBatch === 0 ||
+        !lastCursorId
+      ) {
+        break;
+      }
     }
 
-    return tasks.length;
+    return totalProcessed;
   }
 }

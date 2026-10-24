@@ -93,6 +93,7 @@ export class NotificationCenterRepository {
     const existing = db.models['notifications'] as
       Model<NotificationDocumentRecord> | undefined;
     if (existing) return existing;
+    if (typeof db.model !== 'function') return null;
     const definition = NOTIFICATION_PERSISTENCE.collections.find(
       (col) => col.name === 'notifications',
     )!;
@@ -204,6 +205,61 @@ export class NotificationCenterRepository {
     }
   }
 
+  private recipientMatchFilter(recipientId: string): Record<string, unknown> {
+    return {
+      $or: [{ recipientId }, { recipientUserId: recipientId }],
+    };
+  }
+
+  private unreadMatchFilter(recipientId: string): Record<string, unknown> {
+    return {
+      $and: [
+        this.recipientMatchFilter(recipientId),
+        {
+          $or: [
+            { readAt: null, isRead: { $ne: true } },
+            { readAt: { $exists: false }, isRead: { $ne: true } },
+          ],
+        },
+      ],
+    };
+  }
+
+  private async sanitizeItemsForListing(
+    recipientId: string,
+    items: NotificationItemDto[],
+  ): Promise<NotificationItemDto[]> {
+    if (!this.activeConnection() || items.length === 0) {
+      return items;
+    }
+
+    return Promise.all(
+      items.map(async (item) => {
+        try {
+          const resolution = await this.resolveTargetAccess(recipientId, item);
+          if (resolution.available) {
+            return item;
+          }
+          return {
+            ...item,
+            message:
+              resolution.reason === 'DELETED'
+                ? 'Content is no longer available.'
+                : 'This content is no longer available',
+            target: item.target
+              ? {
+                  ...item.target,
+                  url: '/notifications',
+                }
+              : null,
+          };
+        } catch {
+          return item;
+        }
+      }),
+    );
+  }
+
   async listByRecipient(
     recipientId: string,
     query: NotificationListQuery,
@@ -214,15 +270,21 @@ export class NotificationCenterRepository {
 
     if (!model) {
       const allForRecipient = [...this.memoryStore.values()]
-        .filter((doc) => doc.recipientId === recipientId)
+        .filter(
+          (doc) =>
+            doc.recipientId === recipientId ||
+            doc.recipientUserId === recipientId,
+        )
         .sort(
           (a, b) =>
             b.createdAt.getTime() - a.createdAt.getTime() ||
             b._id.toHexString().localeCompare(a._id.toHexString()),
         );
-      const unreadCount = allForRecipient.filter((doc) => !doc.readAt).length;
+      const unreadCount = allForRecipient.filter(
+        (doc) => !doc.readAt && !doc.isRead,
+      ).length;
       const filtered = allForRecipient.filter((doc) => {
-        if (query.unreadOnly && doc.readAt) return false;
+        if (query.unreadOnly && (doc.readAt || doc.isRead)) return false;
         if (!parsedCursor) return true;
         const docTime = doc.createdAt.getTime();
         const cursorTime = parsedCursor.createdAt.getTime();
@@ -236,27 +298,38 @@ export class NotificationCenterRepository {
       const hasMore = slice.length > limit;
       const pageItems = hasMore ? slice.slice(0, limit) : slice;
       const last = pageItems.at(-1);
+      const sanitizedItems = await this.sanitizeItemsForListing(
+        recipientId,
+        pageItems.map((doc) => this.toDto(doc)),
+      );
       return {
-        items: pageItems.map((doc) => this.toDto(doc)),
+        items: sanitizedItems,
         nextCursor:
           hasMore && last ? this.encodeCursor(last.createdAt, last._id) : null,
         unreadCount,
       };
     }
 
-    const filter: Record<string, unknown> = { recipientId };
-    if (query.unreadOnly) {
-      filter.readAt = null;
-    }
-    if (parsedCursor) {
-      filter.$or = [
-        { createdAt: { $lt: parsedCursor.createdAt } },
-        {
-          createdAt: parsedCursor.createdAt,
-          _id: { $lt: parsedCursor.id },
-        },
-      ];
-    }
+    const baseFilter = query.unreadOnly
+      ? this.unreadMatchFilter(recipientId)
+      : this.recipientMatchFilter(recipientId);
+
+    const filter: Record<string, unknown> = parsedCursor
+      ? {
+          $and: [
+            baseFilter,
+            {
+              $or: [
+                { createdAt: { $lt: parsedCursor.createdAt } },
+                {
+                  createdAt: parsedCursor.createdAt,
+                  _id: { $lt: parsedCursor.id },
+                },
+              ],
+            },
+          ],
+        }
+      : baseFilter;
 
     const [rows, unreadCount] = await Promise.all([
       model
@@ -265,15 +338,19 @@ export class NotificationCenterRepository {
         .limit(limit + 1)
         .lean()
         .exec(),
-      model.countDocuments({ recipientId, readAt: null }).exec(),
+      model.countDocuments(this.unreadMatchFilter(recipientId)).exec(),
     ]);
 
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
     const last = pageRows.at(-1);
+    const sanitizedItems = await this.sanitizeItemsForListing(
+      recipientId,
+      pageRows.map((row) => this.toDto(row)),
+    );
 
     return {
-      items: pageRows.map((row) => this.toDto(row)),
+      items: sanitizedItems,
       nextCursor:
         hasMore && last ? this.encodeCursor(last.createdAt, last._id) : null,
       unreadCount,
@@ -284,10 +361,14 @@ export class NotificationCenterRepository {
     const model = this.notificationsModel();
     if (!model) {
       return [...this.memoryStore.values()].filter(
-        (doc) => doc.recipientId === recipientId && !doc.readAt,
+        (doc) =>
+          (doc.recipientId === recipientId ||
+            doc.recipientUserId === recipientId) &&
+          !doc.readAt &&
+          !doc.isRead,
       ).length;
     }
-    return model.countDocuments({ recipientId, readAt: null }).exec();
+    return model.countDocuments(this.unreadMatchFilter(recipientId)).exec();
   }
 
   async markRead(
@@ -301,8 +382,15 @@ export class NotificationCenterRepository {
     const model = this.notificationsModel();
     if (!model) {
       const doc = this.memoryStore.get(notificationId);
-      if (!doc || doc.recipientId !== recipientId) return null;
+      if (
+        !doc ||
+        (doc.recipientId !== recipientId && doc.recipientUserId !== recipientId)
+      ) {
+        return null;
+      }
       if (!doc.readAt) {
+        doc.recipientId = recipientId;
+        doc.recipientUserId = recipientId;
         doc.readAt = now;
         doc.isRead = true;
         doc.updatedAt = now;
@@ -311,11 +399,14 @@ export class NotificationCenterRepository {
     }
 
     const existing = await model
-      .findOne({ _id: new Types.ObjectId(notificationId), recipientId })
+      .findOne({
+        _id: new Types.ObjectId(notificationId),
+        ...this.recipientMatchFilter(recipientId),
+      })
       .lean()
       .exec();
     if (!existing) return null;
-    if (existing.readAt) {
+    if (existing.readAt || existing.isRead) {
       return this.toDto(existing);
     }
 
@@ -323,11 +414,12 @@ export class NotificationCenterRepository {
       .findOneAndUpdate(
         {
           _id: new Types.ObjectId(notificationId),
-          recipientId,
-          readAt: null,
+          ...this.unreadMatchFilter(recipientId),
         },
         {
           $set: {
+            recipientId,
+            recipientUserId: recipientId,
             isRead: true,
             readAt: now,
           },
@@ -348,7 +440,14 @@ export class NotificationCenterRepository {
     if (!model) {
       let updatedCount = 0;
       for (const doc of this.memoryStore.values()) {
-        if (doc.recipientId === recipientId && !doc.readAt) {
+        if (
+          (doc.recipientId === recipientId ||
+            doc.recipientUserId === recipientId) &&
+          !doc.readAt &&
+          !doc.isRead
+        ) {
+          doc.recipientId = recipientId;
+          doc.recipientUserId = recipientId;
           doc.readAt = now;
           doc.isRead = true;
           doc.updatedAt = now;
@@ -359,10 +458,14 @@ export class NotificationCenterRepository {
     }
 
     const result = await model
-      .updateMany(
-        { recipientId, readAt: null },
-        { $set: { isRead: true, readAt: now } },
-      )
+      .updateMany(this.unreadMatchFilter(recipientId), {
+        $set: {
+          recipientId,
+          recipientUserId: recipientId,
+          isRead: true,
+          readAt: now,
+        },
+      })
       .exec();
 
     return {
@@ -381,11 +484,19 @@ export class NotificationCenterRepository {
     const model = this.notificationsModel();
     if (!model) {
       const doc = this.memoryStore.get(notificationId);
-      if (!doc || doc.recipientId !== recipientId) return null;
+      if (
+        !doc ||
+        (doc.recipientId !== recipientId && doc.recipientUserId !== recipientId)
+      ) {
+        return null;
+      }
       return this.toDto(doc);
     }
     const doc = await model
-      .findOne({ _id: new Types.ObjectId(notificationId), recipientId })
+      .findOne({
+        _id: new Types.ObjectId(notificationId),
+        ...this.recipientMatchFilter(recipientId),
+      })
       .lean()
       .exec();
     return doc ? this.toDto(doc) : null;
@@ -879,18 +990,61 @@ export class NotificationCenterRepository {
             target: null,
           };
         }
+
+        const chatOrgId =
+          target.organizationId ??
+          notification.organizationId ??
+          (conv.organizationId ? String(conv.organizationId) : null);
+        if (
+          chatOrgId &&
+          Types.ObjectId.isValid(chatOrgId) &&
+          Types.ObjectId.isValid(actorUserId)
+        ) {
+          const orgMemberships = this.dbCollection(
+            SERVICE_DATABASES.iam,
+            'organization_memberships',
+          );
+          if (orgMemberships) {
+            const orgMembership = await orgMemberships.findOne({
+              organizationId: new Types.ObjectId(chatOrgId),
+              userId: new Types.ObjectId(actorUserId),
+              status: 'ACTIVE',
+            });
+            if (!orgMembership) {
+              return {
+                available: false,
+                reason: 'FORBIDDEN',
+                message: 'This content is no longer available',
+                target: null,
+              };
+            }
+          }
+        }
+
         const normalizedActorId = actorUserId.toLowerCase();
         let isMember = false;
         if (Array.isArray(conv.members)) {
-          isMember = conv.members.some((m: { userId?: unknown }) => {
-            const id =
-              typeof m?.userId === 'string'
-                ? m.userId.toLowerCase()
-                : m?.userId instanceof Types.ObjectId
-                  ? m.userId.toHexString().toLowerCase()
-                  : '';
-            return id === normalizedActorId;
-          });
+          isMember = conv.members.some(
+            (m: {
+              userId?: unknown;
+              status?: unknown;
+              deletedAt?: unknown;
+            }) => {
+              const id =
+                typeof m?.userId === 'string'
+                  ? m.userId.toLowerCase()
+                  : m?.userId instanceof Types.ObjectId
+                    ? m.userId.toHexString().toLowerCase()
+                    : '';
+              const statusOk =
+                m?.status === undefined ||
+                m?.status === null ||
+                m?.status === 'ACTIVE';
+              const notDeleted =
+                m?.deletedAt === undefined || m?.deletedAt === null;
+              return id === normalizedActorId && statusOk && notDeleted;
+            },
+          );
         } else {
           const chatMembers = this.dbCollection(
             SERVICE_DATABASES.chat,
@@ -908,9 +1062,20 @@ export class NotificationCenterRepository {
                     ],
                   }
                 : actorUserId,
+              $or: [
+                { status: 'ACTIVE' },
+                { status: { $exists: false } },
+                { status: null },
+              ],
             });
+            const statusOk =
+              memberDoc &&
+              (memberDoc.status === undefined ||
+                memberDoc.status === null ||
+                memberDoc.status === 'ACTIVE');
             isMember = Boolean(
               memberDoc &&
+              statusOk &&
               (memberDoc.deletedAt === null ||
                 memberDoc.deletedAt === undefined),
             );
@@ -1004,9 +1169,15 @@ export class NotificationCenterRepository {
           }
         : null;
 
+    const resolvedReadAt = doc.readAt
+      ? new Date(doc.readAt).toISOString()
+      : doc.isRead
+        ? new Date(doc.updatedAt ?? doc.createdAt).toISOString()
+        : null;
+
     return {
       id: doc._id.toHexString(),
-      recipientId: doc.recipientId,
+      recipientId: doc.recipientId || doc.recipientUserId || '',
       actorId: doc.actorId ?? null,
       organizationId: doc.organizationId ?? null,
       projectId: doc.projectId ?? null,
@@ -1017,7 +1188,7 @@ export class NotificationCenterRepository {
       title: doc.title,
       message: doc.message || doc.body || '',
       target,
-      readAt: doc.readAt ? new Date(doc.readAt).toISOString() : null,
+      readAt: resolvedReadAt,
       createdAt: new Date(doc.createdAt).toISOString(),
     };
   }

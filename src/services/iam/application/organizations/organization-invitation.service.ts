@@ -145,7 +145,7 @@ export class OrganizationInvitationService {
       result.acknowledgement.membership.status === 'ACTIVE'
     ) {
       await this.notificationService.notifyOrganizationMemberAdded({
-        actorId: null,
+        actorId: actor.id,
         recipientUserId: result.acknowledgement.membership.userId,
         organizationId: result.acknowledgement.membership.organizationId,
         eventId: `accept:${result.acknowledgement.invitation.id}`,
