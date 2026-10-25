@@ -8,7 +8,11 @@ import {
 describe('work notes domain rules', () => {
   it.each([
     ['DAILY', 1],
+    ['EVERY_2_DAYS', 2],
     ['EVERY_3_DAYS', 3],
+    ['EVERY_4_DAYS', 4],
+    ['EVERY_5_DAYS', 5],
+    ['EVERY_6_DAYS', 6],
     ['WEEKLY', 7],
   ] as const)('maps %s to %i days', (frequency, days) => {
     expect(getFrequencyDays(frequency)).toBe(days);

@@ -126,7 +126,14 @@ describe('WorkNotesAuthorizationService', () => {
           pagination: { totalPages: 1 },
         }),
       )
-      .mockResolvedValueOnce(response({ id: taskId, projectId }));
+      .mockResolvedValueOnce(
+        response({
+          id: taskId,
+          projectId,
+          key: 'FE-12',
+          title: 'Authentication & session handling',
+        }),
+      );
 
     const actor = await service.resolveTask({}, projectId, taskId);
 
@@ -136,6 +143,8 @@ describe('WorkNotesAuthorizationService', () => {
       projectId,
       canReview: false,
       joinedAt,
+      taskKey: 'FE-12',
+      taskTitle: 'Authentication & session handling',
     });
     const taskCall = fetchSpy.mock.calls[4] as unknown as
       [unknown, RequestInit | undefined] | undefined;

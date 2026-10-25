@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Types, type Connection } from 'mongoose';
 import type { WorkNotesAuthorizationService } from './work-notes-authorization.service';
@@ -55,7 +56,7 @@ describe('Capture Work Notes Mongo workflows', () => {
     await connection
       .collection('work_reports')
       .createIndex(
-        { projectId: 1, memberUserId: 1, periodStart: 1 },
+        { projectId: 1, memberUserId: 1, reportScope: 1, periodStart: 1 },
         { unique: true },
       );
     await connection
@@ -81,7 +82,7 @@ describe('Capture Work Notes Mongo workflows', () => {
     await connection
       .collection('work_reports')
       .createIndex(
-        { projectId: 1, memberUserId: 1, periodStart: 1 },
+        { projectId: 1, memberUserId: 1, reportScope: 1, periodStart: 1 },
         { unique: true },
       );
     await connection
@@ -127,6 +128,7 @@ describe('Capture Work Notes Mongo workflows', () => {
           );
       },
     };
+    const objects = new Map<string, Buffer>();
     service = new WorkNotesService(
       authorization as WorkNotesAuthorizationService,
       connection,
@@ -134,6 +136,19 @@ describe('Capture Work Notes Mongo workflows', () => {
       {
         append: jest.fn().mockResolvedValue(undefined),
       } as unknown as AuditService,
+      {
+        put: jest.fn((key: string, bytes: Buffer) => {
+          objects.set(key, bytes);
+          return Promise.resolve();
+        }),
+        get: jest.fn((key: string) =>
+          Promise.resolve(objects.get(key) ?? Buffer.alloc(0)),
+        ),
+        delete: jest.fn((key: string) => {
+          objects.delete(key);
+          return Promise.resolve();
+        }),
+      } as unknown as ProjectDocumentStorage,
     );
   });
 
@@ -210,6 +225,108 @@ describe('Capture Work Notes Mongo workflows', () => {
 
     expect(page.data).toHaveLength(1);
     expect(page.data[0].taskId).toBe(taskId);
+  });
+
+  it('enforces per-task authorization, enriches task context, and filters/sorts project task notes', async () => {
+    const secondTaskId = new Types.ObjectId().toHexString();
+    const restrictedTaskId = new Types.ObjectId().toHexString();
+    const otherAuthorId = new Types.ObjectId().toHexString();
+
+    await service.createTaskNote({}, projectId, taskId, {
+      title: 'Improved token validation',
+      accomplishments: 'Added checks for expired access tokens.',
+      approach: 'Reused authentication middleware.',
+      reason: 'Prevent inconsistent session behavior.',
+    });
+
+    currentActor = {
+      ...currentActor,
+      userId: otherAuthorId,
+      userName: 'Developer B',
+    };
+    await service.createTaskNote({}, projectId, secondTaskId, {
+      title: 'Refactored sidebar navigation',
+      accomplishments: 'Simplified navigation state.',
+      approach: 'Consolidated route matchers.',
+      reason: 'Fix active menu highlighting.',
+    });
+    await service.createTaskNote({}, projectId, restrictedTaskId, {
+      title: 'Restricted task note',
+      accomplishments: 'Should be hidden when task access is denied.',
+      approach: 'Server-side task check.',
+      reason: 'Zero privilege escalation.',
+    });
+
+    (authorization.resolveTask as jest.Mock).mockImplementation(
+      (_headers: unknown, _projectId: string, candidateTaskId: string) => {
+        if (candidateTaskId === restrictedTaskId) {
+          return Promise.reject(new NotFoundException('Task not found'));
+        }
+        if (candidateTaskId === taskId) {
+          return Promise.resolve({
+            ...currentActor,
+            taskKey: 'FE-12',
+            taskTitle: 'Authentication & session handling',
+          });
+        }
+        return Promise.resolve({
+          ...currentActor,
+          taskKey: 'FE-08',
+          taskTitle: 'Dashboard navigation',
+        });
+      },
+    );
+
+    const allAccessible = await service.listProjectTaskNotes(
+      {},
+      projectId,
+      1,
+      50,
+    );
+    expect(allAccessible.data).toHaveLength(2);
+    expect(allAccessible.pagination.totalItems).toBe(2);
+    expect(
+      allAccessible.data.map((item) => ({
+        taskId: item.taskId,
+        taskKey: item.taskKey,
+        taskTitle: item.taskTitle,
+      })),
+    ).toEqual([
+      {
+        taskId: secondTaskId,
+        taskKey: 'FE-08',
+        taskTitle: 'Dashboard navigation',
+      },
+      {
+        taskId,
+        taskKey: 'FE-12',
+        taskTitle: 'Authentication & session handling',
+      },
+    ]);
+
+    const oldestFirst = await service.listProjectTaskNotes(
+      {},
+      projectId,
+      1,
+      50,
+      { sort: 'oldest' },
+    );
+    expect(oldestFirst.data.map((item) => item.taskKey)).toEqual([
+      'FE-12',
+      'FE-08',
+    ]);
+
+    const byAuthor = await service.listProjectTaskNotes({}, projectId, 1, 50, {
+      authorId: memberId,
+    });
+    expect(byAuthor.data).toHaveLength(1);
+    expect(byAuthor.data[0].title).toBe('Improved token validation');
+
+    const bySearch = await service.listProjectTaskNotes({}, projectId, 1, 50, {
+      search: 'sidebar',
+    });
+    expect(bySearch.data).toHaveLength(1);
+    expect(bySearch.data[0].title).toBe('Refactored sidebar navigation');
   });
 
   it('allows the author or reviewer to edit and archive a Task Note', async () => {
@@ -816,6 +933,247 @@ describe('Capture Work Notes Mongo workflows', () => {
     expect(await connection.collection('work_notes').countDocuments()).toBe(0);
     expect(await connection.collection('outbox_events').countDocuments()).toBe(
       0,
+    );
+  });
+
+  it('supports flexible 1-7 day reporting cadences, Leader-to-Manager reporting, and report file uploads', async () => {
+    const managerId = new Types.ObjectId().toHexString();
+    const linkedDocId = new Types.ObjectId().toHexString();
+
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+      joinedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    };
+
+    const updatedTwoDays = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_2_DAYS',
+      'MEMBER',
+    );
+    expect(updatedTwoDays.frequency).toBe('EVERY_2_DAYS');
+
+    const updatedFiveDays = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_5_DAYS',
+      'MEMBER',
+    );
+    expect(updatedFiveDays.frequency).toBe('EVERY_5_DAYS');
+
+    await expect(
+      service.updateWorkReportSettings({}, projectId, 'EVERY_4_DAYS', 'LEADER'),
+    ).rejects.toMatchObject({ status: 403 });
+
+    currentActor = {
+      ...currentActor,
+      userId: managerId,
+      userName: 'Morgan Manager',
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: false,
+    };
+
+    const leaderSettings = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_4_DAYS',
+      'LEADER',
+    );
+    expect(leaderSettings.frequency).toBe('EVERY_4_DAYS');
+    expect(leaderSettings.permissions.canConfigure).toBe(true);
+
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+      joinedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    };
+
+    const leaderDraft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Delivered sprint milestone and reviewed PRs.',
+        approach: 'Coordinated FE and BE contracts.',
+        reason: 'Keep release on track.',
+        blockers: 'None.',
+        nextSteps: 'Prepare UAT.',
+        documentIds: [linkedDocId],
+      },
+      'LEADER',
+    );
+    expect(leaderDraft.reportScope).toBe('LEADER');
+    expect(leaderDraft.documentIds).toEqual([linkedDocId]);
+
+    const pdfBytes = Buffer.from('%PDF-1.4\nLeader report attachment');
+    const withFile = await service.uploadWorkReportFile(
+      {},
+      projectId,
+      leaderDraft.id,
+      'leader-sprint-summary.pdf',
+      'application/pdf',
+      pdfBytes,
+    );
+    expect(withFile.file).toEqual({
+      name: 'leader-sprint-summary.pdf',
+      contentType: 'application/pdf',
+      size: pdfBytes.length,
+    });
+
+    const submittedLeaderReport = await service.submitWorkReport(
+      {},
+      projectId,
+      leaderDraft.id,
+    );
+    expect(submittedLeaderReport.status).toBe('PENDING_REVIEW');
+
+    await expect(
+      service.reviewWorkReport({}, projectId, leaderDraft.id, 'APPROVED', {}),
+    ).rejects.toMatchObject({ status: 403 });
+
+    currentActor = {
+      ...currentActor,
+      userId: managerId,
+      userName: 'Morgan Manager',
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: false,
+    };
+    const downloaded = await service.downloadWorkReportFile(
+      {},
+      projectId,
+      leaderDraft.id,
+    );
+    expect(downloaded.name).toBe('leader-sprint-summary.pdf');
+    expect(downloaded.bytes.equals(pdfBytes)).toBe(true);
+
+    const approvedLeaderReport = await service.reviewWorkReport(
+      {},
+      projectId,
+      leaderDraft.id,
+      'APPROVED',
+      { comment: 'Great sprint summary.' },
+    );
+    expect(approvedLeaderReport.status).toBe('APPROVED');
+    expect(approvedLeaderReport.reviewComment).toBe('Great sprint summary.');
+  });
+
+  it('keeps Leader and legacy Member reports distinct for the same author and period', async () => {
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      joinedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    };
+    const settings = await service.getWorkReportSettings({}, projectId);
+    const periodStart = new Date(
+      settings.leaderSettings?.effectiveAt ?? settings.effectiveAt,
+    );
+    await connection.collection('work_reports').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      memberUserId: new Types.ObjectId(leaderId),
+      periodStart,
+      periodEnd: new Date(periodStart.getTime() + 7 * 86_400_000),
+      dueAt: new Date(periodStart.getTime() + 7 * 86_400_000),
+      frequency: 'WEEKLY',
+      status: 'APPROVED',
+      accomplishments: 'Legacy member report',
+      approach: 'Legacy approach',
+      reason: 'Legacy reason',
+    });
+    const draft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Leader work',
+        approach: 'Leader approach',
+        reason: 'Leader reason',
+      },
+      'LEADER',
+    );
+    expect(draft.reportScope).toBe('LEADER');
+    expect(
+      await connection
+        .collection('work_reports')
+        .countDocuments({ memberUserId: new Types.ObjectId(leaderId) }),
+    ).toBe(2);
+  });
+
+  it('keeps historical Leader periods on their original cadence after a change', async () => {
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      joinedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    };
+    const earlier = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Earlier work',
+        approach: 'Earlier approach',
+        reason: 'Earlier reason',
+      },
+      'LEADER',
+    );
+    currentActor = {
+      ...currentActor,
+      userId: new Types.ObjectId().toHexString(),
+      isLeader: false,
+      isManager: true,
+    };
+    const changed = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'DAILY',
+      'LEADER',
+    );
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      isLeader: true,
+      isManager: false,
+    };
+    const later = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Later work',
+        approach: 'Later approach',
+        reason: 'Later reason',
+      },
+      'LEADER',
+    );
+    expect(later.id).not.toBe(earlier.id);
+    expect(later.frequency).toBe('DAILY');
+    expect(new Date(later.periodStart).getTime()).toBeGreaterThanOrEqual(
+      new Date(changed.history.at(-1)!.effectiveAt).getTime(),
+    );
+    const persistedEarlier = await connection
+      .collection('work_reports')
+      .findOne({ _id: new Types.ObjectId(earlier.id) });
+    expect(persistedEarlier?.frequency).toBe('WEEKLY');
+    expect(persistedEarlier?.periodEnd).toEqual(
+      new Date(changed.history.at(-1)!.effectiveAt),
     );
   });
 });

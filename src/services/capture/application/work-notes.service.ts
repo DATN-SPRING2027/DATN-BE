@@ -15,11 +15,11 @@ import { CAPTURE_PERSISTENCE } from '../infrastructure/persistence';
 import { AuditService } from '../infrastructure/audit/audit.service';
 import { OutboxService } from '../infrastructure/outbox/outbox.service';
 import { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
+import { NotificationService } from '../../notification/notification.service';
 import {
   assertReviewerCanReview,
   calculateReportPeriod,
   getFrequencyDays,
-  nextFrequencyEffectiveAt,
   type WorkReportFrequency,
 } from './work-notes.domain';
 import { WorkNotesAuthorizationService } from './work-notes-authorization.service';
@@ -31,6 +31,7 @@ import type {
   ProjectDocumentInput,
   ProjectDocumentRecord,
   ProjectDocumentSummaryRecord,
+  ProjectTaskNotesQueryOptions,
   ReviewInput,
   TaskNoteInput,
   TaskNoteRecord,
@@ -39,6 +40,7 @@ import type {
   WorkNotesPermissions,
   WorkReportInput,
   WorkReportRecord,
+  WorkReportScope,
   WorkReportSettingsRecord,
   WorkReportStatus,
 } from './work-notes.types';
@@ -335,6 +337,7 @@ export class WorkNotesService {
     @Optional() private readonly outbox?: OutboxService,
     @Optional() private readonly audit?: AuditService,
     @Optional() private readonly documentStorage?: ProjectDocumentStorage,
+    @Optional() private readonly notifications?: NotificationService,
   ) {}
 
   async listTaskNotes(
@@ -378,32 +381,107 @@ export class WorkNotesService {
     projectId: string,
     page: number,
     pageSize: number,
-    taskId?: string,
+    taskIdOrOptions?: string | ProjectTaskNotesQueryOptions,
   ): Promise<WorkNotesPage<TaskNoteRecord>> {
+    const options: ProjectTaskNotesQueryOptions =
+      typeof taskIdOrOptions === 'string'
+        ? { taskId: taskIdOrOptions }
+        : (taskIdOrOptions ?? {});
+    const { taskId, authorId, search, sort = 'recent' } = options;
     const actor = taskId
       ? await this.authorization.resolveTask(headers, projectId, taskId)
       : await this.authorization.resolveProject(headers, projectId);
     const db = this.database();
-    const filter = {
+    const trimmedSearch = search?.trim() ?? '';
+    const escapedSearch = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex =
+      escapedSearch.length > 0 ? new RegExp(escapedSearch, 'i') : undefined;
+    const filter: Record<string, unknown> = {
       organizationId: objectId(actor.organizationId),
       projectId: objectId(projectId),
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
-      taskId: { $type: 'objectId' },
-      ...(taskId ? { taskId: objectId(taskId) } : {}),
+      taskId: taskId ? objectId(taskId) : { $type: 'objectId' },
+      ...(authorId && validId(authorId)
+        ? { authorUserId: objectId(authorId) }
+        : {}),
+      ...(searchRegex
+        ? {
+            $or: [
+              { title: searchRegex },
+              { authorName: searchRegex },
+              { whatDone: searchRegex },
+              { howSolved: searchRegex },
+              { whyThisWay: searchRegex },
+            ],
+          }
+        : {}),
     };
+    const sortSpec: Record<string, 1 | -1> =
+      sort === 'oldest' ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 };
     const collection = db.collection('work_notes');
-    const [rows, totalItems] = await Promise.all([
-      collection
-        .find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .skip((page - 1) * pageSize)
-        .limit(pageSize)
-        .toArray(),
-      collection.countDocuments(filter),
-    ]);
+    if (taskId) {
+      const [rows, totalItems] = await Promise.all([
+        collection
+          .find(filter)
+          .sort(sortSpec)
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray(),
+        collection.countDocuments(filter),
+      ]);
+      return {
+        data: rows.map((row) => this.taskNoteRecord(row, actor)),
+        pagination: this.pagination(page, pageSize, totalItems),
+      };
+    }
+
+    const allRows = await collection.find(filter).sort(sortSpec).toArray();
+    const distinctTaskIds = [
+      ...new Set(
+        allRows
+          .map((row) => idText((row as Record<string, unknown>).taskId))
+          .filter((id) => validId(id)),
+      ),
+    ];
+    const resolvedTaskActors = new Map<string, WorkNotesActor | null>();
+    await Promise.all(
+      distinctTaskIds.map(async (candidateTaskId) => {
+        try {
+          const resolved = await this.authorization.resolveTask(
+            headers,
+            projectId,
+            candidateTaskId,
+          );
+          resolvedTaskActors.set(candidateTaskId, resolved);
+        } catch (err) {
+          if (
+            err instanceof NotFoundException ||
+            err instanceof ForbiddenException
+          ) {
+            resolvedTaskActors.set(candidateTaskId, null);
+            return;
+          }
+          throw err;
+        }
+      }),
+    );
+
+    const authorizedRows = allRows.filter((row) => {
+      const rowTaskId = idText((row as Record<string, unknown>).taskId);
+      return Boolean(resolvedTaskActors.get(rowTaskId));
+    });
+    const totalItems = authorizedRows.length;
+    const pagedRows = authorizedRows.slice(
+      (page - 1) * pageSize,
+      page * pageSize,
+    );
     return {
-      data: rows.map((row) => this.taskNoteRecord(row, actor)),
+      data: pagedRows.map((row) => {
+        const rowTaskId = idText((row as Record<string, unknown>).taskId);
+        const taskActor = resolvedTaskActors.get(rowTaskId) ?? actor;
+        return this.taskNoteRecord(row, taskActor);
+      }),
       pagination: this.pagination(page, pageSize, totalItems),
     };
   }
@@ -452,8 +530,12 @@ export class WorkNotesService {
       });
     const taskId = row ? idText(row.taskId) : '';
     if (!row || !validId(taskId)) throw this.taskNoteNotFound();
-    await this.authorization.resolveTask(headers, projectId, taskId);
-    return this.taskNoteRecord(row, actor);
+    const taskActor = await this.authorization.resolveTask(
+      headers,
+      projectId,
+      taskId,
+    );
+    return this.taskNoteRecord(row, taskActor);
   }
 
   async createTaskNote(
@@ -503,6 +585,8 @@ export class WorkNotesService {
       id: String(id),
       projectId,
       taskId,
+      ...(actor.taskKey ? { taskKey: actor.taskKey } : {}),
+      ...(actor.taskTitle ? { taskTitle: actor.taskTitle } : {}),
       authorId: actor.userId,
       authorName: actor.userName,
       type: 'TASK_NOTE',
@@ -1488,51 +1572,200 @@ export class WorkNotesService {
   async getWorkReportSettings(
     headers: CaptureRequestHeaders,
     projectId: string,
+    scope: WorkReportScope = 'MEMBER',
   ): Promise<WorkReportSettingsRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     const settings = await this.settingsTimeline(actor);
-    return this.settingsRecord(settings, actor, new Date());
+    return this.settingsRecord(settings, actor, new Date(), scope);
   }
 
   async updateWorkReportSettings(
     headers: CaptureRequestHeaders,
     projectId: string,
     frequency: WorkReportFrequency,
+    scope: WorkReportScope = 'MEMBER',
   ): Promise<WorkReportSettingsRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
-    if (!actor.canConfigure) throw this.reviewPermissionDenied();
+    if (scope === 'LEADER') {
+      if (!actor.isManager) throw this.reviewPermissionDenied();
+    } else if (!actor.canConfigure) {
+      throw this.reviewPermissionDenied();
+    }
     const settings = await this.settingsTimeline(actor);
     const now = new Date();
-    const active = this.activeSetting(settings, now);
-    const pending = settings.find(
-      (item) => new Date(String(item.effectiveAt)).getTime() > now.getTime(),
-    );
-    if (pending) {
-      throw conflict('A Work Report frequency change is already scheduled.');
-    }
-    if (text(active.frequency) === frequency) {
-      return this.settingsRecord(settings, actor, now);
+
+    if (scope === 'LEADER') {
+      const root = settings[0];
+      if (!root) {
+        throw new ServiceUnavailableException({
+          code: 'WORK_REPORT_SETTINGS_UNAVAILABLE',
+          message: 'Work Report settings are unavailable.',
+        });
+      }
+      const previousFrequency = (text(root.leaderFrequency) ||
+        'WEEKLY') as WorkReportFrequency;
+      const leaderEffectiveAt =
+        root.leaderEffectiveAt instanceof Date
+          ? root.leaderEffectiveAt
+          : new Date(String(root.leaderEffectiveAt ?? root.effectiveAt));
+      const existingHistory = Array.isArray(root.leaderHistory)
+        ? (root.leaderHistory as Array<Record<string, unknown>>)
+        : [
+            {
+              frequency: previousFrequency,
+              effectiveAt:
+                iso(leaderEffectiveAt) ?? startOfUtcWeek(now).toISOString(),
+              updatedBy: String(
+                root.leaderUpdatedByUserId ?? root.createdByUserId,
+              ),
+            },
+          ];
+      const nextHistory = [
+        ...existingHistory,
+        {
+          frequency,
+          effectiveAt: now.toISOString(),
+          updatedBy: actor.userId,
+        },
+      ];
+      await this.transaction(async (db, session) => {
+        await db.collection('work_report_settings').updateOne(
+          { _id: root._id },
+          {
+            $set: {
+              leaderFrequency: frequency,
+              leaderEffectiveAt: now,
+              leaderUpdatedByUserId: objectId(actor.userId),
+              leaderHistory: nextHistory,
+              updatedAt: now,
+            },
+          },
+          { session },
+        );
+        await db.collection('work_reports').updateMany(
+          {
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            reportScope: 'LEADER',
+            status: 'DRAFT',
+            periodEnd: { $gt: now },
+          },
+          {
+            $set: {
+              periodEnd: now,
+              dueAt: now,
+              updatedAt: now,
+            },
+          },
+          { session },
+        );
+        await this.appendOutbox(
+          {
+            eventName: 'WORK_REPORT_FREQUENCY_CHANGED',
+            aggregateType: 'WORK_REPORT_SETTINGS',
+            aggregateId: projectId,
+            payload: {
+              organizationId: actor.organizationId,
+              projectId,
+              scope: 'LEADER',
+              previousFrequency,
+              frequency,
+              effectiveAt: now.toISOString(),
+            },
+          },
+          session,
+        );
+        await this.auditEvent(
+          actor,
+          'REPORT_FREQUENCY_CHANGED',
+          'PROJECT',
+          projectId,
+          {
+            scope: 'LEADER',
+            previousFrequency,
+            frequency,
+            effectiveAt: now.toISOString(),
+          },
+          session,
+        );
+      });
+      if (
+        this.notifications &&
+        typeof this.authorization.listActiveLeaders === 'function'
+      ) {
+        try {
+          const leaders = await this.authorization.listActiveLeaders(
+            actor,
+            headers,
+          );
+          const days = getFrequencyDays(frequency);
+          await this.notifications.emitSafe({
+            type: 'TASK_DEADLINE_APPROACHING',
+            actorId: actor.userId,
+            recipients: leaders.map((l) => l.userId),
+            title: 'Leader reporting cadence updated',
+            message: `Manager updated Leader work report schedule to every ${days} ${days === 1 ? 'day' : 'days'}.`,
+            organizationId: actor.organizationId,
+            projectId,
+            target: {
+              kind: 'PROJECT',
+              url: `/projects/${projectId}/work-reports`,
+              organizationId: actor.organizationId,
+              projectId,
+            },
+            eventKey: `leader-report-cadence:${projectId}:${frequency}:${now.getTime()}`,
+          });
+        } catch {
+          // Do not fail setting mutation if notification emit fails
+        }
+      }
+      const updated = await this.settingsTimeline(actor);
+      return this.settingsRecord(updated, actor, now, 'LEADER');
     }
 
-    const effectiveAt = nextFrequencyEffectiveAt(
-      new Date(String(active.effectiveAt)),
-      text(active.frequency) as WorkReportFrequency,
-      now,
-    );
-    const setting = {
-      _id: new Types.ObjectId(),
-      organizationId: objectId(actor.organizationId),
-      projectId: objectId(projectId),
-      frequency,
-      effectiveAt,
-      createdByUserId: objectId(actor.userId),
-      createdAt: now,
-      updatedAt: now,
-    };
+    const active = this.activeSetting(settings, now);
+    const previousFrequency = text(active.frequency) as WorkReportFrequency;
+    const activeEffectiveAt = new Date(String(active.effectiveAt));
+    const newPeriod = calculateReportPeriod(activeEffectiveAt, frequency, now);
     await this.transaction(async (db, session) => {
-      await db
-        .collection('work_report_settings')
-        .insertOne(setting, { session });
+      await db.collection('work_report_settings').deleteMany(
+        {
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          _id: { $ne: active._id },
+          effectiveAt: { $gt: now },
+        },
+        { session },
+      );
+      await db.collection('work_report_settings').updateOne(
+        { _id: active._id },
+        {
+          $set: {
+            frequency,
+            createdByUserId: objectId(actor.userId),
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      await db.collection('work_reports').updateMany(
+        {
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          $or: [{ reportScope: 'MEMBER' }, { reportScope: { $exists: false } }],
+          status: 'DRAFT',
+          periodEnd: { $gt: now },
+        },
+        {
+          $set: {
+            frequency,
+            periodEnd: newPeriod.periodEnd,
+            dueAt: newPeriod.periodEnd,
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
       await this.appendOutbox(
         {
           eventName: 'WORK_REPORT_FREQUENCY_CHANGED',
@@ -1541,9 +1774,9 @@ export class WorkNotesService {
           payload: {
             organizationId: actor.organizationId,
             projectId,
-            previousFrequency: text(active.frequency),
+            previousFrequency,
             frequency,
-            effectiveAt: effectiveAt.toISOString(),
+            effectiveAt: activeEffectiveAt.toISOString(),
           },
         },
         session,
@@ -1554,15 +1787,42 @@ export class WorkNotesService {
         'PROJECT',
         projectId,
         {
-          previousFrequency: text(active.frequency),
+          previousFrequency,
           frequency,
-          effectiveAt: effectiveAt.toISOString(),
+          effectiveAt: activeEffectiveAt.toISOString(),
         },
         session,
       );
     });
+    if (this.notifications) {
+      try {
+        const members = await this.authorization.listActiveMembers(
+          actor,
+          headers,
+        );
+        const days = getFrequencyDays(frequency);
+        await this.notifications.emitSafe({
+          type: 'TASK_DEADLINE_APPROACHING',
+          actorId: actor.userId,
+          recipients: members.map((m) => m.userId),
+          title: 'Work report schedule updated',
+          message: `Project reporting cadence is now every ${days} ${days === 1 ? 'day' : 'days'}.`,
+          organizationId: actor.organizationId,
+          projectId,
+          target: {
+            kind: 'PROJECT',
+            url: `/projects/${projectId}/work-reports`,
+            organizationId: actor.organizationId,
+            projectId,
+          },
+          eventKey: `member-report-cadence:${projectId}:${frequency}:${now.getTime()}`,
+        });
+      } catch {
+        // Do not fail setting mutation if notification emit fails
+      }
+    }
     const updated = await this.settingsTimeline(actor);
-    return this.settingsRecord(updated, actor, now);
+    return this.settingsRecord(updated, actor, now, 'MEMBER');
   }
 
   async listWorkReports(
@@ -1571,21 +1831,86 @@ export class WorkNotesService {
     page: number,
     pageSize: number,
     status?: WorkReportStatus,
+    scope: WorkReportScope = 'MEMBER',
   ): Promise<WorkNotesPage<WorkReportRecord>> {
     const actor = await this.authorization.resolveProject(headers, projectId);
+    const timeline = await this.settingsTimeline(actor);
+    const now = new Date();
+
+    if (scope === 'LEADER') {
+      if (!actor.canReview) throw this.reviewPermissionDenied();
+      const leaders =
+        typeof this.authorization.listActiveLeaders === 'function'
+          ? await this.authorization.listActiveLeaders(actor, headers)
+          : [];
+      if (!actor.isManager) {
+        const normalizedActorId = actor.userId.toLowerCase();
+        if (
+          !leaders.some((l) => l.userId.toLowerCase() === normalizedActorId)
+        ) {
+          leaders.push({
+            userId: normalizedActorId,
+            fullName: actor.userName || actor.userId,
+            joinedAt:
+              actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
+                ? actor.joinedAt
+                : startOfUtcWeek(now).toISOString(),
+          });
+        }
+      }
+      const activeLeaderIds = new Set(
+        leaders.map((leader) => leader.userId.toLowerCase()),
+      );
+      const leaderTimeline = this.leaderSettingsTimeline(timeline);
+      await this.ensureReportObligations(
+        actor,
+        leaders,
+        leaderTimeline,
+        now,
+        'LEADER',
+      );
+      await this.markOverdue(actor, projectId, now, activeLeaderIds, 'LEADER');
+      const leaderFilter = {
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        reportScope: 'LEADER',
+        ...(!actor.isManager ? { memberUserId: objectId(actor.userId) } : {}),
+        ...(status ? { status } : {}),
+      };
+      const collection = this.database().collection('work_reports');
+      const [rows, totalItems] = await Promise.all([
+        collection
+          .find(leaderFilter)
+          .sort({ periodStart: -1, memberUserId: 1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray(),
+        collection.countDocuments(leaderFilter),
+      ]);
+      return {
+        data: rows.map((row) => {
+          const leaderId = String(row.memberUserId);
+          const leaderName = leaders.find(
+            (leader) => leader.userId === leaderId.toLowerCase(),
+          )?.fullName;
+          return this.workReportRecord(row, actor, leaderName);
+        }),
+        pagination: this.pagination(page, pageSize, totalItems),
+      };
+    }
+
     const members = actor.canReview
       ? await this.authorization.listActiveMembers(actor, headers)
       : [this.resolveActorMemberObligation(actor)];
     const activeMemberIds = new Set(
       members.map((member) => member.userId.toLowerCase()),
     );
-    const timeline = await this.settingsTimeline(actor);
-    const now = new Date();
-    await this.ensureReportObligations(actor, members, timeline, now);
-    await this.markOverdue(actor, projectId, now, activeMemberIds);
+    await this.ensureReportObligations(actor, members, timeline, now, 'MEMBER');
+    await this.markOverdue(actor, projectId, now, activeMemberIds, 'MEMBER');
     const filter = {
       organizationId: objectId(actor.organizationId),
       projectId: objectId(projectId),
+      $or: [{ reportScope: 'MEMBER' }, { reportScope: { $exists: false } }],
       ...(!actor.canReview ? { memberUserId: objectId(actor.userId) } : {}),
       ...(status ? { status } : {}),
     };
@@ -1615,8 +1940,64 @@ export class WorkNotesService {
     headers: CaptureRequestHeaders,
     projectId: string,
     input: WorkReportInput,
+    scope: WorkReportScope = 'MEMBER',
   ): Promise<WorkReportRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
+    if (scope === 'LEADER') {
+      if (!actor.canReview || (actor.isManager && !actor.isLeader)) {
+        throw new ForbiddenException({
+          code: 'WORK_REPORT_LEADER_ONLY',
+          message: 'Only Project Leaders can save a Leader Work Report draft.',
+        });
+      }
+      const now = new Date();
+      const leaderObligation = {
+        userId: actor.userId,
+        fullName: actor.userName,
+        joinedAt:
+          actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
+            ? actor.joinedAt
+            : startOfUtcWeek(now).toISOString(),
+      };
+      const timeline = await this.settingsTimeline(actor);
+      const leaderTimeline = this.leaderSettingsTimeline(timeline);
+      await this.ensureReportObligations(
+        actor,
+        [leaderObligation],
+        leaderTimeline,
+        now,
+        'LEADER',
+      );
+      await this.markOverdue(
+        actor,
+        projectId,
+        now,
+        new Set([actor.userId.toLowerCase()]),
+        'LEADER',
+      );
+      const currentSetting = this.activeSetting(leaderTimeline, now);
+      const period = calculateReportPeriod(
+        currentSetting.effectiveAt instanceof Date
+          ? currentSetting.effectiveAt
+          : new Date(String(currentSetting.effectiveAt)),
+        text(currentSetting.frequency) as WorkReportFrequency,
+        now,
+      );
+      const row = record(
+        await this.database()
+          .collection('work_reports')
+          .findOne({
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            memberUserId: objectId(actor.userId),
+            reportScope: 'LEADER',
+            periodStart: period.periodStart,
+          }),
+      );
+      if (!row) throw reportNotFound();
+      return this.saveReportDraft(actor, row._id, input, 'LEADER');
+    }
+
     if (actor.canReview) {
       throw new ForbiddenException({
         code: 'WORK_REPORT_MEMBER_ONLY',
@@ -1627,12 +2008,19 @@ export class WorkNotesService {
     const member = this.resolveActorMemberObligation(actor);
     const timeline = await this.settingsTimeline(actor);
     const now = new Date();
-    await this.ensureReportObligations(actor, [member], timeline, now);
+    await this.ensureReportObligations(
+      actor,
+      [member],
+      timeline,
+      now,
+      'MEMBER',
+    );
     await this.markOverdue(
       actor,
       projectId,
       now,
       new Set([member.userId.toLowerCase()]),
+      'MEMBER',
     );
     const currentSetting = this.activeSetting(timeline, now);
     const period = calculateReportPeriod(
@@ -1651,7 +2039,124 @@ export class WorkNotesService {
         }),
     );
     if (!row) throw reportNotFound();
-    return this.saveReportDraft(actor, row._id, input);
+    return this.saveReportDraft(actor, row._id, input, 'MEMBER');
+  }
+
+  async uploadWorkReportFile(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+    name: string,
+    contentType: string,
+    bytes: Buffer,
+  ): Promise<WorkReportRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(reportId)) throw reportNotFound();
+    const cleanName = name.trim();
+    const resolvedContentType =
+      bytes.length > 0 &&
+      bytes.length <= 20 * 1024 * 1024 &&
+      cleanName.length > 0 &&
+      cleanName.length <= 180 &&
+      !/[\\/]/.test(cleanName) &&
+      ![...cleanName].some((character) => character.charCodeAt(0) < 32)
+        ? resolveValidatedDocumentContentType(cleanName, contentType, bytes)
+        : null;
+    if (!resolvedContentType)
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_INVALID',
+        message:
+          'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
+      });
+    const id = objectId(reportId);
+    const reports = this.database().collection('work_reports');
+    const existing = await reports.findOne({
+      _id: id,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      memberUserId: objectId(actor.userId),
+      status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
+    });
+    if (!existing) throw reportNotFound();
+    if (!this.documentStorage)
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    const key = `work-reports/${actor.organizationId}/${projectId}/${reportId}/${randomUUID()}`;
+    await this.documentStorage.put(key, bytes, resolvedContentType);
+    try {
+      await this.transaction(async (db, session) => {
+        const result = await db.collection('work_reports').updateOne(
+          {
+            _id: id,
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            memberUserId: objectId(actor.userId),
+            status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
+          },
+          {
+            $set: {
+              file: {
+                key,
+                name: cleanName,
+                contentType: resolvedContentType,
+                size: bytes.length,
+              },
+              updatedAt: new Date(),
+            },
+          },
+          { session },
+        );
+        if (result.matchedCount !== 1)
+          throw conflict('The Work Report changed during file upload.');
+        await this.auditEvent(
+          actor,
+          'REPORT_FILE_UPLOADED',
+          'WORK_REPORT',
+          reportId,
+          { fileName: cleanName, size: bytes.length },
+          session,
+        );
+      });
+    } catch (error) {
+      await this.documentStorage.delete(key).catch(() => undefined);
+      throw error;
+    }
+    const oldKey = (existing.file as { key?: string } | undefined)?.key;
+    if (oldKey && oldKey !== key) {
+      await this.documentStorage.delete(oldKey).catch(() => undefined);
+    }
+    return this.getWorkReport(headers, projectId, reportId);
+  }
+
+  async downloadWorkReportFile(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+  ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(reportId)) throw reportNotFound();
+    const report = await this.database()
+      .collection('work_reports')
+      .findOne({
+        _id: objectId(reportId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        ...(!actor.canReview ? { memberUserId: objectId(actor.userId) } : {}),
+      });
+    if (!report) throw reportNotFound();
+    const file = report.file as
+      { key?: string; name?: string; contentType?: string } | undefined;
+    if (!file?.key || !file.name || !file.contentType) throw reportNotFound();
+    if (!this.documentStorage)
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    return {
+      bytes: await this.documentStorage.get(file.key),
+      name: file.name,
+      contentType: file.contentType,
+    };
   }
 
   async getWorkReport(
@@ -1673,13 +2178,19 @@ export class WorkNotesService {
     );
     if (!row) throw reportNotFound();
     const memberId = String(row.memberUserId);
+    const isLeaderReport = text(row.reportScope) === 'LEADER';
     const memberName =
       memberId === actor.userId
         ? actor.userName
         : actor.canReview
-          ? (await this.authorization.listActiveMembers(actor, headers)).find(
-              (member) => member.userId === memberId,
-            )?.fullName
+          ? isLeaderReport &&
+            typeof this.authorization.listActiveLeaders === 'function'
+            ? (await this.authorization.listActiveLeaders(actor, headers)).find(
+                (leader) => leader.userId === memberId.toLowerCase(),
+              )?.fullName
+            : (await this.authorization.listActiveMembers(actor, headers)).find(
+                (member) => member.userId === memberId,
+              )?.fullName
           : undefined;
     return this.workReportRecord(row, actor, memberName);
   }
@@ -1798,8 +2309,16 @@ export class WorkNotesService {
         ),
       );
       if (!current) throw reportNotFound();
+      const isLeaderReport = text(current.reportScope) === 'LEADER';
+      if (isLeaderReport && !actor.isManager) {
+        throw this.reviewPermissionDenied();
+      }
       memberId = String(current.memberUserId);
-      assertReviewerCanReview(memberId, actor.userId, actor.canReview);
+      assertReviewerCanReview(
+        memberId,
+        actor.userId,
+        isLeaderReport ? Boolean(actor.isManager) : actor.canReview,
+      );
       const history = pickReviewHistory(current.reviewHistory);
       const updated = await reports.updateOne(
         { _id: id, status: 'PENDING_REVIEW' },
@@ -1880,6 +2399,31 @@ export class WorkNotesService {
         session,
       );
     });
+    if (this.notifications && memberId) {
+      await this.notifications.emitSafe({
+        type: 'TASK_DEADLINE_APPROACHING',
+        actorId: actor.userId,
+        recipients: [memberId],
+        title:
+          action === 'APPROVED'
+            ? 'Work report approved'
+            : action === 'CHANGES_REQUESTED'
+              ? 'Changes requested on work report'
+              : 'Work report rejected',
+        message: input.comment
+          ? `Reviewer feedback: ${input.comment}`
+          : `Your work report status was updated to ${action.replace('_', ' ').toLowerCase()}.`,
+        organizationId: actor.organizationId,
+        projectId,
+        target: {
+          kind: 'PROJECT',
+          url: `/projects/${projectId}/work-reports`,
+          organizationId: actor.organizationId,
+          projectId,
+        },
+        eventKey: `work-report-review:${reportId}:${action}:${now.getTime()}`,
+      });
+    }
     return this.getWorkReport(headers, projectId, reportId);
   }
 
@@ -1957,7 +2501,28 @@ export class WorkNotesService {
           return true;
         },
       );
-      if (didTransition) transitioned += 1;
+      if (didTransition) {
+        transitioned += 1;
+        if (this.notifications) {
+          await this.notifications.emitSafe({
+            type: 'TASK_DEADLINE_OVERDUE',
+            actorId: null,
+            recipients: [String(item.memberUserId)],
+            title: 'Work report overdue',
+            message:
+              'Your periodic work report has passed its due date. Please complete and submit your report.',
+            organizationId: String(item.organizationId),
+            projectId: String(item.projectId),
+            target: {
+              kind: 'PROJECT',
+              url: `/projects/${String(item.projectId)}/work-reports`,
+              organizationId: String(item.organizationId),
+              projectId: String(item.projectId),
+            },
+            eventKey: `work-report-overdue:${String(id)}`,
+          });
+        }
+      }
     }
     return transitioned;
   }
@@ -1979,6 +2544,7 @@ export class WorkNotesService {
       project.members,
       timeline,
       new Date(),
+      'MEMBER',
     );
   }
 
@@ -1986,16 +2552,37 @@ export class WorkNotesService {
     actor: WorkNotesActor,
     reportId: Types.ObjectId,
     input: WorkReportInput,
+    expectedScope?: WorkReportScope,
   ): Promise<WorkReportRecord> {
-    if (actor.canReview) {
+    const reports = this.database().collection('work_reports');
+    const existingReport = record(
+      await reports.findOne({
+        _id: reportId,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(actor.projectId),
+      }),
+    );
+    const resolvedScope: WorkReportScope =
+      expectedScope ??
+      (text(existingReport?.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER');
+    if (resolvedScope === 'MEMBER' && actor.canReview) {
       throw new ForbiddenException({
         code: 'WORK_REPORT_MEMBER_ONLY',
         message:
           'Project Leaders are excluded from member Work Report obligations.',
       });
     }
+    if (
+      resolvedScope === 'LEADER' &&
+      (!actor.canReview || (actor.isManager && !actor.isLeader))
+    ) {
+      throw new ForbiddenException({
+        code: 'WORK_REPORT_LEADER_ONLY',
+        message: 'Only Project Leaders can save a Leader Work Report draft.',
+      });
+    }
+    if (!existingReport) throw reportNotFound();
     const now = new Date();
-    const reports = this.database().collection('work_reports');
     await this.transaction(async (db, session) => {
       const txReports = db.collection('work_reports');
       const update = await txReports.updateOne(
@@ -2013,6 +2600,9 @@ export class WorkNotesService {
             reason: input.reason,
             blockers: input.blockers ?? '',
             nextSteps: input.nextSteps ?? '',
+            ...(input.documentIds !== undefined
+              ? { documentIds: input.documentIds }
+              : {}),
             updatedAt: now,
           },
         },
@@ -2058,12 +2648,23 @@ export class WorkNotesService {
       .toArray();
     if (rows.length === 0) {
       const now = new Date();
+      const effectiveAt = startOfUtcWeek(now);
       const setting = {
         _id: new Types.ObjectId(),
         ...filter,
         frequency: 'WEEKLY',
-        effectiveAt: startOfUtcWeek(now),
+        effectiveAt,
         createdByUserId: objectId(actor.userId),
+        leaderFrequency: 'WEEKLY',
+        leaderEffectiveAt: effectiveAt,
+        leaderUpdatedByUserId: objectId(actor.userId),
+        leaderHistory: [
+          {
+            frequency: 'WEEKLY',
+            effectiveAt: effectiveAt.toISOString(),
+            updatedBy: actor.userId,
+          },
+        ],
         createdAt: now,
         updatedAt: now,
       };
@@ -2085,6 +2686,32 @@ export class WorkNotesService {
     return rows;
   }
 
+  private leaderSettingsTimeline(settings: MongoRecord[]): MongoRecord[] {
+    const root = settings[0];
+    if (!root) return [];
+    const frequency = (text(root.leaderFrequency) ||
+      'WEEKLY') as WorkReportFrequency;
+    const effectiveAt =
+      root.leaderEffectiveAt instanceof Date
+        ? root.leaderEffectiveAt
+        : new Date(String(root.leaderEffectiveAt ?? root.effectiveAt));
+    const createdByUserId = root.leaderUpdatedByUserId ?? root.createdByUserId;
+    const history = Array.isArray(root.leaderHistory)
+      ? (root.leaderHistory as Array<Record<string, unknown>>)
+      : [{ frequency, effectiveAt, updatedBy: String(createdByUserId) }];
+    return history.map((entry) => ({
+      _id: root._id,
+      organizationId: root.organizationId,
+      projectId: root.projectId,
+      frequency: text(entry.frequency) || frequency,
+      effectiveAt:
+        entry.effectiveAt instanceof Date
+          ? entry.effectiveAt
+          : new Date(String(entry.effectiveAt)),
+      createdByUserId: entry.updatedBy ?? createdByUserId,
+    }));
+  }
+
   private activeSetting(settings: MongoRecord[], now: Date): MongoRecord {
     const active = settings
       .filter(
@@ -2103,16 +2730,72 @@ export class WorkNotesService {
     settings: MongoRecord[],
     actor: WorkNotesActor,
     now: Date,
+    scope: WorkReportScope = 'MEMBER',
   ): WorkReportSettingsRecord {
+    const root = settings[0];
+    const leaderFrequency = (text(root?.leaderFrequency) ||
+      'WEEKLY') as WorkReportFrequency;
+    const leaderEffectiveAt =
+      iso(root?.leaderEffectiveAt ?? root?.effectiveAt) ?? '';
+    const leaderUpdatedBy =
+      idText(root?.leaderUpdatedByUserId ?? root?.createdByUserId) ||
+      actor.userId;
+    const leaderHistory = Array.isArray(root?.leaderHistory)
+      ? (root.leaderHistory as Array<Record<string, unknown>>).map((entry) => ({
+          frequency: (text(entry.frequency) || 'WEEKLY') as WorkReportFrequency,
+          effectiveAt: iso(entry.effectiveAt) ?? leaderEffectiveAt,
+          updatedBy: text(entry.updatedBy) || leaderUpdatedBy,
+        }))
+      : [
+          {
+            frequency: leaderFrequency,
+            effectiveAt: leaderEffectiveAt,
+            updatedBy: leaderUpdatedBy,
+          },
+        ];
+    const actorRole: 'MANAGER' | 'LEADER' | 'MEMBER' = actor.isManager
+      ? 'MANAGER'
+      : actor.canReview
+        ? 'LEADER'
+        : 'MEMBER';
+    const leaderSettingsSummary = {
+      frequency: leaderFrequency,
+      effectiveAt: leaderEffectiveAt,
+      updatedBy: leaderUpdatedBy,
+      history: leaderHistory,
+      permissions: { canConfigure: Boolean(actor.isManager) },
+    };
+
+    if (scope === 'LEADER') {
+      return {
+        projectId: actor.projectId,
+        scope: 'LEADER',
+        actorRole,
+        frequency: leaderFrequency,
+        effectiveAt: leaderEffectiveAt,
+        updatedBy: leaderUpdatedBy,
+        history: leaderHistory,
+        permissions: { canConfigure: Boolean(actor.isManager) },
+        leaderSettings: leaderSettingsSummary,
+      };
+    }
+
     const active = this.activeSetting(settings, now);
     const next = settings.find(
       (item) => new Date(String(item.effectiveAt)).getTime() > now.getTime(),
     );
     return {
       projectId: actor.projectId,
+      scope: 'MEMBER',
+      actorRole,
       frequency: text(active.frequency) as WorkReportFrequency,
       effectiveAt: iso(active.effectiveAt) ?? '',
-      ...(next ? { nextEffectiveAt: iso(next.effectiveAt) } : {}),
+      ...(next
+        ? {
+            nextFrequency: text(next.frequency) as WorkReportFrequency,
+            nextEffectiveAt: iso(next.effectiveAt),
+          }
+        : {}),
       updatedBy: String(active.createdByUserId),
       history: settings.map((item) => ({
         frequency: text(item.frequency) as WorkReportFrequency,
@@ -2120,6 +2803,7 @@ export class WorkNotesService {
         updatedBy: String(item.createdByUserId),
       })),
       permissions: { canConfigure: actor.canConfigure },
+      leaderSettings: leaderSettingsSummary,
     };
   }
 
@@ -2128,6 +2812,7 @@ export class WorkNotesService {
     members: Array<{ userId: string; joinedAt: string }>,
     settings: MongoRecord[],
     now: Date,
+    scope: WorkReportScope = 'MEMBER',
   ): Promise<void> {
     const reports = this.database().collection('work_reports');
     const operations: Array<{
@@ -2137,15 +2822,26 @@ export class WorkNotesService {
         upsert: true;
       };
     }> = [];
+    const currentPeriodNotifications: Array<{
+      memberId: string;
+      frequency: WorkReportFrequency;
+      periodStart: Date;
+      dueAt: Date;
+    }> = [];
     const maxPeriodsPerMember = 20_000;
     const periodStartByUser = new Map<string, number>();
 
     for (let index = 0; index < settings.length; index += 1) {
       const setting = settings[index];
-      const segmentStart = new Date(String(setting.effectiveAt));
+      const segmentStart =
+        setting.effectiveAt instanceof Date
+          ? setting.effectiveAt
+          : new Date(String(setting.effectiveAt));
       const nextSetting = settings[index + 1];
       const segmentEnd = nextSetting
-        ? new Date(String(nextSetting.effectiveAt))
+        ? nextSetting.effectiveAt instanceof Date
+          ? nextSetting.effectiveAt
+          : new Date(String(nextSetting.effectiveAt))
         : undefined;
       if (segmentStart.getTime() > now.getTime()) continue;
 
@@ -2166,6 +2862,8 @@ export class WorkNotesService {
         if (segmentEnd && end.getTime() > segmentEnd.getTime())
           end = segmentEnd;
         if (end.getTime() <= start.getTime()) break;
+        const isCurrentPeriod =
+          start.getTime() <= now.getTime() && end.getTime() > now.getTime();
         for (const member of members) {
           const memberId = member.userId;
           if (!validId(memberId)) continue;
@@ -2191,6 +2889,7 @@ export class WorkNotesService {
               filter: {
                 projectId: projectObjectId,
                 memberUserId: memberObjectId,
+                reportScope: scope,
                 periodStart: start,
               },
               update: {
@@ -2199,6 +2898,7 @@ export class WorkNotesService {
                   organizationId: objectId(actor.organizationId),
                   projectId: projectObjectId,
                   memberUserId: memberObjectId,
+                  reportScope: scope,
                   frequency,
                   periodStart: start,
                   periodEnd: end,
@@ -2208,6 +2908,7 @@ export class WorkNotesService {
                   reason: '',
                   blockers: '',
                   nextSteps: '',
+                  documentIds: [],
                   status: 'DRAFT',
                   reviewHistory: [],
                   createdAt: now,
@@ -2217,15 +2918,25 @@ export class WorkNotesService {
               upsert: true,
             },
           });
+          if (isCurrentPeriod) {
+            currentPeriodNotifications.push({
+              memberId,
+              frequency,
+              periodStart: start,
+              dueAt: end,
+            });
+          }
         }
         periodStart = new Date(periodStart.getTime() + periodLengthMs);
       }
     }
 
+    let upsertedCount = 0;
     for (let offset = 0; offset < operations.length; offset += 500) {
       const batch = operations.slice(offset, offset + 500);
       try {
-        await reports.bulkWrite(batch, { ordered: false });
+        const result = await reports.bulkWrite(batch, { ordered: false });
+        upsertedCount += result.upsertedCount ?? 0;
       } catch (error) {
         if (
           !(error instanceof Error) ||
@@ -2233,6 +2944,39 @@ export class WorkNotesService {
           error.code !== 11000
         )
           throw error;
+      }
+    }
+
+    if (
+      upsertedCount > 0 &&
+      this.notifications &&
+      currentPeriodNotifications.length > 0
+    ) {
+      for (const item of currentPeriodNotifications) {
+        const days = getFrequencyDays(item.frequency);
+        const dueDateLabel = item.dueAt.toISOString().slice(0, 10);
+        await this.notifications.emitSafe({
+          type: 'TASK_DEADLINE_APPROACHING',
+          actorId: null,
+          recipients: [item.memberId],
+          title:
+            scope === 'LEADER'
+              ? 'Leader work report due to Manager'
+              : 'Periodic work report due',
+          message:
+            scope === 'LEADER'
+              ? `Your Leader report (${days}-${days === 1 ? 'day' : 'day'} cadence) is due by ${dueDateLabel}.`
+              : `Your periodic work report (every ${days} ${days === 1 ? 'day' : 'days'}) is due by ${dueDateLabel}.`,
+          organizationId: actor.organizationId,
+          projectId: actor.projectId,
+          target: {
+            kind: 'PROJECT',
+            url: `/projects/${actor.projectId}/work-reports`,
+            organizationId: actor.organizationId,
+            projectId: actor.projectId,
+          },
+          eventKey: `work-report-due:${actor.projectId}:${scope}:${item.memberId}:${item.periodStart.toISOString()}`,
+        });
       }
     }
   }
@@ -2245,12 +2989,27 @@ export class WorkNotesService {
     const value = row as unknown as Record<string, unknown>;
     const memberId = String(value.memberUserId);
     const status = text(value.status) as WorkReportStatus;
+    const reportScope: WorkReportScope =
+      text(value.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
     const isOwner = memberId === actor.userId;
+    const isLeaderAuthor =
+      reportScope === 'LEADER' &&
+      Boolean(actor.isLeader || (actor.canReview && !actor.isManager));
+    const canAuthorReport =
+      reportScope === 'LEADER' ? isLeaderAuthor : !actor.canReview;
+    const canReviewReport =
+      reportScope === 'LEADER'
+        ? Boolean(actor.isManager) && !isOwner && status === 'PENDING_REVIEW'
+        : actor.canReview && !isOwner && status === 'PENDING_REVIEW';
+    const canConfigureReport =
+      reportScope === 'LEADER' ? Boolean(actor.isManager) : actor.canConfigure;
+
     return {
       id: String(value._id),
       projectId: String(value.projectId),
       memberId,
       memberName: isOwner ? actor.userName : resolvedMemberName || memberId,
+      reportScope,
       frequency: text(value.frequency) as WorkReportFrequency,
       periodStart: iso(value.periodStart) ?? '',
       periodEnd: iso(value.periodEnd) ?? '',
@@ -2261,6 +3020,24 @@ export class WorkNotesService {
       reason: text(value.reason),
       blockers: text(value.blockers),
       nextSteps: text(value.nextSteps),
+      ...(Array.isArray(value.documentIds)
+        ? {
+            documentIds: (value.documentIds as unknown[])
+              .filter((id): id is string => typeof id === 'string')
+              .map((id) => id.trim()),
+          }
+        : {}),
+      ...(value.file && typeof value.file === 'object'
+        ? {
+            file: {
+              name: text((value.file as Record<string, unknown>).name),
+              contentType: text(
+                (value.file as Record<string, unknown>).contentType,
+              ),
+              size: Number((value.file as Record<string, unknown>).size),
+            },
+          }
+        : {}),
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
       ...(iso(value.submittedAt)
@@ -2275,17 +3052,17 @@ export class WorkNotesService {
         : {}),
       reviewHistory: pickReviewHistory(value.reviewHistory),
       permissions: {
-        canCreate: !actor.canReview,
+        canCreate: canAuthorReport,
         canEdit:
-          !actor.canReview &&
+          canAuthorReport &&
           isOwner &&
           ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'].includes(status),
         canSubmit:
-          !actor.canReview &&
+          canAuthorReport &&
           isOwner &&
           ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'].includes(status),
-        canReview: actor.canReview && !isOwner && status === 'PENDING_REVIEW',
-        canConfigure: actor.canConfigure,
+        canReview: canReviewReport,
+        canConfigure: canConfigureReport,
       },
     };
   }
@@ -2313,6 +3090,7 @@ export class WorkNotesService {
     projectId: string,
     now: Date,
     activeMemberIds?: ReadonlySet<string>,
+    scope: WorkReportScope = 'MEMBER',
   ): Promise<void> {
     if (activeMemberIds && activeMemberIds.size === 0) return;
     const allowedMemberObjectIds = activeMemberIds
@@ -2323,6 +3101,14 @@ export class WorkNotesService {
       .find({
         organizationId: objectId(actor.organizationId),
         projectId: objectId(projectId),
+        ...(scope === 'LEADER'
+          ? { reportScope: 'LEADER' }
+          : {
+              $or: [
+                { reportScope: 'MEMBER' },
+                { reportScope: { $exists: false } },
+              ],
+            }),
         ...(allowedMemberObjectIds
           ? { memberUserId: { $in: allowedMemberObjectIds } }
           : {}),
@@ -2334,6 +3120,7 @@ export class WorkNotesService {
     for (const candidate of candidates) {
       const item = candidate as unknown as Record<string, unknown>;
       const id = objectId(String(item._id));
+      let didTransition = false;
       await this.transaction(async (db, session) => {
         const update = await db
           .collection('work_reports')
@@ -2343,6 +3130,7 @@ export class WorkNotesService {
             { session },
           );
         if (update.modifiedCount !== 1) return;
+        didTransition = true;
         const commonPayload = {
           organizationId: actor.organizationId,
           projectId,
@@ -2370,6 +3158,28 @@ export class WorkNotesService {
           session,
         );
       });
+      if (didTransition && this.notifications) {
+        await this.notifications.emitSafe({
+          type: 'TASK_DEADLINE_OVERDUE',
+          actorId: null,
+          recipients: [String(item.memberUserId)],
+          title:
+            scope === 'LEADER'
+              ? 'Leader work report overdue'
+              : 'Work report overdue',
+          message:
+            'Your periodic work report has passed its due date. Please complete and submit your report.',
+          organizationId: actor.organizationId,
+          projectId,
+          target: {
+            kind: 'PROJECT',
+            url: `/projects/${projectId}/work-reports`,
+            organizationId: actor.organizationId,
+            projectId,
+          },
+          eventKey: `work-report-overdue:${String(id)}`,
+        });
+      }
     }
   }
 
@@ -2380,6 +3190,8 @@ export class WorkNotesService {
       id: String(value._id),
       projectId: String(value.projectId),
       taskId: String(value.taskId),
+      ...(actor.taskKey ? { taskKey: actor.taskKey } : {}),
+      ...(actor.taskTitle ? { taskTitle: actor.taskTitle } : {}),
       authorId,
       authorName:
         text(value.authorName) ||

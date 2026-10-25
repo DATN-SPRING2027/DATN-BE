@@ -14,6 +14,7 @@ interface IdentityResponse {
   id?: string;
   name?: string;
   organizationId?: string;
+  roles?: string[];
 }
 
 interface MembershipResponse {
@@ -79,14 +80,20 @@ export class WorkNotesAuthorizationService {
       throw this.projectNotFound();
     }
 
+    const isManager =
+      Array.isArray(identity.roles) && identity.roles.includes('ADMIN');
     const settingsAccess = await this.request<{ canUpdateProject?: boolean }>(
       `/api/v1/iam/projects/${normalizedProjectId}/settings-access`,
       headers,
       { allowForbidden: true },
     );
-    const canReview = settingsAccess?.canUpdateProject === true;
+    const isLeader = settingsAccess?.canUpdateProject === true;
+    const canReview = isLeader || isManager;
     const joinedAt = canReview
-      ? undefined
+      ? typeof project.createdAt === 'string' &&
+        Number.isFinite(Date.parse(project.createdAt))
+        ? project.createdAt
+        : undefined
       : await this.resolveActiveMemberJoinedAt(
           normalizedProjectId,
           userId.toLowerCase(),
@@ -100,6 +107,8 @@ export class WorkNotesAuthorizationService {
       projectId: normalizedProjectId,
       canReview,
       canConfigure: canReview,
+      isManager,
+      isLeader,
       ...(joinedAt ? { joinedAt } : {}),
     };
   }
@@ -136,7 +145,19 @@ export class WorkNotesAuthorizationService {
         message: 'Task not found.',
       });
     }
-    return actor;
+    const taskKey =
+      typeof task.key === 'string' && task.key.trim().length > 0
+        ? task.key.trim()
+        : undefined;
+    const taskTitle =
+      typeof task.title === 'string' && task.title.trim().length > 0
+        ? task.title.trim()
+        : undefined;
+    return {
+      ...actor,
+      ...(taskKey ? { taskKey } : {}),
+      ...(taskTitle ? { taskTitle } : {}),
+    };
   }
 
   async listActiveMembers(
@@ -208,6 +229,96 @@ export class WorkNotesAuthorizationService {
     return [...members.entries()]
       .filter(([userId]) => !leaderIds.has(userId))
       .map(([userId, membership]) => ({ userId, ...membership }));
+  }
+
+  async listActiveLeaders(
+    actor: WorkNotesActor,
+    headers: CaptureRequestHeaders,
+  ): Promise<Array<{ userId: string; fullName: string; joinedAt: string }>> {
+    if (!actor.canReview) {
+      throw new ForbiddenException({
+        code: 'PROJECT_REVIEW_PERMISSION_REQUIRED',
+        message: 'Project review permission is required.',
+      });
+    }
+
+    const members = new Map<string, { fullName: string; joinedAt: string }>();
+    let page = 1;
+    let totalPages = 1;
+    do {
+      const result = await this.request<MembershipResponse>(
+        `/api/v1/iam/projects/${actor.projectId}/memberships?page=${page}&pageSize=100&status=ACTIVE`,
+        headers,
+      );
+      if (!Array.isArray(result?.data)) {
+        throw this.membersUnavailable();
+      }
+      for (const membership of result.data) {
+        if (validId(membership.userId ?? '')) {
+          const userId = membership.userId!.toLowerCase();
+          if (
+            !membership.joinedAt ||
+            !Number.isFinite(Date.parse(membership.joinedAt))
+          )
+            throw this.membersUnavailable();
+          members.set(userId, {
+            fullName:
+              membership.user?.fullName?.trim() ||
+              membership.user?.email?.trim() ||
+              userId,
+            joinedAt: membership.joinedAt,
+          });
+        }
+      }
+      totalPages = result.pagination?.totalPages ?? 1;
+      if (
+        !Number.isSafeInteger(totalPages) ||
+        totalPages < 1 ||
+        totalPages > 1000
+      ) {
+        throw this.membersUnavailable();
+      }
+      page += 1;
+    } while (page <= totalPages);
+
+    const leadersResponse = await this.request<{
+      data?: Array<{
+        userId?: string;
+        fullName?: string;
+        email?: string;
+        status?: string;
+      }>;
+    }>(`/api/v1/iam/projects/${actor.projectId}/leaders`, headers);
+    if (!Array.isArray(leadersResponse?.data)) {
+      throw this.membersUnavailable();
+    }
+    const fallbackJoinedAt =
+      actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
+        ? actor.joinedAt
+        : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const activeLeaders: Array<{
+      userId: string;
+      fullName: string;
+      joinedAt: string;
+    }> = [];
+    for (const leader of leadersResponse.data) {
+      if (leader.status !== undefined && leader.status !== 'ACTIVE') continue;
+      if (typeof leader.userId !== 'string' || !validId(leader.userId))
+        continue;
+      const userId = leader.userId.toLowerCase();
+      const memberEntry = members.get(userId);
+      activeLeaders.push({
+        userId,
+        fullName:
+          leader.fullName?.trim() ||
+          memberEntry?.fullName ||
+          leader.email?.trim() ||
+          userId,
+        joinedAt: memberEntry?.joinedAt ?? fallbackJoinedAt,
+      });
+    }
+    return activeLeaders;
   }
 
   private async resolveActiveMemberJoinedAt(

@@ -28,6 +28,8 @@ export type WorkReportStatus =
   | 'REJECTED'
   | 'OVERDUE';
 
+export type WorkReportScope = 'MEMBER' | 'LEADER';
+
 export interface CaptureRequestHeaders {
   authorization?: string;
   cookie?: string;
@@ -43,7 +45,20 @@ export interface WorkNotesActor {
   projectId: string;
   canReview: boolean;
   canConfigure: boolean;
+  isManager?: boolean;
+  isLeader?: boolean;
   joinedAt?: string;
+  taskKey?: string;
+  taskTitle?: string;
+}
+
+export type TaskNoteSortOrder = 'recent' | 'oldest';
+
+export interface ProjectTaskNotesQueryOptions {
+  taskId?: string;
+  authorId?: string;
+  search?: string;
+  sort?: TaskNoteSortOrder;
 }
 
 export interface TaskNoteInput {
@@ -76,6 +91,7 @@ export interface WorkReportInput {
   reason: string;
   blockers?: string;
   nextSteps?: string;
+  documentIds?: string[];
 }
 
 export interface WorkNotesPagination {
@@ -103,6 +119,8 @@ export interface TaskNoteRecord extends TaskNoteInput {
   id: string;
   projectId: string;
   taskId: string;
+  taskKey?: string;
+  taskTitle?: string;
   authorId: string;
   authorName: string;
   type: 'TASK_NOTE';
@@ -169,11 +187,14 @@ export interface WorkReportRecord extends WorkReportInput {
   projectId: string;
   memberId: string;
   memberName: string;
+  reportScope?: WorkReportScope;
   frequency: WorkReportFrequency;
   periodStart: string;
   periodEnd: string;
   dueAt: string;
   status: WorkReportStatus;
+  file?: ProjectDocumentFileRecord;
+  documentIds?: string[];
   createdAt: string;
   updatedAt: string;
   submittedAt?: string;
@@ -186,8 +207,11 @@ export interface WorkReportRecord extends WorkReportInput {
 
 export interface WorkReportSettingsRecord {
   projectId: string;
+  scope?: WorkReportScope;
+  actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';
   frequency: WorkReportFrequency;
   effectiveAt: string;
+  nextFrequency?: WorkReportFrequency;
   nextEffectiveAt?: string;
   updatedBy: string;
   history: Array<{
@@ -196,4 +220,15 @@ export interface WorkReportSettingsRecord {
     updatedBy: string;
   }>;
   permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
+  leaderSettings?: {
+    frequency: WorkReportFrequency;
+    effectiveAt: string;
+    updatedBy: string;
+    history: Array<{
+      frequency: WorkReportFrequency;
+      effectiveAt: string;
+      updatedBy: string;
+    }>;
+    permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
+  };
 }
