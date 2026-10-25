@@ -145,7 +145,19 @@ export class WorkNotesAuthorizationService {
         message: 'Task not found.',
       });
     }
-    return actor;
+    const taskKey =
+      typeof task.key === 'string' && task.key.trim().length > 0
+        ? task.key.trim()
+        : undefined;
+    const taskTitle =
+      typeof task.title === 'string' && task.title.trim().length > 0
+        ? task.title.trim()
+        : undefined;
+    return {
+      ...actor,
+      ...(taskKey ? { taskKey } : {}),
+      ...(taskTitle ? { taskTitle } : {}),
+    };
   }
 
   async listActiveMembers(

@@ -48,6 +48,17 @@ export interface WorkNotesActor {
   isManager?: boolean;
   isLeader?: boolean;
   joinedAt?: string;
+  taskKey?: string;
+  taskTitle?: string;
+}
+
+export type TaskNoteSortOrder = 'recent' | 'oldest';
+
+export interface ProjectTaskNotesQueryOptions {
+  taskId?: string;
+  authorId?: string;
+  search?: string;
+  sort?: TaskNoteSortOrder;
 }
 
 export interface TaskNoteInput {
@@ -108,6 +119,8 @@ export interface TaskNoteRecord extends TaskNoteInput {
   id: string;
   projectId: string;
   taskId: string;
+  taskKey?: string;
+  taskTitle?: string;
   authorId: string;
   authorName: string;
   type: 'TASK_NOTE';

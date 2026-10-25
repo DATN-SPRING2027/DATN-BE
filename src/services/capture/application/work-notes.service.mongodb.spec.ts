@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Types, type Connection } from 'mongoose';
 import type { WorkNotesAuthorizationService } from './work-notes-authorization.service';
@@ -224,6 +225,108 @@ describe('Capture Work Notes Mongo workflows', () => {
 
     expect(page.data).toHaveLength(1);
     expect(page.data[0].taskId).toBe(taskId);
+  });
+
+  it('enforces per-task authorization, enriches task context, and filters/sorts project task notes', async () => {
+    const secondTaskId = new Types.ObjectId().toHexString();
+    const restrictedTaskId = new Types.ObjectId().toHexString();
+    const otherAuthorId = new Types.ObjectId().toHexString();
+
+    await service.createTaskNote({}, projectId, taskId, {
+      title: 'Improved token validation',
+      accomplishments: 'Added checks for expired access tokens.',
+      approach: 'Reused authentication middleware.',
+      reason: 'Prevent inconsistent session behavior.',
+    });
+
+    currentActor = {
+      ...currentActor,
+      userId: otherAuthorId,
+      userName: 'Developer B',
+    };
+    await service.createTaskNote({}, projectId, secondTaskId, {
+      title: 'Refactored sidebar navigation',
+      accomplishments: 'Simplified navigation state.',
+      approach: 'Consolidated route matchers.',
+      reason: 'Fix active menu highlighting.',
+    });
+    await service.createTaskNote({}, projectId, restrictedTaskId, {
+      title: 'Restricted task note',
+      accomplishments: 'Should be hidden when task access is denied.',
+      approach: 'Server-side task check.',
+      reason: 'Zero privilege escalation.',
+    });
+
+    (authorization.resolveTask as jest.Mock).mockImplementation(
+      (_headers: unknown, _projectId: string, candidateTaskId: string) => {
+        if (candidateTaskId === restrictedTaskId) {
+          return Promise.reject(new NotFoundException('Task not found'));
+        }
+        if (candidateTaskId === taskId) {
+          return Promise.resolve({
+            ...currentActor,
+            taskKey: 'FE-12',
+            taskTitle: 'Authentication & session handling',
+          });
+        }
+        return Promise.resolve({
+          ...currentActor,
+          taskKey: 'FE-08',
+          taskTitle: 'Dashboard navigation',
+        });
+      },
+    );
+
+    const allAccessible = await service.listProjectTaskNotes(
+      {},
+      projectId,
+      1,
+      50,
+    );
+    expect(allAccessible.data).toHaveLength(2);
+    expect(allAccessible.pagination.totalItems).toBe(2);
+    expect(
+      allAccessible.data.map((item) => ({
+        taskId: item.taskId,
+        taskKey: item.taskKey,
+        taskTitle: item.taskTitle,
+      })),
+    ).toEqual([
+      {
+        taskId: secondTaskId,
+        taskKey: 'FE-08',
+        taskTitle: 'Dashboard navigation',
+      },
+      {
+        taskId,
+        taskKey: 'FE-12',
+        taskTitle: 'Authentication & session handling',
+      },
+    ]);
+
+    const oldestFirst = await service.listProjectTaskNotes(
+      {},
+      projectId,
+      1,
+      50,
+      { sort: 'oldest' },
+    );
+    expect(oldestFirst.data.map((item) => item.taskKey)).toEqual([
+      'FE-12',
+      'FE-08',
+    ]);
+
+    const byAuthor = await service.listProjectTaskNotes({}, projectId, 1, 50, {
+      authorId: memberId,
+    });
+    expect(byAuthor.data).toHaveLength(1);
+    expect(byAuthor.data[0].title).toBe('Improved token validation');
+
+    const bySearch = await service.listProjectTaskNotes({}, projectId, 1, 50, {
+      search: 'sidebar',
+    });
+    expect(bySearch.data).toHaveLength(1);
+    expect(bySearch.data[0].title).toBe('Refactored sidebar navigation');
   });
 
   it('allows the author or reviewer to edit and archive a Task Note', async () => {

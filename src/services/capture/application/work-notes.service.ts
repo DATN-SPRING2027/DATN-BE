@@ -31,6 +31,7 @@ import type {
   ProjectDocumentInput,
   ProjectDocumentRecord,
   ProjectDocumentSummaryRecord,
+  ProjectTaskNotesQueryOptions,
   ReviewInput,
   TaskNoteInput,
   TaskNoteRecord,
@@ -380,32 +381,107 @@ export class WorkNotesService {
     projectId: string,
     page: number,
     pageSize: number,
-    taskId?: string,
+    taskIdOrOptions?: string | ProjectTaskNotesQueryOptions,
   ): Promise<WorkNotesPage<TaskNoteRecord>> {
+    const options: ProjectTaskNotesQueryOptions =
+      typeof taskIdOrOptions === 'string'
+        ? { taskId: taskIdOrOptions }
+        : (taskIdOrOptions ?? {});
+    const { taskId, authorId, search, sort = 'recent' } = options;
     const actor = taskId
       ? await this.authorization.resolveTask(headers, projectId, taskId)
       : await this.authorization.resolveProject(headers, projectId);
     const db = this.database();
-    const filter = {
+    const trimmedSearch = search?.trim() ?? '';
+    const escapedSearch = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex =
+      escapedSearch.length > 0 ? new RegExp(escapedSearch, 'i') : undefined;
+    const filter: Record<string, unknown> = {
       organizationId: objectId(actor.organizationId),
       projectId: objectId(projectId),
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
-      taskId: { $type: 'objectId' },
-      ...(taskId ? { taskId: objectId(taskId) } : {}),
+      taskId: taskId ? objectId(taskId) : { $type: 'objectId' },
+      ...(authorId && validId(authorId)
+        ? { authorUserId: objectId(authorId) }
+        : {}),
+      ...(searchRegex
+        ? {
+            $or: [
+              { title: searchRegex },
+              { authorName: searchRegex },
+              { whatDone: searchRegex },
+              { howSolved: searchRegex },
+              { whyThisWay: searchRegex },
+            ],
+          }
+        : {}),
     };
+    const sortSpec: Record<string, 1 | -1> =
+      sort === 'oldest' ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 };
     const collection = db.collection('work_notes');
-    const [rows, totalItems] = await Promise.all([
-      collection
-        .find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .skip((page - 1) * pageSize)
-        .limit(pageSize)
-        .toArray(),
-      collection.countDocuments(filter),
-    ]);
+    if (taskId) {
+      const [rows, totalItems] = await Promise.all([
+        collection
+          .find(filter)
+          .sort(sortSpec)
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray(),
+        collection.countDocuments(filter),
+      ]);
+      return {
+        data: rows.map((row) => this.taskNoteRecord(row, actor)),
+        pagination: this.pagination(page, pageSize, totalItems),
+      };
+    }
+
+    const allRows = await collection.find(filter).sort(sortSpec).toArray();
+    const distinctTaskIds = [
+      ...new Set(
+        allRows
+          .map((row) => idText((row as Record<string, unknown>).taskId))
+          .filter((id) => validId(id)),
+      ),
+    ];
+    const resolvedTaskActors = new Map<string, WorkNotesActor | null>();
+    await Promise.all(
+      distinctTaskIds.map(async (candidateTaskId) => {
+        try {
+          const resolved = await this.authorization.resolveTask(
+            headers,
+            projectId,
+            candidateTaskId,
+          );
+          resolvedTaskActors.set(candidateTaskId, resolved);
+        } catch (err) {
+          if (
+            err instanceof NotFoundException ||
+            err instanceof ForbiddenException
+          ) {
+            resolvedTaskActors.set(candidateTaskId, null);
+            return;
+          }
+          throw err;
+        }
+      }),
+    );
+
+    const authorizedRows = allRows.filter((row) => {
+      const rowTaskId = idText((row as Record<string, unknown>).taskId);
+      return Boolean(resolvedTaskActors.get(rowTaskId));
+    });
+    const totalItems = authorizedRows.length;
+    const pagedRows = authorizedRows.slice(
+      (page - 1) * pageSize,
+      page * pageSize,
+    );
     return {
-      data: rows.map((row) => this.taskNoteRecord(row, actor)),
+      data: pagedRows.map((row) => {
+        const rowTaskId = idText((row as Record<string, unknown>).taskId);
+        const taskActor = resolvedTaskActors.get(rowTaskId) ?? actor;
+        return this.taskNoteRecord(row, taskActor);
+      }),
       pagination: this.pagination(page, pageSize, totalItems),
     };
   }
@@ -454,8 +530,12 @@ export class WorkNotesService {
       });
     const taskId = row ? idText(row.taskId) : '';
     if (!row || !validId(taskId)) throw this.taskNoteNotFound();
-    await this.authorization.resolveTask(headers, projectId, taskId);
-    return this.taskNoteRecord(row, actor);
+    const taskActor = await this.authorization.resolveTask(
+      headers,
+      projectId,
+      taskId,
+    );
+    return this.taskNoteRecord(row, taskActor);
   }
 
   async createTaskNote(
@@ -505,6 +585,8 @@ export class WorkNotesService {
       id: String(id),
       projectId,
       taskId,
+      ...(actor.taskKey ? { taskKey: actor.taskKey } : {}),
+      ...(actor.taskTitle ? { taskTitle: actor.taskTitle } : {}),
       authorId: actor.userId,
       authorName: actor.userName,
       type: 'TASK_NOTE',
@@ -3108,6 +3190,8 @@ export class WorkNotesService {
       id: String(value._id),
       projectId: String(value.projectId),
       taskId: String(value.taskId),
+      ...(actor.taskKey ? { taskKey: actor.taskKey } : {}),
+      ...(actor.taskTitle ? { taskTitle: actor.taskTitle } : {}),
       authorId,
       authorName:
         text(value.authorName) ||

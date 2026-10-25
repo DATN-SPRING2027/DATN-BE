@@ -247,15 +247,56 @@ export class WorkNotesController {
     @Param('projectId') projectId: string,
     @Query() rawQuery: Record<string, unknown>,
   ) {
-    assertQueryKeys(rawQuery, ['page', 'pageSize', 'taskId']);
+    assertQueryKeys(rawQuery, [
+      'page',
+      'pageSize',
+      'taskId',
+      'authorId',
+      'search',
+      'sort',
+    ]);
     if (rawQuery.taskId !== undefined && typeof rawQuery.taskId !== 'string')
       invalid();
+    if (
+      rawQuery.authorId !== undefined &&
+      (typeof rawQuery.authorId !== 'string' ||
+        !/^[a-f\d]{24}$/i.test(rawQuery.authorId))
+    )
+      invalid();
+    if (
+      rawQuery.search !== undefined &&
+      (typeof rawQuery.search !== 'string' || rawQuery.search.length > 200)
+    )
+      invalid();
+    if (
+      rawQuery.sort !== undefined &&
+      rawQuery.sort !== 'recent' &&
+      rawQuery.sort !== 'oldest'
+    )
+      invalid();
+    const hasExtendedFilters =
+      rawQuery.authorId !== undefined ||
+      rawQuery.search !== undefined ||
+      rawQuery.sort !== undefined;
     return this.service.listProjectTaskNotes(
       this.requestHeaders(request),
       projectId,
       positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
       positiveInteger(rawQuery.pageSize, 20, 100),
-      rawQuery.taskId,
+      hasExtendedFilters
+        ? {
+            ...(rawQuery.taskId !== undefined
+              ? { taskId: rawQuery.taskId }
+              : {}),
+            ...(rawQuery.authorId !== undefined
+              ? { authorId: rawQuery.authorId }
+              : {}),
+            ...(rawQuery.search !== undefined
+              ? { search: rawQuery.search }
+              : {}),
+            ...(rawQuery.sort !== undefined ? { sort: rawQuery.sort } : {}),
+          }
+        : rawQuery.taskId,
     );
   }
 
