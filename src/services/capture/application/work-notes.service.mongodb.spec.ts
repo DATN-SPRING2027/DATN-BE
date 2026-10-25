@@ -55,7 +55,7 @@ describe('Capture Work Notes Mongo workflows', () => {
     await connection
       .collection('work_reports')
       .createIndex(
-        { projectId: 1, memberUserId: 1, periodStart: 1 },
+        { projectId: 1, memberUserId: 1, reportScope: 1, periodStart: 1 },
         { unique: true },
       );
     await connection
@@ -81,7 +81,7 @@ describe('Capture Work Notes Mongo workflows', () => {
     await connection
       .collection('work_reports')
       .createIndex(
-        { projectId: 1, memberUserId: 1, periodStart: 1 },
+        { projectId: 1, memberUserId: 1, reportScope: 1, periodStart: 1 },
         { unique: true },
       );
     await connection
@@ -966,5 +966,111 @@ describe('Capture Work Notes Mongo workflows', () => {
     );
     expect(approvedLeaderReport.status).toBe('APPROVED');
     expect(approvedLeaderReport.reviewComment).toBe('Great sprint summary.');
+  });
+
+  it('keeps Leader and legacy Member reports distinct for the same author and period', async () => {
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      joinedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    };
+    const settings = await service.getWorkReportSettings({}, projectId);
+    const periodStart = new Date(
+      settings.leaderSettings?.effectiveAt ?? settings.effectiveAt,
+    );
+    await connection.collection('work_reports').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      memberUserId: new Types.ObjectId(leaderId),
+      periodStart,
+      periodEnd: new Date(periodStart.getTime() + 7 * 86_400_000),
+      dueAt: new Date(periodStart.getTime() + 7 * 86_400_000),
+      frequency: 'WEEKLY',
+      status: 'APPROVED',
+      accomplishments: 'Legacy member report',
+      approach: 'Legacy approach',
+      reason: 'Legacy reason',
+    });
+    const draft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Leader work',
+        approach: 'Leader approach',
+        reason: 'Leader reason',
+      },
+      'LEADER',
+    );
+    expect(draft.reportScope).toBe('LEADER');
+    expect(
+      await connection
+        .collection('work_reports')
+        .countDocuments({ memberUserId: new Types.ObjectId(leaderId) }),
+    ).toBe(2);
+  });
+
+  it('keeps historical Leader periods on their original cadence after a change', async () => {
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      joinedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    };
+    const earlier = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Earlier work',
+        approach: 'Earlier approach',
+        reason: 'Earlier reason',
+      },
+      'LEADER',
+    );
+    currentActor = {
+      ...currentActor,
+      userId: new Types.ObjectId().toHexString(),
+      isLeader: false,
+      isManager: true,
+    };
+    const changed = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'DAILY',
+      'LEADER',
+    );
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      isLeader: true,
+      isManager: false,
+    };
+    const later = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Later work',
+        approach: 'Later approach',
+        reason: 'Later reason',
+      },
+      'LEADER',
+    );
+    expect(later.id).not.toBe(earlier.id);
+    expect(later.frequency).toBe('DAILY');
+    expect(new Date(later.periodStart).getTime()).toBeGreaterThanOrEqual(
+      new Date(changed.history.at(-1)!.effectiveAt).getTime(),
+    );
+    const persistedEarlier = await connection
+      .collection('work_reports')
+      .findOne({ _id: new Types.ObjectId(earlier.id) });
+    expect(persistedEarlier?.frequency).toBe('WEEKLY');
+    expect(persistedEarlier?.periodEnd).toEqual(
+      new Date(changed.history.at(-1)!.effectiveAt),
+    );
   });
 });

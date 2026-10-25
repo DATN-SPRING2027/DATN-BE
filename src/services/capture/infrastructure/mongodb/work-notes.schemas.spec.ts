@@ -21,14 +21,19 @@ describe('Work Notes persistence contract', () => {
     );
   });
 
-  it('prevents duplicate work report obligations for one project member period', () => {
+  it('prevents duplicate work report obligations within each reporting scope', () => {
     const indexes = collections.get('work_reports')?.indexes ?? [];
     expect(
       indexes.some(
         (index) =>
           index.options?.unique === true &&
           JSON.stringify(index.fields) ===
-            JSON.stringify({ projectId: 1, memberUserId: 1, periodStart: 1 }),
+            JSON.stringify({
+              projectId: 1,
+              memberUserId: 1,
+              reportScope: 1,
+              periodStart: 1,
+            }),
       ),
     ).toBe(true);
   });

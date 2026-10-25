@@ -60,8 +60,8 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
       name: 'work_reports',
       indexes: [
         index(
-          { projectId: 1, memberUserId: 1, periodStart: 1 },
-          { unique: true, name: 'work_reports_member_period_unique' },
+          { projectId: 1, memberUserId: 1, reportScope: 1, periodStart: 1 },
+          { unique: true, name: 'work_reports_member_scope_period_unique' },
         ),
         index(
           { organizationId: 1, projectId: 1, status: 1, periodStart: -1 },

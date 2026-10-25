@@ -1546,18 +1546,13 @@ export class WorkNotesService {
           updatedBy: actor.userId,
         },
       ];
-      const newPeriod = calculateReportPeriod(
-        leaderEffectiveAt,
-        frequency,
-        now,
-      );
       await this.transaction(async (db, session) => {
         await db.collection('work_report_settings').updateOne(
           { _id: root._id },
           {
             $set: {
               leaderFrequency: frequency,
-              leaderEffectiveAt,
+              leaderEffectiveAt: now,
               leaderUpdatedByUserId: objectId(actor.userId),
               leaderHistory: nextHistory,
               updatedAt: now,
@@ -1575,9 +1570,8 @@ export class WorkNotesService {
           },
           {
             $set: {
-              frequency,
-              periodEnd: newPeriod.periodEnd,
-              dueAt: newPeriod.periodEnd,
+              periodEnd: now,
+              dueAt: now,
               updatedAt: now,
             },
           },
@@ -1594,7 +1588,7 @@ export class WorkNotesService {
               scope: 'LEADER',
               previousFrequency,
               frequency,
-              effectiveAt: leaderEffectiveAt.toISOString(),
+              effectiveAt: now.toISOString(),
             },
           },
           session,
@@ -1608,7 +1602,7 @@ export class WorkNotesService {
             scope: 'LEADER',
             previousFrequency,
             frequency,
-            effectiveAt: leaderEffectiveAt.toISOString(),
+            effectiveAt: now.toISOString(),
           },
           session,
         );
@@ -1901,7 +1895,9 @@ export class WorkNotesService {
       );
       const currentSetting = this.activeSetting(leaderTimeline, now);
       const period = calculateReportPeriod(
-        new Date(String(currentSetting.effectiveAt)),
+        currentSetting.effectiveAt instanceof Date
+          ? currentSetting.effectiveAt
+          : new Date(String(currentSetting.effectiveAt)),
         text(currentSetting.frequency) as WorkReportFrequency,
         now,
       );
@@ -1912,6 +1908,7 @@ export class WorkNotesService {
             organizationId: objectId(actor.organizationId),
             projectId: objectId(projectId),
             memberUserId: objectId(actor.userId),
+            reportScope: 'LEADER',
             periodStart: period.periodStart,
           }),
       );
@@ -2617,16 +2614,20 @@ export class WorkNotesService {
         ? root.leaderEffectiveAt
         : new Date(String(root.leaderEffectiveAt ?? root.effectiveAt));
     const createdByUserId = root.leaderUpdatedByUserId ?? root.createdByUserId;
-    return [
-      {
-        _id: root._id,
-        organizationId: root.organizationId,
-        projectId: root.projectId,
-        frequency,
-        effectiveAt,
-        createdByUserId,
-      },
-    ];
+    const history = Array.isArray(root.leaderHistory)
+      ? (root.leaderHistory as Array<Record<string, unknown>>)
+      : [{ frequency, effectiveAt, updatedBy: String(createdByUserId) }];
+    return history.map((entry) => ({
+      _id: root._id,
+      organizationId: root.organizationId,
+      projectId: root.projectId,
+      frequency: text(entry.frequency) || frequency,
+      effectiveAt:
+        entry.effectiveAt instanceof Date
+          ? entry.effectiveAt
+          : new Date(String(entry.effectiveAt)),
+      createdByUserId: entry.updatedBy ?? createdByUserId,
+    }));
   }
 
   private activeSetting(settings: MongoRecord[], now: Date): MongoRecord {
@@ -2750,10 +2751,15 @@ export class WorkNotesService {
 
     for (let index = 0; index < settings.length; index += 1) {
       const setting = settings[index];
-      const segmentStart = new Date(String(setting.effectiveAt));
+      const segmentStart =
+        setting.effectiveAt instanceof Date
+          ? setting.effectiveAt
+          : new Date(String(setting.effectiveAt));
       const nextSetting = settings[index + 1];
       const segmentEnd = nextSetting
-        ? new Date(String(nextSetting.effectiveAt))
+        ? nextSetting.effectiveAt instanceof Date
+          ? nextSetting.effectiveAt
+          : new Date(String(nextSetting.effectiveAt))
         : undefined;
       if (segmentStart.getTime() > now.getTime()) continue;
 
@@ -2801,6 +2807,7 @@ export class WorkNotesService {
               filter: {
                 projectId: projectObjectId,
                 memberUserId: memberObjectId,
+                reportScope: scope,
                 periodStart: start,
               },
               update: {
