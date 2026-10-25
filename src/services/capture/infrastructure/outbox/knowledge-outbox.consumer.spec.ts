@@ -1,17 +1,27 @@
 import { ConfigService } from '@nestjs/config';
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http';
 import { Types } from 'mongoose';
 import type { Connection } from 'mongoose';
 import type { ProjectDocumentStorage } from '../storage/project-document.storage';
 import {
+  HttpSagKnowledgeSyncTransport,
   KnowledgeOutboxConsumer,
   type SagKnowledgeSyncTransport,
   type SagProjectDocumentRevokeInput,
   type SagProjectDocumentUploadInput,
+  type SagProjectDocumentUploadReceipt,
+  type SagProjectDocumentVersionStatusInput,
+  type SagProjectDocumentVersionStatusReceipt,
 } from './knowledge-outbox.consumer';
 
 const organizationId = new Types.ObjectId('6ad76c7d938f3bf53df7335e');
 const projectId = new Types.ObjectId('6ad7758334bd88b3f2cc844c');
 const documentId = new Types.ObjectId('6bd7758334bd88b3f2cc9001');
+const secondDocumentId = new Types.ObjectId('6bd7758334bd88b3f2cc9002');
 const reviewerUserId = new Types.ObjectId('6ad76c7d938f3bf53df73351');
 
 interface MockOutboxEvent {
@@ -32,16 +42,19 @@ interface MockOutboxEvent {
 interface MockHarnessOptions {
   events: MockOutboxEvent[];
   liveDocument: Record<string, unknown> | null;
+  liveDocumentsById?: Record<string, Record<string, unknown>>;
   liveVersions: Array<Record<string, unknown>>;
   fileBytesByKey?: Record<string, Buffer>;
-  uploadImpl?: (input: SagProjectDocumentUploadInput) => Promise<{
-    documentId: string;
-    documentVersionId: string;
-    status: string;
+  uploadImpl?: (
+    input: SagProjectDocumentUploadInput,
+  ) => Promise<SagProjectDocumentUploadReceipt>;
+  statusImpl?: (
+    input: SagProjectDocumentVersionStatusInput,
+  ) => Promise<SagProjectDocumentVersionStatusReceipt>;
+  revokeImpl?: (input: SagProjectDocumentRevokeInput) => Promise<{
+    status: 'REVOKED' | 'ALREADY_REVOKED' | 'NOT_FOUND';
+    documentId: string | null;
   }>;
-  revokeImpl?: (
-    input: SagProjectDocumentRevokeInput,
-  ) => Promise<{ status: 'REVOKED' | 'NOT_FOUND'; documentId: string | null }>;
 }
 
 function cloneEvent(event: MockOutboxEvent): MockOutboxEvent {
@@ -59,9 +72,22 @@ function cloneEvent(event: MockOutboxEvent): MockOutboxEvent {
 function createHarness(options: MockHarnessOptions) {
   const events = options.events.map((event) => cloneEvent(event));
   const uploads: SagProjectDocumentUploadInput[] = [];
+  const statusCalls: SagProjectDocumentVersionStatusInput[] = [];
   const revokes: SagProjectDocumentRevokeInput[] = [];
 
   const outboxCollection = {
+    find: jest.fn((filter: Record<string, unknown>) => {
+      const matched = events
+        .filter((e) => matchesFilter(e, filter))
+        .sort(compareEvents)
+        .map((e) => cloneEvent(e));
+      return {
+        sort: jest.fn(() => ({
+          toArray: jest.fn(() => Promise.resolve(matched)),
+        })),
+        toArray: jest.fn(() => Promise.resolve(matched)),
+      };
+    }),
     findOne: jest.fn((filter: Record<string, unknown>) => {
       const candidates = events
         .filter((e) => matchesFilter(e, filter))
@@ -98,6 +124,15 @@ function createHarness(options: MockHarnessOptions) {
 
   const documentsCollection = {
     findOne: jest.fn((filter: Record<string, unknown>) => {
+      const idHex =
+        filter._id instanceof Types.ObjectId
+          ? filter._id.toHexString()
+          : typeof filter._id === 'string'
+            ? filter._id
+            : '';
+      if (options.liveDocumentsById && idHex in options.liveDocumentsById) {
+        return Promise.resolve({ ...options.liveDocumentsById[idHex] });
+      }
       if (!options.liveDocument) return Promise.resolve(null);
       if (filter._id && !sameValue(filter._id, options.liveDocument._id)) {
         return Promise.resolve(null);
@@ -146,8 +181,28 @@ function createHarness(options: MockHarnessOptions) {
       }
       return {
         documentId: 'sag-doc-1',
-        documentVersionId: `sag-ver-${input.version}`,
-        status: 'QUEUED',
+        versionId: `sag-ver-${input.version}`,
+        versionNo: input.version,
+        runId: `run-${input.version}`,
+        status: 'RECEIVED',
+        searchStatus: 'PENDING',
+        knowledgeStatus: 'NOT_STARTED',
+        isDuplicate: false,
+      };
+    },
+    async getProjectDocumentVersionStatus(input) {
+      statusCalls.push(input);
+      if (options.statusImpl) {
+        return options.statusImpl(input);
+      }
+      return {
+        documentId: input.sagDocumentId,
+        versionNo: input.versionNo,
+        status: 'SEARCH_READY',
+        searchStatus: 'SEARCH_READY',
+        knowledgeStatus: 'NOT_STARTED',
+        searchReady: true,
+        knowledgeReady: false,
       };
     },
     async revokeProjectDocument(input) {
@@ -164,6 +219,8 @@ function createHarness(options: MockHarnessOptions) {
 
   const config = new ConfigService({
     KNOWLEDGE_OUTBOX_CONSUMER_ENABLED: 'false',
+    KNOWLEDGE_OUTBOX_SEARCH_READY_POLL_MS: 5,
+    KNOWLEDGE_OUTBOX_SEARCH_READY_TIMEOUT_MS: 100,
   });
 
   const consumer = new KnowledgeOutboxConsumer(
@@ -173,10 +230,15 @@ function createHarness(options: MockHarnessOptions) {
     transport,
   );
 
+  const createPeerConsumer = () =>
+    new KnowledgeOutboxConsumer(connection, config, storage, transport);
+
   return {
     consumer,
+    createPeerConsumer,
     events,
     uploads,
+    statusCalls,
     revokes,
     outboxCollection,
   };
@@ -286,6 +348,15 @@ function matchesFilter(
           return false;
         continue;
       }
+      if ('$nin' in ops && Array.isArray(ops.$nin)) {
+        if (ops.$nin.some((item) => String(item) === String(actual)))
+          return false;
+        continue;
+      }
+      if ('$ne' in ops) {
+        if (sameValue(actual, ops.$ne)) return false;
+        continue;
+      }
       if ('$exists' in ops) {
         const exists = actual !== undefined;
         if (Boolean(ops.$exists) !== exists) return false;
@@ -299,6 +370,26 @@ function matchesFilter(
           return false;
         }
         continue;
+      }
+      if ('$lt' in ops) {
+        if (ops.$lt instanceof Date) {
+          if (
+            !(actual instanceof Date) ||
+            actual.getTime() >= ops.$lt.getTime()
+          ) {
+            return false;
+          }
+          continue;
+        }
+        if (
+          ops.$lt instanceof Types.ObjectId &&
+          actual instanceof Types.ObjectId
+        ) {
+          if (actual.toHexString().localeCompare(ops.$lt.toHexString()) >= 0) {
+            return false;
+          }
+          continue;
+        }
       }
       if ('$gt' in ops && ops.$gt instanceof Date) {
         if (
@@ -315,6 +406,10 @@ function matchesFilter(
       actual instanceof Types.ObjectId
     ) {
       if (!expected.equals(actual)) return false;
+      continue;
+    }
+    if (expected instanceof Date && actual instanceof Date) {
+      if (expected.getTime() !== actual.getTime()) return false;
       continue;
     }
     if (actual !== expected) return false;
@@ -346,12 +441,13 @@ function applyUpdate(
 }
 
 describe('KnowledgeOutboxConsumer', () => {
-  it('uploads an APPROVED document version to SAG and transitions PENDING -> PUBLISHED', async () => {
+  it('uploads an APPROVED document version to SAG, verifies SEARCH_READY, and transitions PENDING -> PUBLISHED', async () => {
     const storageKey = `work-notes/${organizationId.toHexString()}/${projectId.toHexString()}/${documentId.toHexString()}/11111111-2222-4333-8444-555555555555`;
     const fileBytes = Buffer.from('# SAG Architecture Spec v1\n', 'utf-8');
     const eventId = new Types.ObjectId('700000000000000000000001');
+    let pollAttempt = 0;
 
-    const { consumer, events, uploads } = createHarness({
+    const { consumer, events, uploads, statusCalls } = createHarness({
       events: [
         {
           _id: eventId,
@@ -400,11 +496,24 @@ describe('KnowledgeOutboxConsumer', () => {
         },
       ],
       fileBytesByKey: { [storageKey]: fileBytes },
+      statusImpl: (input) => {
+        pollAttempt += 1;
+        return Promise.resolve({
+          documentId: input.sagDocumentId,
+          versionNo: input.versionNo,
+          status: pollAttempt >= 2 ? 'SEARCH_READY' : 'RECEIVED',
+          searchStatus: pollAttempt >= 2 ? 'SEARCH_READY' : 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: pollAttempt >= 2,
+          knowledgeReady: false,
+        });
+      },
     });
 
     await expect(consumer.runOnce()).resolves.toBe('PUBLISHED');
 
     expect(uploads).toHaveLength(1);
+    expect(statusCalls).toHaveLength(2);
     expect(uploads[0]).toMatchObject({
       organizationId: organizationId.toHexString(),
       projectId: projectId.toHexString(),
@@ -418,6 +527,80 @@ describe('KnowledgeOutboxConsumer', () => {
     expect(uploads[0]?.bytes.equals(fileBytes)).toBe(true);
     expect(events[0]?.status).toBe('PUBLISHED');
     expect(events[0]?.publishedAt).toBeInstanceOf(Date);
+    const delivery = (events[0]?.payload.delivery ?? {}) as Record<
+      string,
+      unknown
+    >;
+    expect(delivery.receipt).toMatchObject({
+      documentId: 'sag-doc-1',
+      versionId: 'sag-ver-1',
+      versionNo: 1,
+      searchStatus: 'SEARCH_READY',
+      searchReady: true,
+    });
+  });
+
+  it('schedules RETRY (never PUBLISHED) when SAG indexing reports INDEX_FAILED after upload', async () => {
+    const eventId = new Types.ObjectId('700000000000000000000009');
+    const { consumer, events } = createHarness({
+      events: [
+        {
+          _id: eventId,
+          eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateId: documentId.toHexString(),
+          payload: {
+            sourceType: 'PROJECT_DOCUMENT',
+            sourceId: documentId.toHexString(),
+            organizationId: organizationId.toHexString(),
+            projectId: projectId.toHexString(),
+            version: 1,
+            approvedAt: '2026-10-25T10:00:00.000Z',
+          },
+          status: 'PENDING',
+          occurredAt: new Date('2026-10-25T10:00:00.000Z'),
+        },
+      ],
+      liveDocument: {
+        _id: documentId,
+        organizationId,
+        projectId,
+        title: 'Index Failure Spec',
+        status: 'APPROVED',
+        currentVersionNumber: 1,
+        latestApprovedVersionNumber: 1,
+        createdByUserId: reviewerUserId,
+        updatedByUserId: reviewerUserId,
+      },
+      liveVersions: [
+        {
+          _id: new Types.ObjectId(),
+          organizationId,
+          projectId,
+          documentId,
+          versionNumber: 1,
+          title: 'Index Failure Spec',
+          status: 'APPROVED',
+          reviewedByUserId: reviewerUserId,
+          content: '# Index Failure Spec\n\nBody text.',
+        },
+      ],
+      statusImpl: (input) =>
+        Promise.resolve({
+          documentId: input.sagDocumentId,
+          versionNo: input.versionNo,
+          status: 'FAILED',
+          searchStatus: 'INDEX_FAILED',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          error: { code: 'STORE_PERSIST_FAILED' },
+        }),
+    });
+
+    await expect(consumer.runOnce()).resolves.toBe('RETRY');
+    expect(events[0]?.status).toBe('PENDING');
+    expect(events[0]?.lastError).toBe('SAG_INDEX_FAILED:STORE_PERSIST_FAILED');
   });
 
   it('skips a stale KNOWLEDGE_SOURCE_APPROVED event when live document is ARCHIVED (after REVOKED) so it never revives in SAG', async () => {
@@ -582,7 +765,6 @@ describe('KnowledgeOutboxConsumer', () => {
     );
     expect(results).toEqual(['SKIPPED', 'PUBLISHED', 'PUBLISHED']);
 
-    // Only v2 was uploaded to SAG; stale v1 was skipped!
     expect(uploads).toHaveLength(1);
     expect(uploads[0]?.version).toBe(2);
     expect(uploads[0]?.idempotencyKey).toBe(
@@ -673,21 +855,134 @@ describe('KnowledgeOutboxConsumer', () => {
       revokeImpl: () => Promise.reject(new Error('SAG_HTTP_503_UNAVAILABLE')),
     });
 
-    // Attempt 5 reaches MAX_ATTEMPTS (5) -> status becomes FAILED
     await expect(consumer.runOnce()).resolves.toBe('FAILED');
     expect(events[0]?.status).toBe('FAILED');
     expect(events[0]?.lastError).toBe('SAG_HTTP_503_UNAVAILABLE');
   });
 
-  it('serializes concurrent runOnce calls for the same documentId in strict FIFO order without overlapping transport calls', async () => {
-    const executionOrder: string[] = [];
-    let inFlightForDoc = 0;
-    let maxConcurrentForDoc = 0;
+  it('enforces multi-instance per-documentId FIFO and prevents out-of-order execution when an older event is leased or in retry backoff', async () => {
+    const futureRetry = new Date(Date.now() + 60_000);
+    const { consumer, createPeerConsumer, events, uploads, revokes } =
+      createHarness({
+        events: [
+          {
+            _id: new Types.ObjectId('700000000000000000000040'),
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            aggregateType: 'PROJECT_DOCUMENT',
+            aggregateId: documentId.toHexString(),
+            payload: {
+              sourceType: 'PROJECT_DOCUMENT',
+              sourceId: documentId.toHexString(),
+              organizationId: organizationId.toHexString(),
+              projectId: projectId.toHexString(),
+              version: 1,
+              approvedAt: '2026-10-25T10:00:00.000Z',
+              delivery: {
+                attemptCount: 1,
+                nextAttemptAt: futureRetry,
+              },
+            },
+            status: 'PENDING',
+            occurredAt: new Date('2026-10-25T10:00:00.000Z'),
+          },
+          {
+            _id: new Types.ObjectId('700000000000000000000041'),
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+            aggregateType: 'PROJECT_DOCUMENT',
+            aggregateId: documentId.toHexString(),
+            payload: {
+              sourceType: 'PROJECT_DOCUMENT',
+              sourceId: documentId.toHexString(),
+              organizationId: organizationId.toHexString(),
+              projectId: projectId.toHexString(),
+              version: 1,
+              reason: 'ARCHIVED',
+            },
+            status: 'PENDING',
+            occurredAt: new Date('2026-10-25T10:01:00.000Z'),
+          },
+          {
+            _id: new Types.ObjectId('700000000000000000000042'),
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            aggregateType: 'PROJECT_DOCUMENT',
+            aggregateId: secondDocumentId.toHexString(),
+            payload: {
+              sourceType: 'PROJECT_DOCUMENT',
+              sourceId: secondDocumentId.toHexString(),
+              organizationId: organizationId.toHexString(),
+              projectId: projectId.toHexString(),
+              version: 1,
+              approvedAt: '2026-10-25T10:02:00.000Z',
+            },
+            status: 'PENDING',
+            occurredAt: new Date('2026-10-25T10:02:00.000Z'),
+          },
+        ],
+        liveDocument: null,
+        liveDocumentsById: {
+          [documentId.toHexString()]: {
+            _id: documentId,
+            organizationId,
+            projectId,
+            title: 'Doc 1',
+            status: 'ARCHIVED',
+            currentVersionNumber: 1,
+            latestApprovedVersionNumber: 1,
+            createdByUserId: reviewerUserId,
+            updatedByUserId: reviewerUserId,
+          },
+          [secondDocumentId.toHexString()]: {
+            _id: secondDocumentId,
+            organizationId,
+            projectId,
+            title: 'Doc 2',
+            status: 'APPROVED',
+            currentVersionNumber: 1,
+            latestApprovedVersionNumber: 1,
+            createdByUserId: reviewerUserId,
+            updatedByUserId: reviewerUserId,
+          },
+        },
+        liveVersions: [
+          {
+            _id: new Types.ObjectId(),
+            organizationId,
+            projectId,
+            documentId: secondDocumentId,
+            versionNumber: 1,
+            title: 'Doc 2',
+            status: 'APPROVED',
+            reviewedByUserId: reviewerUserId,
+            content: '# Doc 2 Content',
+          },
+        ],
+      });
 
-    const { consumer, events } = createHarness({
+    const peerConsumer = createPeerConsumer();
+
+    // 1. Scoped run on Doc 1 returns IDLE because its head-of-line event (40) is in retry backoff,
+    //    and event (41) is blocked behind event (40) with attemptCount rolled back to 0!
+    await expect(peerConsumer.runOnce(documentId.toHexString())).resolves.toBe(
+      'IDLE',
+    );
+    expect(revokes).toHaveLength(0);
+    expect(
+      (events[1]?.payload.delivery as Record<string, unknown> | undefined)
+        ?.attemptCount ?? 0,
+    ).toBe(0);
+
+    // 2. Unscoped runOnce skips blocked Doc 1 and processes ready Doc 2 without starvation!
+    await expect(consumer.runOnce()).resolves.toBe('PUBLISHED');
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.documentId).toBe(secondDocumentId.toHexString());
+    expect(events[2]?.status).toBe('PUBLISHED');
+  });
+
+  it('supports scoped Pilot inspection and execution via inspectPendingEvents and runScopedBatch', async () => {
+    const { consumer, uploads } = createHarness({
       events: [
         {
-          _id: new Types.ObjectId('700000000000000000000040'),
+          _id: new Types.ObjectId('700000000000000000000050'),
           eventName: 'KNOWLEDGE_SOURCE_APPROVED',
           aggregateType: 'PROJECT_DOCUMENT',
           aggregateId: documentId.toHexString(),
@@ -697,38 +992,39 @@ describe('KnowledgeOutboxConsumer', () => {
             organizationId: organizationId.toHexString(),
             projectId: projectId.toHexString(),
             version: 1,
-            approvedAt: '2026-10-25T10:00:00.000Z',
           },
           status: 'PENDING',
           occurredAt: new Date('2026-10-25T10:00:00.000Z'),
         },
         {
-          _id: new Types.ObjectId('700000000000000000000041'),
-          eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+          _id: new Types.ObjectId('700000000000000000000051'),
+          eventName: 'KNOWLEDGE_SOURCE_APPROVED',
           aggregateType: 'PROJECT_DOCUMENT',
-          aggregateId: documentId.toHexString(),
+          aggregateId: secondDocumentId.toHexString(),
           payload: {
             sourceType: 'PROJECT_DOCUMENT',
-            sourceId: documentId.toHexString(),
+            sourceId: secondDocumentId.toHexString(),
             organizationId: organizationId.toHexString(),
             projectId: projectId.toHexString(),
             version: 1,
-            reason: 'ARCHIVED',
           },
           status: 'PENDING',
           occurredAt: new Date('2026-10-25T10:01:00.000Z'),
         },
       ],
-      liveDocument: {
-        _id: documentId,
-        organizationId,
-        projectId,
-        title: 'Concurrent Doc',
-        status: 'APPROVED',
-        currentVersionNumber: 1,
-        latestApprovedVersionNumber: 1,
-        createdByUserId: reviewerUserId,
-        updatedByUserId: reviewerUserId,
+      liveDocument: null,
+      liveDocumentsById: {
+        [documentId.toHexString()]: {
+          _id: documentId,
+          organizationId,
+          projectId,
+          title: 'Pilot Doc 1',
+          status: 'APPROVED',
+          currentVersionNumber: 1,
+          latestApprovedVersionNumber: 1,
+          createdByUserId: reviewerUserId,
+          updatedByUserId: reviewerUserId,
+        },
       },
       liveVersions: [
         {
@@ -737,52 +1033,211 @@ describe('KnowledgeOutboxConsumer', () => {
           projectId,
           documentId,
           versionNumber: 1,
-          title: 'Concurrent Doc',
+          title: 'Pilot Doc 1',
           status: 'APPROVED',
           reviewedByUserId: reviewerUserId,
-          content: '# Concurrent Doc v1',
+          content: '# Pilot Doc 1 Content',
         },
       ],
-      uploadImpl: async (input) => {
-        inFlightForDoc += 1;
-        maxConcurrentForDoc = Math.max(maxConcurrentForDoc, inFlightForDoc);
-        executionOrder.push(`UPLOAD_START_v${input.version}`);
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        executionOrder.push(`UPLOAD_END_v${input.version}`);
-        inFlightForDoc -= 1;
-        return {
-          documentId: 'sag-doc-1',
-          documentVersionId: 'sag-ver-1',
-          status: 'QUEUED',
-        };
-      },
-      revokeImpl: async () => {
-        inFlightForDoc += 1;
-        maxConcurrentForDoc = Math.max(maxConcurrentForDoc, inFlightForDoc);
-        executionOrder.push('REVOKE_START');
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        executionOrder.push('REVOKE_END');
-        inFlightForDoc -= 1;
-        return {
-          status: 'REVOKED',
-          documentId: 'sag-doc-1',
-        };
-      },
     });
 
-    const [firstResult, secondResult] = await Promise.all([
-      consumer.runOnce(documentId.toHexString()),
-      consumer.runOnce(documentId.toHexString()),
-    ]);
+    await expect(consumer.runScopedBatch({ documentIds: [] })).rejects.toThrow(
+      'SCOPED_BATCH_DOCUMENT_IDS_REQUIRED',
+    );
 
-    expect([firstResult, secondResult]).toEqual(['PUBLISHED', 'PUBLISHED']);
-    expect(maxConcurrentForDoc).toBe(1);
-    expect(executionOrder).toEqual([
-      'UPLOAD_START_v1',
-      'UPLOAD_END_v1',
-      'REVOKE_START',
-      'REVOKE_END',
+    const dryRunRes = await consumer.runScopedBatch({
+      documentIds: [documentId.toHexString()],
+      dryRun: true,
+    });
+    expect(dryRunRes.candidateEvents).toHaveLength(1);
+    expect(dryRunRes.candidateEvents[0]?.documentId).toBe(
+      documentId.toHexString(),
+    );
+    expect(uploads).toHaveLength(0);
+
+    const execRes = await consumer.runScopedBatch({
+      documentIds: [documentId.toHexString()],
+    });
+    expect(execRes.outcomesByDocument[documentId.toHexString()]).toEqual([
+      'PUBLISHED',
     ]);
-    expect(events.every((e) => e.status === 'PUBLISHED')).toBe(true);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.documentId).toBe(documentId.toHexString());
+
+    // Second document outside the Pilot allowlist remains untouched in PENDING
+    const remaining = await consumer.inspectPendingEvents();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.documentId).toBe(secondDocumentId.toHexString());
+  });
+});
+
+describe('HttpSagKnowledgeSyncTransport (Real HTTP Contract)', () => {
+  it('sends BFF service token + Continuum scope headers and parses version_id + version_no over HTTP', async () => {
+    const receivedRequests: Array<{
+      method: string;
+      url: string;
+      headers: IncomingMessage['headers'];
+    }> = [];
+
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      receivedRequests.push({
+        method: req.method ?? '',
+        url: req.url ?? '',
+        headers: req.headers,
+      });
+
+      if (
+        req.method === 'POST' &&
+        req.url ===
+          `/api/v1/projects/${projectId.toHexString()}/documents/upload`
+      ) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            document_id: 'sag-doc-http-1',
+            version_no: 2,
+            version_id: 'sag-ver-http-2',
+            run_id: 'run-http-2',
+            file_hash: 'sha256-abc',
+            status: 'RECEIVED',
+            search_status: 'PENDING',
+            knowledge_status: 'NOT_STARTED',
+            is_duplicate: false,
+          }),
+        );
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        req.url ===
+          `/api/v1/projects/${projectId.toHexString()}/documents/sag-doc-http-1/versions/2/status`
+      ) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            document_id: 'sag-doc-http-1',
+            version_no: 2,
+            status: 'SEARCH_READY',
+            search_status: 'SEARCH_READY',
+            knowledge_status: 'NOT_STARTED',
+            search_ready: true,
+            knowledge_ready: false,
+            current_stage: 'COMPLETE',
+          }),
+        );
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        req.url ===
+          `/api/v1/projects/${projectId.toHexString()}/documents/revoke`
+      ) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            document_id: 'sag-doc-http-1',
+            project_id: projectId.toHexString(),
+            logical_source_id: `continuum:project_document:${documentId.toHexString()}`,
+            status: 'REVOKED',
+            delete_job_id: 'job-del-1',
+            revoked_version_count: 1,
+          }),
+        );
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const transport = new HttpSagKnowledgeSyncTransport(
+        new ConfigService({
+          SAG_API_BASE_URL: `http://127.0.0.1:${port}`,
+          SAG_BFF_SERVICE_TOKEN: 'bff-test-secret',
+          CAPTURE_FILE_TIMEOUT_MS: 5_000,
+        }),
+      );
+
+      const uploadReceipt = await transport.uploadProjectDocument({
+        organizationId: organizationId.toHexString(),
+        projectId: projectId.toHexString(),
+        documentId: documentId.toHexString(),
+        version: 2,
+        logicalSourceId: `continuum:project_document:${documentId.toHexString()}`,
+        idempotencyKey: `continuum:project_document:${documentId.toHexString()}:v2`,
+        actorUserId: reviewerUserId.toHexString(),
+        fileName: 'spec.md',
+        contentType: 'text/markdown',
+        bytes: Buffer.from('# HTTP Spec v2\n', 'utf-8'),
+      });
+
+      expect(uploadReceipt).toEqual({
+        documentId: 'sag-doc-http-1',
+        versionId: 'sag-ver-http-2',
+        versionNo: 2,
+        runId: 'run-http-2',
+        fileHash: 'sha256-abc',
+        status: 'RECEIVED',
+        searchStatus: 'PENDING',
+        knowledgeStatus: 'NOT_STARTED',
+        isDuplicate: false,
+        searchReady: false,
+      });
+
+      const statusReceipt = await transport.getProjectDocumentVersionStatus({
+        organizationId: organizationId.toHexString(),
+        projectId: projectId.toHexString(),
+        sagDocumentId: 'sag-doc-http-1',
+        versionNo: 2,
+        actorUserId: reviewerUserId.toHexString(),
+      });
+      expect(statusReceipt.searchReady).toBe(true);
+      expect(statusReceipt.searchStatus).toBe('SEARCH_READY');
+
+      const revokeReceipt = await transport.revokeProjectDocument({
+        organizationId: organizationId.toHexString(),
+        projectId: projectId.toHexString(),
+        documentId: documentId.toHexString(),
+        version: 2,
+        logicalSourceId: `continuum:project_document:${documentId.toHexString()}`,
+        actorUserId: reviewerUserId.toHexString(),
+        reason: 'ARCHIVED',
+      });
+      expect(revokeReceipt).toEqual({
+        status: 'REVOKED',
+        documentId: 'sag-doc-http-1',
+      });
+
+      expect(receivedRequests).toHaveLength(3);
+      expect(receivedRequests[0]?.headers['x-sag-bff-service-token']).toBe(
+        'bff-test-secret',
+      );
+      expect(receivedRequests[0]?.headers['x-continuum-organization-id']).toBe(
+        organizationId.toHexString(),
+      );
+      expect(receivedRequests[0]?.headers['x-continuum-tenant-id']).toBe(
+        organizationId.toHexString(),
+      );
+      expect(receivedRequests[0]?.headers['x-continuum-project-id']).toBe(
+        projectId.toHexString(),
+      );
+      expect(
+        receivedRequests[0]?.headers['x-continuum-security-partition'],
+      ).toBe(projectId.toHexString());
+      expect(receivedRequests[0]?.headers['idempotency-key']).toBe(
+        `continuum:project_document:${documentId.toHexString()}:v2`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
