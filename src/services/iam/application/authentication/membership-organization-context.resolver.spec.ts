@@ -68,6 +68,21 @@ describe('MembershipOrganizationContextResolver', () => {
     });
   });
 
+  it('does not turn project or display role codes into organization authority', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([orgA]);
+    repository.findOrganizationRoleAssignments.mockResolvedValue([
+      { organizationId: orgA, roleCode: 'MEMBER' },
+      { organizationId: orgA, roleCode: 'TEAM_LEADER' },
+      { organizationId: orgA, roleCode: 'LEADER' },
+      { organizationId: orgA, roleCode: 'MANAGER' },
+      { organizationId: orgB, roleCode: 'ADMIN' },
+    ]);
+    await expect(resolver.resolveForUser(userId, orgA)).resolves.toEqual({
+      outcome: 'RESOLVED',
+      context: { orgId: orgA, roles: ['MEMBER'] },
+    });
+  });
+
   it('requires explicit selection for multiple active memberships', async () => {
     repository.findActiveOrganizationMembershipIds.mockResolvedValue([
       orgB,

@@ -158,13 +158,12 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
       });
     }
 
-    const isOrgAdmin =
-      identity.roles.includes('ADMIN') ||
-      assignments.some(
-        (a) =>
-          (a.projectId === null || a.projectId === undefined) &&
-          a.roleCode === 'ADMIN',
-      );
+    // Session role labels cannot replace the current scoped assignment read.
+    const isOrgAdmin = assignments.some(
+      (a) =>
+        (a.projectId === null || a.projectId === undefined) &&
+        a.roleCode === 'ADMIN',
+    );
 
     // Gate G4: Organization ADMIN can view, create, edit and transition tasks
     // in every active Project of the Organization, including PRIVATE projects
@@ -238,9 +237,7 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
       ),
     ]);
 
-    const isOrgAdmin =
-      Boolean(orgMembership) &&
-      (identity.roles.includes('ADMIN') || Boolean(adminAssignment));
+    const isOrgAdmin = Boolean(orgMembership) && Boolean(adminAssignment);
 
     if (!isOrgAdmin) {
       // Non-ADMIN receives 404 so the route does not act as an existence oracle.

@@ -33,6 +33,7 @@ const integration =
   process.env.MONGODB_INTEGRATION === 'true' ? describe : describe.skip;
 const collections = [
   'users',
+  'organizations',
   'refresh_sessions',
   'organization_memberships',
   'roles',
@@ -164,6 +165,13 @@ integration('C-02 membership reads on disposable MongoDB 7', () => {
     for (const name of collections)
       await connection!.collection(name).deleteMany({});
     const time = new Date('2026-10-01T00:00:00Z');
+    // Current session identity resolves Organization roles from persistence.
+    // Keep the real Organization model/data in this disposable auth fixture.
+    await connection!.collection('organizations').insertOne({
+      _id: organizationId,
+      name: 'C-02 membership read fixture',
+      slug: 'c-02-membership-read-fixture',
+    });
     await connection!.collection('users').insertMany([
       {
         _id: actorId,

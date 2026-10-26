@@ -60,7 +60,12 @@ export class MembershipOrganizationContextResolver implements OrganizationContex
     const roles = [
       ...new Set(
         assignments
-          .filter((assignment) => assignment.organizationId === orgId)
+          .filter(
+            (assignment) =>
+              assignment.organizationId === orgId &&
+              (assignment.roleCode === 'ADMIN' ||
+                assignment.roleCode === 'MEMBER'),
+          )
           .map((assignment) => assignment.roleCode),
       ),
     ].sort();
