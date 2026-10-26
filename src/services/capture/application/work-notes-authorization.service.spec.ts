@@ -82,6 +82,64 @@ describe('WorkNotesAuthorizationService', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('allows a current Organization Manager to review an active Project without Project membership', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({
+          id: userId,
+          organizationId,
+          name: 'Manager',
+          roles: ['ADMIN'],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: projectId,
+          organizationId,
+          status: 'ACTIVE',
+          createdAt: '2026-10-01T00:00:00.000Z',
+        }),
+      )
+      .mockResolvedValueOnce(response({}, 403));
+
+    await expect(
+      service.resolveProject({ organizationId }, projectId),
+    ).resolves.toMatchObject({
+      userId,
+      organizationId,
+      projectId,
+      isManager: true,
+      isLeader: false,
+      canReview: true,
+    });
+    expect(
+      fetchSpy.mock.calls.some(([url]) => String(url).includes('/memberships')),
+    ).toBe(false);
+  });
+
+  it('does not extend Manager review authority to another Organization', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({
+          id: userId,
+          organizationId,
+          name: 'Manager',
+          roles: ['ADMIN'],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: projectId,
+          organizationId: new Types.ObjectId().toHexString(),
+          status: 'ACTIVE',
+        }),
+      );
+    await expect(service.resolveProject({}, projectId)).rejects.toMatchObject({
+      status: 404,
+      response: { code: 'PROJECT_NOT_FOUND' },
+    });
+  });
+
   it('denies an unprivileged member a task from another Project', async () => {
     const joinedAt = '2026-10-20T00:00:00.000Z';
     fetchSpy
@@ -185,7 +243,7 @@ describe('WorkNotesAuthorizationService', () => {
     );
   });
 
-  it('denies non-members of a PUBLIC project, non-member Organization ADMINs, and ARCHIVED projects', async () => {
+  it('denies non-members without review authority and ARCHIVED projects', async () => {
     // 1. Non-member of PUBLIC project: /projects/:id returns 200, /memberships returns 403
     fetchSpy
       .mockResolvedValueOnce(
@@ -207,10 +265,16 @@ describe('WorkNotesAuthorizationService', () => {
       response: { code: 'PROJECT_NOT_FOUND' },
     });
 
-    // 2. Non-member Organization ADMIN on PRIVATE project: /memberships returns 200 without ADMIN in list
+    // 2. An identity without current ADMIN or Project Leader authority is not
+    // admitted merely because the directory endpoint can return other members.
     fetchSpy
       .mockResolvedValueOnce(
-        response({ id: userId, organizationId, name: 'Org Admin' }),
+        response({
+          id: userId,
+          organizationId,
+          name: 'Member',
+          roles: ['MEMBER'],
+        }),
       )
       .mockResolvedValueOnce(
         response({

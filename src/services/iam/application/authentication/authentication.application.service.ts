@@ -808,12 +808,25 @@ export class AuthenticationApplicationService {
       await this.repository.findActiveOrganizationMembershipIds(claims.sub);
     if (!activeMembershipIds.includes(claims.orgId)) throw unauthorized();
 
+    // Token roles describe issuance time. Consumers of /auth/me (including
+    // Task and Capture authorization) need the current Organization roles so
+    // revocation takes effect while the access token is still valid.
+    const organization = await this.organizationResolver.resolveForUser(
+      claims.sub,
+      claims.orgId,
+    );
+    if (
+      organization.outcome !== 'RESOLVED' ||
+      organization.context.orgId !== claims.orgId
+    )
+      throw unauthorized();
+
     return {
       id: claims.sub,
       email: claims.email,
       name: profile.name,
       organizationId: claims.orgId,
-      roles: claims.roles,
+      roles: organization.context.roles,
     };
   }
 

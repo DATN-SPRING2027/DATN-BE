@@ -566,10 +566,15 @@ describe('AuthenticationApplicationService', () => {
       ORG_ID,
       OTHER_ORG_ID,
     ]);
-    organizationResolver.resolveForUser.mockResolvedValue({
-      outcome: 'RESOLVED',
-      context: { orgId: OTHER_ORG_ID, roles: ['MEMBER'] },
-    });
+    organizationResolver.resolveForUser
+      .mockResolvedValueOnce({
+        outcome: 'RESOLVED',
+        context: { orgId: ORG_ID, roles: ['ADMIN'] },
+      })
+      .mockResolvedValue({
+        outcome: 'RESOLVED',
+        context: { orgId: OTHER_ORG_ID, roles: ['MEMBER'] },
+      });
 
     const result = await service.selectOrganization(
       'Bearer current-organization-token',
@@ -814,7 +819,7 @@ describe('AuthenticationApplicationService', () => {
     );
   });
 
-  it('returns the verified token identity at /me, including organization and roles', async () => {
+  it('returns the verified identity with current organization roles at /me', async () => {
     await expect(
       service.getCurrentIdentity('Bearer any.valid-token', undefined),
     ).resolves.toEqual({
@@ -822,9 +827,68 @@ describe('AuthenticationApplicationService', () => {
       email: account.email,
       name: 'Test Person',
       organizationId: ORG_ID,
-      roles: ['ADMIN'],
+      roles: ['ADMIN', 'MEMBER'],
     });
     expect(repository.findProfileById.mock.calls).toContainEqual([USER_ID]);
+  });
+
+  it('removes revoked Manager authority from a still-valid access token', async () => {
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'RESOLVED',
+      context: { orgId: ORG_ID, roles: ['MEMBER'] },
+    });
+
+    await expect(
+      service.getCurrentIdentity('Bearer token-with-old-admin-role', undefined),
+    ).resolves.toMatchObject({ organizationId: ORG_ID, roles: ['MEMBER'] });
+    expect(organizationResolver.resolveForUser).toHaveBeenCalledWith(
+      USER_ID,
+      ORG_ID,
+    );
+  });
+
+  it('reflects newly granted Manager authority without waiting for token refresh', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      orgId: ORG_ID,
+      roles: ['MEMBER'],
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+      sid: SESSION_ID,
+      userFence: 0,
+    });
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'RESOLVED',
+      context: { orgId: ORG_ID, roles: ['ADMIN'] },
+    });
+
+    await expect(
+      service.getCurrentIdentity(
+        'Bearer token-with-old-member-role',
+        undefined,
+      ),
+    ).resolves.toMatchObject({ roles: ['ADMIN'] });
+  });
+
+  it('rejects an identity when its current organization can no longer be resolved', async () => {
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'INVALID_ORGANIZATION_SELECTION',
+    });
+    await expect(
+      service.getCurrentIdentity('Bearer valid-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('does not substitute authority from another organization', async () => {
+    organizationResolver.resolveForUser.mockResolvedValue({
+      outcome: 'RESOLVED',
+      context: { orgId: OTHER_ORG_ID, roles: ['ADMIN'] },
+    });
+    await expect(
+      service.getCurrentIdentity('Bearer valid-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('does not let a Platform-context token become an Organization identity', async () => {
