@@ -8,6 +8,11 @@ import {
 } from '../../../common/redis/redis-connection';
 import { AuditService } from './audit/audit.service';
 import { MongoInfrastructureModule } from './mongodb/mongodb.module';
+import {
+  HttpSagKnowledgeSyncTransport,
+  KnowledgeOutboxConsumer,
+  SAG_KNOWLEDGE_SYNC_TRANSPORT,
+} from './outbox/knowledge-outbox.consumer';
 import { OutboxService } from './outbox/outbox.service';
 import { IdempotencyService } from './redis/idempotency.service';
 import { RedisService } from './redis/redis.service';
@@ -26,7 +31,18 @@ export class CaptureInfrastructureModule {
       IdempotencyService,
       R2Storage,
       ProjectDocumentStorage,
-      ...(enabled ? [AuditService, OutboxService] : []),
+      ...(enabled
+        ? [
+            AuditService,
+            OutboxService,
+            HttpSagKnowledgeSyncTransport,
+            {
+              provide: SAG_KNOWLEDGE_SYNC_TRANSPORT,
+              useExisting: HttpSagKnowledgeSyncTransport,
+            },
+            KnowledgeOutboxConsumer,
+          ]
+        : []),
       ...(enabled
         ? [
             {
