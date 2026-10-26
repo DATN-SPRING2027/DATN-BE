@@ -149,7 +149,10 @@ integration('A-05 Organization provisioning on disposable MongoDB 7', () => {
         { provide: PasswordCredentialService, useValue: {} },
         {
           provide: AUTH_SECURITY_STORE,
-          useValue: { isTokenRevoked: () => Promise.resolve(false) },
+          useValue: {
+            isTokenRevoked: () => Promise.resolve(false),
+            consumeRateLimit: () => Promise.resolve(true),
+          },
         },
         {
           provide: PlatformAuditService,

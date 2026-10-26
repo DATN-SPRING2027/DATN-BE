@@ -317,7 +317,12 @@ export class PlatformAdministrationService {
     input: PlatformSessionMutationInput & PlatformSessionVersionInput,
   ) {
     this.validateSessionMutation(input);
-    if (!sessionIdPattern.test(input.sessionId)) validationFailed();
+    if (
+      !sessionIdPattern.test(input.sessionId) ||
+      !(input.expectedUpdatedAt instanceof Date) ||
+      !Number.isFinite(input.expectedUpdatedAt.getTime())
+    )
+      validationFailed();
     const session = await this.repository.revokeUserSession(input);
     if (!session) throw new NotFoundException({ code: 'SESSION_NOT_FOUND' });
     return session;
@@ -334,6 +339,9 @@ export class PlatformAdministrationService {
     const seen = new Set<string>();
     for (const session of input.sessions) {
       if (
+        typeof session !== 'object' ||
+        session === null ||
+        Array.isArray(session) ||
         !sessionIdPattern.test(session.sessionId) ||
         seen.has(session.sessionId) ||
         !(session.expectedUpdatedAt instanceof Date) ||

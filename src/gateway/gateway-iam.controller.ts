@@ -33,6 +33,8 @@ const forwardedResponseHeaders = [
   'idempotency-replayed',
   'x-idempotent-replay',
   'retry-after',
+  'x-ratelimit-limit',
+  'x-ratelimit-reset',
   'www-authenticate',
   'referrer-policy',
 ] as const;

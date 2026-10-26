@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -40,6 +41,7 @@ const SECRET = 'platform-e2e-secret-at-least-32-characters';
 
 describe('Platform Operator login and provisioning (e2e)', () => {
   let app: INestApplication;
+  const revokedAccessHashes = new Set<string>();
   let assignmentActive: boolean;
   let assignedPermission: string;
   let repository: jest.Mocked<AuthenticationRepositoryPort>;
@@ -195,8 +197,12 @@ describe('Platform Operator login and provisioning (e2e)', () => {
           useValue: {
             consumeRateLimit: jest.fn().mockResolvedValue(true),
             clearRateLimit: jest.fn().mockResolvedValue(undefined),
-            isTokenRevoked: jest.fn().mockResolvedValue(false),
-            revokeToken: jest.fn().mockResolvedValue(undefined),
+            isTokenRevoked: (hash: string) =>
+              Promise.resolve(revokedAccessHashes.has(hash)),
+            revokeToken: (hash: string) => {
+              revokedAccessHashes.add(hash);
+              return Promise.resolve();
+            },
           },
         },
         {
@@ -255,6 +261,7 @@ describe('Platform Operator login and provisioning (e2e)', () => {
   });
 
   beforeEach(() => {
+    revokedAccessHashes.clear();
     assignmentActive = true;
     assignedPermission = 'organization.create';
     jest.clearAllMocks();
@@ -409,6 +416,36 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     });
     expect(response.headers['cache-control']).toContain('no-store');
     expect(response.text).not.toContain(SECRET);
+  });
+
+  it('logs out the signed-in Admin, clears cookies and rejects replay of its signed access token', async () => {
+    assignedPermission = 'platform.audit.read';
+    const token = operatorToken();
+    await request(app.getHttpServer() as App)
+      .get('/api/v1/auth/platform/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const refresh = Buffer.alloc(32, 7).toString('base64url');
+    const result = await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/logout')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Cookie', `__Secure-refresh=${refresh}`)
+      .expect(200)
+      .expect('Cache-Control', 'no-store');
+    expect(result.body).toEqual({ status: 'logged_out' });
+    expect(result.headers['set-cookie']).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^continuum_access=;.*Max-Age=0/),
+        expect.stringMatching(/^__Secure-refresh=;.*Max-Age=0/),
+      ]),
+    );
+    expect(repository.revokeRefreshSessionByHash.mock.calls).toEqual([
+      [createHash('sha256').update(refresh).digest('hex')],
+    ]);
+    await request(app.getHttpServer() as App)
+      .get('/api/v1/auth/platform/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401);
   });
 
   it('serves the documented IAM liveness response for a health-only Platform assignment', async () => {

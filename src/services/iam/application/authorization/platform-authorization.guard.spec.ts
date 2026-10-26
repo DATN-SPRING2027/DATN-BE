@@ -7,6 +7,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { AUTH_SECURITY_STORE } from '../authentication/auth-security.store';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { StructuredExceptionFilter } from '../../../../common/http/structured-exception.filter';
@@ -77,6 +78,7 @@ describe('PlatformAuthorizationGuard', () => {
       return Promise.resolve(platformSubject);
     }),
   };
+  const security = { consumeRateLimit: jest.fn().mockResolvedValue(true) };
   const evidence = {
     loadPlatformPermission: jest.fn(() => Promise.resolve(facts)),
   };
@@ -86,6 +88,7 @@ describe('PlatformAuthorizationGuard', () => {
       controllers: [PlatformAuthorizationHarnessController],
       providers: [
         PlatformAuthorizationGuard,
+        { provide: AUTH_SECURITY_STORE, useValue: security },
         AuthorizationPolicy,
         { provide: AuthenticationApplicationService, useValue: authentication },
         { provide: AUTHORIZATION_EVIDENCE_PROVIDER, useValue: evidence },
@@ -99,6 +102,7 @@ describe('PlatformAuthorizationGuard', () => {
 
   beforeEach(() => {
     facts = { assignments: [] };
+    security.consumeRateLimit.mockReset().mockResolvedValue(true);
     identity.roles = ['ADMIN', 'PLATFORM_OPERATOR'];
     evidence.loadPlatformPermission.mockClear();
   });
@@ -126,6 +130,40 @@ describe('PlatformAuthorizationGuard', () => {
       );
     },
   );
+
+  it('returns 429 before executing an authorized operation when its budget is exhausted', async () => {
+    facts = { assignments: [assignment('platform.health.read')] };
+    security.consumeRateLimit.mockResolvedValue(false);
+    await request(app.getHttpServer() as App)
+      .get('/api/v1/platform-authorization-test/health')
+      .set('Authorization', 'Bearer valid')
+      .expect(429)
+      .expect('Cache-Control', 'no-store')
+      .expect('Retry-After', /^[1-9][0-9]*$/);
+  });
+
+  it('does not consume a budget before authorization succeeds', async () => {
+    await request(app.getHttpServer() as App)
+      .get('/api/v1/platform-authorization-test/health')
+      .set('Authorization', 'Bearer valid')
+      .expect(403);
+    expect(security.consumeRateLimit.mock.calls).toHaveLength(0);
+  });
+
+  it('fails closed with 503 when the rate-limit store is down', async () => {
+    facts = { assignments: [assignment('platform.health.read')] };
+    security.consumeRateLimit.mockRejectedValue(
+      new Error('private Redis error'),
+    );
+    const result = await request(app.getHttpServer() as App)
+      .get('/api/v1/platform-authorization-test/health')
+      .set('Authorization', 'Bearer valid')
+      .expect(503);
+    expect(result.body).toMatchObject({
+      code: 'PLATFORM_RATE_LIMIT_UNAVAILABLE',
+    });
+    expect(result.text).not.toContain('private Redis error');
+  });
 
   it('returns 401 when the subject is unauthenticated', async () => {
     await request(app.getHttpServer() as App)
