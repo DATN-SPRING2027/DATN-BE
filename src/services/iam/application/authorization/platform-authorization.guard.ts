@@ -7,7 +7,12 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import {
+  AUTH_SECURITY_STORE,
+  type AuthSecurityStore,
+} from '../authentication/auth-security.store';
+import { enforcePlatformRateLimit } from './platform-request-rate-limit';
 import { AuthenticationApplicationService } from '../authentication/authentication.application.service';
 import {
   AUTHORIZATION_EVIDENCE_PROVIDER,
@@ -25,9 +30,12 @@ export class PlatformAuthorizationGuard implements CanActivate {
     private readonly evidence: AuthorizationEvidenceProvider,
     private readonly policy: AuthorizationPolicy,
     private readonly reflector: Reflector,
+    @Inject(AUTH_SECURITY_STORE) private readonly security: AuthSecurityStore,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const response = context.switchToHttp().getResponse<Response>();
+    response.setHeader('Cache-Control', 'no-store');
     const permission = this.reflector.getAllAndOverride<PlatformPermission>(
       PLATFORM_PERMISSION,
       [context.getHandler(), context.getClass()],
@@ -62,8 +70,15 @@ export class PlatformAuthorizationGuard implements CanActivate {
         assignments: facts.assignments,
         now: new Date(),
       }).allowed
-    )
+    ) {
+      await enforcePlatformRateLimit(
+        this.security,
+        identity.id,
+        request.method,
+        response,
+      );
       return true;
+    }
 
     throw new ForbiddenException({
       code: 'FORBIDDEN',

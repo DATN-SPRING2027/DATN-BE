@@ -1042,6 +1042,20 @@ describe('AuthenticationApplicationService', () => {
     expect(refreshCheck?.[2]).toBeInstanceOf(Date);
   });
 
+  it('rejects an old access token after revoke-all advances the user fence', async () => {
+    repository.findProfileById.mockResolvedValue({
+      name: 'Test Person',
+      status: 'ACTIVE',
+      mutationFence: 1,
+    });
+    // Even a surviving credential cannot restore the previous user epoch.
+    repository.hasActiveRefreshSession.mockResolvedValue(true);
+    await expect(
+      service.getCurrentPlatformSubject('Bearer any.valid-token', undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(repository.hasActiveRefreshSession.mock.calls).toHaveLength(0);
+  });
+
   it('rejects a still-valid token after organization membership is suspended or removed', async () => {
     repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
     await expect(

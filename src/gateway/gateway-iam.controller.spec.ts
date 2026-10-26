@@ -115,3 +115,53 @@ describe('GatewayIamController invitation forwarding', () => {
     expect(response.status).toHaveBeenCalledWith(200);
   });
 });
+
+describe('GatewayIamController Platform rate-limit forwarding', () => {
+  afterEach(() => jest.restoreAllMocks());
+  it('preserves the 429 response and retry/budget headers from IAM', async () => {
+    const controller = new GatewayIamController({
+      getOrThrow: (key: string) =>
+        key === 'IAM_GATEWAY_SECRET'
+          ? 'gateway-secret-with-at-least-thirty-two-characters'
+          : key === 'IAM_SERVICE_URL'
+            ? 'http://127.0.0.1:3001'
+            : 5000,
+    } as never);
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new globalThis.Response(
+        JSON.stringify({ code: 'TOO_MANY_REQUESTS', requestId: 'request-1' }),
+        {
+          status: 429,
+          headers: {
+            'cache-control': 'no-store',
+            'retry-after': '45',
+            'x-ratelimit-limit': '120',
+            'x-ratelimit-reset': '1792972860',
+          },
+        },
+      ),
+    );
+    const response = {
+      setHeader: jest.fn(),
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+    };
+    await controller.listPlatformServices(
+      {
+        method: 'GET',
+        path: '/api/v1/iam/platform/services',
+        originalUrl: '/api/v1/iam/platform/services',
+        headers: { authorization: 'Bearer fixture' },
+      } as unknown as Request,
+      response as unknown as Response,
+    );
+    expect(response.status.mock.calls).toEqual([[429]]);
+    for (const [name, value] of [
+      ['retry-after', '45'],
+      ['x-ratelimit-limit', '120'],
+      ['x-ratelimit-reset', '1792972860'],
+    ]) {
+      expect(response.setHeader.mock.calls).toContainEqual([name, value]);
+    }
+  });
+});

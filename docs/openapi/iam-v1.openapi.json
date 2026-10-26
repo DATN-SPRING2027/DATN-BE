@@ -1,5 +1,6 @@
 {
   "openapi": "3.1.0",
+  "x-platform-rate-limit": { "scope": "/api/v1/iam/platform", "key": "verified actor, shared across resources and IAM instances", "windowSeconds": 60, "readLimit": 120, "writeLimit": 20, "window": "UTC minute fixed window", "dependencyFailure": "503 PLATFORM_RATE_LIMIT_UNAVAILABLE", "exceeded": "429 TOO_MANY_REQUESTS" },
   "info": {
     "title": "Continuum AI IAM API",
     "version": "1.0.0-draft",
@@ -1919,6 +1920,7 @@
           { "$ref": "#/components/parameters/PageSize" }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "A stable page of safe Organization summaries.",
             "content": {
@@ -1953,6 +1955,8 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "The Platform rate-limit dependency is unavailable; no handler is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "201": {
             "description": "Organization created with first ADMIN bootstrap and audit record committed atomically.",
             "content": {
@@ -1987,6 +1991,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe Organization summary.",
             "content": {
@@ -2042,6 +2047,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Organization metadata updated or already at the requested state.",
             "content": {
@@ -2088,6 +2094,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe membership page.",
             "content": {
@@ -2172,6 +2179,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Membership suspension committed or exactly replayed.",
             "headers": {
@@ -2219,6 +2227,7 @@
           { "$ref": "#/components/parameters/PageSize" }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Bounded page of pending invitation metadata.",
             "content": {
@@ -2297,6 +2306,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "201": {
             "description": "Invitation command committed or exactly replayed.",
             "headers": {
@@ -2405,6 +2415,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Invitation resend committed or exactly replayed.",
             "headers": {
@@ -2513,6 +2524,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Invitation cancellation committed or exactly replayed.",
             "headers": {
@@ -2587,6 +2599,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Stable page of safe membership summaries.",
             "content": {
@@ -2621,6 +2634,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe membership detail.",
             "content": {
@@ -2672,6 +2686,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Stable page of safe user summaries.",
             "content": {
@@ -2724,6 +2739,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Exact match for an active account.",
             "headers": {
@@ -2780,6 +2796,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Stable page of safe Platform project projections.",
             "content": {
@@ -2812,6 +2829,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe Platform project projection.",
             "content": {
@@ -2867,6 +2885,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Project metadata updated or already at the requested state.",
             "content": {
@@ -2916,6 +2935,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Stable page of safe project membership metadata.",
             "content": {
@@ -2943,6 +2963,7 @@
         "x-platform-permission": "platform.dashboard.summary.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Current bounded IAM counts, service readiness summary, and safe recent activity.",
             "content": {
@@ -3001,6 +3022,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Paginated safe incident projections.",
             "content": {
@@ -3072,6 +3094,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "201": {
             "description": "Created incident summary.",
             "headers": {
@@ -3116,6 +3139,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe incident summary.",
             "content": {
@@ -3153,6 +3177,7 @@
           { "$ref": "#/components/parameters/PageSize" }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Paginated safe incident history.",
             "content": {
@@ -3233,6 +3258,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Incident acknowledged or exactly replayed.",
             "headers": {
@@ -3323,6 +3349,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Incident resolved or exactly replayed.",
             "headers": {
@@ -3413,6 +3440,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Incident note committed or exactly replayed.",
             "headers": {
@@ -3450,6 +3478,7 @@
         "x-platform-permission": "platform.services.service.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe operational status projections for all owned backend services.",
             "content": {
@@ -3495,6 +3524,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe operational status projection for the requested backend service.",
             "content": {
@@ -3521,6 +3551,8 @@
         "x-platform-permission": "platform.jobs.job.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "The Platform rate-limit dependency is unavailable; no handler is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "200": {
             "description": "Safe queue health projections.",
             "content": {
@@ -3553,6 +3585,8 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "The Platform rate-limit dependency is unavailable; no handler is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "200": {
             "description": "Safe queue health projection.",
             "content": {
@@ -3594,6 +3628,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Paginated safe job metadata projection.",
             "content": {
@@ -3634,6 +3669,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe job metadata projection.",
             "content": {
@@ -3716,6 +3752,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Retry accepted or exactly replayed.",
             "headers": {
@@ -3810,6 +3847,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Cancellation accepted or exactly replayed.",
             "headers": {
@@ -3846,6 +3884,8 @@
         "x-platform-permission": "platform.ai.operations.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "The Platform rate-limit dependency is unavailable; no handler is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "200": {
             "description": "Safe SAG and RAG operational status projection, including the current upstream ownership boundary.",
             "content": {
@@ -3894,6 +3934,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Paginated safe Jira connection metadata.",
             "content": {
@@ -3928,6 +3969,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe Jira integration metadata projection.",
             "content": {
@@ -3997,6 +4039,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe connection test result from an available Jira provider.",
             "headers": {
@@ -4083,6 +4126,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe reconnect result from an available Jira provider.",
             "headers": {
@@ -4124,6 +4168,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe user, membership and effective Platform permission projection.",
             "content": {
@@ -4175,6 +4220,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Updated safe user detail projection.",
             "content": {
@@ -4232,6 +4278,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Status changed or already at the requested state.",
             "content": {
@@ -4287,6 +4334,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Archived safe user detail projection.",
             "content": {
@@ -4344,6 +4392,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Restored user detail with status still SUSPENDED and archivedAt null.",
             "content": {
@@ -4388,6 +4437,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe Organization membership page.",
             "content": {
@@ -4430,6 +4480,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe paginated session-family projection.",
             "content": {
@@ -4469,6 +4520,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe session-family detail.",
             "content": {
@@ -4532,6 +4584,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Revoked session-family projection.",
             "content": {
@@ -4591,6 +4644,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Count and safe projections for the requested session families.",
             "content": {
@@ -4650,6 +4704,7 @@
           }
         },
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Number of refresh-session records revoked.",
             "content": {
@@ -4678,6 +4733,8 @@
         "x-platform-permission": "platform.health.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "The Platform rate-limit dependency is unavailable; no handler is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "200": {
             "description": "IAM process liveness response; dependency readiness is not included.",
             "content": {
@@ -4700,6 +4757,8 @@
         "x-platform-permission": "platform.audit.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "description": "The Platform rate-limit dependency is unavailable; no handler is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "200": {
             "description": "At most 100 newest safe platform operational audit records.",
             "content": {
@@ -4769,6 +4828,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Stable page of safe Platform audit projections.",
             "content": {
@@ -4806,6 +4866,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe audit trace with a truncation flag when more than 50 events match.",
             "content": {
@@ -4841,6 +4902,7 @@
           }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe Platform audit event.",
             "content": {
@@ -4884,6 +4946,7 @@
           { "$ref": "#/components/parameters/PageSize" }
         ],
         "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
           "200": {
             "description": "Safe resource audit history page.",
             "content": {
