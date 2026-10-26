@@ -62,6 +62,11 @@ export interface ProjectAccessRepository {
     projectId: string,
     input: ProjectSettingsUpdateInput,
   ): Promise<ProjectRecord>;
+  deleteProject(
+    organizationId: string,
+    actorId: string,
+    projectId: string,
+  ): Promise<void>;
   changeVisibility(
     organizationId: string,
     actorId: string,

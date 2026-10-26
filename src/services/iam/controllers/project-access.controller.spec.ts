@@ -26,6 +26,7 @@ function fixture() {
     updateSettings: jest
       .fn()
       .mockResolvedValue({ id: projectId, name: 'Updated' }),
+    deleteProject: jest.fn().mockResolvedValue(undefined),
     listLeaders: jest.fn().mockResolvedValue({ data: [] }),
     listLeaderCandidates: jest.fn().mockResolvedValue({ data: [] }),
     listMembers: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
@@ -50,6 +51,7 @@ describe('ProjectAccessController contract validation', () => {
     const expected = {
       getSettingsAccess: 'project.update',
       updateSettings: 'project.update',
+      deleteProject: 'project.delete',
       changeVisibility: 'project.visibility.manage',
       getVisibilityAccess: 'project.visibility.manage',
       listMembers: 'project.members.list',
@@ -121,6 +123,9 @@ describe('ProjectAccessController contract validation', () => {
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     }
     expect(access.updateSettings).toHaveBeenCalledTimes(1);
+
+    await controller.deleteProject(undefined, undefined, projectId, response);
+    expect(access.deleteProject).toHaveBeenCalledWith(actor, projectId);
   });
 
   it('lists a safe Leader projection and searches eligible Leader candidates by email', async () => {

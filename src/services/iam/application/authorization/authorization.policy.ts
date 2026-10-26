@@ -64,6 +64,7 @@ export const PLATFORM_V2_PERMISSIONS: readonly PlatformPermission[] = [
 export const PLATFORM_PERMISSIONS = PLATFORM_V2_PERMISSIONS;
 export type ProjectAccessPermission =
   | 'project.update'
+  | 'project.delete'
   | 'project.visibility.manage'
   | 'project.leader.manage'
   | 'project.members.list'
@@ -71,6 +72,7 @@ export type ProjectAccessPermission =
   | 'project.members.remove';
 const enabledProjectAccessPermissions: ReadonlySet<string> = new Set([
   'project.update',
+  'project.delete',
   'project.visibility.manage',
   'project.leader.manage',
   'project.members.list',
@@ -365,7 +367,8 @@ export class AuthorizationPolicy {
               { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
               { roleCode: 'MEMBER', projectId: requestedProjectId },
             ]
-          : permission === 'project.leader.manage'
+          : permission === 'project.leader.manage' ||
+              permission === 'project.delete'
             ? [{ roleCode: 'ADMIN', projectId: null }]
             : [{ roleCode: 'TEAM_LEADER', projectId: requestedProjectId }];
     const allowed = allowedScopes.some((scope) => {
@@ -380,7 +383,15 @@ export class AuthorizationPolicy {
               sameObjectId(assignment.projectId, scope.projectId)) &&
           assignment.roleCode === scope.roleCode &&
           assignment.resolvedRoleCode === scope.roleCode &&
-          hasPermission(assignment.permissions, permission),
+          (permission === 'project.delete'
+            ? Array.isArray(assignment.permissions) &&
+              assignment.permissions.every(
+                (candidate) => typeof candidate === 'string',
+              ) &&
+              (assignment.permissions.includes('project.delete') ||
+                assignment.permissions.includes('project.leader.manage') ||
+                assignment.permissions.includes('project.visibility.manage'))
+            : hasPermission(assignment.permissions, permission)),
       );
     });
     return allowed

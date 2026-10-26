@@ -5023,6 +5023,23 @@
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" }
         }
+      },
+      "delete": {
+        "tags": ["Projects"],
+        "summary": "Delete a project",
+        "description": "Deletes an active Project and its project-scoped memberships and role assignments in a single transaction. Requires ACTIVE OrganizationMembership and an organization-scoped ADMIN RoleAssignment (Manager). Project-scoped TEAM_LEADER (Leader) and MEMBER assignments are denied with 403. The deletion is audited in continuum_audit.audit_logs_iam with action PROJECT_DELETED; Cache-Control: no-store.",
+        "operationId": "deleteProject",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "responses": {
+          "204": {
+            "description": "Project deleted."
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
       }
     },
     "/api/v1/iam/projects/{projectId}/settings-access": {

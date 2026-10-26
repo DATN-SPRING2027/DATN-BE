@@ -188,6 +188,107 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     }
   }
 
+  async deleteProject(
+    organizationId: string,
+    actorId: string,
+    projectId: string,
+  ): Promise<void> {
+    if (![organizationId, actorId, projectId].every(validId))
+      throw projectNotFound();
+    const connection = this.requireConnection();
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.authorizeMutation(
+          organizationId,
+          actorId,
+          projectId,
+          'project.delete',
+          session,
+        );
+        const organization = new Types.ObjectId(organizationId);
+        const projectObjectId = new Types.ObjectId(projectId);
+
+        const deleted = await this.model<ProjectDocument>('projects')
+          .findOneAndDelete(
+            {
+              _id: projectObjectId,
+              organizationId: organization,
+              status: 'ACTIVE',
+            },
+            { session },
+          )
+          .lean()
+          .exec();
+        if (!deleted) throw projectNotFound();
+
+        await this.model<MembershipDocument>('project_memberships')
+          .deleteMany(
+            {
+              organizationId: organization,
+              projectId: projectObjectId,
+            },
+            { session },
+          )
+          .exec();
+        await this.model<RoleAssignmentDocument>('role_assignments')
+          .deleteMany(
+            {
+              organizationId: organization,
+              projectId: projectObjectId,
+            },
+            { session },
+          )
+          .exec();
+
+        const teamsModel = this.connection?.models[modelName('teams')] as
+          Model<{ _id: Types.ObjectId }> | undefined;
+        const teamMembershipsModel = this.connection?.models[
+          modelName('team_memberships')
+        ] as Model<{ teamId: Types.ObjectId }> | undefined;
+        if (teamsModel) {
+          const projectTeams = await teamsModel
+            .find({
+              organizationId: organization,
+              projectId: projectObjectId,
+            })
+            .select({ _id: 1 })
+            .session(session)
+            .lean()
+            .exec();
+          if (projectTeams.length > 0 && teamMembershipsModel) {
+            await teamMembershipsModel
+              .deleteMany(
+                { teamId: { $in: projectTeams.map((team) => team._id) } },
+                { session },
+              )
+              .exec();
+          }
+          await teamsModel
+            .deleteMany(
+              {
+                organizationId: organization,
+                projectId: projectObjectId,
+              },
+              { session },
+            )
+            .exec();
+        }
+
+        await this.audit(session, {
+          organizationId,
+          projectId,
+          actorId,
+          action: 'PROJECT_DELETED',
+          targetResource: 'PROJECT',
+          targetResourceId: projectId,
+        });
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
+
   async changeVisibility(
     organizationId: string,
     actorId: string,
@@ -1603,6 +1704,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       | 'project.visibility.manage'
       | 'project.leader.manage'
       | 'project.update'
+      | 'project.delete'
       | 'project.members.add'
       | 'project.members.remove'
     >,
@@ -1724,7 +1826,8 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
             { roleCode: 'ADMIN', projectId: null },
             { roleCode: 'TEAM_LEADER', projectId: projectIdValue },
           ]
-        : permission === 'project.leader.manage'
+        : permission === 'project.leader.manage' ||
+            permission === 'project.delete'
           ? [{ roleCode: 'ADMIN', projectId: null }]
           : [{ roleCode: 'TEAM_LEADER', projectId: projectIdValue }];
     const authorizationMatch = allowedScopes
@@ -1740,7 +1843,11 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
               : String(assignment.projectId)) === scope.projectId &&
             assignment.roleCode === scope.roleCode &&
             role?.code === scope.roleCode &&
-            role.permissions.includes(permission)
+            (permission === 'project.delete'
+              ? role.permissions.includes('project.delete') ||
+                role.permissions.includes('project.leader.manage') ||
+                role.permissions.includes('project.visibility.manage')
+              : role.permissions.includes(permission))
           );
         }),
       }))
@@ -1808,7 +1915,16 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       {
         _id: authorizationRole._id,
         code: expectedRole,
-        permissions: permission,
+        permissions:
+          permission === 'project.delete'
+            ? {
+                $in: [
+                  'project.delete',
+                  'project.leader.manage',
+                  'project.visibility.manage',
+                ],
+              }
+            : permission,
       },
       session,
     );
