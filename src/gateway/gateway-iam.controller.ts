@@ -802,6 +802,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Delete('iam/projects/:projectId')
+  deleteProject(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/projects/:projectId/settings-access')
   getProjectSettingsAccess(
     @Req() request: Request,

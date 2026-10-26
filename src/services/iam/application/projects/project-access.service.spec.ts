@@ -18,6 +18,7 @@ describe('ProjectAccessService', () => {
   let listLeaders: jest.Mock;
   let listLeaderCandidates: jest.Mock;
   let updateSettings: jest.Mock;
+  let deleteProject: jest.Mock;
   let service: ProjectAccessService;
 
   beforeEach(() => {
@@ -27,9 +28,11 @@ describe('ProjectAccessService', () => {
     listLeaders = jest.fn();
     listLeaderCandidates = jest.fn();
     updateSettings = jest.fn();
+    deleteProject = jest.fn();
     const repository: ProjectAccessRepository = {
       changeVisibility: jest.fn(),
       updateSettings,
+      deleteProject,
       listLeaders,
       listLeaderCandidates,
       listMembers,
@@ -41,6 +44,18 @@ describe('ProjectAccessService', () => {
       revokeLeader: jest.fn(),
     };
     service = new ProjectAccessService(repository);
+  });
+
+  it('delegates Project deletion with trusted organization, actor and project', async () => {
+    deleteProject.mockResolvedValue(undefined);
+    await expect(
+      service.deleteProject(actor, projectId),
+    ).resolves.toBeUndefined();
+    expect(deleteProject).toHaveBeenCalledWith(
+      'org-1',
+      'user-leader-1',
+      'proj-1',
+    );
   });
 
   it('delegates Project settings updates with trusted organization, actor and project', async () => {

@@ -202,6 +202,21 @@ export class ProjectAccessController {
     );
   }
 
+  @Delete()
+  @HttpCode(204)
+  @RequireProjectAccessPermission('project.delete')
+  @UseGuards(ProjectAccessAuthorizationGuard)
+  async deleteProject(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Param('projectId') projectId: string,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    response.setHeader('Cache-Control', 'no-store');
+    const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    await this.access.deleteProject(actor, projectId);
+  }
+
   @Get('visibility')
   @RequireProjectAccessPermission('project.visibility.manage')
   @UseGuards(ProjectAccessAuthorizationGuard)

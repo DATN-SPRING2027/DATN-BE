@@ -30,6 +30,14 @@ export class ProjectAccessService {
     );
   }
 
+  deleteProject(actor: AuthenticatedIdentity, projectId: string) {
+    return this.repository.deleteProject(
+      actor.organizationId,
+      actor.id,
+      projectId,
+    );
+  }
+
   changeVisibility(
     actor: AuthenticatedIdentity,
     projectId: string,

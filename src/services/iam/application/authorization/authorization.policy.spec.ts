@@ -288,6 +288,43 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
     expect(policy.evaluateProjectAccess(facts)).toEqual({ allowed: true });
   });
 
+  it('allows only organization ADMIN (Manager) to delete a Project and denies TEAM_LEADER (Leader) and MEMBER', () => {
+    const adminFacts = projectAccessBase('project.delete');
+    adminFacts.projectMembership = null;
+    adminFacts.assignments = [
+      projectAssignment(null, 'ADMIN', 'ADMIN', [
+        'project.visibility.manage',
+        'project.leader.manage',
+      ]),
+    ];
+    expect(policy.evaluateProjectAccess(adminFacts)).toEqual({ allowed: true });
+
+    const leaderFacts = projectAccessBase('project.delete');
+    leaderFacts.assignments = [
+      projectAssignment(projectId, 'TEAM_LEADER', 'TEAM_LEADER', [
+        'project.update',
+        'project.visibility.manage',
+        'project.delete',
+      ]),
+    ];
+    expect(policy.evaluateProjectAccess(leaderFacts)).toEqual({
+      allowed: false,
+      reason: 'NO_DOCUMENTED_PERMISSION',
+    });
+
+    const memberFacts = projectAccessBase('project.delete');
+    memberFacts.assignments = [
+      projectAssignment(projectId, 'MEMBER', 'MEMBER', [
+        'project.read',
+        'project.delete',
+      ]),
+    ];
+    expect(policy.evaluateProjectAccess(memberFacts)).toEqual({
+      allowed: false,
+      reason: 'NO_DOCUMENTED_PERMISSION',
+    });
+  });
+
   it('denies the disabled project.members.role.change code even if it is present on a Role', () => {
     const facts = projectAccessBase('project.members.list');
     facts.permission = 'project.members.role.change' as ProjectAccessPermission;
