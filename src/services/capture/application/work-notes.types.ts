@@ -50,6 +50,8 @@ export interface WorkNotesActor {
   joinedAt?: string;
   taskKey?: string;
   taskTitle?: string;
+  taskContextInvalid?: boolean;
+  taskContextVersion?: string;
   taskContext?: import('./work-note-agent/work-note-agent.types').AgentInput['task'];
 }
 

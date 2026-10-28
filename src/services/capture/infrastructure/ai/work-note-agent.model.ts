@@ -9,10 +9,47 @@ import {
 } from '../../application/work-note-agent/work-note-agent';
 import { recoverEmptyContainers } from '../../application/work-note-agent/work-note-agent.formatting';
 import { WorkNoteXkiroClient } from './work-note-xkiro.client';
+import {
+  buildAssessmentMessages,
+  parseAssessmentOutput,
+  ASSESSMENT_PROMPT_VERSION,
+} from '../../application/work-note-agent/work-note-assessment.protocol';
+import type { AssessmentModelInput } from '../../application/work-note-agent/work-note-assessment.types';
 
 @Injectable()
 export class WorkNoteAgentModel {
   constructor(private readonly config: ConfigService) {}
+  async assess(input: AssessmentModelInput) {
+    const enabled = this.config.get<boolean | string>('WORKNOTE_AGENT_ENABLED');
+    const apiKey = this.config.get<string>('XKIRO_API_KEY'),
+      model = this.config.get<string>('XKIRO_MODEL');
+    if ((enabled !== true && enabled !== 'true') || !apiKey || !model)
+      throw new ServiceUnavailableException({
+        code: 'WORKNOTE_AGENT_UNAVAILABLE',
+        message: 'Agent is unavailable. You can still save your note.',
+      });
+    const messages = buildAssessmentMessages(input);
+    const completion = await new WorkNoteXkiroClient({
+      apiKey,
+      model,
+      maxTokens: 8192,
+      timeoutMs: 30000,
+      jsonMode: true,
+      temperature: 0.1,
+      retries: 0,
+    }).complete(messages, `assessment-${randomUUID()}`);
+    return {
+      result: parseAssessmentOutput(input, completion.content),
+      provenance: {
+        model,
+        promptVersion: ASSESSMENT_PROMPT_VERSION,
+        promptTokens: completion.promptTokens,
+        completionTokens: completion.completionTokens,
+        httpAttempts: completion.attempts,
+        durationMs: completion.elapsedMs,
+      },
+    };
+  }
   async rewrite(input: AgentInput) {
     const enabled = this.config.get<string | boolean>('WORKNOTE_AGENT_ENABLED');
     const key = this.config.get<string>('XKIRO_API_KEY'),

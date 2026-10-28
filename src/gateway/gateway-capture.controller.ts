@@ -126,6 +126,14 @@ export class GatewayCaptureController {
   agentMessage(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
+  @Post('work-note-drafts/:draftId/agent/assessments')
+  assessTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('work-note-drafts/:draftId/agent/assessments/:assessmentId/:action')
+  updateTaskAssessment(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
   @Post('work-note-drafts/:draftId/agent/suggestions/:suggestionId/apply')
   applyAgentSuggestion(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
@@ -328,7 +336,7 @@ export class GatewayCaptureController {
         ...(body === undefined ? {} : { body }),
         ...(streamUpload ? { duplex: 'half' } : {}),
         signal: AbortSignal.timeout(
-          /\/(?:work-note-drafts|editor-drafts)\/[^/]+\/agent\/messages(?:\?|$)/.test(
+          /\/(?:work-note-drafts|editor-drafts)\/[^/]+\/agent\/(?:messages(?:\?|$)|assessments(?:\/|\?|$))/.test(
             request.originalUrl,
           )
             ? 35_000

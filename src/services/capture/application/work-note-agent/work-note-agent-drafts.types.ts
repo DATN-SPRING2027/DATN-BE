@@ -46,6 +46,7 @@ export type PendingQuestion = AgentResult['questions'][number] & {
   request: MessageInput;
 };
 export type AgentDraftState = {
+  assessment?: import('./work-note-assessment.types').AssessmentView;
   baseNoteHash?: string;
   title: string;
   contentMarkdown: string;
@@ -61,6 +62,7 @@ export type AgentDraftState = {
   messageTurns: number;
 };
 export type AgentDraftView = {
+  assessment?: import('./work-note-assessment.types').AssessmentView;
   id: string;
   taskId: string;
   noteId: string | null;

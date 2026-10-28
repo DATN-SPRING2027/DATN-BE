@@ -1,0 +1,487 @@
+import {
+  gradeAssessment,
+  loadAssessmentCorpus,
+  makeAssessmentWorksheet,
+  type AssessmentScenario,
+} from '../../../../../scripts/work-note-agent/assessment-evaluation';
+import {
+  AssessmentAttemptBudget,
+  parseAssessmentRunOptions,
+  runAssessmentEvaluation,
+} from '../../../../../scripts/work-note-agent/assessment-run';
+import type { AssessmentModelOutput } from './work-note-assessment.types';
+import { parseAssessmentOutput } from './work-note-assessment.protocol';
+
+describe('Task-aware assessment evaluation evidence', () => {
+  it('freezes 72 varied scenarios, family-exclusive splits and the 29-call pilot ceiling', () => {
+    const corpus = loadAssessmentCorpus();
+    expect(corpus.scenarios).toHaveLength(72);
+    const counts = (values: string[]) =>
+      values.reduce<Record<string, number>>(
+        (r, v) => ({ ...r, [v]: (r[v] ?? 0) + 1 }),
+        {},
+      );
+    expect(counts(corpus.scenarios.map((c) => c.split))).toEqual({
+      development: 36,
+      validation: 12,
+      holdout: 24,
+    });
+    expect(counts(corpus.scenarios.map((c) => String(c.turns.length)))).toEqual(
+      { '1': 48, '2': 16, '3': 8 },
+    );
+    for (const family of new Set(corpus.scenarios.map((c) => c.family))) {
+      expect(
+        new Set(
+          corpus.scenarios
+            .filter((c) => c.family === family)
+            .map((c) => c.split),
+        ).size,
+      ).toBe(1);
+    }
+    const pilot = corpus.scenarios.filter((c) => c.pilot);
+    expect(pilot).toHaveLength(12);
+    expect(counts(pilot.map((c) => String(c.turns.length)))).toEqual({
+      '1': 8,
+      '2': 3,
+      '3': 1,
+    });
+    expect(pilot.reduce((n, c) => n + c.turns.length + 1, 0)).toBe(29);
+    expect(new Set(corpus.scenarios.map((c) => c.family)).size).toBe(36);
+    expect(
+      new Set(
+        corpus.scenarios.map(
+          (c) => c.sources.find((s) => s.id === 'note.body')?.text,
+        ),
+      ).size,
+    ).toBeGreaterThan(60);
+  });
+
+  it('does not convert Save, author acceptance or a valid quote into semantic correctness', () => {
+    const scenario = loadAssessmentCorpus().scenarios.find(
+      (c) => c.category === 'negation',
+    )!;
+    const source = scenario.sources.find((s) => s.id === 'note.body')!;
+    const output = fixture(scenario);
+    output.claims = [
+      {
+        text: 'All tests passed.',
+        originKind: 'AUTHOR_REPORT',
+        supportRelation: 'FULL',
+        sourceRefs: [{ sourceId: source.id, quote: source.text }],
+      },
+    ];
+    const grade = gradeAssessment(scenario, 0, output);
+    expect(grade.failures).toContain('FORBIDDEN_ASSERTION');
+    expect(grade.semanticAcceptance).toBe('NOT_ESTABLISHED');
+    const sheet = makeAssessmentWorksheet([
+      { caseId: scenario.id, turn: 1, output, grade },
+    ]);
+    expect(sheet.items[0].ratings.claimSupport).toBeNull();
+    expect(sheet.items[0].signals).toEqual({
+      saved: false,
+      proposalAccepted: false,
+      authorValidated: false,
+      independentSemanticAcceptance: 'NOT_ESTABLISHED',
+    });
+  });
+
+  it('checks the source kind of requirements and the question gap rather than accepting generic questions', () => {
+    const scenario = loadAssessmentCorpus().scenarios.find(
+      (c) => c.turns[0].expected.question === 'required',
+    )!;
+    const output = fixture(scenario);
+    output.taskUnderstanding.requirements = [
+      {
+        text: 'Assumed requirement.',
+        sourceRefs: [
+          {
+            sourceId: 'note.body',
+            quote: scenario.sources.find((s) => s.id === 'note.body')!.text,
+          },
+        ],
+      },
+    ];
+    output.gaps = [
+      {
+        kind: 'PURPOSE',
+        target: 'unrelated',
+        impact: 'OPTIONAL',
+        owner: 'NOTE_AUTHOR',
+        sourceRefs: [],
+      },
+    ];
+    output.nextQuestion = {
+      gapIndex: 0,
+      text: 'What is your favorite color?',
+      reason: 'Need a detail.',
+      options: [],
+    };
+    const failures = gradeAssessment(scenario, 0, output).failures;
+    expect(failures).toContain('REQUIREMENT_FROM_NON_TASK_SOURCE');
+    expect(failures).toContain('QUESTION_GAP_KIND');
+    expect(failures).toContain('QUESTION_RELEVANCE');
+  });
+
+  it('exercises the actual protocol on an existing quote that contradicts the claim and on related-only text', () => {
+    const c = loadAssessmentCorpus().scenarios.find(
+      (c) => c.category === 'negation',
+    )!;
+    const input = {
+      sources: c.sources,
+      purpose: c.purpose,
+      previous: null,
+      answers: [],
+    };
+    const output = fixture(c),
+      source = c.sources.find((s) => s.id === 'note.body')!;
+    output.claims[0] = {
+      text: 'Đã kiểm thử và xác minh nguyên nhân timeout.',
+      originKind: 'AUTHOR_REPORT',
+      supportRelation: 'FULL',
+      sourceRefs: [{ sourceId: source.id, quote: source.text }],
+    };
+    expect(() => parseAssessmentOutput(input, JSON.stringify(output))).toThrow(
+      'SEMANTIC_POLARITY_MISMATCH',
+    );
+    output.claims[0].text = 'The author discussed the upload screen.';
+    expect(
+      parseAssessmentOutput(input, JSON.stringify(output)).claims[0]
+        .supportRelation,
+    ).toBe('PARTIAL');
+  });
+});
+
+describe('Assessment evaluator budget and non-network defaults', () => {
+  it('keeps observed development schema failures strict instead of repairing them into accepted output', () => {
+    const c = loadAssessmentCorpus().scenarios.find(
+      (c) => c.category === 'negation',
+    )!;
+    const input = {
+      sources: c.sources,
+      purpose: c.purpose,
+      previous: null,
+      answers: [],
+    };
+    const output = fixture(c),
+      requirement = c.sources.find((s) => s.id === 'task.step.0')!,
+      note = c.sources.find((s) => s.id === 'note.body')!;
+    output.taskUnderstanding.requirements = [
+      {
+        text: requirement.text,
+        sourceRefs: [{ sourceId: requirement.id, quote: requirement.text }],
+      },
+    ];
+    output.coverage = [
+      { requirementIndex: 0, status: 'NOT_REPORTED', sourceRefs: [] },
+    ];
+    const gap = {
+      kind: 'EVIDENCE' as const,
+      target: 'test result',
+      impact: 'BLOCKING' as const,
+      owner: 'NOTE_AUTHOR' as const,
+      sourceRefs: [{ sourceId: note.id, quote: note.text }],
+    };
+    output.gaps = [gap];
+    expect(() =>
+      parseAssessmentOutput(input, JSON.stringify(output)),
+    ).not.toThrow();
+    const invalidShapes: unknown[] = [
+      { ...output, nextQuestion: [] },
+      {
+        ...output,
+        coverage: [
+          { requirementIndex: 0, status: 'INSUFFICIENT', sourceRefs: [] },
+        ],
+      },
+      { ...output, gaps: [{ ...gap, gapIndex: 0 }] },
+      {
+        ...output,
+        taskUnderstanding: {
+          ...output.taskUnderstanding,
+          requirements: [
+            {
+              text: requirement.text.split(' ')[0],
+              sourceRefs: [
+                { sourceId: requirement.id, quote: requirement.text },
+              ],
+            },
+          ],
+        },
+      },
+    ];
+    for (const invalid of invalidShapes)
+      expect(() =>
+        parseAssessmentOutput(input, JSON.stringify(invalid)),
+      ).toThrow();
+  });
+
+  it('retains invalid synthetic model content only in redacted local review evidence', async () => {
+    const key = 'SYNTHETIC_ECHO_SECRET';
+    const network = jest.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: `not-json ${key}` },
+              },
+            ],
+            usage: { total_tokens: 9 },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const result = await runAssessmentEvaluation(
+      ['--live', '--model', 'test/model', '--max-attempts', '1'],
+      {
+        readCredentials: () => Promise.resolve({ apiKey: key }),
+        fetcher: network,
+        writeReport: false,
+      },
+    );
+    expect(result.rows[0].rawSyntheticResponse).toBe('not-json [REDACTED]');
+    expect(JSON.stringify(result)).not.toContain(key);
+    expect(
+      makeAssessmentWorksheet(result.rows).items[0].rawSyntheticResponse,
+    ).toBe('not-json [REDACTED]');
+  });
+
+  it('does not treat an extractive negative author claim as completed requirement evidence', () => {
+    const c = structuredClone(
+      loadAssessmentCorpus().scenarios.find((c) => c.category === 'negation')!,
+    );
+    const requirement = c.sources.find((s) => s.id === 'task.step.0')!;
+    requirement.text = 'Kiểm thử mất mạng đã hoàn tất.';
+    const note = c.sources.find((s) => s.id === 'note.body')!;
+    note.text = 'Chưa kiểm thử mất mạng.';
+    const output = fixture(c);
+    output.taskUnderstanding.requirements = [
+      {
+        text: requirement.text,
+        sourceRefs: [{ sourceId: requirement.id, quote: requirement.text }],
+      },
+    ];
+    output.coverage = [
+      {
+        requirementIndex: 0,
+        status: 'SUPPORTED',
+        sourceRefs: [{ sourceId: note.id, quote: note.text }],
+      },
+    ];
+    const parsed = parseAssessmentOutput(
+      { sources: c.sources, purpose: c.purpose, previous: null, answers: [] },
+      JSON.stringify(output),
+    );
+    expect(parsed.claims[0].supportRelation).toBe('FULL');
+    expect(parsed.coverage[0].status).toBe('PARTIAL');
+  });
+
+  it('does not read credentials or call a provider for its default dry run', async () => {
+    const secrets = jest
+      .fn()
+      .mockRejectedValue(Error('credential should not be read'));
+    const network = jest
+      .fn()
+      .mockRejectedValue(Error('network should not be called'));
+    const result = await runAssessmentEvaluation([], {
+      readCredentials: secrets,
+      fetcher: network,
+    });
+    expect(result.mode).toBe('dry-run');
+    expect(result.ceiling.logicalCalls).toBe(29);
+    expect(result.ceiling.httpAttempts).toBe(29);
+    expect(secrets).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  });
+
+  it('bounds every actual HTTP attempt globally across roles and does not expose request secrets', async () => {
+    const underlying = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
+        }),
+        { status: 200 },
+      ),
+    );
+    const budget = new AssessmentAttemptBudget(2, 100000, underlying);
+    const payload = {
+      model: 'test/model',
+      messages: [{ role: 'user', content: 'Synthetic only.' }],
+      max_tokens: 128,
+    };
+    const init = {
+      method: 'POST',
+      headers: { Authorization: 'Bearer NEVER_PRINT_THIS_SECRET' },
+      body: JSON.stringify(payload),
+    };
+    await budget.fetch('https://api.xkiro.com/v1/chat/completions', init);
+    await budget.fetch('https://api.xkiro.com/v1/chat/completions', init);
+    await expect(
+      budget.fetch('https://api.xkiro.com/v1/chat/completions', init),
+    ).rejects.toThrow('HTTP_ATTEMPT_BUDGET');
+    expect(underlying).toHaveBeenCalledTimes(2);
+    expect(budget.snapshot().actualHttpAttempts).toBe(2);
+    expect(budget.snapshot().reportedTokens).toBe(14);
+    expect(JSON.stringify(budget.snapshot())).not.toContain('NEVER_PRINT');
+  });
+
+  it('charges unknown usage conservatively after failures and blocks the next reservation', async () => {
+    const underlying = jest
+      .fn()
+      .mockRejectedValue(Error('secret provider detail'));
+    const budget = new AssessmentAttemptBudget(29, 700, underlying);
+    const init = {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'test/model',
+        messages: [{ role: 'user', content: 'synthetic'.repeat(15) }],
+        max_tokens: 128,
+      }),
+    };
+    await expect(
+      budget.fetch('https://api.xkiro.com/v1/chat/completions', init),
+    ).rejects.toThrow('ASSESSMENT_PROVIDER_NETWORK');
+    expect(budget.snapshot().unknownUsageAttempts).toBe(1);
+    await expect(
+      budget.fetch('https://api.xkiro.com/v1/chat/completions', init),
+    ).rejects.toThrow('TOKEN_RESERVATION_BUDGET');
+    expect(underlying).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects secret arguments, excess calls and automatic retries before inference', () => {
+    expect(parseAssessmentRunOptions([]).live).toBe(false);
+    expect(() => parseAssessmentRunOptions(['--api-key', 'secret'])).toThrow();
+    expect(() => parseAssessmentRunOptions(['--max-attempts', '30'])).toThrow();
+    expect(() => parseAssessmentRunOptions(['--retries', '1'])).toThrow();
+  });
+
+  it('shares the same live-run HTTP ceiling between analysis and Editor using synthetic mock responses', async () => {
+    const first = loadAssessmentCorpus().scenarios[0];
+    const network = jest.fn(
+      (_url: string | URL | Request, init?: RequestInit) => {
+        if (typeof init?.body !== 'string')
+          throw Error('Mock expected serialized JSON');
+        const body = JSON.parse(init.body) as {
+          messages: { content: string }[];
+        };
+        const last = JSON.parse(body.messages.at(-1)!.content) as {
+          sources?: unknown[];
+          source?: { text: string };
+        };
+        const response = last.sources
+          ? {
+              ...fixture(first),
+              taskContextStatus: first.turns[0].expected.taskContextStatus[0],
+            }
+          : {
+              status: 'SUGGESTION_READY',
+              message: 'Synthetic formatting proposal.',
+              suggestion: {
+                replacementText: last.source!.text,
+                suggestedTitle: null,
+                changeSummary: ['Kept the supplied facts.'],
+              },
+              questions: [],
+              uncertainties: [],
+            };
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              model: 'test/model',
+              choices: [
+                {
+                  finish_reason: 'stop',
+                  message: { content: JSON.stringify(response) },
+                },
+              ],
+              usage: {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+              },
+            }),
+            { status: 200 },
+          ),
+        );
+      },
+    );
+    const result = await runAssessmentEvaluation(
+      ['--live', '--model', 'test/model', '--max-attempts', '2'],
+      {
+        readCredentials: () =>
+          Promise.resolve({
+            apiKey: 'SYNTHETIC_KEY_NOT_TO_BE_LOGGED',
+          }),
+        fetcher: network,
+        writeReport: false,
+      },
+    );
+    if (!('budget' in result)) throw Error('Expected mock live evidence');
+    expect(network).toHaveBeenCalledTimes(2);
+    expect(result.budget.actualHttpAttempts).toBe(2);
+    expect(
+      result.rows.filter((r) => r.role === 'editor' && !r.errorCode),
+    ).toHaveLength(1);
+    expect(result.rows.some((r) => r.errorCode === 'HTTP_ATTEMPT_BUDGET')).toBe(
+      true,
+    );
+    expect(result.semanticAcceptance).toBe('NOT_ESTABLISHED');
+    expect(JSON.stringify(result)).not.toContain(
+      'SYNTHETIC_KEY_NOT_TO_BE_LOGGED',
+    );
+  });
+
+  it('does not retry a provider HTTP 500 within a logical call', async () => {
+    const network = jest.fn(() =>
+      Promise.resolve(new Response('{}', { status: 500 })),
+    );
+    const result = await runAssessmentEvaluation(
+      ['--live', '--model', 'test/model', '--max-attempts', '2'],
+      {
+        readCredentials: () => Promise.resolve({ apiKey: 'synthetic-only' }),
+        fetcher: network,
+        writeReport: false,
+      },
+    );
+    expect(network).toHaveBeenCalledTimes(2);
+    expect(
+      result.rows.filter((r) => r.errorCode === 'XKIRO_HTTP_ERROR_500'),
+    ).toHaveLength(2);
+    expect(
+      new Set(
+        result.rows
+          .filter((r) => r.errorCode && !r.skipped)
+          .map((r) => r.caseId),
+      ).size,
+    ).toBeGreaterThanOrEqual(2);
+  });
+});
+
+function fixture(c: AssessmentScenario): AssessmentModelOutput {
+  const task = c.sources.find((s) => s.id === 'task.title')!;
+  const note = c.sources.find((s) => s.id === 'note.body')!;
+  return {
+    purpose: c.purpose,
+    taskUnderstanding: {
+      objective: task.text,
+      scope: task.text,
+      requirements: [],
+      unknowns: [],
+    },
+    claims: [
+      {
+        text: note.text,
+        originKind: 'AUTHOR_REPORT',
+        supportRelation: 'FULL',
+        sourceRefs: [{ sourceId: note.id, quote: note.text }],
+      },
+    ],
+    coverage: [],
+    gaps: [],
+    nextQuestion: null,
+    taskContextStatus: 'CLEAR',
+    noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+  };
+}

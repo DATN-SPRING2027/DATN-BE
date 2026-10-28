@@ -12,6 +12,8 @@ import {
   GatewayTimeoutException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { staleAssessment } from './work-note-assessment.state';
+import { assessmentHash } from './work-note-assessment.protocol';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types, type Connection, type ClientSession } from 'mongoose';
 import type { Document, Db } from 'mongodb';
@@ -98,6 +100,7 @@ export type DraftRow = Document & {
   inferenceLeaseUntil?: Date;
 };
 type OperationRow = Document & {
+  createdAt?: Date;
   _id: string;
   organizationId: Types.ObjectId;
   projectId: Types.ObjectId;
@@ -213,7 +216,26 @@ export class WorkNoteAgentDraftsService {
   }
   protected view(d: DraftRow): AgentDraftView {
     const q = d.state.pendingQuestion;
+    if (
+      d.state.assessment?.state === 'analyzing' &&
+      (!d.inferenceLeaseUntil || d.inferenceLeaseUntil.getTime() <= Date.now())
+    ) {
+      d.state.assessment = {
+        ...d.state.assessment,
+        state: 'error',
+        nextQuestion: null,
+        allowedActions: ['reset', 'feedback', 'manual'],
+      };
+    }
     return {
+      ...(d.state.assessment
+        ? {
+            assessment:
+              d.state.assessment.sourceRevision !== d.revision
+                ? staleAssessment(d.state.assessment)
+                : d.state.assessment,
+          }
+        : {}),
       id: d._id,
       taskId: d.taskId ? String(d.taskId) : '',
       noteId: d.noteId ? String(d.noteId) : null,
@@ -262,7 +284,11 @@ export class WorkNoteAgentDraftsService {
       ...this.scope(actor),
       expiresAt: { $gt: new Date() },
     });
-    if (!draft || (draft.workflow && draft.workflow !== 'TASK_NOTE'))
+    if (
+      !draft ||
+      draft.createdAt.getTime() + DAY <= Date.now() ||
+      (draft.workflow && draft.workflow !== 'TASK_NOTE')
+    )
       throw missing();
     const taskActor = await this.authorization.resolveTask(
       headers,
@@ -279,6 +305,9 @@ export class WorkNoteAgentDraftsService {
       if (!note.permissions.canEdit)
         throw new ForbiddenException({ code: 'NOTE_EDIT_DENIED' });
     }
+    draft.expiresAt = new Date(
+      Math.min(draft.expiresAt.getTime(), draft.createdAt.getTime() + DAY),
+    );
     return { actor: taskActor, draft };
   }
   protected async prior(
@@ -301,6 +330,22 @@ export class WorkNoteAgentDraftsService {
         code: 'OPERATION_EXPIRED',
         message: 'Use a new operation ID.',
       });
+    if (op.createdAt && op.createdAt.getTime() + DAY <= Date.now())
+      throw new ConflictException({ code: 'OPERATION_EXPIRED' });
+    if (!op.createdAt) {
+      // Old raw insertOne receipts predate explicit timestamps. Do not let a
+      // sliding legacy expiry expose source-bearing results beyond draft age.
+      const sourceDraft = await this.drafts().findOne(
+        { _id: op.draftId, ...this.scope(actor) },
+        { session },
+      );
+      if (
+        !sourceDraft ||
+        sourceDraft.createdAt.getTime() + DAY <= Date.now() ||
+        sourceDraft.expiresAt.getTime() <= Date.now()
+      )
+        throw new ConflictException({ code: 'OPERATION_EXPIRED' });
+    }
     if (op.payloadHash !== hash(payload))
       throw new ConflictException({
         code: 'OPERATION_ID_REUSED',
@@ -343,11 +388,12 @@ export class WorkNoteAgentDraftsService {
       draftId,
       payloadHash: hash(payload),
       status: 'COMPLETED',
+      createdAt: new Date(),
       result,
       expiresAt,
     };
   }
-  private async consumeAgentQuota(actor: WorkNotesActor): Promise<boolean> {
+  protected async consumeAgentQuota(actor: WorkNotesActor): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
@@ -462,7 +508,21 @@ export class WorkNoteAgentDraftsService {
     });
   }
   async get(headers: CaptureRequestHeaders, projectId: string, id: string) {
-    return this.view((await this.owned(headers, projectId, id)).draft);
+    const { actor, draft } = await this.owned(headers, projectId, id);
+    if (
+      draft.state.assessment &&
+      draft.state.assessment.taskContextHash !==
+        assessmentHash([
+          actor.taskContext,
+          actor.taskContextVersion,
+          Boolean(actor.taskContextInvalid),
+        ])
+    )
+      draft.state.assessment = staleAssessment(
+        draft.state.assessment,
+        'TASK_CHANGED',
+      );
+    return this.view(draft);
   }
   async resume(
     headers: CaptureRequestHeaders,
@@ -481,6 +541,7 @@ export class WorkNoteAgentDraftsService {
         ...this.scope(actor),
         taskId: oid(taskId),
         noteId: noteId ? oid(noteId) : null,
+        createdAt: { $gt: new Date(Date.now() - DAY) },
         expiresAt: { $gt: new Date() },
       },
       { sort: { updatedAt: -1 } },
@@ -537,7 +598,9 @@ export class WorkNoteAgentDraftsService {
   }
   private async write(d: DraftRow, session: ClientSession) {
     d.updatedAt = new Date();
-    d.expiresAt = new Date(Date.now() + DAY);
+    d.expiresAt = new Date(
+      Math.min(d.createdAt.getTime() + DAY, Date.now() + DAY),
+    );
     const changed = await this.drafts().replaceOne(
       {
         _id: d._id,
@@ -574,6 +637,8 @@ export class WorkNoteAgentDraftsService {
         d.state.contentMarkdown = input.contentMarkdown;
         d.state.suggestion = null;
         d.state.pendingQuestion = null;
+        if (d.state.assessment)
+          d.state.assessment = staleAssessment(d.state.assessment);
         return this.write(d, session);
       },
     );
@@ -595,6 +660,11 @@ export class WorkNoteAgentDraftsService {
         d.state.clarifications = [];
         d.state.pendingQuestion = null;
         d.state.suggestion = null;
+        if (d.state.assessment)
+          d.state.assessment = staleAssessment(
+            d.state.assessment,
+            'CHAT_RESET',
+          );
         return this.write(d, session);
       },
     );
@@ -745,7 +815,14 @@ export class WorkNoteAgentDraftsService {
       if (claimed.modifiedCount !== 1) throw conflict();
       await this.operations().insertOne(
         {
-          ...this.receipt(actor, input.operationId, id, payload, null),
+          ...this.receipt(
+            actor,
+            input.operationId,
+            id,
+            payload,
+            null,
+            d.expiresAt,
+          ),
           status: 'PENDING',
         },
         { session },
@@ -767,6 +844,11 @@ export class WorkNoteAgentDraftsService {
         );
         if (!current) throw conflict();
         const result = completion.result;
+        if (current.state.assessment)
+          current.state.assessment = staleAssessment(
+            current.state.assessment,
+            'LEGACY_AGENT_REQUEST',
+          );
         const question = result.questions[0];
         const questionId = question ? randomUUID() : null;
         current.state.clarifications = clarifications;
@@ -782,7 +864,9 @@ export class WorkNoteAgentDraftsService {
         current.state.suggestionTaskHash = hash(actor.taskContext ?? null);
         current.state.suggestionProvenance = completion.provenance;
         current.state.messageTurns++;
-        current.expiresAt = new Date(Date.now() + DAY);
+        current.expiresAt = new Date(
+          Math.min(current.createdAt.getTime() + DAY, Date.now() + DAY),
+        );
         current.updatedAt = new Date();
         delete current.inferenceOperationId;
         delete current.inferenceLeaseUntil;
@@ -906,6 +990,10 @@ export class WorkNoteAgentDraftsService {
             appliedAt: new Date().toISOString(),
             scope: suggestion.scope,
           };
+        }
+        if (d.state.assessment) {
+          d.state.assessment = staleAssessment(d.state.assessment);
+          d.state.assessment.signals.proposalApplied = true;
         }
         d.state.suggestion = null;
         return this.write(d, session);
@@ -1154,6 +1242,14 @@ export class WorkNoteAgentDraftsService {
             status: 'COMPLETED',
             result: {
               closed: true,
+              assessmentSignals: d.state.assessment
+                ? {
+                    saved: true,
+                    proposalApplied: d.state.assessment.signals.proposalApplied,
+                    authorValidated: d.state.assessment.signals.authorValidated,
+                    reviewerSemanticAssessment: 'NOT_ESTABLISHED',
+                  }
+                : undefined,
               noteId: String(noteId),
               taskId: String(d.taskId),
               version,

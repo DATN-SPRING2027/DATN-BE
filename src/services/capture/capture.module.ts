@@ -15,6 +15,8 @@ import { WorkNoteAgentDraftsService } from './application/work-note-agent/work-n
 import { WorkNoteAgentModel } from './infrastructure/ai/work-note-agent.model';
 import { WorkNoteEditorService } from './application/work-note-agent/work-note-editor.service';
 import { WorkNoteEditorController } from './controllers/work-note-editor.controller';
+import { WorkNoteAssessmentController } from './controllers/work-note-assessment.controller';
+import { WorkNoteAssessmentService } from './application/work-note-agent/work-note-assessment.service';
 
 @Module({
   imports: [
@@ -28,6 +30,7 @@ import { WorkNoteEditorController } from './controllers/work-note-editor.control
     WorkNotesController,
     WorkNoteAgentController,
     WorkNoteEditorController,
+    WorkNoteAssessmentController,
   ],
   providers: [
     CaptureApplicationService,
@@ -36,6 +39,7 @@ import { WorkNoteEditorController } from './controllers/work-note-editor.control
     WorkNoteAgentDraftsService,
     WorkNoteAgentModel,
     WorkNoteEditorService,
+    WorkNoteAssessmentService,
     ProjectReportRosterService,
     WorkReportOverdueScheduler,
   ],

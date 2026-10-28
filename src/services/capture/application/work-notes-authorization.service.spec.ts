@@ -28,6 +28,63 @@ describe('WorkNotesAuthorizationService', () => {
 
   afterEach(() => fetchSpy.mockRestore());
 
+  const scopedTaskResponse = (patch: Record<string, unknown> = {}) => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Author' }),
+      )
+      .mockResolvedValueOnce(
+        response({ id: projectId, organizationId, status: 'ACTIVE' }),
+      )
+      .mockResolvedValueOnce(response({ canUpdateProject: true }))
+      .mockResolvedValueOnce(
+        response({
+          id: taskId,
+          projectId,
+          title: 'Existing task',
+          description: null,
+          status: 'DONE',
+          version: 4,
+          steps: [],
+          ...patch,
+        }),
+      );
+  };
+
+  it.each([
+    ['description object', { description: { text: 'lost by projection' } }],
+    ['description number', { description: 42 }],
+    ['non-string status', { status: 42 }],
+    ['blank status', { status: '  ' }],
+    ['nonpositive version', { version: 0 }],
+    ['fractional version', { version: 1.5 }],
+    ['string version', { version: '4' }],
+    ['null version', { version: null }],
+  ])(
+    'marks malformed Task %s as an acquisition error instead of missing authored requirements',
+    async (_label, patch) => {
+      scopedTaskResponse(patch);
+      const actor = await service.resolveTask({}, projectId, taskId);
+      expect(actor.taskContextInvalid).toBe(true);
+      if (Object.hasOwn(patch, 'version'))
+        expect(actor.taskContextVersion).toBeUndefined();
+    },
+  );
+
+  it('keeps a genuinely sparse authored task valid and preserves the current Task version', async () => {
+    scopedTaskResponse();
+    expect(await service.resolveTask({}, projectId, taskId)).toMatchObject({
+      taskContextInvalid: false,
+      taskContextVersion: '4',
+      taskContext: {
+        title: 'Existing task',
+        description: null,
+        status: 'DONE',
+        steps: [],
+      },
+    });
+  });
+
   it('resolves Project access and review permission from IAM using the caller session', async () => {
     fetchSpy
       .mockResolvedValueOnce(

@@ -194,6 +194,10 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .truthy('true')
     .falsy('false')
     .default(false),
+  WORKNOTE_ASSESSMENT_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
   WORKNOTE_AGENT_ENABLED: Joi.boolean()
     .truthy('true')
     .falsy('false')

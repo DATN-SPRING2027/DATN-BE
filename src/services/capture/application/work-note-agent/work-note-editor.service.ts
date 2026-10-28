@@ -168,8 +168,12 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
       workflow: { $in: ['PROJECT_DOCUMENT', 'WORK_REPORT'] },
       expiresAt: { $gt: new Date() },
     });
-    if (!draft) throw unavailable();
+    if (!draft || draft.createdAt.getTime() + 86400000 <= Date.now())
+      throw unavailable();
     await this.source(actor, this.identity(draft), true);
+    draft.expiresAt = new Date(
+      Math.min(draft.expiresAt.getTime(), draft.createdAt.getTime() + 86400000),
+    );
     return { actor, draft };
   }
   private identity(d: DraftRow): Identity {
