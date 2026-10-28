@@ -16,6 +16,7 @@ describe('validateEnvironment', () => {
       SWAGGER_ENABLED: false,
       INFRA_ENABLED: true,
       SERVICE_DATABASE: 'continuum_iam',
+      SAG_CHAT_STREAM_TIMEOUT_MS: 120000,
     });
   });
 
@@ -30,6 +31,8 @@ describe('validateEnvironment', () => {
     [{ IAM_GATEWAY_SECRET: 'too-short' }, 'IAM_GATEWAY_SECRET'],
     [{ SERVICE_DATABASE: 'continuum_db' }, 'SERVICE_DATABASE'],
     [{ SERVICE_DATABASE: 'continuum_task' }, 'SERVICE_DATABASE'],
+    [{ SAG_CHAT_STREAM_TIMEOUT_MS: '1000' }, 'SAG_CHAT_STREAM_TIMEOUT_MS'],
+    [{ SAG_CHAT_STREAM_TIMEOUT_MS: '600001' }, 'SAG_CHAT_STREAM_TIMEOUT_MS'],
     [
       { GATEWAY_TRUSTED_PROXY_CIDRS: 'anywhere' },
       'GATEWAY_TRUSTED_PROXY_CIDRS',
@@ -91,5 +94,20 @@ describe('validateEnvironment', () => {
         GOOGLE_CALLBACK_URL: 'http://app.example.test/api/auth/google/callback',
       }),
     ).toThrow('must use HTTPS in production');
+  });
+
+  it('rejects SAG_API_BASE_URL containing embedded credentials or query strings', () => {
+    expect(() =>
+      validateEnvironment({
+        SAG_API_BASE_URL: 'http://user:pass@127.0.0.1:8000',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      }),
+    ).toThrow('SAG_API_BASE_URL must not contain credentials');
+    expect(() =>
+      validateEnvironment({
+        SAG_API_BASE_URL: 'http://127.0.0.1:8000?debug=1',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      }),
+    ).toThrow('SAG_API_BASE_URL must not contain credentials');
   });
 });

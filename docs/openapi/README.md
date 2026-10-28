@@ -125,3 +125,22 @@ and `WWW-Authenticate` rules, and adds:
 
 None of it is approved by any authority and none of it allows route activation, production use
 or policy `ALLOW`. `src/contracts/task-create-openapi.spec.ts` guards the file.
+
+
+## AI Chat <-> SAG BFF: ai-chat-sag.openapi.json
+
+The [AI Chat <-> SAG BFF contract](ai-chat-sag.openapi.json) defines the
+project-scoped AI Knowledge Search boundary under
+`/api/v1/ai-chat/projects/{projectId}` (`GET/POST /threads`,
+`PATCH/DELETE /threads/{threadId}`, `GET /threads/{threadId}/messages`, and
+`POST /threads/{threadId}/ask` SSE stream).
+
+- Every operation verifies Continuum identity and active Project access before
+  minting a short-lived, single-project SAG JWT via
+  `POST /api/v1/auth/continuum-login`.
+- Cookie-authenticated mutations (`POST`, `PATCH`, `DELETE`) enforce constant-time
+  `X-CSRF-Token` verification (`403 CSRF_INVALID`).
+- `POST /threads/{threadId}/ask` forces `web_enabled: false` and
+  `knowledge_only: true` server-side and emits whitelisted `started`, `step`,
+  `delta`, and terminal `completed` / `failed` SSE frames with document
+  `citations`, ECCE `sessionCitations`, and sanitized `retrievalSteps`.
