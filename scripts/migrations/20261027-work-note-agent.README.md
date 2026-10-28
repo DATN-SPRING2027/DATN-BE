@@ -131,7 +131,7 @@ unchanged. No bulk backfill; optional deterministic conversion remains separate.
 Migration: 20261028-work-note-editor.mjs (loopback) and explicit shared wrapper;
 indexes-only default, --backfill is separate. Backup reference is attestation only.
 PR type: Database
-PR: Pending reviewed commit/push/PR. No merge or notification sent.
+PR: https://github.com/DATN-SPRING2027/DATN-BE/pull/104 (draft). No merge or notification sent.
 ```
 
 
@@ -140,5 +140,5 @@ now default to indexes-only for --apply. Task bulk conversion requires explicit
 --backfill, just like Report conversion. The original local engine/CLI retains
 its existing default backfill behavior for compatibility. A regression first
 failed then passed for apply/backfill:false preserving legacy rows/history.
-The current existing-Atlas rollout will use indexes only and retain all5 legacy
+The completed existing-Atlas rollout used indexes only and retained all5 legacy
 Task Notes unchanged until an authorized author saves through the new editor.
