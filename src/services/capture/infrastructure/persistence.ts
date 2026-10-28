@@ -16,6 +16,50 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
   databaseName: SERVICE_DATABASES.capture,
   collections: [
     {
+      name: 'work_note_agent_drafts',
+      indexes: [
+        index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            ownerUserId: 1,
+            workflow: 1,
+            resourceId: 1,
+            updatedAt: -1,
+          },
+          { name: 'agent_drafts_workflow_resume' },
+        ),
+        index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            ownerUserId: 1,
+            taskId: 1,
+            noteId: 1,
+            updatedAt: -1,
+          },
+          { name: 'agent_drafts_owned_resume' },
+        ),
+        index(
+          { expiresAt: 1 },
+          { name: 'agent_drafts_expiry', expireAfterSeconds: 0 },
+        ),
+      ],
+    },
+    {
+      name: 'work_note_agent_operations',
+      indexes: [
+        index(
+          { expiresAt: 1 },
+          { name: 'agent_operations_expiry', expireAfterSeconds: 0 },
+        ),
+        index(
+          { draftId: 1, ownerUserId: 1 },
+          { name: 'agent_operations_draft_cleanup' },
+        ),
+      ],
+    },
+    {
       name: 'work_notes',
       indexes: [
         index({ organizationId: 1, projectId: 1, status: 1, createdAt: 1 }),
@@ -72,6 +116,24 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
           { name: 'work_reports_member_period' },
         ),
         index({ status: 1, dueAt: 1 }, { name: 'work_reports_status_due_at' }),
+      ],
+    },
+    {
+      name: 'work_report_versions',
+      indexes: [
+        index(
+          { reportId: 1, versionNumber: 1 },
+          { unique: true, name: 'report_editor_versions_unique' },
+        ),
+      ],
+    },
+    {
+      name: 'project_document_editor_versions',
+      indexes: [
+        index(
+          { documentId: 1, versionNumber: 1 },
+          { unique: true, name: 'document_editor_versions_unique' },
+        ),
       ],
     },
     {
