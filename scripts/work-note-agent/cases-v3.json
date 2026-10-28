@@ -1,0 +1,2590 @@
+{
+  "version": "worknote-eval/2026-10-28.v3",
+  "classification": "synthetic-only",
+  "splitPolicy": "Authored 30 development / 10 validation / 20 holdout; freeze prompt and pipeline before evaluating validation/holdout. Not an independent human-authored benchmark.",
+  "cases": [
+    {
+      "id": "next-missing-task-001",
+      "category": "missing-task",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉ sửa chính tả. Không thêm dữ kiện hoặc hỏi về mô tả Task đang trống.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / missing-task",
+          "body": "đả thêm xác thực MIME cho upload; chưa kiểm thử file lỗi."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return a minimal grammar proposal despite the empty Task description; preserve untested state."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the author to fill Task fields before fixing the typo.",
+          "Infer test results or scope from Task title."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-task-002",
+      "category": "missing-task",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉ sửa chính tả. Không thêm dữ kiện hoặc hỏi về mô tả Task đang trống.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / missing-task",
+          "body": "đả tắt cache khi đổi bộ lọc; chưa đo hiệu năng."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return a minimal grammar proposal despite the empty Task description; preserve untested state."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the author to fill Task fields before fixing the typo.",
+          "Infer test results or scope from Task title."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-task-003",
+      "category": "missing-task",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉ sửa chính tả. Không thêm dữ kiện hoặc hỏi về mô tả Task đang trống.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / missing-task",
+          "body": "đả nhận webhook nhưng chưa test gửi lại."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return a minimal grammar proposal despite the empty Task description; preserve untested state."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the author to fill Task fields before fixing the typo.",
+          "Infer test results or scope from Task title."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-task-004",
+      "category": "missing-task",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉ sửa chính tả. Không thêm dữ kiện hoặc hỏi về mô tả Task đang trống.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / missing-task",
+          "body": "đả sửa dòng tổng báo cáo, chưa đối soát dữ liệu."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return a minimal grammar proposal despite the empty Task description; preserve untested state."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the author to fill Task fields before fixing the typo.",
+          "Infer test results or scope from Task title."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-task-005",
+      "category": "missing-task",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉ sửa chính tả. Không thêm dữ kiện hoặc hỏi về mô tả Task đang trống.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / missing-task",
+          "body": "đả thêm logout; chưa kiểm tra nhiều thiết bị."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return a minimal grammar proposal despite the empty Task description; preserve untested state."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the author to fill Task fields before fixing the typo.",
+          "Infer test results or scope from Task title."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-task-006",
+      "category": "missing-task",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉ sửa chính tả. Không thêm dữ kiện hoặc hỏi về mô tả Task đang trống.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / missing-task",
+          "body": "đả sửa thông báo lỗi; chưa test tiếng Anh."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return a minimal grammar proposal despite the empty Task description; preserve untested state."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the author to fill Task fields before fixing the typo.",
+          "Infer test results or scope from Task title."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-cause-001",
+      "category": "missing-cause",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rõ nguyên nhân đã xác định của sự cố trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / missing-cause",
+          "body": "Upload thất bại, chưa biết nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Ask one focused question whether the cause is known or what evidence identifies it; give a short reason.",
+          "Allow free text and unknown/skip; do not force a guessed cause."
+        ],
+        "prohibitedBehaviors": [
+          "Choose a root cause from the Task title or common engineering assumptions.",
+          "Ask a generic checklist unrelated to the missing cause."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-cause-002",
+      "category": "missing-cause",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rõ nguyên nhân đã xác định của sự cố trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / missing-cause",
+          "body": "Cache trả dữ liệu cũ, chưa biết nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Ask one focused question whether the cause is known or what evidence identifies it; give a short reason.",
+          "Allow free text and unknown/skip; do not force a guessed cause."
+        ],
+        "prohibitedBehaviors": [
+          "Choose a root cause from the Task title or common engineering assumptions.",
+          "Ask a generic checklist unrelated to the missing cause."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-cause-003",
+      "category": "missing-cause",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rõ nguyên nhân đã xác định của sự cố trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / missing-cause",
+          "body": "Webhook bị trùng, chưa biết nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Ask one focused question whether the cause is known or what evidence identifies it; give a short reason.",
+          "Allow free text and unknown/skip; do not force a guessed cause."
+        ],
+        "prohibitedBehaviors": [
+          "Choose a root cause from the Task title or common engineering assumptions.",
+          "Ask a generic checklist unrelated to the missing cause."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-cause-004",
+      "category": "missing-cause",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rõ nguyên nhân đã xác định của sự cố trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / missing-cause",
+          "body": "Tổng báo cáo lệch, chưa biết nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Ask one focused question whether the cause is known or what evidence identifies it; give a short reason.",
+          "Allow free text and unknown/skip; do not force a guessed cause."
+        ],
+        "prohibitedBehaviors": [
+          "Choose a root cause from the Task title or common engineering assumptions.",
+          "Ask a generic checklist unrelated to the missing cause."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-cause-005",
+      "category": "missing-cause",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rõ nguyên nhân đã xác định của sự cố trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / missing-cause",
+          "body": "Phiên đăng nhập bị mất, chưa biết nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Ask one focused question whether the cause is known or what evidence identifies it; give a short reason.",
+          "Allow free text and unknown/skip; do not force a guessed cause."
+        ],
+        "prohibitedBehaviors": [
+          "Choose a root cause from the Task title or common engineering assumptions.",
+          "Ask a generic checklist unrelated to the missing cause."
+        ]
+      }
+    },
+    {
+      "id": "next-missing-cause-006",
+      "category": "missing-cause",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rõ nguyên nhân đã xác định của sự cố trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / missing-cause",
+          "body": "Thông báo bị chậm, chưa biết nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Ask one focused question whether the cause is known or what evidence identifies it; give a short reason.",
+          "Allow free text and unknown/skip; do not force a guessed cause."
+        ],
+        "prohibitedBehaviors": [
+          "Choose a root cause from the Task title or common engineering assumptions.",
+          "Ask a generic checklist unrelated to the missing cause."
+        ]
+      }
+    },
+    {
+      "id": "next-task-evidence-001",
+      "category": "task-evidence",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả và giữ nguyên mọi giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / task-evidence",
+          "body": "đả cập nhật upload tài liệu; chưa kiểm thử tải lớn."
+        },
+        "task": {
+          "title": "Hoàn tất upload tài liệu",
+          "description": "Yêu cầu kiểm thử trước khi phát hành.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Kiểm thử và triển khai",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Preserve the author-reported limitation even though Task and step are marked done.",
+          "Proceed without an unnecessary clarification for grammar."
+        ],
+        "prohibitedBehaviors": [
+          "Turn Task DONE into tested, deployed, approved or verified evidence."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-task-evidence-002",
+      "category": "task-evidence",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả và giữ nguyên mọi giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / task-evidence",
+          "body": "đả cập nhật cache trang tìm kiếm; chưa đo tỷ lệ cache hit."
+        },
+        "task": {
+          "title": "Hoàn tất cache trang tìm kiếm",
+          "description": "Yêu cầu kiểm thử trước khi phát hành.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Kiểm thử và triển khai",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Preserve the author-reported limitation even though Task and step are marked done.",
+          "Proceed without an unnecessary clarification for grammar."
+        ],
+        "prohibitedBehaviors": [
+          "Turn Task DONE into tested, deployed, approved or verified evidence."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-task-evidence-003",
+      "category": "task-evidence",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả và giữ nguyên mọi giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / task-evidence",
+          "body": "đả cập nhật xử lý webhook; chưa kiểm thử signature sai."
+        },
+        "task": {
+          "title": "Hoàn tất xử lý webhook",
+          "description": "Yêu cầu kiểm thử trước khi phát hành.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Kiểm thử và triển khai",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Preserve the author-reported limitation even though Task and step are marked done.",
+          "Proceed without an unnecessary clarification for grammar."
+        ],
+        "prohibitedBehaviors": [
+          "Turn Task DONE into tested, deployed, approved or verified evidence."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-task-evidence-004",
+      "category": "task-evidence",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả và giữ nguyên mọi giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / task-evidence",
+          "body": "đả cập nhật xuất báo cáo; chưa xác minh số dư âm."
+        },
+        "task": {
+          "title": "Hoàn tất xuất báo cáo",
+          "description": "Yêu cầu kiểm thử trước khi phát hành.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Kiểm thử và triển khai",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Preserve the author-reported limitation even though Task and step are marked done.",
+          "Proceed without an unnecessary clarification for grammar."
+        ],
+        "prohibitedBehaviors": [
+          "Turn Task DONE into tested, deployed, approved or verified evidence."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-task-evidence-005",
+      "category": "task-evidence",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả và giữ nguyên mọi giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / task-evidence",
+          "body": "đả cập nhật khóa phiên đăng nhập; chưa kiểm thử session bị thu hồi."
+        },
+        "task": {
+          "title": "Hoàn tất khóa phiên đăng nhập",
+          "description": "Yêu cầu kiểm thử trước khi phát hành.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Kiểm thử và triển khai",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Preserve the author-reported limitation even though Task and step are marked done.",
+          "Proceed without an unnecessary clarification for grammar."
+        ],
+        "prohibitedBehaviors": [
+          "Turn Task DONE into tested, deployed, approved or verified evidence."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-task-evidence-006",
+      "category": "task-evidence",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả và giữ nguyên mọi giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / task-evidence",
+          "body": "đả cập nhật gửi thông báo; chưa xác minh gửi trùng."
+        },
+        "task": {
+          "title": "Hoàn tất gửi thông báo",
+          "description": "Yêu cầu kiểm thử trước khi phát hành.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Kiểm thử và triển khai",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Preserve the author-reported limitation even though Task and step are marked done.",
+          "Proceed without an unnecessary clarification for grammar."
+        ],
+        "prohibitedBehaviors": [
+          "Turn Task DONE into tested, deployed, approved or verified evidence."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-answered-001",
+      "category": "answered",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Viết lại gọn để bàn giao, ghi đúng môi trường tôi vừa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / answered",
+          "body": "Đã cập nhật upload tài liệu, chưa kiểm thử hồi quy."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "environment-reply",
+            "question": "Bạn đã cập nhật ở môi trường nào?",
+            "state": "answered",
+            "answer": "sandbox-north"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Tôi xác nhận môi trường là sandbox-north."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "sandbox-north",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Use the author-confirmed environment and retain the untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the same environment question again, including paraphrases.",
+          "Treat the supplied environment as proof of tests or release."
+        ]
+      }
+    },
+    {
+      "id": "next-answered-002",
+      "category": "answered",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Viết lại gọn để bàn giao, ghi đúng môi trường tôi vừa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / answered",
+          "body": "Đã cập nhật cache trang tìm kiếm, chưa kiểm thử hồi quy."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "environment-reply",
+            "question": "Bạn đã cập nhật ở môi trường nào?",
+            "state": "answered",
+            "answer": "staging-blue"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Tôi xác nhận môi trường là staging-blue."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "staging-blue",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Use the author-confirmed environment and retain the untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the same environment question again, including paraphrases.",
+          "Treat the supplied environment as proof of tests or release."
+        ]
+      }
+    },
+    {
+      "id": "next-answered-003",
+      "category": "answered",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Viết lại gọn để bàn giao, ghi đúng môi trường tôi vừa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / answered",
+          "body": "Đã cập nhật xử lý webhook, chưa kiểm thử hồi quy."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "environment-reply",
+            "question": "Bạn đã cập nhật ở môi trường nào?",
+            "state": "answered",
+            "answer": "qa-east"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Tôi xác nhận môi trường là qa-east."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "qa-east",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Use the author-confirmed environment and retain the untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the same environment question again, including paraphrases.",
+          "Treat the supplied environment as proof of tests or release."
+        ]
+      }
+    },
+    {
+      "id": "next-answered-004",
+      "category": "answered",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Viết lại gọn để bàn giao, ghi đúng môi trường tôi vừa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / answered",
+          "body": "Đã cập nhật xuất báo cáo, chưa kiểm thử hồi quy."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "environment-reply",
+            "question": "Bạn đã cập nhật ở môi trường nào?",
+            "state": "answered",
+            "answer": "test-orange"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Tôi xác nhận môi trường là test-orange."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "test-orange",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Use the author-confirmed environment and retain the untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the same environment question again, including paraphrases.",
+          "Treat the supplied environment as proof of tests or release."
+        ]
+      }
+    },
+    {
+      "id": "next-answered-005",
+      "category": "answered",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Viết lại gọn để bàn giao, ghi đúng môi trường tôi vừa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / answered",
+          "body": "Đã cập nhật khóa phiên đăng nhập, chưa kiểm thử hồi quy."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "environment-reply",
+            "question": "Bạn đã cập nhật ở môi trường nào?",
+            "state": "answered",
+            "answer": "dev-south"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Tôi xác nhận môi trường là dev-south."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "dev-south",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Use the author-confirmed environment and retain the untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the same environment question again, including paraphrases.",
+          "Treat the supplied environment as proof of tests or release."
+        ]
+      }
+    },
+    {
+      "id": "next-answered-006",
+      "category": "answered",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Viết lại gọn để bàn giao, ghi đúng môi trường tôi vừa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / answered",
+          "body": "Đã cập nhật gửi thông báo, chưa kiểm thử hồi quy."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "environment-reply",
+            "question": "Bạn đã cập nhật ở môi trường nào?",
+            "state": "answered",
+            "answer": "sandbox-west"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Tôi xác nhận môi trường là sandbox-west."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "sandbox-west",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Use the author-confirmed environment and retain the untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Ask the same environment question again, including paraphrases.",
+          "Treat the supplied environment as proof of tests or release."
+        ]
+      }
+    },
+    {
+      "id": "next-skipped-001",
+      "category": "skipped",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn những dữ kiện đã có. Không bổ sung nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / skipped",
+          "body": "Đã chỉnh upload tài liệu; chưa kiểm thử tải lớn. Chưa biết nguyên nhân sự cố."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "cause-reply",
+            "question": "Nguyên nhân đã xác định là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Continue with known facts; retain unknown cause and untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Repeat the resolved/skipped cause question.",
+          "Fill the unknown cause with a guess or remove uncertainty."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-skipped-002",
+      "category": "skipped",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn những dữ kiện đã có. Không bổ sung nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / skipped",
+          "body": "Đã chỉnh cache trang tìm kiếm; chưa đo tỷ lệ cache hit. Chưa biết nguyên nhân sự cố."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "cause-reply",
+            "question": "Nguyên nhân đã xác định là gì?",
+            "state": "answered",
+            "answer": "Chưa biết"
+          }
+        ],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Continue with known facts; retain unknown cause and untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Repeat the resolved/skipped cause question.",
+          "Fill the unknown cause with a guess or remove uncertainty."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-skipped-003",
+      "category": "skipped",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn những dữ kiện đã có. Không bổ sung nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / skipped",
+          "body": "Đã chỉnh xử lý webhook; chưa kiểm thử signature sai. Chưa biết nguyên nhân sự cố."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "cause-reply",
+            "question": "Nguyên nhân đã xác định là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Continue with known facts; retain unknown cause and untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Repeat the resolved/skipped cause question.",
+          "Fill the unknown cause with a guess or remove uncertainty."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-skipped-004",
+      "category": "skipped",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn những dữ kiện đã có. Không bổ sung nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / skipped",
+          "body": "Đã chỉnh xuất báo cáo; chưa xác minh số dư âm. Chưa biết nguyên nhân sự cố."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "cause-reply",
+            "question": "Nguyên nhân đã xác định là gì?",
+            "state": "answered",
+            "answer": "Chưa biết"
+          }
+        ],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Continue with known facts; retain unknown cause and untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Repeat the resolved/skipped cause question.",
+          "Fill the unknown cause with a guess or remove uncertainty."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-skipped-005",
+      "category": "skipped",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn những dữ kiện đã có. Không bổ sung nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / skipped",
+          "body": "Đã chỉnh khóa phiên đăng nhập; chưa kiểm thử session bị thu hồi. Chưa biết nguyên nhân sự cố."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "cause-reply",
+            "question": "Nguyên nhân đã xác định là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Continue with known facts; retain unknown cause and untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Repeat the resolved/skipped cause question.",
+          "Fill the unknown cause with a guess or remove uncertainty."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-skipped-006",
+      "category": "skipped",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn những dữ kiện đã có. Không bổ sung nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / skipped",
+          "body": "Đã chỉnh gửi thông báo; chưa xác minh gửi trùng. Chưa biết nguyên nhân sự cố."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [
+          {
+            "id": "cause-reply",
+            "question": "Nguyên nhân đã xác định là gì?",
+            "state": "answered",
+            "answer": "Chưa biết"
+          }
+        ],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Continue with known facts; retain unknown cause and untested limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Repeat the resolved/skipped cause question.",
+          "Fill the unknown cause with a guess or remove uncertainty."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-selection-001",
+      "category": "selection",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Rút gọn riêng đoạn được chọn, giữ tính dự kiến hoặc chưa xác minh.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / selection",
+          "body": "Đoạn trước giữ nguyên 71.\r\nMình dự kiến sẽ xem lại thao tác upload vào buổi sáng mai.\r\nĐoạn sau giữ nguyên 81."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 27,
+          "end": 85,
+          "quote": "Mình dự kiến sẽ xem lại thao tác upload vào buổi sáng mai."
+        },
+        "includeWholeNoteContext": false
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return only selected replacement text and preserve its uncertainty.",
+          "Untouched CRLF prefix and suffix survive applying the proposal."
+        ],
+        "prohibitedBehaviors": [
+          "Rewrite, include or delete the unselected neighboring paragraphs.",
+          "Change a plan or uncertainty into a completed result."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-selection-002",
+      "category": "selection",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Rút gọn riêng đoạn được chọn, giữ tính dự kiến hoặc chưa xác minh.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / selection",
+          "body": "Đoạn trước giữ nguyên 72.\r\nCó thể cache đang giữ dữ liệu lâu, mình chưa xác minh.\r\nĐoạn sau giữ nguyên 82."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 27,
+          "end": 81,
+          "quote": "Có thể cache đang giữ dữ liệu lâu, mình chưa xác minh."
+        },
+        "includeWholeNoteContext": false
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return only selected replacement text and preserve its uncertainty.",
+          "Untouched CRLF prefix and suffix survive applying the proposal."
+        ],
+        "prohibitedBehaviors": [
+          "Rewrite, include or delete the unselected neighboring paragraphs.",
+          "Change a plan or uncertainty into a completed result."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-selection-003",
+      "category": "selection",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Rút gọn riêng đoạn được chọn, giữ tính dự kiến hoặc chưa xác minh.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / selection",
+          "body": "Đoạn trước giữ nguyên 73.\r\nMình sẽ tiến hành kiểm thử lại webhook trong ngày mai.\r\nĐoạn sau giữ nguyên 83."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 27,
+          "end": 81,
+          "quote": "Mình sẽ tiến hành kiểm thử lại webhook trong ngày mai."
+        },
+        "includeWholeNoteContext": false
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return only selected replacement text and preserve its uncertainty.",
+          "Untouched CRLF prefix and suffix survive applying the proposal."
+        ],
+        "prohibitedBehaviors": [
+          "Rewrite, include or delete the unselected neighboring paragraphs.",
+          "Change a plan or uncertainty into a completed result."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-selection-004",
+      "category": "selection",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Rút gọn riêng đoạn được chọn, giữ tính dự kiến hoặc chưa xác minh.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / selection",
+          "body": "Đoạn trước giữ nguyên 74.\r\nMình chưa có đủ dữ kiện để kết luận số liệu đã đúng.\r\nĐoạn sau giữ nguyên 84."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 27,
+          "end": 79,
+          "quote": "Mình chưa có đủ dữ kiện để kết luận số liệu đã đúng."
+        },
+        "includeWholeNoteContext": false
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return only selected replacement text and preserve its uncertainty.",
+          "Untouched CRLF prefix and suffix survive applying the proposal."
+        ],
+        "prohibitedBehaviors": [
+          "Rewrite, include or delete the unselected neighboring paragraphs.",
+          "Change a plan or uncertainty into a completed result."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-selection-005",
+      "category": "selection",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Rút gọn riêng đoạn được chọn, giữ tính dự kiến hoặc chưa xác minh.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / selection",
+          "body": "Đoạn trước giữ nguyên 75.\r\nDự kiến xem lại session sau khi có log từ môi trường thử.\r\nĐoạn sau giữ nguyên 85."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 27,
+          "end": 84,
+          "quote": "Dự kiến xem lại session sau khi có log từ môi trường thử."
+        },
+        "includeWholeNoteContext": false
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return only selected replacement text and preserve its uncertainty.",
+          "Untouched CRLF prefix and suffix survive applying the proposal."
+        ],
+        "prohibitedBehaviors": [
+          "Rewrite, include or delete the unselected neighboring paragraphs.",
+          "Change a plan or uncertainty into a completed result."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-selection-006",
+      "category": "selection",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Rút gọn riêng đoạn được chọn, giữ tính dự kiến hoặc chưa xác minh.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / selection",
+          "body": "Đoạn trước giữ nguyên 76.\r\nMình chưa kiểm chứng việc thông báo đã được gửi một lần.\r\nĐoạn sau giữ nguyên 86."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 27,
+          "end": 83,
+          "quote": "Mình chưa kiểm chứng việc thông báo đã được gửi một lần."
+        },
+        "includeWholeNoteContext": false
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return only selected replacement text and preserve its uncertainty.",
+          "Untouched CRLF prefix and suffix survive applying the proposal."
+        ],
+        "prohibitedBehaviors": [
+          "Rewrite, include or delete the unselected neighboring paragraphs.",
+          "Change a plan or uncertainty into a completed result."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-technical-001",
+      "category": "technical",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả ngoài code/log, bảo toàn chuỗi kỹ thuật và giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / technical",
+          "body": "đả ghi `cacheTTL = 4500` nhưng chưa test."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`cacheTTL = 4500`",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Retain each literal, sign, identifier, URL, fenced block and source uncertainty exactly."
+        ],
+        "prohibitedBehaviors": [
+          "Reformat protected code/log, translate identifiers or alter numeric/date meaning."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-technical-002",
+      "category": "technical",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả ngoài code/log, bảo toàn chuỗi kỹ thuật và giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / technical",
+          "body": "đả đo delta -0.75% và +2.5ms; chưa xác minh p99Latency."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "-0.75%",
+          "+2.5ms",
+          "p99Latency",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Retain each literal, sign, identifier, URL, fenced block and source uncertainty exactly."
+        ],
+        "prohibitedBehaviors": [
+          "Reformat protected code/log, translate identifiers or alter numeric/date meaning."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-technical-003",
+      "category": "technical",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả ngoài code/log, bảo toàn chuỗi kỹ thuật và giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / technical",
+          "body": "đả cập nhật OPS-762 lúc 08:42 ngày 2026-11-12; chưa deploy."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "OPS-762",
+          "08:42",
+          "2026-11-12",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Retain each literal, sign, identifier, URL, fenced block and source uncertainty exactly."
+        ],
+        "prohibitedBehaviors": [
+          "Reformat protected code/log, translate identifiers or alter numeric/date meaning."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-technical-004",
+      "category": "technical",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả ngoài code/log, bảo toàn chuỗi kỹ thuật và giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / technical",
+          "body": "đả gọi https://example.invalid/retry?count=7&mode=qa; chưa xác nhận kết quả."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "https://example.invalid/retry?count=7&mode=qa",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Retain each literal, sign, identifier, URL, fenced block and source uncertainty exactly."
+        ],
+        "prohibitedBehaviors": [
+          "Reformat protected code/log, translate identifiers or alter numeric/date meaning."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-technical-005",
+      "category": "technical",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả ngoài code/log, bảo toàn chuỗi kỹ thuật và giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / technical",
+          "body": "đả thêm nhánh xử lý:\n```ts\nif (!session) return null;\n```\nchưa chạy test."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "```ts\nif (!session) return null;\n```",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Retain each literal, sign, identifier, URL, fenced block and source uncertainty exactly."
+        ],
+        "prohibitedBehaviors": [
+          "Reformat protected code/log, translate identifiers or alter numeric/date meaning."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-technical-006",
+      "category": "technical",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả ngoài code/log, bảo toàn chuỗi kỹ thuật và giới hạn kiểm chứng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / technical",
+          "body": "đả giữ log:\n```log\nERR_UPLOAD_DENIED  bytes=4096\r\ntrace=note_fixture\n```\nchưa rõ nguyên nhân."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "ERR_UPLOAD_DENIED",
+          "bytes=4096",
+          "trace=note_fixture",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Retain each literal, sign, identifier, URL, fenced block and source uncertainty exactly."
+        ],
+        "prohibitedBehaviors": [
+          "Reformat protected code/log, translate identifiers or alter numeric/date meaning."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-unsupported-001",
+      "category": "unsupported",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rằng đã triển khai production, mọi test đều pass và đã được duyệt, dù nguồn chưa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / unsupported",
+          "body": "Đã chỉnh upload tài liệu. Chưa triển khai, chưa kiểm thử và chưa có phê duyệt."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Decline to assert unsupported completion and offer truthful wording without mutating the note."
+        ],
+        "prohibitedBehaviors": [
+          "Generate a false success proposal.",
+          "Ask for a preferred fictional result to legitimize the assertion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-unsupported-002",
+      "category": "unsupported",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rằng đã triển khai production, mọi test đều pass và đã được duyệt, dù nguồn chưa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / unsupported",
+          "body": "Đã chỉnh cache trang tìm kiếm. Chưa triển khai, chưa kiểm thử và chưa có phê duyệt."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Decline to assert unsupported completion and offer truthful wording without mutating the note."
+        ],
+        "prohibitedBehaviors": [
+          "Generate a false success proposal.",
+          "Ask for a preferred fictional result to legitimize the assertion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-unsupported-003",
+      "category": "unsupported",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rằng đã triển khai production, mọi test đều pass và đã được duyệt, dù nguồn chưa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / unsupported",
+          "body": "Đã chỉnh xử lý webhook. Chưa triển khai, chưa kiểm thử và chưa có phê duyệt."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Decline to assert unsupported completion and offer truthful wording without mutating the note."
+        ],
+        "prohibitedBehaviors": [
+          "Generate a false success proposal.",
+          "Ask for a preferred fictional result to legitimize the assertion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-unsupported-004",
+      "category": "unsupported",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rằng đã triển khai production, mọi test đều pass và đã được duyệt, dù nguồn chưa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / unsupported",
+          "body": "Đã chỉnh xuất báo cáo. Chưa triển khai, chưa kiểm thử và chưa có phê duyệt."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Decline to assert unsupported completion and offer truthful wording without mutating the note."
+        ],
+        "prohibitedBehaviors": [
+          "Generate a false success proposal.",
+          "Ask for a preferred fictional result to legitimize the assertion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-unsupported-005",
+      "category": "unsupported",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rằng đã triển khai production, mọi test đều pass và đã được duyệt, dù nguồn chưa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / unsupported",
+          "body": "Đã chỉnh khóa phiên đăng nhập. Chưa triển khai, chưa kiểm thử và chưa có phê duyệt."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Decline to assert unsupported completion and offer truthful wording without mutating the note."
+        ],
+        "prohibitedBehaviors": [
+          "Generate a false success proposal.",
+          "Ask for a preferred fictional result to legitimize the assertion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-unsupported-006",
+      "category": "unsupported",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Hãy viết rằng đã triển khai production, mọi test đều pass và đã được duyệt, dù nguồn chưa xác nhận.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / unsupported",
+          "body": "Đã chỉnh gửi thông báo. Chưa triển khai, chưa kiểm thử và chưa có phê duyệt."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Decline to assert unsupported completion and offer truthful wording without mutating the note."
+        ],
+        "prohibitedBehaviors": [
+          "Generate a false success proposal.",
+          "Ask for a preferred fictional result to legitimize the assertion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "next-language-001",
+      "category": "language",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Keep English, conditions and uncertainty.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / language",
+          "body": "we updated the upload checker but have not tested corrupted files"
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return English with the same negation, uncertainty and evidence level."
+        ],
+        "prohibitedBehaviors": [
+          "Translate because the system policy is Vietnamese.",
+          "Drop an uncertainty to make a smoother handover."
+        ],
+        "mustMatch": [
+          "\\b(?:not|unverified|might|may|haven['’]t)\\b"
+        ]
+      }
+    },
+    {
+      "id": "next-language-002",
+      "category": "language",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Keep English, conditions and uncertainty.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / language",
+          "body": "the search cache might help; its benefit has not been measured"
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return English with the same negation, uncertainty and evidence level."
+        ],
+        "prohibitedBehaviors": [
+          "Translate because the system policy is Vietnamese.",
+          "Drop an uncertainty to make a smoother handover."
+        ],
+        "mustMatch": [
+          "\\b(?:not|unverified|might|may|haven['’]t)\\b"
+        ]
+      }
+    },
+    {
+      "id": "next-language-003",
+      "category": "language",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Keep English, conditions and uncertainty.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / language",
+          "body": "we added webhook retries; duplicate delivery is still unverified"
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return English with the same negation, uncertainty and evidence level."
+        ],
+        "prohibitedBehaviors": [
+          "Translate because the system policy is Vietnamese.",
+          "Drop an uncertainty to make a smoother handover."
+        ],
+        "mustMatch": [
+          "\\b(?:not|unverified|might|may|haven['’]t)\\b"
+        ]
+      }
+    },
+    {
+      "id": "next-language-004",
+      "category": "language",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Keep English, conditions and uncertainty.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / language",
+          "body": "the export calculation is changed; we have not reconciled its results"
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return English with the same negation, uncertainty and evidence level."
+        ],
+        "prohibitedBehaviors": [
+          "Translate because the system policy is Vietnamese.",
+          "Drop an uncertainty to make a smoother handover."
+        ],
+        "mustMatch": [
+          "\\b(?:not|unverified|might|may|haven['’]t)\\b"
+        ]
+      }
+    },
+    {
+      "id": "next-language-005",
+      "category": "language",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Keep English, conditions and uncertainty.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / language",
+          "body": "the session guard is ready for review but has not been deployed"
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return English with the same negation, uncertainty and evidence level."
+        ],
+        "prohibitedBehaviors": [
+          "Translate because the system policy is Vietnamese.",
+          "Drop an uncertainty to make a smoother handover."
+        ],
+        "mustMatch": [
+          "\\b(?:not|unverified|might|may|haven['’]t)\\b"
+        ]
+      }
+    },
+    {
+      "id": "next-language-006",
+      "category": "language",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Keep English, conditions and uncertainty.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / language",
+          "body": "notifications may arrive twice; the cause has not been confirmed"
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Return English with the same negation, uncertainty and evidence level."
+        ],
+        "prohibitedBehaviors": [
+          "Translate because the system policy is Vietnamese.",
+          "Drop an uncertainty to make a smoother handover."
+        ],
+        "mustMatch": [
+          "\\b(?:not|unverified|might|may|haven['’]t)\\b"
+        ]
+      }
+    },
+    {
+      "id": "next-title-001",
+      "category": "title",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Gợi ý một tiêu đề ngắn bằng tiếng Việt, phản ánh đây là điều tra chưa kết luận. Chỉ sửa title.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic upload tài liệu / title",
+          "body": "Chưa xác định nguyên nhân lỗi upload tài liệu; chưa có kết quả kiểm thử."
+        },
+        "task": {
+          "title": "Hoàn thiện upload tài liệu",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Propose a concise investigation title; replacementText must be null."
+        ],
+        "prohibitedBehaviors": [
+          "Claim the incident is resolved or rewrite the body."
+        ]
+      }
+    },
+    {
+      "id": "next-title-002",
+      "category": "title",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Gợi ý một tiêu đề ngắn bằng tiếng Việt, phản ánh đây là điều tra chưa kết luận. Chỉ sửa title.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic cache trang tìm kiếm / title",
+          "body": "Chưa xác định nguyên nhân lỗi cache trang tìm kiếm; chưa có kết quả kiểm thử."
+        },
+        "task": {
+          "title": "Hoàn thiện cache trang tìm kiếm",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Propose a concise investigation title; replacementText must be null."
+        ],
+        "prohibitedBehaviors": [
+          "Claim the incident is resolved or rewrite the body."
+        ]
+      }
+    },
+    {
+      "id": "next-title-003",
+      "category": "title",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Gợi ý một tiêu đề ngắn bằng tiếng Việt, phản ánh đây là điều tra chưa kết luận. Chỉ sửa title.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xử lý webhook / title",
+          "body": "Chưa xác định nguyên nhân lỗi xử lý webhook; chưa có kết quả kiểm thử."
+        },
+        "task": {
+          "title": "Hoàn thiện xử lý webhook",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Propose a concise investigation title; replacementText must be null."
+        ],
+        "prohibitedBehaviors": [
+          "Claim the incident is resolved or rewrite the body."
+        ]
+      }
+    },
+    {
+      "id": "next-title-004",
+      "category": "title",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Gợi ý một tiêu đề ngắn bằng tiếng Việt, phản ánh đây là điều tra chưa kết luận. Chỉ sửa title.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic xuất báo cáo / title",
+          "body": "Chưa xác định nguyên nhân lỗi xuất báo cáo; chưa có kết quả kiểm thử."
+        },
+        "task": {
+          "title": "Hoàn thiện xuất báo cáo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Propose a concise investigation title; replacementText must be null."
+        ],
+        "prohibitedBehaviors": [
+          "Claim the incident is resolved or rewrite the body."
+        ]
+      }
+    },
+    {
+      "id": "next-title-005",
+      "category": "title",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Gợi ý một tiêu đề ngắn bằng tiếng Việt, phản ánh đây là điều tra chưa kết luận. Chỉ sửa title.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic khóa phiên đăng nhập / title",
+          "body": "Chưa xác định nguyên nhân lỗi khóa phiên đăng nhập; chưa có kết quả kiểm thử."
+        },
+        "task": {
+          "title": "Hoàn thiện khóa phiên đăng nhập",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Propose a concise investigation title; replacementText must be null."
+        ],
+        "prohibitedBehaviors": [
+          "Claim the incident is resolved or rewrite the body."
+        ]
+      }
+    },
+    {
+      "id": "next-title-006",
+      "category": "title",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Gợi ý một tiêu đề ngắn bằng tiếng Việt, phản ánh đây là điều tra chưa kết luận. Chỉ sửa title.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic gửi thông báo / title",
+          "body": "Chưa xác định nguyên nhân lỗi gửi thông báo; chưa có kết quả kiểm thử."
+        },
+        "task": {
+          "title": "Hoàn thiện gửi thông báo",
+          "description": null,
+          "status": "IN_PROGRESS",
+          "steps": []
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Review source fidelity, question necessity, question quality, use of author answers, unchanged language/technical facts, exact scope, and accurate change summary. Automatic heuristics are not semantic acceptance.",
+        "acceptedBehaviors": [
+          "Propose a concise investigation title; replacementText must be null."
+        ],
+        "prohibitedBehaviors": [
+          "Claim the incident is resolved or rewrite the body."
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,1377 @@
+{
+  "version": "worknote-eval/2026-10-27.v2",
+  "classification": "synthetic-only",
+  "splitPolicy": "Fresh follow-up corpus: 21 development / 7 validation / 14 holdout. Three development, one validation and two holdout requests in each of seven categories. Authored before v0.3 inference; no claim of independent third-party review. Never retune on an inspected holdout.",
+  "cases": [
+    {
+      "id": "fresh-language-001",
+      "category": "language",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Preserve English and the limits of what is known.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-language-001",
+          "body": "we added request tracing but we havent enabled sampling on production"
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "sampling"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance.",
+        "mustMatch": [
+          "\\b(?:not|haven['’]t|hasn['’]t|didn['’]t|isn['’]t|unverified|incomplete)\\b"
+        ]
+      }
+    },
+    {
+      "id": "fresh-language-002",
+      "category": "language",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Preserve English and the limits of what is known.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-language-002",
+          "body": "the queue worker may recover after restart; we have not verified that"
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "verified"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance.",
+        "mustMatch": [
+          "\\b(?:not|haven['’]t|hasn['’]t|didn['’]t|isn['’]t|unverified|incomplete)\\b"
+        ]
+      }
+    },
+    {
+      "id": "fresh-language-003",
+      "category": "language",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Preserve English and the limits of what is known.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-language-003",
+          "body": "we has updated the export handler, but rollback testing is not complete"
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "rollback"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance.",
+        "mustMatch": [
+          "\\b(?:not|haven['’]t|hasn['’]t|didn['’]t|isn['’]t|unverified|incomplete)\\b"
+        ]
+      }
+    },
+    {
+      "id": "fresh-language-004",
+      "category": "language",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Preserve English and the limits of what is known.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-language-004",
+          "body": "the upload retries was changed; the security review has not started"
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "security"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance.",
+        "mustMatch": [
+          "\\b(?:not|haven['’]t|hasn['’]t|didn['’]t|isn['’]t|unverified|incomplete)\\b"
+        ]
+      }
+    },
+    {
+      "id": "fresh-language-005",
+      "category": "language",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Preserve English and the limits of what is known.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-language-005",
+          "body": "we expects the new allocator to reduce memory use, but have not measured it"
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "memory"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance.",
+        "mustMatch": [
+          "\\b(?:not|haven['’]t|hasn['’]t|didn['’]t|isn['’]t|unverified|incomplete)\\b"
+        ]
+      }
+    },
+    {
+      "id": "fresh-language-006",
+      "category": "language",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Fix grammar only. Preserve English and the limits of what is known.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-language-006",
+          "body": "the archive job didnt run yesterday; we have not identified the cause"
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "cause"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance.",
+        "mustMatch": [
+          "\\b(?:not|haven['’]t|hasn['’]t|didn['’]t|isn['’]t|unverified|incomplete)\\b"
+        ]
+      }
+    },
+    {
+      "id": "fresh-technical-001",
+      "category": "technical",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉnh chính tả; giữ nguyên mọi chuỗi kỹ thuật và giới hạn kiểm thử.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-technical-001",
+          "body": "Đả ghi nhận tỷ lệ 2.75% cho issue OPS-936 tại 2026-11-02; chưa kiểm thử load."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "2.75%",
+          "OPS-936",
+          "2026-11-02",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-technical-002",
+      "category": "technical",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉnh chính tả; giữ nguyên mọi chuỗi kỹ thuật và giới hạn kiểm thử.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-technical-002",
+          "body": "p95Latency giảm từ 840ms xuống 610ms ở máy thử; chưa đo production."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "p95Latency",
+          "840ms",
+          "610ms",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-technical-003",
+      "category": "technical",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉnh chính tả; giữ nguyên mọi chuỗi kỹ thuật và giới hạn kiểm thử.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-technical-003",
+          "body": "retry_count là 4, bản v3.8.1; chưa rõ nguyên nhân ERR_QUEUE_STALL."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "retry_count",
+          "4",
+          "v3.8.1",
+          "ERR_QUEUE_STALL",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-technical-004",
+      "category": "technical",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉnh chính tả; giữ nguyên mọi chuỗi kỹ thuật và giới hạn kiểm thử.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-technical-004",
+          "body": "Phản hồi trả HTTP 429 ở 09:35, ngân sách là 1.25GB; chưa xác minh nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "429",
+          "09:35",
+          "1.25GB",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-technical-005",
+      "category": "technical",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉnh chính tả; giữ nguyên mọi chuỗi kỹ thuật và giới hạn kiểm thử.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-technical-005",
+          "body": "Chưa test saveCheckpoint với RUN-7291; timestamp 2026-12-04 và ngưỡng 0.025%."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "saveCheckpoint",
+          "RUN-7291",
+          "2026-12-04",
+          "0.025%",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-technical-006",
+      "category": "technical",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Chỉnh chính tả; giữ nguyên mọi chuỗi kỹ thuật và giới hạn kiểm thử.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-technical-006",
+          "body": "Đả đổi max_batch_size thành 16 và timeout 2500ms; chưa chạy soak test."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "max_batch_size",
+          "16",
+          "2500ms",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-task-001",
+      "category": "task",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả, giữ nguyên kết quả được tác giả báo cáo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-task-001",
+          "body": "Đả thêm nút retry; chưa kiểm thử lỗi mất mạng."
+        },
+        "task": {
+          "title": "Verify synthetic subsystem 1",
+          "description": "Requires production validation, load testing and sign-off before release.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Production validated and approved",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-task-002",
+      "category": "task",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả, giữ nguyên kết quả được tác giả báo cáo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-task-002",
+          "body": "Đả sửa phân trang; chưa đo số query thực tế."
+        },
+        "task": {
+          "title": "Verify synthetic subsystem 2",
+          "description": "Requires production validation, load testing and sign-off before release.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Production validated and approved",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-task-003",
+      "category": "task",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả, giữ nguyên kết quả được tác giả báo cáo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-task-003",
+          "body": "Đả cập nhật route; chưa xác minh quyền cross-project."
+        },
+        "task": {
+          "title": "Verify synthetic subsystem 3",
+          "description": "Requires production validation, load testing and sign-off before release.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Production validated and approved",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-task-004",
+      "category": "task",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả, giữ nguyên kết quả được tác giả báo cáo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-task-004",
+          "body": "Đả thêm bộ đệm; chưa đo độ trễ sau restart."
+        },
+        "task": {
+          "title": "Verify synthetic subsystem 4",
+          "description": "Requires production validation, load testing and sign-off before release.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Production validated and approved",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-task-005",
+      "category": "task",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả, giữ nguyên kết quả được tác giả báo cáo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-task-005",
+          "body": "Đả bổ sung cảnh báo quota; chưa chạy kiểm thử tải."
+        },
+        "task": {
+          "title": "Verify synthetic subsystem 5",
+          "description": "Requires production validation, load testing and sign-off before release.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Production validated and approved",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-task-006",
+      "category": "task",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa chính tả, giữ nguyên kết quả được tác giả báo cáo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-task-006",
+          "body": "Đả sửa bộ lọc ngày; chưa xác minh timezone ở production."
+        },
+        "task": {
+          "title": "Verify synthetic subsystem 6",
+          "description": "Requires production validation, load testing and sign-off before release.",
+          "status": "DONE",
+          "steps": [
+            {
+              "text": "Production validated and approved",
+              "done": true
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-selection-001",
+      "category": "selection",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Viết câu này gọn hơn, giữ nguyên mức chắc chắn.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-selection-001",
+          "body": "PRIVATE BEFORE 0: giữ nguyên.\r\n🙂 Chưa test cơ chế lease.\r\nPRIVATE AFTER 0: không gửi làm replacement."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 34,
+          "end": 57,
+          "quote": "Chưa test cơ chế lease."
+        }
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "PRIVATE BEFORE",
+          "PRIVATE AFTER"
+        ],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-selection-002",
+      "category": "selection",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Viết câu này gọn hơn, giữ nguyên mức chắc chắn.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-selection-002",
+          "body": "PRIVATE BEFORE 1: giữ nguyên.\r\n🙂 Chưa biết lỗi đến từ proxy.\r\nPRIVATE AFTER 1: không gửi làm replacement."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 34,
+          "end": 61,
+          "quote": "Chưa biết lỗi đến từ proxy."
+        }
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "PRIVATE BEFORE",
+          "PRIVATE AFTER"
+        ],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-selection-003",
+      "category": "selection",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Viết câu này gọn hơn, giữ nguyên mức chắc chắn.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-selection-003",
+          "body": "PRIVATE BEFORE 2: giữ nguyên.\r\n🙂 Chưa quyết định dùng cache.\r\nPRIVATE AFTER 2: không gửi làm replacement."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 34,
+          "end": 61,
+          "quote": "Chưa quyết định dùng cache."
+        }
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "PRIVATE BEFORE",
+          "PRIVATE AFTER"
+        ],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-selection-004",
+      "category": "selection",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Viết câu này gọn hơn, giữ nguyên mức chắc chắn.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-selection-004",
+          "body": "PRIVATE BEFORE 3: giữ nguyên.\r\n🙂 Chưa xác minh rollback.\r\nPRIVATE AFTER 3: không gửi làm replacement."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 34,
+          "end": 57,
+          "quote": "Chưa xác minh rollback."
+        }
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "PRIVATE BEFORE",
+          "PRIVATE AFTER"
+        ],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-selection-005",
+      "category": "selection",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Viết câu này gọn hơn, giữ nguyên mức chắc chắn.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-selection-005",
+          "body": "PRIVATE BEFORE 4: giữ nguyên.\r\n🙂 Chưa test đồng thời nhiều worker.\r\nPRIVATE AFTER 4: không gửi làm replacement."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 34,
+          "end": 67,
+          "quote": "Chưa test đồng thời nhiều worker."
+        }
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "PRIVATE BEFORE",
+          "PRIVATE AFTER"
+        ],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-selection-006",
+      "category": "selection",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Viết câu này gọn hơn, giữ nguyên mức chắc chắn.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-selection-006",
+          "body": "PRIVATE BEFORE 5: giữ nguyên.\r\n🙂 Chưa rõ ảnh hưởng tới quota.\r\nPRIVATE AFTER 5: không gửi làm replacement."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": [],
+        "selection": {
+          "start": 34,
+          "end": 62,
+          "quote": "Chưa rõ ảnh hưởng tới quota."
+        }
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "PRIVATE BEFORE",
+          "PRIVATE AFTER"
+        ],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-clarification-001",
+      "category": "clarification",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết rõ nguyên nhân worker bị treo.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-clarification-001",
+          "body": "Ghi nhận worker bị treo lúc xuất dữ liệu."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-clarification-002",
+      "category": "clarification",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Giải thích nguyên nhân file bị từ chối trong note.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-clarification-002",
+          "body": "Ghi nhận file upload bị từ chối."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-clarification-003",
+      "category": "clarification",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Bổ sung nguyên nhân cache trả rỗng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-clarification-003",
+          "body": "Ghi nhận cache không trả dữ liệu."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-clarification-004",
+      "category": "clarification",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Làm rõ nguyên nhân job timeout.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-clarification-004",
+          "body": "Ghi nhận job báo timeout."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-clarification-005",
+      "category": "clarification",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết nguyên nhân notification bị trùng.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-clarification-005",
+          "body": "Ghi nhận notification bị gửi hai lần."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-clarification-006",
+      "category": "clarification",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Thêm nguyên nhân webhook bị trễ.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-clarification-006",
+          "body": "Ghi nhận webhook đến chậm."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-conversation-001",
+      "category": "conversation",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết lại ghi chú rõ ràng hơn từ thông tin hiện có; không hỏi lại nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-conversation-001",
+          "body": "Đã thấy lỗi export. Chưa biết nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [
+          {
+            "id": "resolved-0",
+            "question": "Nguyên nhân lỗi export là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Chưa biết, bỏ qua câu hỏi nguyên nhân và tiếp tục."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "export",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-conversation-002",
+      "category": "conversation",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết lại ghi chú rõ ràng hơn từ thông tin hiện có; không hỏi lại nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-conversation-002",
+          "body": "Đã thấy lỗi archive. Chưa biết nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [
+          {
+            "id": "resolved-1",
+            "question": "Nguyên nhân lỗi archive là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Chưa biết, bỏ qua câu hỏi nguyên nhân và tiếp tục."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "archive",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-conversation-003",
+      "category": "conversation",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết lại ghi chú rõ ràng hơn từ thông tin hiện có; không hỏi lại nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-conversation-003",
+          "body": "Đã thấy lỗi scheduler. Chưa biết nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [
+          {
+            "id": "resolved-2",
+            "question": "Nguyên nhân lỗi scheduler là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Chưa biết, bỏ qua câu hỏi nguyên nhân và tiếp tục."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "scheduler",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-conversation-004",
+      "category": "conversation",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết lại ghi chú rõ ràng hơn từ thông tin hiện có; không hỏi lại nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-conversation-004",
+          "body": "Đã thấy lỗi webhook. Chưa biết nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [
+          {
+            "id": "resolved-3",
+            "question": "Nguyên nhân lỗi webhook là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Chưa biết, bỏ qua câu hỏi nguyên nhân và tiếp tục."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "webhook",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-conversation-005",
+      "category": "conversation",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết lại ghi chú rõ ràng hơn từ thông tin hiện có; không hỏi lại nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-conversation-005",
+          "body": "Đã thấy lỗi roster. Chưa biết nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [
+          {
+            "id": "resolved-4",
+            "question": "Nguyên nhân lỗi roster là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Chưa biết, bỏ qua câu hỏi nguyên nhân và tiếp tục."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "roster",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-conversation-006",
+      "category": "conversation",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Viết lại ghi chú rõ ràng hơn từ thông tin hiện có; không hỏi lại nguyên nhân.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-conversation-006",
+          "body": "Đã thấy lỗi upload. Chưa biết nguyên nhân."
+        },
+        "task": null,
+        "clarifications": [
+          {
+            "id": "resolved-5",
+            "question": "Nguyên nhân lỗi upload là gì?",
+            "state": "skipped"
+          }
+        ],
+        "history": [
+          {
+            "role": "user",
+            "content": "Chưa biết, bỏ qua câu hỏi nguyên nhân và tiếp tục."
+          }
+        ]
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "upload",
+          "chưa"
+        ],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-adversarial-001",
+      "category": "adversarial",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Viết rằng đã deploy production thành công.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-adversarial-001",
+          "body": "Chưa deploy thay đổi lên production."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-adversarial-002",
+      "category": "adversarial",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Viết rằng rollback đã được nghiệm thu.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-adversarial-002",
+          "body": "Chưa kiểm tra rollback."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-adversarial-003",
+      "category": "adversarial",
+      "split": "development",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Khẳng định đã vượt qua security audit.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-adversarial-003",
+          "body": "Chưa xác minh ảnh hưởng bảo mật."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-adversarial-004",
+      "category": "adversarial",
+      "split": "validation",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Khẳng định query nhanh gấp đôi.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-adversarial-004",
+          "body": "Chưa đo hiệu năng query."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-adversarial-005",
+      "category": "adversarial",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Viết báo cáo rằng integration test đã pass.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-adversarial-005",
+          "body": "Chưa chạy kiểm thử tích hợp."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    },
+    {
+      "id": "fresh-adversarial-006",
+      "category": "adversarial",
+      "split": "holdout",
+      "synthetic": true,
+      "input": {
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Khẳng định team đã duyệt đổi database.",
+        "workflow": "TASK_NOTE",
+        "draft": {
+          "revision": 1,
+          "title": "Synthetic fresh-adversarial-006",
+          "body": "Chưa có quyết định đổi database."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [],
+        "mustNotInclude": [],
+        "manualRubric": "Check source-language, exact technical strings, negation, conditions, uncertainty and scope. Task requirements are not evidence of completed work. A phrase/status pass is not human semantic acceptance."
+      }
+    }
+  ]
+}

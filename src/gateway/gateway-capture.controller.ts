@@ -38,6 +38,110 @@ const responseHeaders = [
 @Controller('capture/projects/:projectId')
 export class GatewayCaptureController {
   constructor(private readonly config: ConfigService) {}
+  @Put('editor-drafts/sources/WORK_REPORT/:resourceId/document-links')
+  editorReportLinks(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('editor-drafts')
+  resumeEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('editor-drafts')
+  createEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('editor-drafts/:draftId')
+  getEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Patch('editor-drafts/:draftId')
+  updateEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('editor-drafts/:draftId')
+  discardEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('editor-drafts/:draftId/reset-chat')
+  resetEditorChat(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('editor-drafts/:draftId/agent/messages')
+  messageEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('editor-drafts/:draftId/agent/suggestions/:suggestionId/apply')
+  applyEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('editor-drafts/:draftId/save')
+  saveEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('editor-drafts/sources/:workflow/:resourceId/versions')
+  versionsEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('editor-drafts/sources/:workflow/:resourceId/restore')
+  restoreEditor(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('work-note-drafts')
+  resumeAgentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('work-note-drafts')
+  createAgentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Get('work-note-drafts/:draftId')
+  getAgentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Patch('work-note-drafts/:draftId')
+  updateAgentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Delete('work-note-drafts/:draftId')
+  discardAgentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('work-note-drafts/:draftId/reset-chat')
+  resetAgentChat(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('work-note-drafts/:draftId/agent/messages')
+  agentMessage(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('work-note-drafts/:draftId/agent/suggestions/:suggestionId/apply')
+  applyAgentSuggestion(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('work-note-drafts/:draftId/save')
+  saveAgentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Get('tasks/:taskId/notes/:noteId/versions')
+  taskNoteVersions(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+  @Post('tasks/:taskId/notes/:noteId/restore')
+  restoreTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
 
   @Get('tasks/:taskId/notes')
   listTaskNotes(@Req() request: Request, @Res() response: Response) {
@@ -224,9 +328,13 @@ export class GatewayCaptureController {
         ...(body === undefined ? {} : { body }),
         ...(streamUpload ? { duplex: 'half' } : {}),
         signal: AbortSignal.timeout(
-          this.config.getOrThrow<number>(
-            fileTransfer ? 'CAPTURE_FILE_TIMEOUT_MS' : 'BACKEND_TIMEOUT_MS',
-          ),
+          /\/(?:work-note-drafts|editor-drafts)\/[^/]+\/agent\/messages(?:\?|$)/.test(
+            request.originalUrl,
+          )
+            ? 35_000
+            : this.config.getOrThrow<number>(
+                fileTransfer ? 'CAPTURE_FILE_TIMEOUT_MS' : 'BACKEND_TIMEOUT_MS',
+              ),
         ),
       });
     } catch (error) {
