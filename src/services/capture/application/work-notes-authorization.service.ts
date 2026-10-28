@@ -157,6 +157,34 @@ export class WorkNotesAuthorizationService {
       ...actor,
       ...(taskKey ? { taskKey } : {}),
       ...(taskTitle ? { taskTitle } : {}),
+      ...(taskTitle
+        ? {
+            taskContext: {
+              title: taskTitle,
+              description:
+                typeof task.description === 'string' ? task.description : null,
+              status: typeof task.status === 'string' ? task.status : '',
+              steps: Array.isArray(task.steps)
+                ? task.steps
+                    .filter(
+                      (
+                        step: unknown,
+                      ): step is { text: string; done: boolean } =>
+                        !!step &&
+                        typeof step === 'object' &&
+                        typeof (step as Record<string, unknown>).text ===
+                          'string' &&
+                        typeof (step as Record<string, unknown>).done ===
+                          'boolean',
+                    )
+                    .map((step: { text: string; done: boolean }) => ({
+                      text: step.text,
+                      done: step.done,
+                    }))
+                : [],
+            },
+          }
+        : {}),
     };
   }
 

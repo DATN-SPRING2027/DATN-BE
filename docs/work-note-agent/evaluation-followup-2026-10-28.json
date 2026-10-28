@@ -1,0 +1,785 @@
+{
+  "classification": "SYNTHETIC_FOLLOWUP_AGGREGATE",
+  "recordedAt": "2026-10-28",
+  "semanticAcceptance": "NOT_ESTABLISHED",
+  "manualReview": "PENDING",
+  "byModel": {
+    "qwen/qwen3.7-flash:free": {
+      "logicalAttempts": 12,
+      "completed": 6,
+      "providerErrors": 6,
+      "uniqueCompleted": 6
+    },
+    "mistralai/ministral-14b": {
+      "logicalAttempts": 105,
+      "completed": 104,
+      "providerErrors": 1,
+      "uniqueCompleted": 59
+    }
+  },
+  "limitations": [
+    "All actual run records share the same runner prompt-template and corpus hash. The initial freeze document promptTemplateHash used an unmatched serialization; retain it as audit history, not byte-level proof. No prompt content was tuned on validation/holdout outputs.",
+    "Automated behavior/status checks and repeated stability passes do not establish source fidelity, question necessity or semantic correctness.",
+    "Qwen failed development availability checks; it has no new validation/holdout result. Mistral is an explicitly selected comparison, not a runtime fallback.",
+    "15 development cases repeated three times cover only five categories; stability does not establish new unique-case coverage.",
+    "Failed attempts may consume unknown billed usage; public zero list-price snapshots are not invoices.",
+    "Provider requested/reported IDs are not independent routing verification.",
+    "No real user notes, credentials, raw prompts or raw outputs are included here."
+  ],
+  "runs": [
+    {
+      "artifact": "2026-10-28T06-33-25-081Z_qwen_qwen3.7-flash_free_development_5a9f1104.json",
+      "runId": "5a9f1104-2774-446c-be8d-a12c86b2ad6a",
+      "createdAt": "2026-10-28T06:33:25.079Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "qwen/qwen3.7-flash:free",
+      "configuration": {
+        "split": "development",
+        "cases": 30,
+        "runs": 1,
+        "concurrency": 2,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 30,
+        "completed": 3,
+        "providerErrors": 3,
+        "skipped": 24,
+        "syntaxValid": 3,
+        "boundaryAccepted": 3,
+        "automatedPass": 3,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 3,
+        "automatedPassAfterFormattingRecovery": 3,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 5129,
+          "p95": 5773
+        },
+        "attemptedLatencyMs": {
+          "p50": 2059,
+          "p95": 5774
+        },
+        "tokens": {
+          "prompt": 7202,
+          "completion": 200,
+          "unknownUsage": 3
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-task": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "missing-cause": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "task-evidence": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "answered": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "skipped": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "selection": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "technical": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "unsupported": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "language": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "title": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": [
+        {
+          "caseId": "next-missing-cause-001",
+          "repeat": 1,
+          "errorCode": "HTTP_ERROR",
+          "httpStatus": 500
+        },
+        {
+          "caseId": "next-missing-cause-002",
+          "repeat": 1,
+          "errorCode": "HTTP_ERROR",
+          "httpStatus": 500
+        },
+        {
+          "caseId": "next-missing-cause-003",
+          "repeat": 1,
+          "errorCode": "HTTP_ERROR",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "artifact": "2026-10-28T06-38-49-665Z_qwen_qwen3.7-flash_free_development_75cf72d5.json",
+      "runId": "75cf72d5-91d5-4756-bc28-4d32d374dd53",
+      "createdAt": "2026-10-28T06:38:49.663Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "qwen/qwen3.7-flash:free",
+      "configuration": {
+        "split": "development",
+        "cases": 2,
+        "runs": 1,
+        "concurrency": 1,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 2,
+        "completed": 2,
+        "providerErrors": 0,
+        "skipped": 0,
+        "syntaxValid": 2,
+        "boundaryAccepted": 2,
+        "automatedPass": 2,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 2,
+        "automatedPassAfterFormattingRecovery": 2,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 5377,
+          "p95": 6048
+        },
+        "attemptedLatencyMs": {
+          "p50": 5379,
+          "p95": 6049
+        },
+        "tokens": {
+          "prompt": 6242,
+          "completion": 173,
+          "unknownUsage": 0
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-cause": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "task-evidence": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": []
+    },
+    {
+      "artifact": "2026-10-28T06-40-20-299Z_qwen_qwen3.7-flash_free_development_931141d9.json",
+      "runId": "931141d9-e3bb-4e3e-ad92-4e7e537cb15b",
+      "createdAt": "2026-10-28T06:40:20.296Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "qwen/qwen3.7-flash:free",
+      "configuration": {
+        "split": "development",
+        "cases": 25,
+        "runs": 1,
+        "concurrency": 2,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 25,
+        "completed": 1,
+        "providerErrors": 3,
+        "skipped": 21,
+        "syntaxValid": 1,
+        "boundaryAccepted": 1,
+        "automatedPass": 1,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 1,
+        "automatedPassAfterFormattingRecovery": 1,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 5326,
+          "p95": 5326
+        },
+        "attemptedLatencyMs": {
+          "p50": 1064,
+          "p95": 5329
+        },
+        "tokens": {
+          "prompt": 2399,
+          "completion": 103,
+          "unknownUsage": 3
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-cause": {
+            "planned": 2,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "task-evidence": {
+            "planned": 2,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "answered": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "skipped": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "selection": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "technical": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "unsupported": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "language": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "title": {
+            "planned": 3,
+            "completed": 0,
+            "automatedPass": 0
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": [
+        {
+          "caseId": "next-missing-cause-002",
+          "repeat": 1,
+          "errorCode": "HTTP_ERROR",
+          "httpStatus": 429
+        },
+        {
+          "caseId": "next-task-evidence-002",
+          "repeat": 1,
+          "errorCode": "HTTP_ERROR",
+          "httpStatus": 500
+        },
+        {
+          "caseId": "next-task-evidence-003",
+          "repeat": 1,
+          "errorCode": "HTTP_ERROR",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "artifact": "2026-10-28T08-02-15-405Z_mistralai_ministral-14b_development_978b14b3.json",
+      "runId": "978b14b3-32de-4138-a223-5d6e3beac8e9",
+      "createdAt": "2026-10-28T08:02:15.403Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "mistralai/ministral-14b",
+      "configuration": {
+        "split": "development",
+        "cases": 5,
+        "runs": 1,
+        "concurrency": 1,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 5,
+        "completed": 5,
+        "providerErrors": 0,
+        "skipped": 0,
+        "syntaxValid": 5,
+        "boundaryAccepted": 5,
+        "automatedPass": 5,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 5,
+        "automatedPassAfterFormattingRecovery": 5,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 4243,
+          "p95": 4688
+        },
+        "attemptedLatencyMs": {
+          "p50": 4245,
+          "p95": 4689
+        },
+        "tokens": {
+          "prompt": 11722,
+          "completion": 527,
+          "unknownUsage": 0
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-task": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "missing-cause": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": []
+    },
+    {
+      "artifact": "2026-10-28T08-13-15-465Z_mistralai_ministral-14b_development_a65a2789.json",
+      "runId": "a65a2789-59af-4a55-a2cf-98b0057da248",
+      "createdAt": "2026-10-28T08:13:15.455Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "mistralai/ministral-14b",
+      "configuration": {
+        "split": "development",
+        "cases": 25,
+        "runs": 1,
+        "concurrency": 1,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 25,
+        "completed": 25,
+        "providerErrors": 0,
+        "skipped": 0,
+        "syntaxValid": 25,
+        "boundaryAccepted": 25,
+        "automatedPass": 25,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 25,
+        "automatedPassAfterFormattingRecovery": 25,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 2205,
+          "p95": 7617
+        },
+        "attemptedLatencyMs": {
+          "p50": 2206,
+          "p95": 7618
+        },
+        "tokens": {
+          "prompt": 59386,
+          "completion": 2475,
+          "unknownUsage": 0
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-cause": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "task-evidence": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "answered": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "skipped": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "selection": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "technical": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "unsupported": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "language": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          },
+          "title": {
+            "planned": 3,
+            "completed": 3,
+            "automatedPass": 3
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": []
+    },
+    {
+      "artifact": "2026-10-28T08-21-16-177Z_mistralai_ministral-14b_validation_7888633e.json",
+      "runId": "7888633e-5214-4914-bfd8-8b8ab9740f7c",
+      "createdAt": "2026-10-28T08:21:16.175Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "mistralai/ministral-14b",
+      "configuration": {
+        "split": "validation",
+        "cases": 10,
+        "runs": 1,
+        "concurrency": 1,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 10,
+        "completed": 9,
+        "providerErrors": 1,
+        "skipped": 0,
+        "syntaxValid": 9,
+        "boundaryAccepted": 9,
+        "automatedPass": 9,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 9,
+        "automatedPassAfterFormattingRecovery": 9,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 2322,
+          "p95": 7095
+        },
+        "attemptedLatencyMs": {
+          "p50": 2322,
+          "p95": 19066
+        },
+        "tokens": {
+          "prompt": 21225,
+          "completion": 877,
+          "unknownUsage": 1
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-task": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "missing-cause": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "task-evidence": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "answered": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "skipped": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "selection": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "technical": {
+            "planned": 1,
+            "completed": 0,
+            "automatedPass": 0
+          },
+          "unsupported": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "language": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          },
+          "title": {
+            "planned": 1,
+            "completed": 1,
+            "automatedPass": 1
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": [
+        {
+          "caseId": "next-technical-004",
+          "repeat": 1,
+          "errorCode": "NETWORK_ERROR",
+          "httpStatus": null
+        }
+      ]
+    },
+    {
+      "artifact": "2026-10-28T08-58-20-018Z_mistralai_ministral-14b_holdout_0ba2c040.json",
+      "runId": "0ba2c040-fcf8-445e-a2a8-4a2b5c522703",
+      "createdAt": "2026-10-28T08:58:20.017Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "mistralai/ministral-14b",
+      "configuration": {
+        "split": "holdout",
+        "cases": 20,
+        "runs": 1,
+        "concurrency": 1,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 20,
+        "completed": 20,
+        "providerErrors": 0,
+        "skipped": 0,
+        "syntaxValid": 20,
+        "boundaryAccepted": 20,
+        "automatedPass": 20,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 20,
+        "automatedPassAfterFormattingRecovery": 20,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 1800,
+          "p95": 2539
+        },
+        "attemptedLatencyMs": {
+          "p50": 1800,
+          "p95": 2539
+        },
+        "tokens": {
+          "prompt": 47325,
+          "completion": 1922,
+          "unknownUsage": 0
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-task": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "missing-cause": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "task-evidence": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "answered": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "skipped": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "selection": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "technical": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "unsupported": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "language": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          },
+          "title": {
+            "planned": 2,
+            "completed": 2,
+            "automatedPass": 2
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": []
+    },
+    {
+      "artifact": "2026-10-28T09-19-43-436Z_mistralai_ministral-14b_development_7932b342.json",
+      "runId": "7932b342-7fc5-4b07-8d00-35a587b81a94",
+      "createdAt": "2026-10-28T09:19:43.434Z",
+      "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+      "promptTemplateHash": "a5d9e6bc68aedee1ceb5b6da8e9bed2926aca056b50618f8dec7145c5dffd049",
+      "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+      "model": "mistralai/ministral-14b",
+      "configuration": {
+        "split": "development",
+        "cases": 15,
+        "runs": 3,
+        "concurrency": 1,
+        "maxTokens": 4096,
+        "timeoutMs": 30000,
+        "reasoning": "not-explicitly-selected",
+        "jsonModeRequested": true,
+        "repairCalls": 0,
+        "formattingRecovery": "explicit-empty-containers-only"
+      },
+      "summary": {
+        "planned": 45,
+        "completed": 45,
+        "providerErrors": 0,
+        "skipped": 0,
+        "syntaxValid": 45,
+        "boundaryAccepted": 45,
+        "automatedPass": 45,
+        "formattingRecoveryAttempted": 0,
+        "boundaryAcceptedAfterFormattingRecovery": 45,
+        "automatedPassAfterFormattingRecovery": 45,
+        "automatedPassRate": 1,
+        "successfulLatencyMs": {
+          "p50": 2346,
+          "p95": 5088
+        },
+        "attemptedLatencyMs": {
+          "p50": 2346,
+          "p95": 5088
+        },
+        "tokens": {
+          "prompt": 106347,
+          "completion": 4595,
+          "unknownUsage": 0
+        },
+        "manualReview": "required",
+        "semanticAcceptance": "NOT_ESTABLISHED",
+        "groups": {
+          "missing-task": {
+            "planned": 9,
+            "completed": 9,
+            "automatedPass": 9
+          },
+          "missing-cause": {
+            "planned": 9,
+            "completed": 9,
+            "automatedPass": 9
+          },
+          "task-evidence": {
+            "planned": 9,
+            "completed": 9,
+            "automatedPass": 9
+          },
+          "answered": {
+            "planned": 9,
+            "completed": 9,
+            "automatedPass": 9
+          },
+          "skipped": {
+            "planned": 9,
+            "completed": 9,
+            "automatedPass": 9
+          }
+        }
+      },
+      "listPriceEstimateUsd": 0,
+      "failures": []
+    }
+  ]
+}

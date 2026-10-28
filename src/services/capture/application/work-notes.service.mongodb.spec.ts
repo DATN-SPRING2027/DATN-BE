@@ -199,6 +199,38 @@ describe('Capture Work Notes Mongo workflows', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
+  it('blocks lossy legacy writes to upgraded freeform notes', async () => {
+    const input = {
+      title: 'Canonical',
+      accomplishments: 'Legacy',
+      approach: 'Legacy',
+      reason: 'Legacy',
+    };
+    const created = await service.createTaskNote({}, projectId, taskId, input);
+    await connection.collection('work_notes').updateOne(
+      { _id: new Types.ObjectId(created.id) },
+      {
+        $set: {
+          contentSchemaVersion: 2,
+          contentMarkdown: 'Freeform canonical',
+          currentVersionNumber: 1,
+        },
+      },
+    );
+    await expect(
+      service.updateTaskNote({}, projectId, taskId, created.id, input),
+    ).rejects.toMatchObject({
+      response: { code: 'NOTE_EDITOR_UPGRADE_REQUIRED' },
+    });
+    expect(
+      (
+        await service.listProjectTaskNotes({}, projectId, 1, 20, {
+          search: 'Freeform canonical',
+        })
+      ).data,
+    ).toHaveLength(1);
+  });
+
   it('excludes legacy unlinked records from the Task Note taxonomy', async () => {
     await connection.collection('work_notes').insertOne({
       _id: new Types.ObjectId(),
@@ -391,9 +423,21 @@ describe('Capture Work Notes Mongo workflows', () => {
       updatedAt: new Date(),
     });
     await service.listWorkReports({}, projectId, 1, 100);
+    const memberPeriods = await connection
+      .collection('work_reports')
+      .find({
+        memberUserId: new Types.ObjectId(memberId),
+        reportScope: 'MEMBER',
+      })
+      .toArray();
+    expect(memberPeriods.length).toBeGreaterThan(0);
+    expect(memberPeriods.length).toBeLessThanOrEqual(3);
     expect(
-      await connection.collection('work_reports').countDocuments(),
-    ).toBeLessThanOrEqual(3);
+      memberPeriods.every(
+        (row) =>
+          new Date(row.periodEnd as Date).getTime() >= Date.parse(joinedAt),
+      ),
+    ).toBe(true);
   });
 
   it('creates overdue obligations and events without a page request', async () => {

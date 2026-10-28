@@ -2,6 +2,7 @@
 node_modules/
 dist/
 coverage/
+.worknote-agent-evals/
 
 # Runtime configuration and credentials
 .env
