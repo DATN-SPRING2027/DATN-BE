@@ -1,3 +1,12 @@
+> Current execution record — 2026-10-28: the user extended authorization to the
+> existing Atlas integration and Git delivery plan. Capture was backed up to a
+> protected local archive, restored into an owned disposable MongoDB and all10
+> original collection content hashes matched. Both shared wrappers were applied
+> in indexes-only mode and repeated successfully. All10 original collection
+> hashes stayed unchanged; no legacy Task Note or Report was bulk converted.
+> This is local workstation activation, not a merge or production deployment.
+> The earlier preparation/local-only statements below are historical records.
+
 # WorkNote Agent database package
 
 Branch: feat/DanhDEV-agent-worknote-db, base origin/main 2325a8e.
@@ -60,7 +69,8 @@ optional project_document_versions.provenance, project_document_editor_versions,
 work_reports canonical fields and work_report_versions. Shared draft identity is
 exclusive by workflow. Existing review state/cadence/file ownership is unchanged.
 
-All commands below are PREPARED; no Atlas inspect/apply has been performed.
+The commands below are the operator runbook. See the current execution record
+above for the completed, verified indexes-only application on the configured Atlas.
 Default no-argument invocations make no network call:
 
 ```powershell
@@ -116,8 +126,8 @@ project_document_editor_versions, work_reports, work_report_versions,
 work_note_agent_drafts (workflow/resource resume index)
 Change: additive canonical Report text/history + Document editor snapshots;
 workflow-exclusive private drafts; immutable no-TTL canonical history.
-Data impact: optional deterministic legacy Report backfill, blank obligations
-skipped; legacy values retained by backfill; no Atlas execution performed.
+Data impact: verified indexes-only Atlas application; original collection hashes
+unchanged. No bulk backfill; optional deterministic conversion remains separate.
 Migration: 20261028-work-note-editor.mjs (loopback) and explicit shared wrapper;
 indexes-only default, --backfill is separate. Backup reference is attestation only.
 PR type: Database
