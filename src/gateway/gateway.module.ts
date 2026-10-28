@@ -7,6 +7,7 @@ import { GatewayIamController } from './gateway-iam.controller';
 import { GatewayChatController } from './gateway-chat.controller';
 import { GatewayTaskWorkspaceController } from './gateway-task-workspace.controller';
 import { GatewayCaptureController } from './gateway-capture.controller';
+import { GatewayHandoverController } from './gateway-handover.controller';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { GatewayCaptureController } from './gateway-capture.controller';
     GatewayChatController,
     GatewayTaskWorkspaceController,
     GatewayCaptureController,
+    GatewayHandoverController,
   ],
 })
 export class GatewayModule {}
