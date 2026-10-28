@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
 import type { ServiceCollectionDefinition } from './mongodb.types';
+import {
+  validPrivateAssessmentState,
+  withinAbsoluteDraftLifetime,
+} from './work-note-assessment-state.validation';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
 
@@ -117,8 +121,36 @@ const captureSchemas: Record<string, Schema> = {
       },
       revision: { type: Number, min: 1, required: true },
       baseNoteVersion: { type: Number, min: 0, required: true },
-      state: { type: Schema.Types.Mixed, required: true },
-      expiresAt: { type: Date, required: true },
+      state: {
+        type: Schema.Types.Mixed,
+        required: true,
+        validate: {
+          validator: function (
+            this: { workflow?: string; expiresAt?: Date; createdAt?: Date },
+            value: unknown,
+          ) {
+            return validPrivateAssessmentState(
+              value,
+              this.workflow,
+              this.expiresAt,
+              this.createdAt,
+            );
+          },
+          message:
+            'Assessment must remain versioned private Task Note draft state',
+        },
+      },
+      expiresAt: {
+        type: Date,
+        required: true,
+        validate: {
+          validator: function (this: { createdAt?: Date }, value: Date) {
+            return withinAbsoluteDraftLifetime(value, this.createdAt);
+          },
+          message:
+            'Private draft retention cannot exceed its original 24-hour lifetime',
+        },
+      },
       inferenceOperationId: String,
       inferenceLeaseUntil: Date,
     },
