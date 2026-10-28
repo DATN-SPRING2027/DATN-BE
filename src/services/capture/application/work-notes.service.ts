@@ -411,6 +411,7 @@ export class WorkNotesService {
               { title: searchRegex },
               { authorName: searchRegex },
               { whatDone: searchRegex },
+              { contentMarkdown: searchRegex },
               { howSolved: searchRegex },
               { whyThisWay: searchRegex },
             ],
@@ -613,6 +614,24 @@ export class WorkNotesService {
     if (!validId(noteId)) throw this.taskNoteNotFound();
     let updatedRow: Document | null = null;
     await this.transaction(async (db, session) => {
+      const existing = await db.collection('work_notes').findOne(
+        {
+          _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          taskId: objectId(taskId),
+          type: 'TASK_NOTE',
+          status: 'CONFIRMED',
+          ...(actor.canReview ? {} : { authorUserId: objectId(actor.userId) }),
+        },
+        { session },
+      );
+      if (!existing) throw this.taskNoteNotFound();
+      if (existing.contentSchemaVersion === 2)
+        throw new ConflictException({
+          code: 'NOTE_EDITOR_UPGRADE_REQUIRED',
+          message: 'Use the freeform editor to update this note.',
+        });
       updatedRow = await db.collection('work_notes').findOneAndUpdate(
         {
           _id: objectId(noteId),
@@ -2232,12 +2251,16 @@ export class WorkNotesService {
       );
       if (!current) throw reportNotFound();
       if (
-        !text(current.accomplishments).trim() ||
-        !text(current.approach).trim() ||
-        !text(current.reason).trim()
+        current.contentSchemaVersion === 2
+          ? !text(current.title).trim() || !text(current.contentMarkdown).trim()
+          : !text(current.accomplishments).trim() ||
+            !text(current.approach).trim() ||
+            !text(current.reason).trim()
       )
         throw conflict(
-          'Complete the three required report fields before submitting.',
+          current.contentSchemaVersion === 2
+            ? 'Complete title and content before submitting.'
+            : 'Complete the three required report fields before submitting.',
         );
       memberId = String(current.memberUserId);
       const updated = await reports.updateOne(
@@ -2375,7 +2398,7 @@ export class WorkNotesService {
               sourceId: reportId,
               organizationId: actor.organizationId,
               projectId,
-              version: 1,
+              version: Number(current.currentVersionNumber ?? 1),
               approvedAt: now.toISOString(),
             },
           },
@@ -2582,6 +2605,10 @@ export class WorkNotesService {
       });
     }
     if (!existingReport) throw reportNotFound();
+    if (existingReport.contentSchemaVersion === 2)
+      throw conflict(
+        'NOTE_EDITOR_UPGRADE_REQUIRED: use the freeform editor to preserve canonical content.',
+      );
     const now = new Date();
     await this.transaction(async (db, session) => {
       const txReports = db.collection('work_reports');
@@ -2591,6 +2618,7 @@ export class WorkNotesService {
           organizationId: objectId(actor.organizationId),
           projectId: objectId(actor.projectId),
           memberUserId: objectId(actor.userId),
+          contentSchemaVersion: { $ne: 2 },
           status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
         },
         {
@@ -2618,6 +2646,10 @@ export class WorkNotesService {
           { session },
         );
         if (!exists) throw reportNotFound();
+        if (exists.contentSchemaVersion === 2)
+          throw conflict(
+            'NOTE_EDITOR_UPGRADE_REQUIRED: use the freeform editor to preserve canonical content.',
+          );
         throw conflict('Only your unsubmitted Work Report can be edited.');
       }
       await this.auditEvent(
@@ -3016,6 +3048,14 @@ export class WorkNotesService {
       dueAt: iso(value.dueAt) ?? '',
       status,
       accomplishments: text(value.accomplishments),
+      ...(value.contentSchemaVersion === 2
+        ? {
+            title: text(value.title),
+            contentMarkdown: text(value.contentMarkdown),
+            contentSchemaVersion: 2 as const,
+            currentVersionNumber: Number(value.currentVersionNumber),
+          }
+        : {}),
       approach: text(value.approach),
       reason: text(value.reason),
       blockers: text(value.blockers),
@@ -3199,6 +3239,13 @@ export class WorkNotesService {
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
       title: text(value.title),
+      ...(typeof value.contentMarkdown === 'string'
+        ? {
+            contentMarkdown: value.contentMarkdown,
+            contentSchemaVersion: 2 as const,
+            currentVersionNumber: Number(value.currentVersionNumber ?? 1),
+          }
+        : {}),
       accomplishments: text(value.whatDone),
       approach: text(value.howSolved),
       reason: text(value.whyThisWay),
@@ -3240,26 +3287,60 @@ export class WorkNotesService {
     };
   }
 
+  /** Internal editor contract: actor must come from current server Project authority. */
+  async editorSourceRecord(
+    actor: WorkNotesActor,
+    workflow: 'PROJECT_DOCUMENT' | 'WORK_REPORT',
+    id: string,
+    session?: ClientSession,
+  ): Promise<ProjectDocumentRecord | WorkReportRecord> {
+    if (!validId(id)) throw documentNotFound();
+    if (workflow === 'PROJECT_DOCUMENT') {
+      const doc = await this.readDocument(actor, objectId(id), session);
+      if (!doc) throw documentNotFound();
+      return doc;
+    }
+    const row = await this.database()
+      .collection('work_reports')
+      .findOne(
+        {
+          _id: objectId(id),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(actor.projectId),
+          ...(!actor.canReview ? { memberUserId: objectId(actor.userId) } : {}),
+        },
+        { session },
+      );
+    if (!row) throw reportNotFound();
+    return this.workReportRecord(row, actor);
+  }
   private async readDocument(
     actor: WorkNotesActor,
     id: Types.ObjectId,
+    session?: ClientSession,
   ): Promise<ProjectDocumentRecord | null> {
     const db = this.database();
     const document = record(
-      await db.collection('project_documents').findOne({
-        _id: id,
-        organizationId: objectId(actor.organizationId),
-        projectId: objectId(actor.projectId),
-      }),
+      await db.collection('project_documents').findOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(actor.projectId),
+        },
+        { session },
+      ),
     );
     if (!document) return null;
     const versions = await db
       .collection('project_document_versions')
-      .find({
-        documentId: id,
-        organizationId: objectId(actor.organizationId),
-        projectId: objectId(actor.projectId),
-      })
+      .find(
+        {
+          documentId: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(actor.projectId),
+        },
+        { session },
+      )
       .sort({ versionNumber: 1 })
       .toArray();
     const versionRecords = versions.map((item) =>
