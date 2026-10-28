@@ -11,6 +11,7 @@ export interface CollectionIndex {
     unique?: boolean;
     expireAfterSeconds?: number;
     name?: string;
+    partialFilterExpression?: Record<string, unknown>;
   };
 }
 
