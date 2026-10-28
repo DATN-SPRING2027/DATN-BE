@@ -52,6 +52,7 @@ export interface EnvironmentVariables {
   AWS_SECRET_ACCESS_KEY?: string;
   BACKEND_TIMEOUT_MS: number;
   CAPTURE_FILE_TIMEOUT_MS: number;
+  SAG_CHAT_STREAM_TIMEOUT_MS: number;
   SAG_API_BASE_URL?: string;
   SAG_BFF_SERVICE_TOKEN?: string;
   CONTINUUM_WEB_BASE_URL?: string;
@@ -168,6 +169,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .integer()
     .min(1000)
     .max(600000)
+    .default(120000),
+  SAG_CHAT_STREAM_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(300000)
     .default(120000),
   SAG_API_BASE_URL: Joi.string()
     .trim()

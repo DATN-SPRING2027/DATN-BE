@@ -16,6 +16,7 @@ describe('validateEnvironment', () => {
       SWAGGER_ENABLED: false,
       INFRA_ENABLED: true,
       SERVICE_DATABASE: 'continuum_iam',
+      SAG_CHAT_STREAM_TIMEOUT_MS: 120000,
     });
   });
 
@@ -30,6 +31,8 @@ describe('validateEnvironment', () => {
     [{ IAM_GATEWAY_SECRET: 'too-short' }, 'IAM_GATEWAY_SECRET'],
     [{ SERVICE_DATABASE: 'continuum_db' }, 'SERVICE_DATABASE'],
     [{ SERVICE_DATABASE: 'continuum_task' }, 'SERVICE_DATABASE'],
+    [{ SAG_CHAT_STREAM_TIMEOUT_MS: '1000' }, 'SAG_CHAT_STREAM_TIMEOUT_MS'],
+    [{ SAG_CHAT_STREAM_TIMEOUT_MS: '600001' }, 'SAG_CHAT_STREAM_TIMEOUT_MS'],
     [
       { GATEWAY_TRUSTED_PROXY_CIDRS: 'anywhere' },
       'GATEWAY_TRUSTED_PROXY_CIDRS',

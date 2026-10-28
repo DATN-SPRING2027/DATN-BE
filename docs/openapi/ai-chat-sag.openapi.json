@@ -1,0 +1,537 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AI Chat SAG BFF Contract",
+    "version": "1.0.0",
+    "description": "Approved Continuum AI BFF contract for Project-scoped AI Chat backed by SAG and SAG-ECCE. Every request enforces active Organization membership, Project read access, and CSRF validation for cookie-authenticated mutations. No SAG tokens, prompt previews, or internal tool arguments are exposed to clients."
+  },
+  "security": [
+    {
+      "cookieAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/ai-chat/projects/{projectId}/threads": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "get": {
+        "operationId": "listAiChatThreads",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Threads owned by the authenticated user in the selected Project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Thread"
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "post": {
+        "operationId": "createAiChatThread",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateThread"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Thread created in the selected Project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" }
+      ],
+      "patch": {
+        "operationId": "updateAiChatThread",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateThread"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Thread updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAiChatThread",
+        "responses": {
+          "204": {
+            "description": "Thread and its SAG session memory purged"
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" }
+      ],
+      "get": {
+        "operationId": "listAiChatMessages",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 40
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cursor-paginated messages ordered chronologically within the page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/ask": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" }
+      ],
+      "post": {
+        "operationId": "askAiChatThread",
+        "description": "POST returns text/event-stream (SSE). Validates active Organization membership, Project read access, CSRF (for cookie auth), and thread ownership before streaming. Emits allowlisted JSON events: started (StartedEvent), step (StepEvent), delta (DeltaEvent), and at most one terminal event: completed (CompletedEvent) or failed (FailedEvent). Never automatically retries paid LLM generation and never forwards prompt previews, raw upstream errors, or credentials.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Ask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream ending with completed or failed",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "event: started\ndata: {\"runId\":\"r1\",\"threadId\":\"t1\",\"userMessageId\":\"u1\"}\n\nevent: delta\ndata: {\"text\":\"Hello [1]\"}\n\nevent: completed\ndata: {\"messageId\":\"m1\",\"content\":\"Hello [1]\",\"answerStatus\":\"answered\",\"citations\":[],\"sessionCitations\":[],\"retrievalSteps\":[]}\n\n"
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "continuum_access"
+      }
+    },
+    "parameters": {
+      "ProjectId": {
+        "name": "projectId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "ThreadId": {
+        "name": "threadId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Safe standardized error envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Thread": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateThread": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "UpdateThread": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "Ask": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        }
+      },
+      "Citation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "sourceId", "documentId"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "sourceId": { "type": "string" },
+          "sourceName": { "type": "string" },
+          "documentId": { "type": "string" },
+          "documentName": { "type": "string" },
+          "versionNo": { "type": "integer", "minimum": 1 },
+          "heading": { "type": "string" },
+          "snippet": { "type": "string" },
+          "label": { "type": "string" },
+          "pageFrom": { "type": "integer", "minimum": 1 },
+          "pageTo": { "type": "integer", "minimum": 1 },
+          "mapped": { "type": "boolean" },
+          "claimLevel": {
+            "type": "string",
+            "enum": ["claim", "run"]
+          }
+        }
+      },
+      "SessionCitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "source", "turnIds", "summaryExcerpt"],
+        "properties": {
+          "ref": { "type": "string", "pattern": "^S[1-9][0-9]*$" },
+          "source": {
+            "type": "string",
+            "enum": ["selected_group", "recent_continuity"]
+          },
+          "groupId": { "type": ["string", "null"] },
+          "turnIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "turnRange": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer", "minimum": 0 }
+          },
+          "summaryExcerpt": { "type": "string" },
+          "mapped": { "type": "boolean" },
+          "claimLevel": {
+            "type": "string",
+            "enum": ["claim", "run"]
+          }
+        }
+      },
+      "RetrievalStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "durationMs"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["session_context", "tool", "thinking", "answer"]
+          },
+          "label": { "type": "string" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "count": { "type": "integer", "minimum": 0 },
+          "mode": { "type": "string" }
+        }
+      },
+      "Message": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "role",
+          "content",
+          "status",
+          "citations",
+          "sessionCitations",
+          "retrievalSteps",
+          "createdAt"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "role": {
+            "type": "string",
+            "enum": ["user", "assistant"]
+          },
+          "content": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["ok", "failed", "cancelled"]
+          },
+          "citations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Citation" }
+          },
+          "sessionCitations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SessionCitation" }
+          },
+          "retrievalSteps": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RetrievalStep" }
+          },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MessagePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "nextCursor", "hasMore"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Message" }
+          },
+          "nextCursor": { "type": ["string", "null"] },
+          "hasMore": { "type": "boolean" }
+        }
+      },
+      "StartedEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "threadId"],
+        "properties": {
+          "runId": { "type": "string" },
+          "threadId": { "type": "string" },
+          "userMessageId": { "type": "string" }
+        }
+      },
+      "StepEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "durationMs"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["session_context", "tool", "thinking", "answer"]
+          },
+          "label": { "type": "string" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "count": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "DeltaEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" }
+        }
+      },
+      "CompletedEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "messageId",
+          "content",
+          "answerStatus",
+          "citations",
+          "sessionCitations",
+          "retrievalSteps"
+        ],
+        "properties": {
+          "messageId": { "type": "string" },
+          "content": { "type": "string" },
+          "answerStatus": {
+            "type": "string",
+            "enum": ["answered", "no_answer"]
+          },
+          "citations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Citation" }
+          },
+          "sessionCitations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SessionCitation" }
+          },
+          "retrievalSteps": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RetrievalStep" }
+          }
+        }
+      },
+      "FailedEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "retryable"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "retryable": { "type": "boolean" },
+          "messageId": { "type": "string" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["code", "message", "details", "requestId"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "details": { "type": "object" },
+          "requestId": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
