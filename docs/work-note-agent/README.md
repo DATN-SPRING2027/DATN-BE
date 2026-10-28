@@ -53,3 +53,19 @@ runbook and unsent team notification. No dependency or external message added.
 Current rollout evidence is in DOC research-docs/WorkNote-Agent/
 10-existing-atlas-execution-plan-2026-10-28.md. Local backup archives, populated
 environment backups and raw browser/API diagnostics remain outside Git.
+
+Final authenticated Task Note acceptance passed on the normal application:
+New note at BE-2 / Activity / Task notes, real xKiro grammar and missing-detail
+question/answer, explicit Apply, confirmed canonical Save, persistence after
+reload, v2 edit and v1 Restore as newv3. The final read-only Atlas check proves
+history1/2/3, no remaining QA draft/chat, uncertainty preserved and all6 original
+notes unchanged. A new QA Project Document saved as Draft with an immutable editor
+snapshot; all137 original Documents were unchanged. No review/Submit was invoked.
+
+Restore's browser-native confirmation was replaced by the existing in-app
+alertdialog after browser acceptance exposed blocked native interaction. Targeted
+Composer suite12/12; final FE fullcheck953/953 passed plus lint/typecheck/build.
+BE fullcheck1563unit +168e2e passed (137/4 skipped); DB1502unit +168e2e passed
+(135/4 skipped). No independent human semantic acceptance is claimed.
+BE PR105 and FE PR99 remain drafts, DB PR104 remains unmerged. See DOC execution10
+for actual-versus-fixture coverage and the final delivery record.
