@@ -32,7 +32,7 @@ describe('AI Chat <-> SAG BFF (e2e)', () => {
   const actor = {
     id: '507f1f77bcf86cd799439011',
     email: 'thang@continuum.ai',
-    name: 'Thang Dev',
+    name: 'Nguyễn Văn Thắng',
     organizationId: '507f1f77bcf86cd799439022',
     roles: ['ADMIN'],
   };
@@ -175,16 +175,40 @@ describe('AI Chat <-> SAG BFF (e2e)', () => {
                       name: 'session_context',
                       mode: 'on',
                       ms: 14,
+                      audit: {
+                        selected_groups: [
+                          {
+                            citation_tag: 'S1',
+                            primary_turn_id: 'u1',
+                            included_turn_ids: ['u0', 'u1'],
+                          },
+                        ],
+                        recent_turn_ids: ['u2'],
+                      },
                       session_citations: [
                         {
+                          kind: 'session_memory',
                           ref: 'S1',
-                          source: 'selected_group',
-                          group_id: 'g1',
-                          turn_ids: ['u1'],
-                          turn_range: [1, 1],
-                          summary_excerpt: 'Confirmed BFF architecture.',
+                          primary_message_id: 'u1',
+                          message_ids: ['u0', 'u1'],
+                          turn_ordinals: [1, 2],
+                          epistemic_status: 'CONFIRMED',
+                          sha256: 'hash_s1',
+                          cited_source_ids: [],
                           mapped: true,
                           claim_level: 'claim',
+                        },
+                        {
+                          kind: 'session_memory',
+                          ref: 'S2',
+                          primary_message_id: 'u2',
+                          message_ids: ['u2'],
+                          turn_ordinals: [3],
+                          epistemic_status: 'INFO',
+                          sha256: 'hash_s2',
+                          cited_source_ids: [],
+                          mapped: false,
+                          claim_level: 'run',
                         },
                       ],
                     },
@@ -395,9 +419,18 @@ describe('AI Chat <-> SAG BFF (e2e)', () => {
     expect(sseResp.text).toContain('event: delta');
     expect(sseResp.text).toContain('event: completed');
     expect(sseResp.text).toContain('"ref":"S1"');
+    expect(sseResp.text).toContain('"turnIds":["u1","u0"]');
+    expect(sseResp.text).not.toContain('"ref":"S2"');
     expect(sseResp.text).not.toContain('TOP_SECRET_PROMPT');
     expect(sseResp.text).not.toContain(serviceToken);
     expect(sseResp.text).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+
+    const loginCalls = recordedSagRequests.filter(
+      (r) => r.url === '/api/v1/auth/continuum-login',
+    );
+    expect(loginCalls).toHaveLength(1);
+    expect(loginCalls[0]?.headers['x-continuum-name']).toBe('Nguyen Van Thang');
+    expect(projectsMock.get).toHaveBeenCalledTimes(4);
 
     // Verify ask sent knowledge_only=true & web_enabled=false to SAG without leaking service token
     const askUpstream = recordedSagRequests.find((r) =>

@@ -214,6 +214,14 @@ export function validateEnvironment(
       'Environment validation failed: SAG_API_BASE_URL and SAG_BFF_SERVICE_TOKEN must be configured together.',
     );
   }
+  if (sagApiBaseUrl) {
+    const sagUrl = new URL(sagApiBaseUrl);
+    if (sagUrl.search || sagUrl.hash || sagUrl.username || sagUrl.password) {
+      throw new Error(
+        'Environment validation failed: SAG_API_BASE_URL must not contain credentials, query parameters, or fragments.',
+      );
+    }
+  }
   for (const [name, value] of [
     ['CONTINUUM_WEB_BASE_URL', result.value.CONTINUUM_WEB_BASE_URL],
     ['SAG_WEB_BASE_URL', result.value.SAG_WEB_BASE_URL],

@@ -8,6 +8,9 @@
   "security": [
     {
       "cookieAuth": []
+    },
+    {
+      "bearerAuth": []
     }
   ],
   "paths": {
@@ -36,6 +39,7 @@
             "schema": {
               "type": "integer",
               "minimum": 0,
+              "maximum": 10000,
               "default": 0
             }
           }
@@ -60,11 +64,15 @@
           "404": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/Error" },
           "502": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
         }
       },
       "post": {
         "operationId": "createAiChatThread",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
         "requestBody": {
           "required": false,
           "content": {
@@ -92,7 +100,8 @@
           "404": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/Error" },
           "502": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -103,6 +112,9 @@
       ],
       "patch": {
         "operationId": "updateAiChatThread",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -130,11 +142,15 @@
           "404": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/Error" },
           "502": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
         }
       },
       "delete": {
         "operationId": "deleteAiChatThread",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
         "responses": {
           "204": {
             "description": "Thread and its SAG session memory purged"
@@ -145,7 +161,8 @@
           "404": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/Error" },
           "502": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -193,7 +210,8 @@
           "404": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/Error" },
           "502": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -204,6 +222,9 @@
       ],
       "post": {
         "operationId": "askAiChatThread",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
         "description": "POST returns text/event-stream (SSE). Validates active Organization membership, Project read access, CSRF (for cookie auth), and thread ownership before streaming. Emits allowlisted JSON events: started (StartedEvent), step (StepEvent), delta (DeltaEvent), and at most one terminal event: completed (CompletedEvent) or failed (FailedEvent). Never automatically retries paid LLM generation and never forwards prompt previews, raw upstream errors, or credentials.",
         "requestBody": {
           "required": true,
@@ -245,6 +266,11 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "continuum_access"
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
       }
     },
     "parameters": {
@@ -255,7 +281,8 @@
         "schema": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 64
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
         }
       },
       "ThreadId": {
@@ -265,7 +292,19 @@
         "schema": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 64
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        }
+      },
+      "CsrfTokenHeader": {
+        "name": "X-CSRF-Token",
+        "in": "header",
+        "required": false,
+        "description": "Required when authenticating with browser cookies on POST, PATCH, and DELETE mutations.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
         }
       }
     },
@@ -468,7 +507,8 @@
           },
           "label": { "type": "string" },
           "durationMs": { "type": "integer", "minimum": 0 },
-          "count": { "type": "integer", "minimum": 0 }
+          "count": { "type": "integer", "minimum": 0 },
+          "mode": { "type": "string" }
         }
       },
       "DeltaEvent": {

@@ -87,6 +87,7 @@ export class HttpAiEngineClient implements AiEngineClient {
 
   private resolveTarget(rawPath: string): {
     target: URL;
+    routePathname: string;
     serviceToken: string;
   } {
     const baseUrl = this.config.get<string>('SAG_API_BASE_URL')?.trim();
@@ -103,23 +104,34 @@ export class HttpAiEngineClient implements AiEngineClient {
     }
 
     const base = new URL(baseUrl);
-    const target = new URL(rawPath, `${base.origin}/`);
+    if (base.username || base.password || base.search || base.hash) {
+      throw new BadGatewayException('AI Engine base URL is invalid.');
+    }
+    const basePrefix = base.pathname.replace(/\/+$/, '');
+    const routeProbe = new URL(rawPath, 'http://sag.internal');
+    const routePathname = routeProbe.pathname;
+    const target = new URL(
+      `${basePrefix}${routePathname}${routeProbe.search}`,
+      `${base.origin}/`,
+    );
     if (target.origin !== base.origin) {
       throw new BadGatewayException('AI Engine path is not allowed.');
     }
-    return { target, serviceToken };
+    return { target, routePathname, serviceToken };
   }
 
   async request<TResponse>(
     request: AiEngineRequest,
   ): Promise<AiEngineResponse<TResponse>> {
-    const { target, serviceToken } = this.resolveTarget(request.path);
-    if (!isAllowedJsonRoute(request.method, target.pathname)) {
+    const { target, routePathname, serviceToken } = this.resolveTarget(
+      request.path,
+    );
+    if (!isAllowedJsonRoute(request.method, routePathname)) {
       throw new BadGatewayException('AI Engine path is not allowed.');
     }
 
     const headers = new Headers(request.headers);
-    if (requiresBffServiceToken(target.pathname)) {
+    if (requiresBffServiceToken(routePathname)) {
       headers.set('X-SAG-BFF-Service-Token', serviceToken);
     } else {
       headers.delete('X-SAG-BFF-Service-Token');
@@ -174,10 +186,10 @@ export class HttpAiEngineClient implements AiEngineClient {
   async requestStream(
     request: AiEngineStreamRequest,
   ): Promise<AiEngineStreamResponse> {
-    const { target } = this.resolveTarget(request.path);
+    const { target, routePathname } = this.resolveTarget(request.path);
     if (
       request.method !== 'POST' ||
-      !AGENT_THREAD_ASK_PATTERN.test(target.pathname)
+      !AGENT_THREAD_ASK_PATTERN.test(routePathname)
     ) {
       throw new BadGatewayException('AI Engine stream path is not allowed.');
     }
@@ -208,6 +220,11 @@ export class HttpAiEngineClient implements AiEngineClient {
         signal,
       });
     } catch (error) {
+      if (request.signal?.aborted) {
+        throw error instanceof Error
+          ? error
+          : new Error('AI Engine stream aborted by caller.');
+      }
       if (error instanceof Error && error.name === 'TimeoutError') {
         throw new GatewayTimeoutException({
           code: 'AI_ENGINE_TIMEOUT',
@@ -257,15 +274,21 @@ export class HttpAiEngineClient implements AiEngineClient {
         429,
       );
     }
-    if (status < 500) {
-      throw new HttpException(
-        {
-          code: 'AI_ENGINE_REQUEST_FAILED',
-          message: 'AI Engine request failed.',
-        },
-        status,
-      );
+    if (status === 401 || status === 403) {
+      throw new BadGatewayException({
+        code: 'AI_ENGINE_AUTH_FAILED',
+        message: 'AI Engine authentication failed.',
+      });
     }
-    throw new BadGatewayException('AI Engine request failed.');
+    if (status < 500) {
+      throw new BadGatewayException({
+        code: 'AI_ENGINE_REQUEST_FAILED',
+        message: 'AI Engine rejected the upstream request.',
+      });
+    }
+    throw new BadGatewayException({
+      code: 'AI_ENGINE_UPSTREAM_ERROR',
+      message: 'AI Engine request failed.',
+    });
   }
 }

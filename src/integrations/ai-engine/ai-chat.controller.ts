@@ -20,7 +20,7 @@ import {
   validCsrfPair,
 } from '../../services/iam/application/authentication/authentication.application.service';
 import { AiChatService } from './ai-chat.service';
-import type { AiChatRequestHeaders } from './ai-chat.types';
+import type { AiChatRequestHeaders, AiChatSseFrame } from './ai-chat.types';
 
 const SAFE_PATH_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -294,16 +294,36 @@ export class AiChatController {
         abortController.abort();
       }
     };
-    request.on('close', onClose);
+    response.on('close', onClose);
+    if (response.destroyed) {
+      abortController.abort();
+    }
 
     try {
-      const eventStream = await this.aiChat.openAskStream(
-        headers,
-        validProjectId,
-        validThreadId,
-        dto,
-        abortController.signal,
-      );
+      let eventStream: AsyncGenerator<AiChatSseFrame>;
+      try {
+        eventStream = await this.aiChat.openAskStream(
+          headers,
+          validProjectId,
+          validThreadId,
+          dto,
+          abortController.signal,
+        );
+      } catch (error) {
+        if (abortController.signal.aborted || response.destroyed) {
+          return;
+        }
+        throw error;
+      }
+
+      if (
+        abortController.signal.aborted ||
+        response.destroyed ||
+        response.writableEnded
+      ) {
+        await eventStream.return(undefined).catch(() => undefined);
+        return;
+      }
 
       response.status(HttpStatus.OK);
       response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -337,7 +357,7 @@ export class AiChatController {
         }
       }
     } finally {
-      request.off('close', onClose);
+      response.off('close', onClose);
       if (response.headersSent && !response.writableEnded) {
         response.end();
       }

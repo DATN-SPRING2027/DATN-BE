@@ -181,4 +181,31 @@ describe('HttpAiEngineClient', () => {
       }),
     ).rejects.toThrow(GatewayTimeoutException);
   });
+
+  it('maps upstream SAG 401/403/400 errors to 502 BadGatewayException and preserves base URL path prefixes', async () => {
+    const prefixedClient = makeClient({
+      SAG_API_BASE_URL: 'https://gateway.internal/sag/',
+    });
+
+    for (const upstreamStatus of [400, 401, 403]) {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'upstream failure' }), {
+          status: upstreamStatus,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      await expect(
+        prefixedClient.request({
+          path: '/api/v1/agents/default',
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        }),
+      ).rejects.toThrow(BadGatewayException);
+    }
+
+    const calledUrl = fetchMock.mock.calls[0]?.[0] as URL;
+    expect(calledUrl.toString()).toBe(
+      'https://gateway.internal/sag/api/v1/agents/default',
+    );
+  });
 });

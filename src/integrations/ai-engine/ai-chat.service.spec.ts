@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AiChatService } from './ai-chat.service';
+import { sanitizeContinuumActorHeaderName } from './ai-chat.types';
 import type { AiEngineClient } from './ai-engine.port';
 import type { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
 import type { ProjectService } from '../../services/iam/application/projects/project.service';
@@ -13,7 +14,7 @@ describe('AiChatService', () => {
   const actor = {
     id: '507f1f77bcf86cd799439011',
     email: 'member@continuum.ai',
-    name: 'Thang\r\nDeveloper',
+    name: 'Nguyễn Văn Thắng\r\nĐức',
     organizationId: '507f1f77bcf86cd799439022',
     roles: ['MEMBER'],
   };
@@ -177,7 +178,7 @@ describe('AiChatService', () => {
       method: 'POST',
       headers: {
         'X-Continuum-User-Id': actor.id,
-        'X-Continuum-Name': 'Thang  Developer',
+        'X-Continuum-Name': 'Nguyen Van Thang Duc',
         'X-Continuum-Organization-Id': project.organizationId,
         'X-Continuum-Project-Id': project.id,
       },
@@ -380,5 +381,152 @@ describe('AiChatService', () => {
         offset: 0,
       }),
     ).rejects.toThrow(BadGatewayException);
+  });
+
+  it('normalizes real SAG session_memory citations (message_ids, primary_message_id, turn_ordinals) and filters mapped=false pool items', async () => {
+    expect(sanitizeContinuumActorHeaderName('🚀✨')).toBe('Continuum user');
+
+    const { service, requestMock } = setup();
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'h.p.s' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_real' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          items: [
+            {
+              id: 'm-ans',
+              thread_id: 't1',
+              role: 'assistant',
+              content: 'Đã chốt kiến trúc theo [S1].',
+              status: 'ok',
+              created_at: '2026-10-28T12:00:00Z',
+              citations: [],
+              steps: [
+                {
+                  kind: 'session_context',
+                  step: 0,
+                  name: 'session_context',
+                  mode: 'on',
+                  ms: 21,
+                  audit: {
+                    selected_groups: [
+                      {
+                        citation_tag: 'S1',
+                        primary_turn_id: 'msg-u2',
+                        included_turn_ids: ['msg-u1', 'msg-u2'],
+                      },
+                    ],
+                    recent_turn_ids: ['msg-u7', 'msg-u8'],
+                  },
+                  session_citations: [
+                    {
+                      kind: 'session_memory',
+                      ref: 'S1',
+                      primary_message_id: 'msg-u2',
+                      message_ids: ['msg-u1', 'msg-u2'],
+                      turn_ordinals: [1, 2],
+                      epistemic_status: 'CONFIRMED',
+                      sha256: 'abc123',
+                      cited_source_ids: [],
+                      mapped: true,
+                      claim_level: 'claim',
+                    },
+                    {
+                      kind: 'session_memory',
+                      ref: 'S2',
+                      primary_message_id: 'msg-u8',
+                      message_ids: ['msg-u7', 'msg-u8'],
+                      turn_ordinals: [7, 8],
+                      epistemic_status: 'INFO',
+                      sha256: 'def456',
+                      cited_source_ids: [],
+                      mapped: false,
+                      claim_level: 'run',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          next_cursor: null,
+          has_more: false,
+        },
+      });
+
+    const page = await service.listMessages(
+      { authorization: 'Bearer ok' },
+      project.id,
+      't1',
+      { limit: 40 },
+    );
+
+    expect(page.items[0]?.sessionCitations).toEqual([
+      {
+        ref: 'S1',
+        source: 'selected_group',
+        groupId: 'S1',
+        turnIds: ['msg-u2', 'msg-u1'],
+        turnRange: [1, 2],
+        summaryExcerpt: 'Turns #1–#2 · CONFIRMED',
+        mapped: true,
+        claimLevel: 'claim',
+      },
+    ]);
+  });
+
+  it('caches resolved SAG session across consecutive calls while still enforcing Continuum RBAC on every request', async () => {
+    const { service, getCurrentIdentity, getProject, requestMock } = setup();
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'cached.jwt.token' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_cached' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: [],
+      })
+      .mockResolvedValueOnce({
+        status: 201,
+        body: {
+          id: 't-new',
+          title: 'Cached thread',
+          created_at: '2026-10-28T12:00:00Z',
+          updated_at: '2026-10-28T12:00:00Z',
+        },
+      });
+
+    await service.listThreads({ authorization: 'Bearer ok' }, project.id, {
+      limit: 20,
+      offset: 0,
+    });
+    await service.createThread({ authorization: 'Bearer ok' }, project.id, {
+      title: 'Cached thread',
+    });
+
+    // Only 4 SAG HTTP calls total (login + agents/default + GET threads + POST threads), NOT 6!
+    expect(requestMock).toHaveBeenCalledTimes(4);
+    expect(getCurrentIdentity).toHaveBeenCalledTimes(2);
+    expect(getProject).toHaveBeenCalledTimes(2);
+
+    // Revoking project access immediately blocks the next call even with a warm SAG cache
+    getProject.mockRejectedValueOnce(new ForbiddenException());
+    await expect(
+      service.listThreads({ authorization: 'Bearer ok' }, project.id, {
+        limit: 20,
+        offset: 0,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).toHaveBeenCalledTimes(4);
   });
 });

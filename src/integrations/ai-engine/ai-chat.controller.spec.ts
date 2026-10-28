@@ -33,38 +33,32 @@ describe('AiChatController', () => {
     const chunks: string[] = [];
     let statusCode = 200;
     let ended = false;
-    const mockRes: {
-      headersSent: boolean;
-      writableEnded: boolean;
-      setHeader: jest.Mock;
-      status: jest.Mock;
-      flushHeaders: jest.Mock;
-      write: jest.Mock;
-      end: jest.Mock;
-    } = {
-      headersSent: false,
-      writableEnded: false,
-      setHeader: jest.fn((key: string, value: string) => {
+    class MockResponse extends EventEmitter {
+      destroyed = false;
+      headersSent = false;
+      writableEnded = false;
+      setHeader = jest.fn((key: string, value: string) => {
         headers[key.toLowerCase()] = value;
-      }),
-      status: jest.fn((code: number) => {
+      });
+      status = jest.fn((code: number) => {
         statusCode = code;
-        return mockRes;
-      }),
-      flushHeaders: jest.fn(() => {
-        mockRes.headersSent = true;
-      }),
-      write: jest.fn((chunk: string) => {
+        return this;
+      });
+      flushHeaders = jest.fn(() => {
+        this.headersSent = true;
+      });
+      write = jest.fn((chunk: string) => {
         chunks.push(chunk);
         return true;
-      }),
-      end: jest.fn(() => {
+      });
+      end = jest.fn(() => {
         ended = true;
-        mockRes.writableEnded = true;
-      }),
-    };
+        this.writableEnded = true;
+      });
+    }
+    const mockRes = new MockResponse();
     return {
-      res: mockRes as unknown as Response,
+      res: mockRes as unknown as Response & EventEmitter,
       headers,
       chunks,
       getStatus: () => statusCode,
@@ -148,8 +142,11 @@ describe('AiChatController', () => {
     let capturedSignal: AbortSignal | undefined;
     async function* fakeGenerator(): AsyncGenerator<AiChatSseFrame> {
       await Promise.resolve();
-      yield { event: 'delta', data: { text: 'Xin chào' } };
+      // Express JSON body stream closing must NOT prematurely abort the SSE response stream!
       req.emit('close');
+      yield { event: 'delta', data: { text: 'Xin chào' } };
+      // Client disconnecting the HTTP response socket MUST abort upstream immediately!
+      res.emit('close');
       yield {
         event: 'completed',
         data: {

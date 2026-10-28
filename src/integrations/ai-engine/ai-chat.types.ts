@@ -178,8 +178,29 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
   };
 }
 
+export function sanitizeContinuumActorHeaderName(rawName: string): string {
+  const ascii = rawName
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/[^\x20-\x7e]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return ascii || 'Continuum user';
+}
+
+export type SessionCitationAuditHint = Readonly<{
+  inferredSource?: 'selected_group' | 'recent_continuity';
+  inferredGroupId?: string | null;
+}>;
+
 export function mapSagSessionCitation(
   raw: unknown,
+  hint?: SessionCitationAuditHint,
 ): AiChatSessionCitationDto | null {
   if (!isRecord(raw)) return null;
   const ref = nonEmptyString(raw.ref, 16);
@@ -188,29 +209,61 @@ export function mapSagSessionCitation(
   const source =
     raw.source === 'selected_group' || raw.source === 'recent_continuity'
       ? raw.source
-      : 'selected_group';
+      : (hint?.inferredSource ?? 'selected_group');
   const groupIdRaw = raw.group_id ?? raw.groupId;
   const groupId =
     typeof groupIdRaw === 'string' && groupIdRaw.trim()
       ? groupIdRaw.trim().slice(0, 128)
-      : null;
+      : groupIdRaw === null
+        ? null
+        : source === 'selected_group'
+          ? (hint?.inferredGroupId ?? null)
+          : null;
 
   const rawTurnIds = Array.isArray(raw.turn_ids)
     ? raw.turn_ids
     : Array.isArray(raw.turnIds)
       ? raw.turnIds
-      : [];
-  const turnIds = rawTurnIds
+      : Array.isArray(raw.message_ids)
+        ? raw.message_ids
+        : Array.isArray(raw.messageIds)
+          ? raw.messageIds
+          : [];
+  const parsedTurnIds = rawTurnIds
     .filter(
       (id): id is string => typeof id === 'string' && id.trim().length > 0,
     )
     .map((id) => id.trim().slice(0, 128));
+  const primaryId = nonEmptyString(
+    raw.primary_message_id ?? raw.primaryMessageId,
+    128,
+  );
+  const turnIds = primaryId
+    ? [
+        primaryId,
+        ...Array.from(new Set(parsedTurnIds.filter((id) => id !== primaryId))),
+      ]
+    : Array.from(new Set(parsedTurnIds));
 
   const rawRange = Array.isArray(raw.turn_range)
     ? raw.turn_range
     : Array.isArray(raw.turnRange)
       ? raw.turnRange
       : undefined;
+  const rawOrdinals = Array.isArray(raw.turn_ordinals)
+    ? raw.turn_ordinals
+    : Array.isArray(raw.turnOrdinals)
+      ? raw.turnOrdinals
+      : undefined;
+  const validOrdinals = rawOrdinals
+    ? rawOrdinals.filter(
+        (num): num is number =>
+          typeof num === 'number' &&
+          Number.isInteger(num) &&
+          Number.isSafeInteger(num) &&
+          num >= 0,
+      )
+    : [];
   const turnRange =
     rawRange &&
     rawRange.length === 2 &&
@@ -221,11 +274,35 @@ export function mapSagSessionCitation(
     rawRange[0] >= 0 &&
     rawRange[1] >= rawRange[0]
       ? ([rawRange[0], rawRange[1]] as const)
-      : undefined;
+      : validOrdinals.length > 0
+        ? ([Math.min(...validOrdinals), Math.max(...validOrdinals)] as const)
+        : undefined;
 
-  const summaryExcerpt =
-    nonEmptyString(raw.summary_excerpt ?? raw.summaryExcerpt, 600) ??
-    'Session conversation memory';
+  const explicitExcerpt = nonEmptyString(
+    raw.summary_excerpt ?? raw.summaryExcerpt,
+    600,
+  );
+  const rawEpistemic = nonEmptyString(
+    raw.epistemic_status ?? raw.epistemicStatus,
+    32,
+  );
+  const safeEpistemic =
+    rawEpistemic &&
+    /^[A-Z_]{2,24}$/.test(rawEpistemic) &&
+    rawEpistemic !== 'INFO'
+      ? rawEpistemic
+      : undefined;
+  const rangeLabel = turnRange
+    ? turnRange[0] === turnRange[1]
+      ? `Turn #${turnRange[0]}`
+      : `Turns #${turnRange[0]}–#${turnRange[1]}`
+    : undefined;
+  const fallbackExcerpt =
+    [rangeLabel, safeEpistemic]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ') || 'Session conversation memory';
+  const summaryExcerpt = explicitExcerpt ?? fallbackExcerpt;
+
   const mapped = typeof raw.mapped === 'boolean' ? raw.mapped : undefined;
   const claimLevel =
     raw.claim_level === 'claim' || raw.claim_level === 'run'
@@ -266,9 +343,41 @@ export function extractSanitizedStepsAndSessionCitations(rawSteps: unknown): {
         durationMs: nonNegativeInt(step.ms ?? step.duration_ms),
         ...(mode ? { mode } : {}),
       });
+      const selectedGroupTags = new Set<string>();
+      let hasAuditTrace = false;
+      if (isRecord(step.audit)) {
+        if (Array.isArray(step.audit.selected_groups)) {
+          hasAuditTrace = true;
+          for (const grp of step.audit.selected_groups) {
+            if (isRecord(grp) && typeof grp.citation_tag === 'string') {
+              const tag = grp.citation_tag.trim();
+              if (tag) selectedGroupTags.add(tag);
+            }
+          }
+        }
+        if (Array.isArray(step.audit.recent_turn_ids)) {
+          hasAuditTrace = true;
+        }
+      }
       if (Array.isArray(step.session_citations)) {
         for (const sc of step.session_citations) {
-          const mapped = mapSagSessionCitation(sc);
+          if (isRecord(sc) && sc.mapped === false) {
+            continue;
+          }
+          const rawRef = isRecord(sc) ? nonEmptyString(sc.ref, 16) : undefined;
+          const isSelectedGroup = Boolean(
+            rawRef && selectedGroupTags.has(rawRef),
+          );
+          const inferredSource:
+            'selected_group' | 'recent_continuity' | undefined = hasAuditTrace
+            ? isSelectedGroup
+              ? 'selected_group'
+              : 'recent_continuity'
+            : undefined;
+          const mapped = mapSagSessionCitation(sc, {
+            inferredSource,
+            inferredGroupId: isSelectedGroup ? (rawRef ?? null) : null,
+          });
           if (mapped) sessionCitations.push(mapped);
         }
       }

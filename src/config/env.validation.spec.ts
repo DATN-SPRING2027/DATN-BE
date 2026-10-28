@@ -95,4 +95,19 @@ describe('validateEnvironment', () => {
       }),
     ).toThrow('must use HTTPS in production');
   });
+
+  it('rejects SAG_API_BASE_URL containing embedded credentials or query strings', () => {
+    expect(() =>
+      validateEnvironment({
+        SAG_API_BASE_URL: 'http://user:pass@127.0.0.1:8000',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      }),
+    ).toThrow('SAG_API_BASE_URL must not contain credentials');
+    expect(() =>
+      validateEnvironment({
+        SAG_API_BASE_URL: 'http://127.0.0.1:8000?debug=1',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      }),
+    ).toThrow('SAG_API_BASE_URL must not contain credentials');
+  });
 });
