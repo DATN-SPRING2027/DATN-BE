@@ -9,6 +9,11 @@ import {
   outboxSchema,
 } from './mongodb.schemas';
 import type { ServicePersistenceDefinition } from './mongodb.types';
+import handoverV2 from './handover-v2.contract.cjs';
+import {
+  createHandoverV2Schema,
+  HANDOVER_V2_MODEL_SUFFIX,
+} from './handover-v2.schemas';
 
 @Module({})
 export class MongoInfrastructureModule {
@@ -22,6 +27,10 @@ export class MongoInfrastructureModule {
       ...definition.collections.map((collection) => ({
         name: `${serviceDatabaseName}_${collection.name}`,
         schema: createCollectionSchema(collection),
+      })),
+      ...handoverV2.legacyCollections.map((name) => ({
+        name: `${serviceDatabaseName}_${name}${HANDOVER_V2_MODEL_SUFFIX}`,
+        schema: createHandoverV2Schema(name)!,
       })),
       {
         name: `${serviceDatabaseName}_${OUTBOX_COLLECTION}`,

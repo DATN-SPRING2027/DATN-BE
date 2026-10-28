@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import type { ServiceCollectionDefinition } from './mongodb.types';
+import { createHandoverV2Schema } from './handover-v2.schemas';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
 
@@ -224,11 +225,23 @@ export function createCollectionSchema(
   definition: ServiceCollectionDefinition,
 ): Schema {
   const schema =
-    handoverSchemas[definition.name] ?? new Schema({}, { strict: true });
+    handoverSchemas[definition.name] ??
+    createHandoverV2Schema(definition.name) ??
+    new Schema({}, { strict: true });
   schema.set('collection', definition.name);
 
   for (const index of definition.indexes ?? []) {
-    schema.index(index.fields, index.options);
+    if (
+      !schema
+        .indexes()
+        .some(
+          ([fields, options]) =>
+            JSON.stringify(fields) === JSON.stringify(index.fields) &&
+            options.name === index.options?.name,
+        )
+    ) {
+      schema.index(index.fields, index.options);
+    }
   }
 
   return schema;

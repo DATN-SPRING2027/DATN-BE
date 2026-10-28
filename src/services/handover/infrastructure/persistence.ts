@@ -1,6 +1,7 @@
 import { SERVICE_DATABASES } from '../../../common/mongodb/database-names';
 import type { ServicePersistenceDefinition } from './mongodb/mongodb.types';
 import type { QueueName } from './queues/queue.names';
+import handoverV2 from './mongodb/handover-v2.contract.cjs';
 
 const index = (
   fields: Record<string, 1 | -1>,
@@ -66,3 +67,16 @@ export const HANDOVER_QUEUES: QueueName[] = [
   'handover-queue',
   'dlq-failed-jobs',
 ];
+
+for (const [name, definition] of Object.entries(handoverV2.collections)) {
+  let collection = HANDOVER_PERSISTENCE.collections.find(
+    (entry) => entry.name === name,
+  );
+  if (!collection) {
+    collection = { name, indexes: [] };
+    HANDOVER_PERSISTENCE.collections.push(collection);
+  }
+  collection.indexes ??= [];
+  for (const { key, ...options } of definition.indexes)
+    collection.indexes.push({ fields: key, options });
+}
