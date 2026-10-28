@@ -69,3 +69,12 @@ BE fullcheck1563unit +168e2e passed (137/4 skipped); DB1502unit +168e2e passed
 (135/4 skipped). No independent human semantic acceptance is claimed.
 BE PR105 and FE PR99 remain drafts, DB PR104 remains unmerged. See DOC execution10
 for actual-versus-fixture coverage and the final delivery record.
+
+Authenticated Work Report acceptance also passed: the user's own blank current
+Leader obligation, synthetic QA title/body, ordinary Save without AI, Draft
+state retained, no Submit, persisted after browser reload. Atlas proof shows
+schema2/version1 with one snapshot, correct author/period and no remaining draft;
+all46 reports from the pre-run backup are unchanged. The current obligation was
+created by normal scheduling after backup, not by the editor. No role or cadence
+was changed to obtain access. This completes actual Save coverage for all three
+workflows; independent human semantic acceptance and teammate review remain open.
