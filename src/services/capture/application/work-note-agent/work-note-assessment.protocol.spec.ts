@@ -1,6 +1,9 @@
+import { ASSESSMENT_EXAMPLES } from './work-note-assessment.prompt';
+import { assembleAssessment } from './work-note-assessment.state';
 import {
   buildAssessmentMessages,
   parseAssessmentOutput,
+  parseAssessmentCompletion,
 } from './work-note-assessment.protocol';
 import type {
   AssessmentModelInput,
@@ -67,6 +70,88 @@ describe('Task assessment sourced protocol', () => {
     const payload = JSON.parse(m.at(-1)!.content) as { sources: unknown };
     expect(payload.sources).toEqual(input.sources);
   });
+  it('sends the targeted prior claim with an author correction instead of an uninterpretable ID alone', () => {
+    const previous = assembleAssessment(input, output(), {
+      sourceRevision: 1,
+      taskContextHash: 'task',
+      model: 'test/model',
+      expiresAt: new Date(Date.now() + 10000).toISOString(),
+    });
+    const messages = buildAssessmentMessages({
+      ...input,
+      previous,
+      correction: {
+        targetId: previous.claims[0].id,
+        text: 'Only local API changed.',
+      },
+    });
+    const payload = JSON.parse(messages.at(-1)!.content) as {
+      previous: { correctionTarget: { id: string; text: string } };
+    };
+    expect(payload.previous.correctionTarget).toMatchObject({
+      id: previous.claims[0].id,
+      text: previous.claims[0].text,
+    });
+    expect(previous.claims[0].text).toBe(input.sources[0].text);
+  });
+  it('reports options-only recovery without inventing question content or weakening source validation', () => {
+    const raw = {
+      ...output(),
+      gaps: [
+        {
+          kind: 'EVIDENCE',
+          target: 'environment',
+          impact: 'BLOCKING',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [{ sourceId: 'note.body', quote: input.sources[0].text }],
+        },
+      ],
+      nextQuestion: {
+        gapIndex: 0,
+        text: 'Which environment?',
+        reason: 'The note does not specify the environment.',
+      },
+    };
+    expect(() =>
+      parseAssessmentCompletion(input, JSON.stringify(raw), false),
+    ).toThrow();
+    const recovered = parseAssessmentCompletion(
+      input,
+      JSON.stringify(raw),
+      true,
+    );
+    expect(recovered.result.nextQuestion?.options).toEqual([]);
+    expect(recovered.formattingRecovery).toEqual(['nextQuestion.options']);
+    raw.gaps[0].sourceRefs[0].quote = 'Invented source text';
+    expect(() =>
+      parseAssessmentCompletion(input, JSON.stringify(raw), true),
+    ).toThrow('INVALID_SOURCE_REFERENCE');
+  });
+  it('uses well-formed examples with genuine source quotes and distinct purpose decisions', () => {
+    for (const e of ASSESSMENT_EXAMPLES)
+      expect(() =>
+        parseAssessmentOutput(e.input, JSON.stringify(e.output)),
+      ).not.toThrow();
+    const progress = ASSESSMENT_EXAMPLES.find(
+      (e) =>
+        e.input.purpose === 'PROGRESS' &&
+        e.input.sources.some((s) => s.text.includes('Chưa kiểm thử')),
+    )!;
+    expect(progress.output.nextQuestion).toBeNull();
+    expect(progress.output.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+  });
+  it('binds completeness policy to the requested purpose without letting Task completion status override it', () => {
+    const progress = JSON.parse(
+      buildAssessmentMessages({ ...input, purpose: 'PROGRESS' }).at(-1)!
+        .content,
+    ) as { assessmentPolicy: { requireWholeTaskAcceptance: boolean } };
+    const completion = JSON.parse(
+      buildAssessmentMessages({ ...input, purpose: 'COMPLETION' }).at(-1)!
+        .content,
+    ) as { assessmentPolicy: { requireWholeTaskAcceptance: boolean } };
+    expect(progress.assessmentPolicy.requireWholeTaskAcceptance).toBe(false);
+    expect(completion.assessmentPolicy.requireWholeTaskAcceptance).toBe(true);
+  });
   it('accepts extractive author evidence without declaring independent verification', () => {
     expect(
       parseAssessmentOutput(input, JSON.stringify(output())).claims[0]
@@ -112,6 +197,43 @@ describe('Task assessment sourced protocol', () => {
     };
     expect(parseAssessmentOutput(i, JSON.stringify(v)).coverage[0].status).toBe(
       'SUPPORTED',
+    );
+  });
+  it('accepts a valid evidence excerpt inside a fully grounded author statement without losing polarity', () => {
+    const i = structuredClone(input);
+    i.sources[0].text = 'Author can edit; outsiders are denied.';
+    i.sources[1].text = 'Author can edit.';
+    const v = output();
+    v.taskUnderstanding.requirements = [
+      {
+        text: 'Author can edit.',
+        sourceRefs: [{ sourceId: 'task.title', quote: 'Author can edit.' }],
+      },
+    ];
+    v.claims = [
+      {
+        text: i.sources[0].text,
+        sourceRefs: [{ sourceId: 'note.body', quote: i.sources[0].text }],
+        originKind: 'AUTHOR_REPORT',
+        supportRelation: 'FULL',
+      },
+    ];
+    v.coverage = [
+      {
+        requirementIndex: 0,
+        status: 'SUPPORTED',
+        sourceRefs: [{ sourceId: 'note.body', quote: 'Author can edit' }],
+      },
+    ];
+    expect(parseAssessmentOutput(i, JSON.stringify(v)).coverage[0].status).toBe(
+      'SUPPORTED',
+    );
+    i.sources[0].text = 'Author cannot edit; outsiders are denied.';
+    v.claims[0].text = i.sources[0].text;
+    v.claims[0].sourceRefs[0].quote = i.sources[0].text;
+    v.coverage[0].sourceRefs[0].quote = 'edit';
+    expect(parseAssessmentOutput(i, JSON.stringify(v)).coverage[0].status).toBe(
+      'PARTIAL',
     );
   });
   it('rejects a genuine quote used to assert its opposite', () => {

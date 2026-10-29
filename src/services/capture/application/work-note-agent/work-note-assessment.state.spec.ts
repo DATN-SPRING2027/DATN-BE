@@ -360,6 +360,59 @@ describe('Code-driven assessment states', () => {
     expect(next.nextQuestion).toBeNull();
     expect(next.noteAdequacy).not.toBe('ENOUGH_FOR_PURPOSE');
   });
+  it('counts a newly grounded targeted author correction as progress rather than an off-topic reply', () => {
+    const prior = assemble(
+      {},
+      { ...out, gaps: [], nextQuestion: null, noteAdequacy: 'UNDETERMINED' },
+    );
+    prior.counters.noProgress = 1;
+    const text = 'The form uses the API staging environment.';
+    const corrected = assemble(
+      {
+        previous: prior,
+        correction: { targetId: prior.claims[0].id, text },
+        answers: [
+          {
+            id: 'correction',
+            gapId: prior.claims[0].id,
+            target: 'author correction',
+            disposition: 'answered',
+            answer: text,
+            purpose: 'PROGRESS',
+            taskContextHash: 'task',
+          },
+        ],
+        sources: [
+          ...input.sources,
+          {
+            id: 'answer.correction',
+            kind: 'ANSWER',
+            label: 'Author correction',
+            text,
+            version: '1',
+            loadStatus: 'LOADED',
+            includedInRequest: true,
+          },
+        ],
+      },
+      {
+        ...out,
+        claims: [
+          {
+            text,
+            sourceRefs: [{ sourceId: 'answer.correction', quote: text }],
+            originKind: 'AUTHOR_REPORT',
+            supportRelation: 'FULL',
+          },
+        ],
+        gaps: [],
+        nextQuestion: null,
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+      },
+    );
+    expect(corrected.counters.noProgress).toBe(0);
+    expect(corrected.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+  });
   it('keeps author validation distinct from independent semantic review and Save', () => {
     const next = assemble();
     expect(next.signals).toEqual({

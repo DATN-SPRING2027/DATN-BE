@@ -296,6 +296,24 @@ describe('Assessment evaluator budget and non-network defaults', () => {
     expect(network).not.toHaveBeenCalled();
   });
 
+  it('selects development cases explicitly without reading credentials or leaking into another split', async () => {
+    const secrets = jest
+      .fn()
+      .mockRejectedValue(Error('must not read credentials'));
+    const report = await runAssessmentEvaluation(
+      ['--dry-run', '--cases', 'assessment-retry-upload-a'],
+      { readCredentials: secrets },
+    );
+    expect(report.ceiling.scenarios).toBe(1);
+    expect(report.ceiling.logicalCalls).toBe(2);
+    await expect(
+      runAssessmentEvaluation(
+        ['--live', '--model', 'test/model', '--cases', 'not-in-pilot'],
+        { readCredentials: secrets },
+      ),
+    ).rejects.toThrow('ASSESSMENT_CASE_SELECTION_INVALID');
+    expect(secrets).not.toHaveBeenCalled();
+  });
   it('bounds every actual HTTP attempt globally across roles and does not expose request secrets', async () => {
     const underlying = jest.fn().mockResolvedValue(
       new Response(
@@ -369,7 +387,9 @@ describe('Assessment evaluator budget and non-network defaults', () => {
         const last = JSON.parse(body.messages.at(-1)!.content) as {
           sources?: unknown[];
           source?: { text: string };
+          operation?: string;
         };
+        if (!last.sources) expect(last.operation).toBe('custom');
         const response = last.sources
           ? {
               ...fixture(first),

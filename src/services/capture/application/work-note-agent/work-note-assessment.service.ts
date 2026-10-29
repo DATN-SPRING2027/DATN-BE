@@ -38,9 +38,12 @@ import type {
 } from './work-note-assessment.types';
 import {
   assessmentHash,
-  assertAssessmentFidelity,
   buildAssessmentMessages,
 } from './work-note-assessment.protocol';
+import {
+  buildAssessmentEditorInput,
+  assertAssessmentEditorProposal,
+} from './work-note-assessment-editor';
 import {
   assembleAssessment,
   assessmentActions,
@@ -646,56 +649,17 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       );
     });
     try {
-      const completion = await this.model.rewrite({
-        workflow: 'TASK_NOTE',
-        operation: 'custom',
-        scope: 'whole_note',
-        instruction: `Biên tập note cho mục đích ${v.purpose}, giữ nguồn và mọi điều chưa rõ. Đánh giá hiện tại ${v.noteAdequacy}; không tự nâng thành đầy đủ/đã hoàn thành. Chỉ trả đề xuất khi có thể giữ trung thực dữ kiện gốc; không tự hỏi thêm ngoài workflow.`,
-        draft: {
+      const editorInput = buildAssessmentEditorInput(
+        {
           revision: d.revision,
           title: d.state.title,
           body: d.state.contentMarkdown,
         },
-        task: actor.taskContext ?? null,
-        clarifications: v.answers.map((a) => ({
-          id: a.id,
-          question: a.target,
-          state: a.disposition === 'skipped' ? 'skipped' : 'answered',
-          ...(a.disposition !== 'skipped'
-            ? { answer: a.disposition === 'unknown' ? 'Chưa biết' : a.answer }
-            : {}),
-        })),
-        history: v.gaps
-          .filter((g) => g.status !== 'answered')
-          .slice(0, 8)
-          .map((g) => ({
-            role: 'user' as const,
-            content: JSON.stringify({
-              assessmentLimitation: {
-                kind: g.kind,
-                target: g.target,
-                status: g.status,
-                owner: g.owner,
-              },
-            }),
-          })),
-      });
-      if (
-        completion.result.status !== 'SUGGESTION_READY' ||
-        !completion.result.suggestion?.replacementText
-      )
-        throw invalid('Editor did not provide a valid proposal.');
-      assertAssessmentFidelity(
-        d.state.contentMarkdown,
-        completion.result.suggestion.replacementText,
+        actor.taskContext ?? null,
+        v,
       );
-      for (const answer of v.answers) {
-        if (answer.disposition === 'answered' && answer.answer)
-          assertAssessmentFidelity(
-            answer.answer,
-            completion.result.suggestion.replacementText,
-          );
-      }
+      const completion = await this.model.rewrite(editorInput, 'assessment');
+      assertAssessmentEditorProposal(editorInput, completion.result);
       const fresh = await this.owned(headers, p, id);
       if (taskHash(fresh.actor) !== taskHash(actor)) throw stale();
       const response = { ...completion.result, sourceRevision: d.revision };

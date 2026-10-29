@@ -1,3 +1,4 @@
+import { AssessmentPhaseBudget } from './assessment-phase-budget';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,17 +12,23 @@ import {
   WorkNoteXkiroClient,
   XkiroError,
 } from '../../src/services/capture/infrastructure/ai/work-note-xkiro.client';
-import {
-  AgentValidationError,
-  prepareAgentRequest,
-  parseAgentResult,
-} from '../../src/services/capture/application/work-note-agent/work-note-agent';
+import { AgentValidationError } from '../../src/services/capture/application/work-note-agent/work-note-agent';
 import {
   buildAssessmentMessages,
-  parseAssessmentOutput,
-  assertAssessmentFidelity,
+  parseAssessmentCompletion,
   ASSESSMENT_PROMPT_VERSION,
 } from '../../src/services/capture/application/work-note-agent/work-note-assessment.protocol';
+import { assembleAssessment } from '../../src/services/capture/application/work-note-agent/work-note-assessment.state';
+import {
+  buildAssessmentEditorInput,
+  prepareAssessmentEditorRequest,
+  ASSESSMENT_EDITOR_SYSTEM_PROMPT,
+  assertAssessmentEditorProposal,
+  ASSESSMENT_EDITOR_PROVIDER_POLICY,
+  ASSESSMENT_EDITOR_INSTRUCTION_VERSION,
+  ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
+} from '../../src/services/capture/application/work-note-agent/work-note-assessment-editor';
+import { parseRewriteCompletion } from '../../src/services/capture/application/work-note-agent/work-note-agent.completion';
 import {
   loadAssessmentCorpus,
   gradeAssessment,
@@ -40,6 +47,7 @@ export class AssessmentAttemptBudget {
     private readonly maxAttempts: number,
     private readonly maxAccountedTokens: number,
     fetcher: typeof fetch = fetch,
+    private readonly phase?: AssessmentPhaseBudget,
   ) {
     this.fetch = async (url, init) => {
       const endpoint =
@@ -76,6 +84,7 @@ export class AssessmentAttemptBudget {
         this.denialCode = 'TOKEN_RESERVATION_BUDGET';
         throw Error(this.denialCode);
       }
+      const phaseTicket = this.phase?.reserve(reservation);
       this.actualHttpAttempts++;
       this.chargedTokens += reservation;
       let response: Response;
@@ -83,6 +92,7 @@ export class AssessmentAttemptBudget {
         response = await fetcher(url, init);
       } catch {
         this.unknownUsageAttempts++;
+        if (phaseTicket !== undefined) this.phase!.settle(phaseTicket, null);
         throw Error('ASSESSMENT_PROVIDER_NETWORK');
       }
       let reported: number | null = null;
@@ -122,6 +132,7 @@ export class AssessmentAttemptBudget {
       } catch {
         /* Body/error details stay private; unknown usage retains reservation. */
       }
+      if (phaseTicket !== undefined) this.phase!.settle(phaseTicket, reported);
       if (reported === null) this.unknownUsageAttempts++;
       else {
         this.reportedTokens += reported;
@@ -154,6 +165,8 @@ export type AssessmentRunOptions = {
   maxTokens: number;
   maxTotalTokens: number;
   timeoutMs: number;
+  phaseId?: string;
+  caseIds?: string;
 };
 export function parseAssessmentRunOptions(
   args: readonly string[],
@@ -163,7 +176,7 @@ export function parseAssessmentRunOptions(
     batch: 'pilot',
     split: 'development',
     maxAttempts: 29,
-    maxTokens: 4096,
+    maxTokens: 8192,
     maxTotalTokens: 500000,
     timeoutMs: 30000,
   };
@@ -175,6 +188,8 @@ export function parseAssessmentRunOptions(
     '--max-tokens': 'maxTokens',
     '--max-total-tokens': 'maxTotalTokens',
     '--timeout-ms': 'timeoutMs',
+    '--phase-id': 'phaseId',
+    '--cases': 'caseIds',
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') {
@@ -219,12 +234,17 @@ export function parseAssessmentRunOptions(
     (o.model !== undefined && !/^[\w.-]+\/[\w.:-]+$/.test(o.model))
   )
     throw Error('ASSESSMENT_ARGUMENT_LIMIT');
+  if (o.phaseId !== undefined && !/^[a-z0-9][a-z0-9-]{0,79}$/.test(o.phaseId))
+    throw Error('ASSESSMENT_PHASE_ID_INVALID');
   if (o.live && !o.model) throw Error('ASSESSMENT_MODEL_REQUIRED');
   return o;
 }
 
 type Dependencies = {
-  readCredentials?: () => Promise<{ apiKey: string }>;
+  readCredentials?: () => Promise<{
+    apiKey: string;
+    formattingRecovery?: boolean;
+  }>;
   fetcher?: typeof fetch;
   writeReport?: boolean;
 };
@@ -249,85 +269,20 @@ const safeCode = (e: unknown): string => {
     : 'ASSESSMENT_PROVIDER_OR_PROTOCOL_FAILURE';
 };
 
-// This is a synthetic model-protocol transcript adapter, not an IAM/API/E2E fixture.
-// Production state-machine behavior remains covered by the application tests.
+// Uses the production state algorithm; this still does not impersonate IAM/API transactions.
 function evaluationView(
   input: AssessmentModelInput,
   output: AssessmentModelOutput,
-  turn: number,
+  revision: number,
 ): AssessmentView {
-  const now = new Date().toISOString();
-  const gaps = output.gaps.map((g) => ({
-    ...g,
-    id: fingerprint([g.kind, g.target]).slice(0, 24),
-    status: 'open' as const,
-  }));
-  return {
-    schemaVersion: 'task-note-assessment/v1',
-    id: 'synthetic-assessment',
-    revision: turn,
-    sourceRevision: 1,
+  return assembleAssessment(input, output, {
+    sourceRevision: revision,
     taskContextHash: fingerprint(
       input.sources.filter((s) => s.kind === 'TASK'),
     ),
-    answerLedgerHash: fingerprint(input.answers),
-    purpose: output.purpose,
-    state: output.nextQuestion
-      ? 'waiting_for_answer'
-      : output.noteAdequacy === 'ENOUGH_FOR_PURPOSE'
-        ? 'ready_to_edit'
-        : 'missing_context',
-    contextManifest: {
-      acquisitionStatus: 'LOADED',
-      sources: input.sources,
-      sourceCatalogVersion: '1',
-    },
-    taskUnderstanding: {
-      ...output.taskUnderstanding,
-      requirements: output.taskUnderstanding.requirements.map((r, i) => ({
-        ...r,
-        id: `requirement-${i}`,
-      })),
-    },
-    claims: output.claims.map((c, i) => ({
-      ...c,
-      id: `claim-${i}`,
-      verificationStatus: 'NOT_INDEPENDENTLY_VERIFIED',
-    })),
-    coverage: output.coverage.map((c) => ({
-      requirementId: `requirement-${c.requirementIndex}`,
-      status: c.status,
-      sourceRefs: c.sourceRefs,
-    })),
-    gaps,
-    nextQuestion: output.nextQuestion
-      ? {
-          id: `question-${turn}`,
-          gapId: gaps[output.nextQuestion.gapIndex]?.id ?? '',
-          text: output.nextQuestion.text,
-          reason: output.nextQuestion.reason,
-          options: output.nextQuestion.options,
-        }
-      : null,
-    taskContextStatus: output.taskContextStatus,
-    noteAdequacy: output.noteAdequacy,
-    counters: { questionCount: turn, noProgress: 0 },
-    allowedActions: [],
-    answers: input.answers,
-    authorValidated: false,
-    reviewerSemanticAssessment: 'NOT_ESTABLISHED',
-    signals: {
-      proposalApplied: false,
-      authorValidated: false,
-      saved: false,
-      reviewerSemanticAssessment: 'NOT_ESTABLISHED',
-    },
-    createdAt: now,
-    expiresAt: now,
-    trace: [],
-    promptVersion: 'evaluation-protocol-adapter',
     model: 'evaluation/synthetic',
-  };
+    expiresAt: new Date(Date.now() + 86400000).toISOString(),
+  });
 }
 
 export async function runAssessmentEvaluation(
@@ -336,11 +291,21 @@ export async function runAssessmentEvaluation(
 ) {
   const options = parseAssessmentRunOptions(args),
     corpus = loadAssessmentCorpus();
-  const scenarios = corpus.scenarios.filter((c) =>
+  const eligible = corpus.scenarios.filter((c) =>
     options.batch === 'pilot'
       ? c.pilot
       : options.split === 'all' || c.split === options.split,
   );
+  const ids = options.caseIds?.split(',');
+  if (
+    ids &&
+    (new Set(ids).size !== ids.length ||
+      ids.some((id) => !eligible.some((c) => c.id === id)))
+  )
+    throw Error('ASSESSMENT_CASE_SELECTION_INVALID');
+  const scenarios = ids
+    ? ids.map((id) => eligible.find((c) => c.id === id)!)
+    : eligible;
   const analyses = scenarios.reduce((n, c) => n + c.turns.length, 0);
   const ceiling = {
     scenarios: scenarios.length,
@@ -371,14 +336,40 @@ export async function runAssessmentEvaluation(
         answers: [],
       })[0],
     ),
+    promptTemplateHash: fingerprint(
+      buildAssessmentMessages({
+        sources: corpus.scenarios[0].sources,
+        purpose: corpus.scenarios[0].purpose,
+        previous: null,
+        answers: [],
+      }).slice(0, -1),
+    ),
   };
   if (!options.live) return { ...base, rows: [] as AssessmentEvaluationRow[] };
+  if (!dependencies.fetcher && !options.phaseId)
+    throw Error('ASSESSMENT_PHASE_ID_REQUIRED');
+  const phase = options.phaseId
+    ? new AssessmentPhaseBudget(
+        resolve(
+          process.cwd(),
+          '.worknote-agent-evals',
+          options.phaseId + '.budget.json',
+        ),
+        options.batch === 'pilot' ? 29 : 176,
+        options.maxTotalTokens,
+      )
+    : undefined;
   const readCredentials =
     dependencies.readCredentials ??
-    (async () => ({
-      apiKey: parseEnv(await readFile(resolve(process.cwd(), '.env'), 'utf8'))
-        .XKIRO_API_KEY,
-    }));
+    (async () => {
+      const env = parseEnv(
+        await readFile(resolve(process.cwd(), '.env'), 'utf8'),
+      );
+      return {
+        apiKey: env.XKIRO_API_KEY,
+        formattingRecovery: env.WORKNOTE_AGENT_FORMATTING_RECOVERY === 'true',
+      };
+    });
   const credentials = await readCredentials();
   if (!credentials.apiKey?.trim())
     throw Error('ASSESSMENT_CREDENTIALS_UNAVAILABLE');
@@ -386,16 +377,23 @@ export async function runAssessmentEvaluation(
     options.maxAttempts,
     options.maxTotalTokens,
     dependencies.fetcher,
+    phase,
   );
   const client = new WorkNoteXkiroClient(
     {
       apiKey: credentials.apiKey,
       model: options.model!,
+      ...ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
       maxTokens: options.maxTokens,
       timeoutMs: options.timeoutMs,
-      retries: 0,
-      jsonMode: true,
-      temperature: 0.1,
+    },
+    budget.fetch,
+  );
+  const editorClient = new WorkNoteXkiroClient(
+    {
+      apiKey: credentials.apiKey,
+      model: options.model!,
+      ...ASSESSMENT_EDITOR_PROVIDER_POLICY,
     },
     budget.fetch,
   );
@@ -414,17 +412,34 @@ export async function runAssessmentEvaluation(
       answers: [],
     };
     let output: AssessmentModelOutput | null = null;
+    let activeAssessment: AssessmentView | null = null;
+    let sourceRevision = 1;
     for (let i = 0; i < c.turns.length; i++) {
       const turn = c.turns[i];
+      input = {
+        ...input,
+        answers: [...input.answers],
+        sources: [...input.sources],
+      };
       const started = Date.now();
       let rawSyntheticResponse: string | undefined;
       try {
-        if (turn.noteReplacement)
-          input.sources = input.sources.map((s) =>
-            s.id === 'note.body'
-              ? { ...s, text: turn.noteReplacement!, version: `note-${i + 1}` }
-              : s,
-          );
+        if (turn.noteReplacement) {
+          sourceRevision++;
+          input.previous = null;
+          input.answers = [];
+          input.sources = input.sources
+            .filter((s) => s.kind !== 'ANSWER')
+            .map((s) =>
+              s.id === 'note.body'
+                ? {
+                    ...s,
+                    text: turn.noteReplacement!,
+                    version: `note-${i + 1}`,
+                  }
+                : s,
+            );
+        }
         if (i > 0 && ['answer', 'unknown', 'skip'].includes(turn.action)) {
           const question = input.previous?.nextQuestion,
             gap = input.previous?.gaps.find((g) => g.id === question?.gapId);
@@ -444,17 +459,15 @@ export async function runAssessmentEvaluation(
             purpose: input.purpose,
             taskContextHash: input.previous!.taskContextHash,
           });
-          gap.status = disposition;
-          if (turn.answer)
-            input.sources.push({
-              id: `answer.${i}`,
-              kind: 'ANSWER',
-              label: 'Synthetic author clarification',
-              text: turn.answer,
-              version: `answer-${i}`,
-              loadStatus: 'LOADED',
-              includedInRequest: true,
-            });
+          input.sources.push({
+            id: `answer.answer-${i}`,
+            kind: 'ANSWER',
+            label: 'Synthetic author clarification',
+            text: disposition === 'answered' ? turn.answer! : disposition,
+            version: `answer-${i}`,
+            loadStatus: 'LOADED',
+            includedInRequest: true,
+          });
         }
         if (turn.action === 'correct') {
           input.correction = {
@@ -464,8 +477,19 @@ export async function runAssessmentEvaluation(
               'synthetic-claim',
             text: turn.correctionText!,
           };
+          input.answers.push({
+            id: `correction-${i}`,
+            gapId: input.correction.targetId,
+            target: 'author correction',
+            disposition: 'answered',
+            answer: turn.correctionText!,
+            purpose: input.purpose,
+            taskContextHash: fingerprint(
+              input.sources.filter((s) => s.kind === 'TASK'),
+            ),
+          });
           input.sources.push({
-            id: `answer.correction.${i}`,
+            id: `answer.correction-${i}`,
             kind: 'ANSWER',
             label: 'Synthetic author correction',
             text: turn.correctionText!,
@@ -492,25 +516,54 @@ export async function runAssessmentEvaluation(
         rawSyntheticResponse = completion.content
           .split(credentials.apiKey)
           .join('[REDACTED]');
-        const parsedOutput = parseAssessmentOutput(input, completion.content);
+        const parsedCompletion = parseAssessmentCompletion(
+          input,
+          completion.content,
+          credentials.formattingRecovery === true,
+        );
+        const parsedOutput = parsedCompletion.result;
         output = parsedOutput;
         const grade = gradeAssessment(c, i, parsedOutput, input);
+        activeAssessment = evaluationView(input, parsedOutput, sourceRevision);
+        const runtimeGrade = gradeAssessment(
+          c,
+          i,
+          {
+            ...parsedOutput,
+            noteAdequacy: activeAssessment.noteAdequacy,
+            nextQuestion: activeAssessment.nextQuestion
+              ? parsedOutput.nextQuestion
+              : null,
+          },
+          input,
+        );
         rows.push({
           caseId: c.id,
           turn: i + 1,
           role: 'analysis',
+          rawSyntheticResponse,
+          formattingRecovery: parsedCompletion.formattingRecovery,
+          runtimeState: {
+            state: activeAssessment.state,
+            noteAdequacy: activeAssessment.noteAdequacy,
+            counters: activeAssessment.counters,
+          },
           output: parsedOutput,
           grade,
+          runtimeGrade,
           sources: structuredClone(input.sources),
           answers: structuredClone(input.answers),
           elapsedMs: Date.now() - started,
         });
         consecutiveErrors = 0;
-        if (c.critical && !grade.automatedPass) {
+        if (
+          c.critical &&
+          (!grade.automatedPass || !runtimeGrade.automatedPass)
+        ) {
           stop = true;
           break;
         }
-        input.previous = evaluationView(input, parsedOutput, i + 1);
+        input.previous = activeAssessment;
       } catch (e) {
         const errorCode = budget.denialCode ?? safeCode(e);
         if (
@@ -548,22 +601,21 @@ export async function runAssessmentEvaluation(
     if (
       !stop &&
       output?.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-      !output.nextQuestion
+      activeAssessment?.allowedActions.includes('rewrite') &&
+      !activeAssessment.nextQuestion
     ) {
+      let rawEditorResponse: string | undefined;
+      const editorStarted = Date.now();
       try {
         const text = (id: string) =>
           input.sources.find((s) => s.id === id)?.text ?? '';
-        const prepared = prepareAgentRequest({
-          operation: 'restructure',
-          scope: 'whole_note',
-          instruction: `Biên tập rõ ràng bằng dữ kiện tác giả cung cấp cho mục đích ${output.purpose}; giữ điều chưa biết, không xác nhận Task hoàn thành.`,
-          workflow: 'TASK_NOTE',
-          draft: {
-            revision: 1,
+        const editorInput = buildAssessmentEditorInput(
+          {
+            revision: sourceRevision,
             title: text('note.title'),
             body: text('note.body'),
           },
-          task: {
+          {
             title: text('task.title'),
             description: text('task.description') || null,
             status: text('task.status'),
@@ -571,44 +623,33 @@ export async function runAssessmentEvaluation(
               .filter((s) => s.id.startsWith('task.step.'))
               .map((s) => ({ text: s.text, done: false })),
           },
-          history: [],
-          clarifications: [
-            ...input.answers.map((a) => ({
-              id: a.id,
-              question: a.target,
-              state:
-                a.disposition === 'answered'
-                  ? ('answered' as const)
-                  : ('skipped' as const),
-              ...(a.answer ? { answer: a.answer } : {}),
-            })),
-            ...(input.correction
-              ? [
-                  {
-                    id: 'synthetic-correction',
-                    question: 'Author correction of earlier text',
-                    state: 'answered' as const,
-                    answer: input.correction.text,
-                  },
-                ]
-              : []),
-          ],
-        });
-        const completion = await client.complete(
+          activeAssessment,
+        );
+        const prepared = prepareAssessmentEditorRequest(editorInput);
+        const completion = await editorClient.complete(
           prepared.messages,
           `assessment-editor-${randomUUID()}`,
         );
-        const editorOutput = parseAgentResult(prepared, completion.content);
-        if (editorOutput.suggestion?.replacementText)
-          assertAssessmentFidelity(
-            text('note.body'),
-            editorOutput.suggestion.replacementText,
-          );
+        rawEditorResponse = completion.content
+          .split(credentials.apiKey)
+          .join('[REDACTED]');
+        const parsed = parseRewriteCompletion(
+          prepared,
+          completion.content,
+          credentials.formattingRecovery === true,
+        );
+        assertAssessmentEditorProposal(editorInput, parsed.result);
+        const editorOutput = parsed.result;
         rows.push({
           caseId: c.id,
           turn: c.turns.length,
           role: 'editor',
+          elapsedMs: Date.now() - editorStarted,
           editorOutput,
+          editorValidation: {
+            runtimeProposalAccepted: true,
+            formattingRecovery: parsed.formattingRecovery,
+          },
           sources: structuredClone(input.sources),
           answers: structuredClone(input.answers),
         });
@@ -618,9 +659,17 @@ export async function runAssessmentEvaluation(
           caseId: c.id,
           turn: c.turns.length,
           role: 'editor',
+          elapsedMs: Date.now() - editorStarted,
+          ...(rawEditorResponse
+            ? { rawSyntheticResponse: rawEditorResponse }
+            : {}),
+          sources: structuredClone(input.sources),
+          answers: structuredClone(input.answers),
           errorCode: code,
         });
-        if (/BUDGET/.test(code)) stop = true;
+        consecutiveErrors++;
+        if (/BUDGET/.test(code) || consecutiveErrors >= 3 || c.critical)
+          stop = true;
       }
     }
   }
@@ -630,9 +679,25 @@ export async function runAssessmentEvaluation(
     promptVersion: ASSESSMENT_PROMPT_VERSION,
     createdAt: new Date().toISOString(),
     budget: budget.snapshot(),
+    phaseId: options.phaseId ?? null,
+    ...(phase ? { phaseBudget: phase.snapshot() } : {}),
     rows,
     manualReview: 'required',
-    runtimeCoverage: 'SYNTHETIC_MODEL_PROTOCOL_NOT_APPLICATION_E2E',
+    runtimeCoverage:
+      'SHARED_REQUEST_PARSER_STATE_AND_PROPOSAL_GUARDS_NOT_IAM_API_E2E',
+    editorInstructionVersion: ASSESSMENT_EDITOR_INSTRUCTION_VERSION,
+    editorSystemPromptHash: fingerprint(ASSESSMENT_EDITOR_SYSTEM_PROMPT),
+    providerConfiguration: {
+      analysis: {
+        ...ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
+        maxTokens: options.maxTokens,
+        timeoutMs: options.timeoutMs,
+      },
+      editor: {
+        ...ASSESSMENT_EDITOR_PROVIDER_POLICY,
+        formattingRecovery: credentials.formattingRecovery === true,
+      },
+    },
   };
   if (dependencies.writeReport !== false) {
     const directory = resolve(process.cwd(), '.worknote-agent-evals');
@@ -666,8 +731,12 @@ if (require.main === module) {
           corpusHash: report.corpusHash,
           promptVersion: report.promptVersion,
           systemPromptHash: report.systemPromptHash,
+          promptTemplateHash: report.promptTemplateHash,
           semanticAcceptance: report.semanticAcceptance,
           ...('budget' in report ? { budget: report.budget } : {}),
+          ...('phaseBudget' in report
+            ? { phaseBudget: report.phaseBudget }
+            : {}),
           rows: report.rows.map((r) => ({
             caseId: r.caseId,
             turn: r.turn,
@@ -675,6 +744,7 @@ if (require.main === module) {
             errorCode: r.errorCode,
             skipped: r.skipped,
             grade: r.grade,
+            runtimeGrade: r.runtimeGrade,
           })),
         }),
       ),

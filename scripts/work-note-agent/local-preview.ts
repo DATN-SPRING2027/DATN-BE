@@ -122,6 +122,7 @@ class PreviewAssessmentModel extends WorkNoteAgentModel {
       provenance: {
         model: 'synthetic/local-assessment-fixture',
         promptVersion: ASSESSMENT_PROMPT_VERSION,
+        formattingRecovery: [] as readonly string[],
         promptTokens: 0,
         completionTokens: 0,
         httpAttempts: 0,
@@ -166,6 +167,8 @@ class PreviewAssessmentModel extends WorkNoteAgentModel {
         model: 'synthetic/local-assessment-fixture',
         promptVersion: prepared.promptVersion,
         formattingRecovery: [] as readonly string[],
+        httpAttempts: 0,
+        durationMs: 0,
         promptTokens: 0,
         completionTokens: 0,
       },

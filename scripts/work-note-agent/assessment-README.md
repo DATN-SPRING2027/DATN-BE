@@ -15,10 +15,9 @@ The corpus and rubrics are authored synthetic fixtures, not human gold labels.
 - Full suite ceiling: 104 analysis plus at most 72 Editor calls = 176. Technical
   preflight denial, a required question or early stop can reduce actual calls.
 
-The multi-turn adapter supplies synthetic question/answer/correction/reset
-transcripts to the model protocol. It is explicitly not a substitute for the
-application's authorization, persisted gap lifecycle, no-progress policy or
-transaction tests. Runtime API/E2E coverage belongs to the production test suite.
+The synthetic adapter supplies question/answer/correction/reset transcripts to the
+production state assembler and model protocol. It is not a substitute for IAM,
+HTTP/transaction/lease tests or real-user end-to-end acceptance. Runtime API/E2E coverage belongs to the production test suite.
 
 ## Default: offline dry run
 
@@ -33,7 +32,7 @@ The implementation agent must not run live evaluation without its authorized
 batch/model/attempt/token scope. For an authorized pilot, the operator command is:
 
 ```powershell
-npx ts-node --transpile-only scripts/work-note-agent/assessment-run.ts --live --model mistralai/ministral-14b --max-attempts 29 --max-total-tokens 500000
+npx ts-node --transpile-only scripts/work-note-agent/assessment-run.ts --live --phase-id operator-authorized-pilot --model mistralai/ministral-14b --max-attempts 29 --max-total-tokens 500000
 ```
 
 Live credentials are read server-side from the current BE `.env`; never pass an
@@ -75,7 +74,7 @@ attempts and 73,953 provider-reported tokens were consumed across tuning and
 diagnostics. There is no remaining provider budget for this phase. The command
 above is a generic interface example, not authorization to start another batch.
 
-## Limits of the frozen development comparison
+## Historical limits of the frozen initial development comparison
 
 The final v5 batch consumed 10 HTTP attempts. Seven assessment turns passed the
 automatic checks; two Editor responses passed the strict protocol. A third
@@ -138,3 +137,52 @@ Tests include the frozen manifest and family splits, default offline behavior,
 mocked shared role-call cap, disabled retries, unknown usage reservation,
 unresolved semantic worksheets and adversarial source/claim inversions. Live
 mode in these tests always uses injected synthetic mocked HTTP and credentials.
+
+
+## Follow-up prompt-quality phase, explicitly requested by the user
+
+`assessment-prompt-quality-2026-10-29.json` records a separate follow-up phase
+requested after the initial29-call phase was closed. It does not overwrite the
+initial ledger or reports. The follow-up consumed exactly29 additional HTTP
+attempts /111387 reported tokens. No provider budget remains in either phase.
+
+Current analysis is v9 and assessed Editor is v2. Analysis uses five validated
+user/assistant examples and a server-owned purpose policy in each request.
+Targeted corrections include the prior claim/gap text, not just an opaque ID.
+Assessed Editor has a dedicated proposal-only prompt and one example; the
+ambiguous `source.wholeNote:null` field is omitted because `source.text` contains
+the full body. Ordinary grammar/selection/document/report Editor behavior remains.
+
+Production and evaluation share the Editor input builder, prepared masked request,
+strict completion/recovery parser, proposal requirement and uncertainty guards.
+Analysis and assessed Editor use shared provider policies:8192/4096 output tokens,
+30s timeout, temperature0.1, JSON object mode and zero retries. The formatting
+recovery flag is read server-side and recorded. Only a missing question options
+array may be added to analysis; no facts, sources, criteria or status are repaired.
+Raw and recovered acceptance must stay separate. Excerpt coverage can be backed
+by a longer fully sourced author statement, with polarity loss still denied.
+
+Every real live CLI run now needs `--phase-id <operator-authorized-id>`.
+The ignored `.worknote-agent-evals/<phase-id>.budget.json` is protected with an
+exclusive lock and counts/reserves before every HTTP request across processes.
+Unknown/crashed calls retain their reservations; repeated runs cannot reset the
+same phase ceiling. A stale lock or corrupt ledger fails closed; never delete a
+ledger/lock to recover budget or silently create a new phase. Phase authorization
+is an operator/user decision, not a capability granted by this file.
+
+`--cases id1,id2` selects/reorders only cases eligible for the chosen batch/split;
+it cannot silently pull holdout cases into a pilot. Always dry-run first. Selected
+or repeated development cases are not an independent full-suite pass rate.
+`promptTemplateHash` covers the system plus all few-shot messages, not only the
+first system message. Reports retain raw synthetic outputs only in ignored local
+artifacts with credential redaction, never console or production telemetry.
+
+Follow-up measurements: v9 produced14 analysis attempts;13 parsed and all13 matched
+the authored allowed adequacy sets, while full automatic rubric passed only7/14
+because gap-kind, relevance/repetition and one requirement extraction failure
+remain. Five actual Editor-v2 responses passed the same runtime proposal guards
+(across tuning runs; four distinct cases). These are syntax/fidelity observations,
+not user Apply/Save, independent semantic review or universal correctness.
+Final correction retest passed runtime adequacy after the grounded-excerpt fix;
+the model still repeated a gap on its middle turn, which runtime suppressed.
+Quality gate remains NOT_PASSED; validation/holdout inference was not performed.

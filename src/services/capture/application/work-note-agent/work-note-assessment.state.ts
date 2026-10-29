@@ -169,14 +169,13 @@ export function assembleAssessment(
       .map((c) => norm(c.text)) ?? [],
   );
   // This is a conservative novelty/relevance guard, not a semantic verifier.
-  // Only new replies to an existing gap can reset the bounded question loop.
+  // New relevant replies or explicitly targeted, grounded corrections can reset the loop.
   const relevantReplies = input.answers.filter((a) => {
     const gap = prior?.gaps.find(
       (g) => g.id === a.gapId && g.status === 'open',
     );
     const text = norm(a.answer ?? '');
     if (
-      !gap ||
       a.disposition !== 'answered' ||
       a.purpose !== prior?.purpose ||
       a.taskContextHash !== meta.taskContextHash ||
@@ -185,6 +184,15 @@ export function assembleAssessment(
       prior?.answers.some((p) => p.id === a.id || norm(p.answer ?? '') === text)
     )
       return false;
+    const targetedCorrection =
+      input.correction &&
+      a.gapId === input.correction.targetId &&
+      a.answer === input.correction.text &&
+      [...(prior?.claims ?? []), ...(prior?.gaps ?? [])].some(
+        (x) => x.id === input.correction!.targetId,
+      );
+    if (targetedCorrection) return true;
+    if (!gap) return false;
     const context = contentWords(
       [
         gap.target,

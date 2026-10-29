@@ -237,11 +237,22 @@ export type AssessmentEvaluationRow = {
   role?: 'analysis' | 'editor';
   output?: AssessmentModelOutput;
   grade?: AssessmentGrade;
+  runtimeGrade?: AssessmentGrade;
   errorCode?: string;
   skipped?: boolean;
   elapsedMs?: number;
   boundaryDenied?: boolean;
   editorOutput?: AgentResult;
+  formattingRecovery?: readonly string[];
+  runtimeState?: {
+    state: string;
+    noteAdequacy: string;
+    counters: { questionCount: number; noProgress: number };
+  };
+  editorValidation?: {
+    runtimeProposalAccepted: boolean;
+    formattingRecovery: readonly string[];
+  };
   sources?: AssessmentSource[];
   answers?: AssessmentAnswer[];
   rawSyntheticResponse?: string;

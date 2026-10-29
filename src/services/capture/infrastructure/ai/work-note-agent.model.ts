@@ -2,16 +2,19 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import {
-  parseAgentResult,
   prepareAgentRequest,
   type AgentInput,
-  type AgentResult,
 } from '../../application/work-note-agent/work-note-agent';
-import { recoverEmptyContainers } from '../../application/work-note-agent/work-note-agent.formatting';
+import { parseRewriteCompletion } from '../../application/work-note-agent/work-note-agent.completion';
+import {
+  ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
+  ASSESSMENT_EDITOR_PROVIDER_POLICY,
+  prepareAssessmentEditorRequest,
+} from '../../application/work-note-agent/work-note-assessment-editor';
 import { WorkNoteXkiroClient } from './work-note-xkiro.client';
 import {
   buildAssessmentMessages,
-  parseAssessmentOutput,
+  parseAssessmentCompletion,
   ASSESSMENT_PROMPT_VERSION,
 } from '../../application/work-note-agent/work-note-assessment.protocol';
 import type { AssessmentModelInput } from '../../application/work-note-agent/work-note-assessment.types';
@@ -32,17 +35,22 @@ export class WorkNoteAgentModel {
     const completion = await new WorkNoteXkiroClient({
       apiKey,
       model,
-      maxTokens: 8192,
-      timeoutMs: 30000,
-      jsonMode: true,
-      temperature: 0.1,
-      retries: 0,
+      ...ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
     }).complete(messages, `assessment-${randomUUID()}`);
+    const recovery = this.config.get<boolean | string>(
+      'WORKNOTE_AGENT_FORMATTING_RECOVERY',
+    );
+    const parsed = parseAssessmentCompletion(
+      input,
+      completion.content,
+      recovery === true || recovery === 'true',
+    );
     return {
-      result: parseAssessmentOutput(input, completion.content),
+      result: parsed.result,
       provenance: {
         model,
         promptVersion: ASSESSMENT_PROMPT_VERSION,
+        formattingRecovery: parsed.formattingRecovery,
         promptTokens: completion.promptTokens,
         completionTokens: completion.completionTokens,
         httpAttempts: completion.attempts,
@@ -50,7 +58,7 @@ export class WorkNoteAgentModel {
       },
     };
   }
-  async rewrite(input: AgentInput) {
+  async rewrite(input: AgentInput, mode: 'editor' | 'assessment' = 'editor') {
     const enabled = this.config.get<string | boolean>('WORKNOTE_AGENT_ENABLED');
     const key = this.config.get<string>('XKIRO_API_KEY'),
       model = this.config.get<string>('XKIRO_MODEL');
@@ -59,32 +67,24 @@ export class WorkNoteAgentModel {
         code: 'WORKNOTE_AGENT_UNAVAILABLE',
         message: 'Agent is unavailable. You can still save your note.',
       });
-    const prepared = prepareAgentRequest(input);
+    const prepared =
+      mode === 'assessment'
+        ? prepareAssessmentEditorRequest(input)
+        : prepareAgentRequest(input);
     const completion = await new WorkNoteXkiroClient({
       apiKey: key,
       model,
-      maxTokens: 4096,
-      timeoutMs: 30000,
-      jsonMode: true,
-      temperature: 0.1,
-      retries: 1,
+      ...ASSESSMENT_EDITOR_PROVIDER_POLICY,
+      retries: mode === 'assessment' ? 0 : 1,
     }).complete(prepared.messages, `worknote-${randomUUID()}`);
-    let result: AgentResult;
-    let formattingRecovery: readonly string[] = [];
-    try {
-      result = parseAgentResult(prepared, completion.content);
-    } catch (error) {
-      const recoveryEnabled = this.config.get<string | boolean>(
-        'WORKNOTE_AGENT_FORMATTING_RECOVERY',
-      );
-      const recovery =
-        recoveryEnabled === true || recoveryEnabled === 'true'
-          ? recoverEmptyContainers(completion.content)
-          : null;
-      if (!recovery) throw error;
-      result = parseAgentResult(prepared, recovery.json);
-      formattingRecovery = recovery.addedFields;
-    }
+    const recoveryEnabled = this.config.get<string | boolean>(
+      'WORKNOTE_AGENT_FORMATTING_RECOVERY',
+    );
+    const { result, formattingRecovery } = parseRewriteCompletion(
+      prepared,
+      completion.content,
+      recoveryEnabled === true || recoveryEnabled === 'true',
+    );
     return {
       result,
       provenance: {
@@ -94,6 +94,8 @@ export class WorkNoteAgentModel {
         formattingRecovery,
         promptTokens: completion.promptTokens,
         completionTokens: completion.completionTokens,
+        httpAttempts: completion.attempts,
+        durationMs: completion.elapsedMs,
       },
     };
   }
