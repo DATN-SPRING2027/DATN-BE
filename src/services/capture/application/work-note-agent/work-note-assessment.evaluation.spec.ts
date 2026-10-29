@@ -10,7 +10,10 @@ import {
   runAssessmentEvaluation,
 } from '../../../../../scripts/work-note-agent/assessment-run';
 import type { AssessmentModelOutput } from './work-note-assessment.types';
-import { parseAssessmentOutput } from './work-note-assessment.protocol';
+import {
+  parseAssessmentOutput,
+  assessmentHash,
+} from './work-note-assessment.protocol';
 
 describe('Task-aware assessment evaluation evidence', () => {
   it('freezes 72 varied scenarios, family-exclusive splits and the 29-call pilot ceiling', () => {
@@ -152,6 +155,40 @@ describe('Task-aware assessment evaluation evidence', () => {
 });
 
 describe('Assessment evaluator budget and non-network defaults', () => {
+  it('fingerprints the actually selected purpose pack even when the provider fails', async () => {
+    let sent = '';
+    const result = await runAssessmentEvaluation(
+      [
+        '--live',
+        '--batch',
+        'full',
+        '--split',
+        'all',
+        '--cases',
+        'assessment-retry-upload-a',
+        '--model',
+        'test/model',
+        '--max-attempts',
+        '1',
+      ],
+      {
+        readCredentials: () => Promise.resolve({ apiKey: 'synthetic' }),
+        writeReport: false,
+        fetcher: (_url, init) => {
+          if (typeof init?.body !== 'string')
+            throw Error('Expected serialized fixture payload');
+          const payload = JSON.parse(init.body) as {
+            messages: unknown[];
+          };
+          sent = assessmentHash(payload.messages.slice(0, -1));
+          return Promise.resolve(new Response('{}', { status: 500 }));
+        },
+      },
+    );
+    if (!('budget' in result)) throw Error('Expected fixture live result');
+    expect(result.promptTemplateHash).toBe(sent);
+    expect(result.rows[0].requestTemplateHash).toBe(sent);
+  });
   it('keeps observed development schema failures strict instead of repairing them into accepted output', () => {
     const c = loadAssessmentCorpus().scenarios.find(
       (c) => c.category === 'negation',
@@ -469,6 +506,10 @@ describe('Assessment evaluator budget and non-network defaults', () => {
     expect(
       result.rows.filter((r) => r.errorCode === 'XKIRO_HTTP_ERROR_500'),
     ).toHaveLength(2);
+    for (const row of result.rows.filter(
+      (r) => r.errorCode === 'XKIRO_HTTP_ERROR_500',
+    ))
+      expect(row.requestTemplateHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(
       new Set(
         result.rows

@@ -64,6 +64,28 @@ const output = (): AssessmentModelOutput => ({
   nextQuestion: null,
 });
 describe('Task assessment sourced protocol', () => {
+  it('teaches atomic claims in every few-shot rather than merging outcomes with unrelated limitations', () => {
+    for (const e of ASSESSMENT_EXAMPLES)
+      for (const claim of e.output.claims)
+        expect(claim.text).not.toMatch(/[;.!?]\s+\S/u);
+  });
+  it('keeps full long sources within the request cap when optional passage hints would duplicate them', () => {
+    const i = structuredClone(input);
+    i.sources[0].text = Array.from(
+      { length: 70 },
+      (_, n) => `Segment ${n}: ${'x'.repeat(600)}.`,
+    ).join('\n');
+    const payload = JSON.parse(buildAssessmentMessages(i).at(-1)!.content) as {
+      sources: unknown;
+      passageAidsComplete: boolean;
+    };
+    expect(payload.sources).toEqual(i.sources);
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(65000);
+    expect(payload.passageAidsComplete).toBe(false);
+  });
+  it('uses a bounded purpose-relevant example pack instead of attaching every example to every request', () => {
+    expect(buildAssessmentMessages(input).length).toBeLessThanOrEqual(10);
+  });
   it('builds an isolated task-aware request without tools or write authority', () => {
     const m = buildAssessmentMessages(input);
     expect(m[0].content).toContain('TASK_REQUIREMENT');
@@ -86,12 +108,23 @@ describe('Task assessment sourced protocol', () => {
       },
     });
     const payload = JSON.parse(messages.at(-1)!.content) as {
-      previous: { correctionTarget: { id: string; text: string } };
+      previous: {
+        correctionTarget: {
+          targetType: string;
+          text: string;
+          id?: string;
+          verificationStatus?: string;
+        };
+      };
     };
     expect(payload.previous.correctionTarget).toMatchObject({
-      id: previous.claims[0].id,
+      targetType: 'CLAIM',
       text: previous.claims[0].text,
     });
+    expect(payload.previous.correctionTarget).not.toHaveProperty('id');
+    expect(payload.previous.correctionTarget).not.toHaveProperty(
+      'verificationStatus',
+    );
     expect(previous.claims[0].text).toBe(input.sources[0].text);
   });
   it('reports options-only recovery without inventing question content or weakening source validation', () => {

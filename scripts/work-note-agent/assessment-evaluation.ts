@@ -299,6 +299,7 @@ export type AssessmentEvaluationRow = {
   sources?: AssessmentSource[];
   answers?: AssessmentAnswer[];
   rawSyntheticResponse?: string;
+  requestTemplateHash?: string;
 };
 export function makeAssessmentWorksheet(
   rows: AssessmentEvaluationRow[],

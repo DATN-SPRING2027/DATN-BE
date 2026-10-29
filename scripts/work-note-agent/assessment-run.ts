@@ -348,16 +348,16 @@ export async function runAssessmentEvaluation(
     promptVersion: ASSESSMENT_PROMPT_VERSION,
     systemPromptHash: fingerprint(
       buildAssessmentMessages({
-        sources: corpus.scenarios[0].sources,
-        purpose: corpus.scenarios[0].purpose,
+        sources: scenarios[0].sources,
+        purpose: scenarios[0].purpose,
         previous: null,
         answers: [],
       })[0],
     ),
     promptTemplateHash: fingerprint(
       buildAssessmentMessages({
-        sources: corpus.scenarios[0].sources,
-        purpose: corpus.scenarios[0].purpose,
+        sources: scenarios[0].sources,
+        purpose: scenarios[0].purpose,
         previous: null,
         answers: [],
       }).slice(0, -1),
@@ -441,6 +441,7 @@ export async function runAssessmentEvaluation(
       };
       const started = Date.now();
       let rawSyntheticResponse: string | undefined;
+      let requestTemplateHash: string | undefined;
       try {
         if (turn.noteReplacement) {
           sourceRevision++;
@@ -527,6 +528,7 @@ export async function runAssessmentEvaluation(
           delete input.correction;
         }
         const messages = buildAssessmentMessages(input);
+        requestTemplateHash = fingerprint(messages.slice(0, -1));
         const completion = await client.complete(
           messages,
           `assessment-${randomUUID()}`,
@@ -561,6 +563,7 @@ export async function runAssessmentEvaluation(
           turn: i + 1,
           role: 'analysis',
           rawSyntheticResponse,
+          requestTemplateHash,
           formattingRecovery: parsedCompletion.formattingRecovery,
           runtimeState: {
             state: activeAssessment.state,
@@ -606,6 +609,7 @@ export async function runAssessmentEvaluation(
           role: 'analysis',
           errorCode,
           elapsedMs: Date.now() - started,
+          requestTemplateHash,
           ...(rawSyntheticResponse ? { rawSyntheticResponse } : {}),
           sources: structuredClone(input.sources),
           answers: structuredClone(input.answers),
@@ -697,6 +701,8 @@ export async function runAssessmentEvaluation(
     model: options.model,
     promptVersion: ASSESSMENT_PROMPT_VERSION,
     createdAt: new Date().toISOString(),
+    promptTemplateSelection: 'PER_PURPOSE_MAX4_EXAMPLES',
+    promptTemplateHashScope: 'FIRST_SELECTED_SCENARIO_INITIAL_TURN',
     budget: budget.snapshot(),
     phaseId: options.phaseId ?? null,
     ...(phase ? { phaseBudget: phase.snapshot() } : {}),

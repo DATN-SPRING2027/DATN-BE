@@ -409,7 +409,10 @@ describe('Capture Work Notes Mongo workflows', () => {
 
   it('does not assign periods ending before a member joined', async () => {
     currentActor = { ...currentActor, canReview: true };
-    const joinedAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    // Align the join instant with the cadence boundary. Separate clock reads
+    // can place the member just before it and legitimately include a fourth period.
+    const anchor = Date.now();
+    const joinedAt = new Date(anchor - 2 * 86_400_000).toISOString();
     (authorization.listActiveMembers as jest.Mock).mockResolvedValue([
       { userId: memberId, fullName: 'Mina Member', joinedAt },
     ]);
@@ -417,7 +420,7 @@ describe('Capture Work Notes Mongo workflows', () => {
       organizationId: new Types.ObjectId(organizationId),
       projectId: new Types.ObjectId(projectId),
       frequency: 'DAILY',
-      effectiveAt: new Date(Date.now() - 10 * 86_400_000),
+      effectiveAt: new Date(anchor - 10 * 86_400_000),
       createdByUserId: new Types.ObjectId(leaderId),
       createdAt: new Date(),
       updatedAt: new Date(),

@@ -1,10 +1,16 @@
 import {
   ASSESSMENT_SYSTEM_PROMPT,
-  ASSESSMENT_EXAMPLES,
+  ASSESSMENT_OUTPUT_CONTRACT,
+  selectAssessmentExamples,
   assessmentPurposePolicy,
 } from './work-note-assessment.prompt';
 import { createHash } from 'node:crypto';
 import { assessmentRequestContext } from './work-note-assessment.context';
+import {
+  hasNegation as negative,
+  dropsSourceNegation,
+  coveragePolarityConflict,
+} from './work-note-assessment.polarity';
 import type { AgentMessage } from './work-note-agent.types';
 import {
   ASSESSMENT_PURPOSES,
@@ -13,7 +19,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v12';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v13';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {
@@ -49,10 +55,6 @@ function en<T extends string>(v: unknown, values: readonly T[]): T {
     return invalid('INVALID_ENUM');
   return v as T;
 }
-const negative = (s: string) =>
-  /\b(?:not|never|cannot|can['’]t|doesn['’]t|didn['’]t|isn['’]t|wasn['’]t|hasn['’]t|haven['’]t|won['’]t|untested|unverified|pending|chưa|không|chưa biết)\b/iu.test(
-    s,
-  ) || /chưa|không|chua |khong /iu.test(s);
 export function assertAssessmentFidelity(source: string, result: string) {
   // Deliberately conservative guard for changes to explicit uncertainty. It is
   // not a general NLI model or independent verification of authors' claims.
@@ -73,6 +75,30 @@ export function buildAssessmentMessages(
     input.sources.some((s) => s.loadStatus !== 'LOADED' || !s.includedInRequest)
   )
     invalid('CONTEXT_UNAVAILABLE');
+  const correctionTarget =
+    input.correction &&
+    input.previous &&
+    [...input.previous.claims, ...input.previous.gaps].find(
+      (x) => x.id === input.correction!.targetId,
+    );
+  const targetContext = !correctionTarget
+    ? null
+    : 'text' in correctionTarget
+      ? {
+          targetType: 'CLAIM',
+          text: correctionTarget.text,
+          sourceRefs: correctionTarget.sourceRefs,
+          originKind: correctionTarget.originKind,
+          supportRelation: correctionTarget.supportRelation,
+        }
+      : {
+          targetType: 'GAP',
+          kind: correctionTarget.kind,
+          target: correctionTarget.target,
+          owner: correctionTarget.owner,
+          impact: correctionTarget.impact,
+          sourceRefs: correctionTarget.sourceRefs,
+        };
   const previous = input.previous
     ? {
         purpose: input.previous.purpose,
@@ -80,10 +106,7 @@ export function buildAssessmentMessages(
         counters: input.previous.counters,
         ...(input.correction
           ? {
-              correctionTarget:
-                [...input.previous.claims, ...input.previous.gaps].find(
-                  (x) => x.id === input.correction!.targetId,
-                ) ?? null,
+              correctionTarget: targetContext,
             }
           : {}),
       }
@@ -95,15 +118,22 @@ export function buildAssessmentMessages(
     previous,
     correction: input.correction ?? null,
     assessmentPolicy: assessmentPurposePolicy(input.purpose),
+    outputContract: ASSESSMENT_OUTPUT_CONTRACT,
     ...assessmentRequestContext(input),
   };
+  if (JSON.stringify(payload).length > 65000) {
+    payload.requirementPassages = [];
+    payload.authorPassages = [];
+    payload.authorLimitPassages = [];
+    payload.passageAidsComplete = false;
+  }
   if (JSON.stringify(payload).length > 65000) invalid('CONTEXT_LIMIT');
   return [
     {
       role: 'system',
       content: ASSESSMENT_SYSTEM_PROMPT,
     },
-    ...ASSESSMENT_EXAMPLES.flatMap((example) => [
+    ...selectAssessmentExamples(input).flatMap((example) => [
       {
         role: 'user' as const,
         content: JSON.stringify({
@@ -173,6 +203,10 @@ export function parseAssessmentOutput(
     'requirements',
     'unknowns',
   ]);
+  const sourceText = (sourceId: string) =>
+    input.sources.find((s) => s.id === sourceId)!.text;
+  const taskTitle =
+    input.sources.find((s) => s.id === 'task.title')?.text ?? '';
   const requirements = list(u.requirements, 50).map((v) => {
     const x = object(v, ['text', 'sourceRefs']);
     const sourceRefs = refs(x.sourceRefs);
@@ -183,6 +217,12 @@ export function parseAssessmentOutput(
     )
       return invalid('INVALID_REQUIREMENT_SOURCE');
     const text = str(x.text, 2000);
+    if (
+      sourceRefs.some((r) =>
+        dropsSourceNegation(sourceText(r.sourceId), r.quote),
+      )
+    )
+      return invalid('REQUIREMENT_POLARITY_MISMATCH');
     if (!sourceRefs.some((r) => normalize(r.quote) === normalize(text)))
       return invalid('UNSUPPORTED_REQUIREMENT');
     return { text, sourceRefs };
@@ -216,10 +256,25 @@ export function parseAssessmentOutput(
       'INSUFFICIENT',
     ] as const);
     if (
-      sourceRefs.some((r) => negative(r.quote)) &&
+      sourceRefs.some((r) =>
+        coveragePolarityConflict(
+          text,
+          sourceText(r.sourceId),
+          r.quote,
+          taskTitle,
+        ),
+      ) &&
       !negative(text) &&
       /tested|test|deployed|deploy|verified|kiểm thử|triển khai|xác minh/iu.test(
         text,
+      )
+    )
+      return invalid('SEMANTIC_POLARITY_MISMATCH');
+    if (
+      supportRelation === 'FULL' &&
+      !negative(text) &&
+      sourceRefs.some((r) =>
+        dropsSourceNegation(sourceText(r.sourceId), r.quote),
       )
     )
       return invalid('SEMANTIC_POLARITY_MISMATCH');
@@ -261,8 +316,13 @@ export function parseAssessmentOutput(
     // requirement/result relationship remains explicit for semantic review.
     if (
       status === 'SUPPORTED' &&
-      (sourceRefs.some(
-        (r) => negative(r.quote) && !negative(requirements[Number(i)].text),
+      (sourceRefs.some((r) =>
+        coveragePolarityConflict(
+          requirements[Number(i)].text,
+          sourceText(r.sourceId),
+          r.quote,
+          taskTitle,
+        ),
       ) ||
         !sourceRefs.every((s) =>
           claims.some(
@@ -270,10 +330,7 @@ export function parseAssessmentOutput(
               c.originKind === 'AUTHOR_REPORT' &&
               c.supportRelation === 'FULL' &&
               c.sourceRefs.some(
-                (r) =>
-                  r.sourceId === s.sourceId &&
-                  r.quote.includes(s.quote) &&
-                  (!negative(r.quote) || negative(s.quote)),
+                (r) => r.sourceId === s.sourceId && r.quote.includes(s.quote),
               ),
           ),
         ))
