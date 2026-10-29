@@ -14,5 +14,6 @@ import { HttpAiEngineClient } from './http-ai-engine.client';
     { provide: AI_ENGINE_CLIENT, useClass: HttpAiEngineClient },
     AiChatService,
   ],
+  exports: [AI_ENGINE_CLIENT],
 })
 export class AiEngineModule {}

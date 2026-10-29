@@ -53,6 +53,12 @@ function isAllowedJsonRoute(
   if (method === 'GET' && pathname.startsWith('/api/v1/projects/')) {
     return true;
   }
+  if (
+    method === 'POST' &&
+    /^\/api\/v1\/projects\/[^/]+\/handover\/assist$/.test(pathname)
+  ) {
+    return true;
+  }
   if (method === 'GET' && pathname === '/api/v1/agents/default') {
     return true;
   }

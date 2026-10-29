@@ -208,4 +208,44 @@ describe('HttpAiEngineClient', () => {
       'https://gateway.internal/sag/api/v1/agents/default',
     );
   });
+
+  it('allows POST /api/v1/projects/:projectId/handover/assist with X-SAG-BFF-Service-Token and rejects arbitrary POST paths (C03)', async () => {
+    const client = makeClient();
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ task: 'SOURCE_PROPOSAL', candidates: [] }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+
+    const res = await client.request({
+      path: '/api/v1/projects/751a2b3c4d5e6f7a8b9c0d20/handover/assist',
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': '651a2b3c4d5e6f7a8b9c0d11',
+        'X-Continuum-Organization-Id': '651a2b3c4d5e6f7a8b9c0d10',
+        'X-Continuum-Tenant-Id': '651a2b3c4d5e6f7a8b9c0d10',
+        'X-Continuum-Project-Id': '751a2b3c4d5e6f7a8b9c0d20',
+        'X-Continuum-Security-Partition': '751a2b3c4d5e6f7a8b9c0d20',
+      },
+      body: { task: 'SOURCE_PROPOSAL', query: 'runbook', sources: [] },
+    });
+
+    expect(res.status).toBe(200);
+    const assistInit = fetchMock.mock.calls[0]?.[1];
+    const assistHeaders = new Headers(assistInit?.headers);
+    expect(assistHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+
+    await expect(
+      client.request({
+        path: '/api/v1/search',
+        method: 'POST',
+        headers: {},
+        body: { query: 'forbidden connector path' },
+      }),
+    ).rejects.toBeInstanceOf(BadGatewayException);
+  });
 });
