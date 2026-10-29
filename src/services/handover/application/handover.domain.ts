@@ -438,13 +438,13 @@ export function evaluateCarriedItemAcceptances(input: {
       continue;
     }
 
-    // Reverify current source eligibility & readability for successor B before carrying
+    // Reverify current source eligibility, readability, and freshness for successor B before carrying (H-14 / A09)
     const deps = collectItemDependencyRefs(newItem);
-    const depsReadable = deps.every((dep) => {
+    const depsReadableAndCurrent = deps.every((dep) => {
       const ev = input.successorSourceMap.get(sourceRefKey(dep));
-      return Boolean(ev && ev.eligible && ev.readable);
+      return Boolean(ev && ev.eligible && ev.readable && ev.isCurrent);
     });
-    if (!depsReadable) {
+    if (!depsReadableAndCurrent) {
       continue;
     }
 
@@ -477,6 +477,14 @@ export interface CompletionBlocker {
   code: string;
   itemId?: string;
   transferId?: string;
+  taskId?: string;
+}
+
+export interface LiveHandoverTaskState {
+  exists: boolean;
+  status: string | null;
+  version: number | null;
+  assigneeId: string | null;
 }
 
 export interface CompletionEvaluationResult {
@@ -497,6 +505,7 @@ export function evaluateCompletionReadiness(input: {
   transferChildOperations: readonly StoredOperationDoc[];
   leaderSourceMap: ReadonlyMap<string, EvaluatedHandoverSource>;
   successorSourceMap: ReadonlyMap<string, EvaluatedHandoverSource>;
+  liveTaskStateMap?: ReadonlyMap<string, LiveHandoverTaskState>;
 }): CompletionEvaluationResult {
   const blockers: CompletionBlocker[] = [];
   let requiredPendingCount = 0;
@@ -556,6 +565,12 @@ export function evaluateCompletionReadiness(input: {
         succEv?.readable,
       );
     });
+    const depsCurrent = deps.every((dep) => {
+      const key = sourceRefKey(dep);
+      const leaderEv = input.leaderSourceMap.get(key);
+      const succEv = succLower ? input.successorSourceMap.get(key) : undefined;
+      return Boolean(leaderEv?.isCurrent && succEv?.isCurrent);
+    });
 
     const binding = resolveItemBindingState({
       revisionId: revHex,
@@ -576,7 +591,11 @@ export function evaluateCompletionReadiness(input: {
         binding.latestEvidenceReview?.decision === 'APPROVED');
 
     const itemResolved =
-      contentApproved && depsAccessible && itemUnderstood && evidenceSatisfied;
+      contentApproved &&
+      depsAccessible &&
+      depsCurrent &&
+      itemUnderstood &&
+      evidenceSatisfied;
 
     if (item.isRequired) {
       if (!itemResolved) {
@@ -584,11 +603,13 @@ export function evaluateCompletionReadiness(input: {
         blockers.push({
           code: !depsAccessible
             ? 'REQUIRED_ITEM_DEPENDENCY_UNAVAILABLE'
-            : !contentApproved
-              ? 'REQUIRED_ITEM_GAP_REMAINS'
-              : !itemUnderstood
-                ? 'REQUIRED_ITEM_NOT_UNDERSTOOD'
-                : 'REQUIRED_ITEM_EVIDENCE_UNAPPROVED',
+            : !depsCurrent
+              ? 'REQUIRED_ITEM_SOURCE_OUTDATED'
+              : !contentApproved
+                ? 'REQUIRED_ITEM_GAP_REMAINS'
+                : !itemUnderstood
+                  ? 'REQUIRED_ITEM_NOT_UNDERSTOOD'
+                  : 'REQUIRED_ITEM_EVIDENCE_UNAPPROVED',
           itemId: itemHex,
         });
       }
@@ -653,8 +674,29 @@ export function evaluateCompletionReadiness(input: {
       if (!confirmedTaskIds.has(taskHex)) {
         blockers.push({
           code: 'SELECTED_TASK_TRANSFER_NOT_CONFIRMED',
+          taskId: taskHex,
         });
         break;
+      }
+    }
+
+    if (input.liveTaskStateMap) {
+      for (const selectedTask of input.currentRevision.selectedTasks) {
+        const taskHex = selectedTask.taskId.toHexString();
+        const liveTask = input.liveTaskStateMap.get(taskHex.toLowerCase());
+        if (!liveTask || !liveTask.exists) {
+          blockers.push({
+            code: 'SELECTED_TASK_NOT_FOUND',
+            taskId: taskHex,
+          });
+          continue;
+        }
+        if (succLower && liveTask.assigneeId?.toLowerCase() !== succLower) {
+          blockers.push({
+            code: 'SELECTED_TASK_ASSIGNEE_DRIFTED',
+            taskId: taskHex,
+          });
+        }
       }
     }
   }

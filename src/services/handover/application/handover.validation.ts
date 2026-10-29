@@ -306,6 +306,7 @@ export function validateDraftItem(value: unknown): DraftItemDto {
     value,
     [
       'itemId',
+      'contentVersion',
       'title',
       'body',
       'isRequired',
@@ -318,6 +319,10 @@ export function validateDraftItem(value: unknown): DraftItemDto {
   );
   return {
     itemId: assertHexId(obj.itemId, 'itemId'),
+    contentVersion:
+      obj.contentVersion === undefined
+        ? 1
+        : assertInt(obj.contentVersion, 'contentVersion', 1),
     title: assertString(obj.title, 'title', 1, 255),
     body: assertString(obj.body, 'body', 0, 20000),
     isRequired: assertBoolean(obj.isRequired, 'isRequired'),

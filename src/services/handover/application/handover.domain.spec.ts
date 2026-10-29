@@ -532,5 +532,173 @@ describe('Handover Domain Invariants (A04, A05, A06, A07, A08, A11, A13, A15)', 
     expect(ready.canComplete).toBe(true);
     expect(ready.requiredPendingCount).toBe(0);
     expect(ready.blockers).toHaveLength(0);
+
+    // F01: Outdated pinned source (isCurrent: false) remains historically readable on item projection
+    //      but MUST block completion (REQUIRED_ITEM_SOURCE_OUTDATED) and MUST NOT carry forward acceptance!
+    const staleReadableMap = new Map<string, EvaluatedHandoverSource>([
+      [
+        sourceRefKey(sourceDoc),
+        {
+          kind: 'PROJECT_DOCUMENT',
+          id: sourceDoc.id,
+          version: 1,
+          exists: true,
+          eligible: true,
+          readable: true,
+          isCurrent: false,
+          currentVersion: 2,
+          title: 'Doc v1',
+          excerpts: [],
+        },
+      ],
+    ]);
+    const blockedByOutdatedSource = evaluateCompletionReadiness({
+      handover,
+      currentRevision,
+      acceptances,
+      evidences: [],
+      evidenceReviews: [],
+      followUps: [
+        {
+          _id: new Types.ObjectId(),
+          schemaVersion: 2,
+          organizationId: orgId,
+          projectId,
+          handoverId,
+          revisionId: rev2Id,
+          itemId: item2Id,
+          kind: 'KNOWLEDGE_GAP',
+          isRequired: false,
+          ownerUserId: leaderD,
+          reason: 'Optional background appendix',
+          dueAt: new Date('2026-12-01T00:00:00Z'),
+          status: 'OPEN',
+          version: 1,
+          createdBy: leaderD,
+          resolvedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      transferOperations: [],
+      transferChildOperations: [],
+      leaderSourceMap: staleReadableMap,
+      successorSourceMap: staleReadableMap,
+    });
+    expect(blockedByOutdatedSource.canComplete).toBe(false);
+    expect(blockedByOutdatedSource.requiredPendingCount).toBe(1);
+    expect(blockedByOutdatedSource.blockers).toContainEqual({
+      code: 'REQUIRED_ITEM_SOURCE_OUTDATED',
+      itemId: item1Id.toHexString(),
+    });
+
+    // F02: Even with a COMMITTED transfer receipt, if live task assignee drifted to C, completion MUST block!
+    const blockedByDriftedAssignee = evaluateCompletionReadiness({
+      handover,
+      currentRevision,
+      acceptances,
+      evidences: [],
+      evidenceReviews: [],
+      followUps: [
+        {
+          _id: new Types.ObjectId(),
+          schemaVersion: 2,
+          organizationId: orgId,
+          projectId,
+          handoverId,
+          revisionId: rev2Id,
+          itemId: item2Id,
+          kind: 'KNOWLEDGE_GAP',
+          isRequired: false,
+          ownerUserId: leaderD,
+          reason: 'Optional background appendix',
+          dueAt: new Date('2026-12-01T00:00:00Z'),
+          status: 'OPEN',
+          version: 1,
+          createdBy: leaderD,
+          resolvedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      transferOperations: [
+        {
+          _id: parentTransferId,
+          schemaVersion: 2,
+          organizationId: orgId,
+          projectId,
+          handoverId,
+          actorUserId: leaderD,
+          namespace: `handover:${handoverId.toHexString()}`,
+          key: deriveTaskIntentId(
+            parentTransferId.toHexString(),
+            handoverId.toHexString(),
+          ),
+          fingerprint: 'c'.repeat(64),
+          kind: 'TASK_TRANSFER',
+          state: 'COMMITTED',
+          expectedVersion: 4,
+          assignmentVersion: 1,
+          revisionId: rev2Id,
+          successorUserId: succB1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      transferChildOperations: [
+        {
+          _id: new Types.ObjectId(),
+          schemaVersion: 2,
+          organizationId: orgId,
+          projectId,
+          handoverId,
+          actorUserId: leaderD,
+          namespace: `transfer-child:${parentTransferId.toHexString()}`,
+          key: deriveTaskIntentId(
+            parentTransferId.toHexString(),
+            task1Id.toHexString(),
+          ),
+          fingerprint: 'd'.repeat(64),
+          kind: 'TASK_TRANSFER_CHILD',
+          state: 'COMMITTED',
+          expectedVersion: 4,
+          assignmentVersion: 1,
+          revisionId: rev2Id,
+          successorUserId: succB1,
+          parentOperationId: parentTransferId,
+          taskIntent: {
+            taskId: task1Id,
+            expectedVersion: 1,
+            expectedAssigneeId: departingA,
+            targetUserId: succB1,
+          },
+          taskOutcome: {
+            state: 'COMMITTED',
+            taskVersion: 2,
+            assigneeId: succB1,
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      leaderSourceMap: readableMap,
+      successorSourceMap: readableMap,
+      liveTaskStateMap: new Map([
+        [
+          task1Id.toHexString(),
+          {
+            exists: true,
+            status: 'IN_PROGRESS',
+            version: 3,
+            assigneeId: '999999999999999999999999',
+          },
+        ],
+      ]),
+    });
+    expect(blockedByDriftedAssignee.canComplete).toBe(false);
+    expect(blockedByDriftedAssignee.blockers).toContainEqual({
+      code: 'SELECTED_TASK_ASSIGNEE_DRIFTED',
+      taskId: task1Id.toHexString(),
+    });
   });
 });

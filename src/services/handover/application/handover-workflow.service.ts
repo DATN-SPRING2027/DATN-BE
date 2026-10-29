@@ -626,45 +626,59 @@ export class HandoverWorkflowService {
       isProjectLeader: input.viewer.isProjectLeader,
     };
 
+    const [leaderScope, successorScope] = await Promise.all([
+      this.iamScope.resolveActiveProjectMemberScope(
+        input.viewer.organizationId,
+        input.viewer.projectId,
+        input.handover.assignedLeaderId,
+      ),
+      input.handover.successorUserId
+        ? this.iamScope.resolveActiveProjectMemberScope(
+            input.viewer.organizationId,
+            input.viewer.projectId,
+            input.handover.successorUserId,
+          )
+        : Promise.resolve({ isProjectMember: false, isProjectLeader: false }),
+    ]);
+
     const leaderCtx: HandoverSourceViewer = {
       organizationId: input.viewer.organizationId,
       projectId: input.viewer.projectId,
       userId: input.handover.assignedLeaderId,
-      isProjectMember: true,
-      isProjectLeader: true,
+      isProjectMember: leaderScope.isProjectMember,
+      isProjectLeader: leaderScope.isProjectLeader,
     };
 
-    let successorMemberActive = false;
-    if (input.handover.successorUserId) {
-      try {
-        await this.iamScope.assertEligibleActiveProjectMember(
-          input.viewer.organizationId,
-          input.viewer.projectId,
-          input.handover.successorUserId,
-        );
-        successorMemberActive = true;
-      } catch {
-        successorMemberActive = false;
-      }
-    }
+    const successorMemberActive = successorScope.isProjectMember;
 
-    const [viewerSourceMap, leaderSourceMap, successorSourceMap] =
-      await Promise.all([
-        this.sourcesService.evaluateSourceRefsMap(viewerCtx, allItemDeps),
-        this.sourcesService.evaluateSourceRefsMap(leaderCtx, allItemDeps),
-        input.handover.successorUserId && successorMemberActive
-          ? this.sourcesService.evaluateSourceRefsMap(
-              {
-                organizationId: input.viewer.organizationId,
-                projectId: input.viewer.projectId,
-                userId: input.handover.successorUserId,
-                isProjectMember: true,
-                isProjectLeader: false,
-              },
-              allItemDeps,
-            )
-          : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
-      ]);
+    const [
+      viewerSourceMap,
+      leaderSourceMap,
+      successorSourceMap,
+      liveTaskStateMap,
+    ] = await Promise.all([
+      this.sourcesService.evaluateSourceRefsMap(viewerCtx, allItemDeps),
+      this.sourcesService.evaluateSourceRefsMap(leaderCtx, allItemDeps),
+      input.handover.successorUserId && successorMemberActive
+        ? this.sourcesService.evaluateSourceRefsMap(
+            {
+              organizationId: input.viewer.organizationId,
+              projectId: input.viewer.projectId,
+              userId: input.handover.successorUserId,
+              isProjectMember: successorScope.isProjectMember,
+              isProjectLeader: successorScope.isProjectLeader,
+            },
+            allItemDeps,
+          )
+        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
+      input.isCurrent && input.revision.selectedTasks.length > 0
+        ? this.taskAssignmentService.inspectTasksCurrentState(
+            input.viewer.organizationId,
+            input.viewer.projectId,
+            input.revision.selectedTasks.map((t) => t.taskId.toHexString()),
+          )
+        : Promise.resolve(undefined),
+    ]);
 
     const reviewByItem = new Map(
       input.revision.reviews.map((r) => [r.itemId.toHexString(), r]),
@@ -703,6 +717,7 @@ export class HandoverWorkflowService {
       transferChildOperations: children,
       leaderSourceMap,
       successorSourceMap,
+      liveTaskStateMap,
     });
 
     return {
@@ -1370,6 +1385,7 @@ export class HandoverWorkflowService {
       )
       .map((d) => ({
         itemId: d.itemId.toHexString(),
+        contentVersion: d.contentVersion,
         title: d.title,
         body: d.body,
         isRequired: d.isRequired,
@@ -1580,7 +1596,11 @@ export class HandoverWorkflowService {
             });
           }
           itemObjId = new Types.ObjectId(inputItem.itemId);
-          contentVersion = hasMeaningfulDraftItemChange(prev, inputItem)
+          contentVersion = hasMeaningfulDraftItemChange(prev, {
+            ...inputItem,
+            title: inputItem.title.trim(),
+            requirement: inputItem.requirement.trim(),
+          })
             ? prev.contentVersion + 1
             : prev.contentVersion;
         } else {
@@ -1940,18 +1960,27 @@ export class HandoverWorkflowService {
       }
     }
 
-    const successorSourceMap = handover.successorUserId
-      ? await this.sourcesService.evaluateSourceRefsMap(
-          {
-            organizationId: actor.organizationId,
-            projectId: actor.projectId,
-            userId: handover.successorUserId,
-            isProjectMember: true,
-            isProjectLeader: false,
-          },
-          allPublishRefs,
+    const successorScope = handover.successorUserId
+      ? await this.iamScope.resolveActiveProjectMemberScope(
+          actor.organizationId,
+          actor.projectId,
+          handover.successorUserId,
         )
-      : new Map<string, EvaluatedHandoverSource>();
+      : { isProjectMember: false, isProjectLeader: false };
+
+    const successorSourceMap =
+      handover.successorUserId && successorScope.isProjectMember
+        ? await this.sourcesService.evaluateSourceRefsMap(
+            {
+              organizationId: actor.organizationId,
+              projectId: actor.projectId,
+              userId: handover.successorUserId,
+              isProjectMember: successorScope.isProjectMember,
+              isProjectLeader: successorScope.isProjectLeader,
+            },
+            allPublishRefs,
+          )
+        : new Map<string, EvaluatedHandoverSource>();
 
     const itemSnapshots: StoredHandoverItemSnapshot[] = draftDocs.map((d) => ({
       itemId: d.itemId,
@@ -3963,6 +3992,18 @@ export class HandoverWorkflowService {
       });
     }
 
+    // Reconcile committed transfer receipts against current Task state before evaluating completion (A10).
+    // If a transferred task was reassigned to C, persist CONFLICT on the transfer ledger without overwriting C.
+    if (revision.selectedTasks.length > 0) {
+      await this.transferService.reverifyCurrentRevisionTransfers({
+        organizationId: actor.organizationId,
+        projectId: actor.projectId,
+        handover,
+        revisionId: revision._id,
+        successorUserId: handover.successorUserId,
+      });
+    }
+
     const [
       acceptances,
       evidences,
@@ -3970,6 +4011,8 @@ export class HandoverWorkflowService {
       followUps,
       transfers,
       children,
+      successorScope,
+      liveTaskStateMap,
     ] = await Promise.all([
       this.repository.acceptances
         .find({ handoverId: handover._id, revisionId: revision._id })
@@ -3999,6 +4042,18 @@ export class HandoverWorkflowService {
         .find({ handoverId: handover._id, kind: 'TASK_TRANSFER_CHILD' })
         .lean<StoredOperationDoc[]>()
         .exec(),
+      this.iamScope.resolveActiveProjectMemberScope(
+        actor.organizationId,
+        actor.projectId,
+        handover.successorUserId,
+      ),
+      revision.selectedTasks.length > 0
+        ? this.taskAssignmentService.inspectTasksCurrentState(
+            actor.organizationId,
+            actor.projectId,
+            revision.selectedTasks.map((t) => t.taskId.toHexString()),
+          )
+        : Promise.resolve(undefined),
     ]);
 
     const allDeps = revision.items.flatMap((it) =>
@@ -4015,16 +4070,18 @@ export class HandoverWorkflowService {
         },
         allDeps,
       ),
-      this.sourcesService.evaluateSourceRefsMap(
-        {
-          organizationId: actor.organizationId,
-          projectId: actor.projectId,
-          userId: handover.successorUserId,
-          isProjectMember: true,
-          isProjectLeader: false,
-        },
-        allDeps,
-      ),
+      successorScope.isProjectMember
+        ? this.sourcesService.evaluateSourceRefsMap(
+            {
+              organizationId: actor.organizationId,
+              projectId: actor.projectId,
+              userId: handover.successorUserId,
+              isProjectMember: successorScope.isProjectMember,
+              isProjectLeader: successorScope.isProjectLeader,
+            },
+            allDeps,
+          )
+        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
     ]);
 
     const evaluation = evaluateCompletionReadiness({
@@ -4038,15 +4095,21 @@ export class HandoverWorkflowService {
       transferChildOperations: children,
       leaderSourceMap,
       successorSourceMap,
+      liveTaskStateMap,
     });
 
-    if (!evaluation.canComplete) {
+    const blockers = [...evaluation.blockers];
+    if (!successorScope.isProjectMember) {
+      blockers.push({ code: 'SUCCESSOR_INACTIVE_IN_PROJECT' });
+    }
+
+    if (blockers.length > 0 || !evaluation.canComplete) {
       throw new ConflictException({
         code: 'COMPLETION_BLOCKED',
         message: 'Handover completion conditions are not satisfied.',
         details: {
           requiredPendingCount: evaluation.requiredPendingCount,
-          blockers: evaluation.blockers,
+          blockers,
         },
       });
     }

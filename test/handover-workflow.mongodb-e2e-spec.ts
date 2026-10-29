@@ -2296,6 +2296,254 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       })
       .expect(201);
     const followupId = (excRes.body as { id: string }).id;
+    expect(followupId).toBeTruthy();
+
+    // F01: Even after OptionalException & task transfer, Revision #3 still pins docRunbookId@v1 while v2 is current!
+    // Historical reading remains AVAILABLE (sourceState: 'CHANGED'), but completion MUST be blocked with REQUIRED_ITEM_SOURCE_OUTDATED!
+    detail = await request(server)
+      .get(baseUrl(`/${handoverId}`))
+      .set('Cookie', cookieFor('leaderD'))
+      .expect(200);
+    etag = detail.headers['etag'];
+    expect((detail.body as { canComplete: boolean }).canComplete).toBe(false);
+
+    const staleSourceCompleteRes = await request(server)
+      .post(baseUrl(`/${handoverId}/completion`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev3Id,
+        assignmentVersion: 4,
+        reviewNote:
+          'Blocked until outdated docRunbookId@v1 is reviewed against v2',
+      })
+      .expect(409);
+    expect(
+      (
+        staleSourceCompleteRes.body as {
+          details?: { blockers?: Array<{ code: string; itemId?: string }> };
+        }
+      ).details?.blockers,
+    ).toContainEqual({
+      code: 'REQUIRED_ITEM_SOURCE_OUTDATED',
+      itemId: itemRequiredId,
+    });
+
+    // Leader D reviews docRunbookId@v2, updates itemRequiredId to cite v2, and publishes Revision #4
+    const rev4ItemsPayload = rev2ItemsPayload.map((it) =>
+      it.itemId === itemRequiredId
+        ? {
+            ...it,
+            sources: [
+              {
+                kind: 'PROJECT_DOCUMENT',
+                id: docRunbookId.toHexString(),
+                version: '2',
+              },
+            ],
+            citations: [
+              {
+                source: {
+                  kind: 'PROJECT_DOCUMENT',
+                  id: docRunbookId.toHexString(),
+                  version: '2',
+                },
+                locator: { kind: 'SECTION', value: 'Rollout Steps' },
+              },
+            ],
+          }
+        : it,
+    );
+
+    const draftRev4 = await request(server)
+      .put(baseUrl(`/${handoverId}/draft`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: rev3DraftVer,
+        selectedSources: [
+          {
+            kind: 'PROJECT_DOCUMENT',
+            id: docRunbookId.toHexString(),
+            version: '2',
+          },
+          {
+            kind: 'KNOWLEDGE_OBJECT',
+            id: koArchitectureId.toHexString(),
+            version: '1',
+          },
+          {
+            kind: 'TASK_NOTE',
+            id: noteRetryId.toHexString(),
+            version: '1',
+          },
+        ],
+        taskIds: [taskActiveId.toHexString()],
+        items: rev4ItemsPayload,
+      })
+      .expect(200);
+    etag = draftRev4.headers['etag'];
+    const rev4DraftVer = rev3DraftVer + 1;
+
+    // F07 BE verification: GET /draft exposes authoritative contentVersion per item (itemRequiredId bumped to 2)
+    const draftForRev4 = await request(server)
+      .get(baseUrl(`/${handoverId}/draft`))
+      .set('Cookie', cookieFor('leaderD'))
+      .expect(200);
+    expect(
+      (
+        draftForRev4.body as {
+          items: Array<{ itemId: string; contentVersion: number }>;
+        }
+      ).items.find((i) => i.itemId === itemRequiredId)?.contentVersion,
+    ).toBe(2);
+
+    const pub4Res = await request(server)
+      .post(baseUrl(`/${handoverId}/revisions`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: rev4DraftVer,
+        reviewNote: 'Revision #4 updated to Canary Rollout Runbook v2.',
+        itemReviews: [
+          {
+            itemId: itemRequiredId,
+            contentVersion: 2,
+            decision: 'CONTENT_APPROVED',
+            impact: 'CHANGED',
+            reason: 'Updated to Canary Rollout Runbook v2.',
+          },
+          {
+            itemId: itemConfidentialId,
+            contentVersion: 2,
+            decision: 'CONTENT_APPROVED',
+            impact: 'UNCHANGED',
+            reason: 'Unchanged and source v1 is still current.',
+          },
+          {
+            itemId: itemOptionalGapId,
+            contentVersion: 1,
+            decision: 'GAP_REMAINS',
+            impact: 'UNCHANGED',
+            reason: 'Tracked in post-handover follow-up.',
+          },
+        ],
+        gapAssignments: [
+          {
+            itemId: itemOptionalGapId,
+            ownerUserId: leaderDId.toHexString(),
+            dueAt: '2026-12-15T00:00:00.000Z',
+            reason: 'Awaiting Q4 DLQ replay runbook update.',
+          },
+        ],
+      })
+      .expect(201);
+    etag = pub4Res.headers['etag'];
+    const rev4Id = (pub4Res.body as { revisionId: string }).revisionId;
+
+    const accRev4 = await request(server)
+      .post(baseUrl(`/${handoverId}/acceptance`))
+      .set('Cookie', cookieFor('successorB1'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ revisionId: rev4Id })
+      .expect(200);
+    etag = accRev4.headers['etag'];
+
+    const ackReqRev4 = await request(server)
+      .post(baseUrl(`/${handoverId}/items/${itemRequiredId}/acknowledgements`))
+      .set('Cookie', cookieFor('successorB1'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev4Id,
+        contentVersion: 2,
+        assignmentVersion: 4,
+        decision: 'UNDERSTOOD',
+        note: 'Confirmed 30-minute canary bake window in v2.',
+      })
+      .expect(200);
+    etag = ackReqRev4.headers['etag'];
+
+    const evRev4 = await request(server)
+      .post(baseUrl(`/${handoverId}/items/${itemRequiredId}/evidence`))
+      .set('Cookie', cookieFor('successorB1'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev4Id,
+        contentVersion: 2,
+        assignmentVersion: 4,
+        resultText: 'Verified 30-minute bake window drill on Revision #4.',
+        links: ['https://grafana.continuum.example/d/rev4-proof'],
+      })
+      .expect(201);
+    etag = evRev4.headers['etag'];
+    const evRev4Id = (evRev4.body as { id: string }).id;
+
+    const evRev4Approve = await request(server)
+      .post(
+        baseUrl(
+          `/${handoverId}/items/${itemRequiredId}/evidence/${evRev4Id}/reviews`,
+        ),
+      )
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev4Id,
+        evidenceId: evRev4Id,
+        outcome: 'ACCEPTED',
+        note: 'Approved v2 canary drill.',
+      })
+      .expect(200);
+    etag = evRev4Approve.headers['etag'];
+
+    const transferRev4 = await request(server)
+      .post(baseUrl(`/${handoverId}/task-transfers`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev4Id,
+        assignmentVersion: 4,
+        tasks: [
+          {
+            taskId: taskActiveId.toHexString(),
+            expectedTaskVersion: 3,
+          },
+        ],
+      })
+      .expect(202);
+    etag = transferRev4.headers['etag'];
+    expect((transferRev4.body as { state: string }).state).toBe('CONFIRMED');
+
+    const excRev4Res = await request(server)
+      .post(baseUrl(`/${handoverId}/items/${itemOptionalGapId}/exceptions`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev4Id,
+        contentVersion: 1,
+        ownerUserId: leaderDId.toHexString(),
+        dueAt: '2026-12-20T00:00:00.000Z',
+        reason: 'Tracked as post-handover follow-up on Revision #4.',
+      })
+      .expect(201);
+    const rev4FollowupId = (excRev4Res.body as { id: string }).id;
 
     // Verify taskActiveId is still IN_PROGRESS (NOT DONE!) before completion (A15)
     const activeTaskDoc = await taskDb
@@ -2303,7 +2551,7 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .findOne({ _id: taskActiveId });
     expect(activeTaskDoc?.status).toBe('IN_PROGRESS');
 
-    // A15: Complete handover succeeds (200) even though transferred taskActiveId is IN_PROGRESS!
+    // A15: Complete handover succeeds (200) once sources are current and transferred taskActiveId is owned by B1!
     detail = await request(server)
       .get(baseUrl(`/${handoverId}`))
       .set('Cookie', cookieFor('leaderD'))
@@ -2318,10 +2566,10 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .set('If-Match', etag)
       .set('Idempotency-Key', randomUUID())
       .send({
-        revisionId: rev3Id,
+        revisionId: rev4Id,
         assignmentVersion: 4,
         reviewNote:
-          'All required knowledge items verified; optional gap tracked in follow-up.',
+          'All required knowledge items verified on current sources; optional gap tracked in follow-up.',
       })
       .expect(200);
     expect((completeRes.body as { status: string }).status).toBe('COMPLETED');
@@ -2335,12 +2583,12 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       followUpsList.body as {
         data: Array<{ id: string; version: number; status: string }>;
       }
-    ).data.find((f) => f.id === followupId)!;
+    ).data.find((f) => f.id === rev4FollowupId)!;
     expect(fu.status).toBe('OPEN');
 
-    const fuEtag = `"handover-followup:${followupId}:${fu.version}"`;
+    const fuEtag = `"handover-followup:${fu.id}:${fu.version}"`;
     const resolveFu = await request(server)
-      .post(baseUrl(`/${handoverId}/follow-ups/${followupId}/resolution`))
+      .post(baseUrl(`/${handoverId}/follow-ups/${fu.id}/resolution`))
       .set('Cookie', cookieFor('leaderD'))
       .set('x-csrf-token', csrfToken)
       .set('If-Match', fuEtag)
@@ -2352,7 +2600,7 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .expect(200);
     expect((resolveFu.body as { status: string }).status).toBe('RESOLVED');
     expect(resolveFu.headers['etag']).toBe(
-      `"handover-followup:${followupId}:${fu.version + 1}"`,
+      `"handover-followup:${fu.id}:${fu.version + 1}"`,
     );
   });
 
@@ -2571,6 +2819,450 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .findOne({ _id: taskCancelKeepId });
     expect((keptTask?.assigneeId as Types.ObjectId).toHexString()).toBe(
       successorB2Id.toHexString(),
+    );
+  });
+
+  it('F02, F03 & F06 regressions: enforces live task drift conflict without overwriting C, pinned source snapshot isolation, and Project Leader successor scope', async () => {
+    const taskDb = iamConn.useDb(WORKSPACE_TASK_DATABASE_NAME, {
+      useCache: true,
+    }).db!;
+
+    // Seed dedicated task + versioned TASK_NOTE + re-approved WORK_REPORT
+    const taskDriftId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d71');
+    const noteVersionedId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d72');
+    const reportReapprovedId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d73');
+    const now = new Date();
+
+    await taskDb.collection(WORKSPACE_TASKS_COLLECTION).insertOne({
+      _id: taskDriftId,
+      organizationId: orgId,
+      projectId,
+      key: 'PLAT-199',
+      title: 'On-Call Runbook Rotation Task',
+      description: 'Rotate on-call pager schedule.',
+      type: 'TASK',
+      status: 'IN_PROGRESS',
+      priority: 'HIGH',
+      assigneeId: departingAId,
+      createdBy: leaderDId,
+      parentId: null,
+      sprintId: null,
+      labels: ['handover'],
+      steps: [],
+      dueDate: null,
+      startDate: null,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      version: 1,
+    });
+
+    await captureConn.db!.collection('work_notes').insertOne({
+      _id: noteVersionedId,
+      organizationId: orgId,
+      projectId,
+      taskId: taskDriftId,
+      authorUserId: departingAId,
+      type: 'TASK_NOTE',
+      title: 'Rotation Note v2 LIVE',
+      whatDone: 'Mutated v2 note body',
+      howSolved: 'v2 approach',
+      whyThisWay: 'v2 rationale',
+      status: 'CONFIRMED',
+      authorConfirmedAt: new Date('2026-10-01T00:00:00Z'),
+      createdAt: new Date('2026-10-01T00:00:00Z'),
+      updatedAt: new Date('2026-10-10T00:00:00Z'),
+    });
+    await captureConn.db!.collection('work_note_versions').insertMany([
+      {
+        _id: new Types.ObjectId(),
+        workNoteId: noteVersionedId,
+        versionNumber: 1,
+        title: 'Rotation Note v1 SNAPSHOT',
+        whatDone: 'Original v1 note body',
+        howSolved: 'v1 approach',
+        whyThisWay: 'v1 rationale',
+        editedByUserId: departingAId,
+      },
+      {
+        _id: new Types.ObjectId(),
+        workNoteId: noteVersionedId,
+        versionNumber: 2,
+        title: 'Rotation Note v2 LIVE',
+        whatDone: 'Mutated v2 note body',
+        howSolved: 'v2 approach',
+        whyThisWay: 'v2 rationale',
+        editedByUserId: departingAId,
+      },
+    ]);
+
+    await captureConn.db!.collection('work_reports').insertOne({
+      _id: reportReapprovedId,
+      organizationId: orgId,
+      projectId,
+      memberUserId: departingAId,
+      reportScope: 'MEMBER',
+      status: 'APPROVED',
+      periodStart: new Date('2026-10-15T00:00:00Z'),
+      accomplishments: 'Re-approved v2 report content',
+      approach: 'Canary validation',
+      reason: 'Operational continuity',
+      reviewHistory: [
+        { action: 'APPROVED', reviewerId: leaderDId, at: now },
+        { action: 'APPROVED', reviewerId: leaderDId, at: now },
+      ],
+    });
+
+    // Create handover where successor IS ALSO a Project Leader (leaderD2Id — F06!)
+    const createRes = await request(server)
+      .post(baseUrl())
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        departingUserId: departingAId.toHexString(),
+        assignedLeaderId: leaderDId.toHexString(),
+        successorUserId: leaderD2Id.toHexString(),
+        teamId: null,
+        targetCompletionDate: '2026-12-05T00:00:00.000Z',
+        title: 'Leader-to-Leader Continuity Handover',
+      })
+      .expect(201);
+    let etag = createRes.headers['etag'];
+    const h3Id = (createRes.body as { handoverId: string }).handoverId;
+
+    // F03: Pinning WORK_REPORT@v1 after re-approval to v2 MUST fail closed (422 SOURCE_NOT_ELIGIBLE)!
+    await request(server)
+      .put(baseUrl(`/${h3Id}/draft`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: 0,
+        selectedSources: [
+          {
+            kind: 'WORK_REPORT',
+            id: reportReapprovedId.toHexString(),
+            version: '1',
+          },
+        ],
+        taskIds: [],
+        items: [],
+      })
+      .expect(422);
+
+    // F03 + F06: Pinning WORK_REPORT@v2 (MEMBER scope of departingA, readable by Leaders D & D2!) and TASK_NOTE@v2
+    const draftRes = await request(server)
+      .put(baseUrl(`/${h3Id}/draft`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: 0,
+        selectedSources: [
+          {
+            kind: 'WORK_REPORT',
+            id: reportReapprovedId.toHexString(),
+            version: '2',
+          },
+          {
+            kind: 'TASK_NOTE',
+            id: noteVersionedId.toHexString(),
+            version: '2',
+          },
+        ],
+        taskIds: [taskDriftId.toHexString()],
+        items: [
+          {
+            itemId: null,
+            title: 'Confidential Member Report Handover Item',
+            body: 'Transferred between Project Leaders D and D2.',
+            requirement: 'Confirm operational continuity steps.',
+            isRequired: true,
+            evidenceRequired: false,
+            sources: [
+              {
+                kind: 'WORK_REPORT',
+                id: reportReapprovedId.toHexString(),
+                version: '2',
+              },
+              {
+                kind: 'TASK_NOTE',
+                id: noteVersionedId.toHexString(),
+                version: '2',
+              },
+            ],
+            citations: [
+              {
+                source: {
+                  kind: 'WORK_REPORT',
+                  id: reportReapprovedId.toHexString(),
+                  version: '2',
+                },
+                locator: { kind: 'SECTION', value: 'accomplishments' },
+              },
+            ],
+          },
+        ],
+      })
+      .expect(200);
+    etag = draftRes.headers['etag'];
+
+    const loadedDraft = await request(server)
+      .get(baseUrl(`/${h3Id}/draft`))
+      .set('Cookie', cookieFor('leaderD'))
+      .expect(200);
+    const itemLeaderId = (
+      loadedDraft.body as { items: Array<{ itemId: string }> }
+    ).items[0].itemId;
+
+    const pubRes = await request(server)
+      .post(baseUrl(`/${h3Id}/revisions`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: 1,
+        reviewNote: 'Published for Leader D2 successor.',
+        itemReviews: [
+          {
+            itemId: itemLeaderId,
+            contentVersion: 1,
+            decision: 'CONTENT_APPROVED',
+            impact: 'CHANGED',
+            reason: 'Verified report v2.',
+          },
+        ],
+        gapAssignments: [],
+      })
+      .expect(201);
+    etag = pubRes.headers['etag'];
+    const revId = (pubRes.body as { revisionId: string }).revisionId;
+
+    // Leader D2 accepts & acknowledges item, and Leader D confirms task transfer to Leader D2
+    const accRes = await request(server)
+      .post(baseUrl(`/${h3Id}/acceptance`))
+      .set('Cookie', cookieFor('leaderD2'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ revisionId: revId })
+      .expect(200);
+    etag = accRes.headers['etag'];
+
+    const ackRes = await request(server)
+      .post(baseUrl(`/${h3Id}/items/${itemLeaderId}/acknowledgements`))
+      .set('Cookie', cookieFor('leaderD2'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: revId,
+        contentVersion: 1,
+        assignmentVersion: 1,
+        decision: 'UNDERSTOOD',
+        note: 'Leader D2 verified report v2.',
+      })
+      .expect(200);
+    etag = ackRes.headers['etag'];
+
+    const trRes = await request(server)
+      .post(baseUrl(`/${h3Id}/task-transfers`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: revId,
+        assignmentVersion: 1,
+        tasks: [
+          {
+            taskId: taskDriftId.toHexString(),
+            expectedTaskVersion: 1,
+          },
+        ],
+      })
+      .expect(202);
+    etag = trRes.headers['etag'];
+    const trId = (trRes.body as { id: string; state: string }).id;
+    expect((trRes.body as { state: string }).state).toBe('CONFIRMED');
+
+    // F06: Because Leader D2 IS a Project Leader, canComplete is TRUE right now even though source is a MEMBER-scoped Work Report!
+    const readyDetail = await request(server)
+      .get(baseUrl(`/${h3Id}`))
+      .set('Cookie', cookieFor('leaderD'))
+      .expect(200);
+    expect((readyDetail.body as { canComplete: boolean }).canComplete).toBe(
+      true,
+    );
+
+    // F02: Now reassign taskDriftId in continuum_task to Member C (version 2 -> 3) AFTER transfer was CONFIRMED!
+    await taskDb.collection(WORKSPACE_TASKS_COLLECTION).updateOne(
+      { _id: taskDriftId },
+      {
+        $set: { assigneeId: memberCId, updatedAt: new Date() },
+        $inc: { version: 1 },
+      },
+    );
+
+    // GET detail immediately detects live assignee drift -> canComplete: false!
+    const driftedDetail = await request(server)
+      .get(baseUrl(`/${h3Id}`))
+      .set('Cookie', cookieFor('leaderD'))
+      .expect(200);
+    expect((driftedDetail.body as { canComplete: boolean }).canComplete).toBe(
+      false,
+    );
+
+    // POST /completion MUST block (409), record CONFLICT on transfer ledger, and leave Member C untouched!
+    const blockedComp = await request(server)
+      .post(baseUrl(`/${h3Id}/completion`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: revId,
+        assignmentVersion: 1,
+        reviewNote: 'Must block because taskDriftId moved to Member C',
+      })
+      .expect(409);
+    const compBlockers = (
+      blockedComp.body as {
+        details?: { blockers?: Array<{ code: string }> };
+      }
+    ).details?.blockers?.map((b) => b.code);
+    expect(compBlockers).toContain('SELECTED_TASK_ASSIGNEE_DRIFTED');
+    expect(compBlockers).toContain('TASK_TRANSFER_CONFLICT');
+
+    // Explicit reconcile endpoint ALSO reports CONFLICT (TASK_REASSIGNED_AFTER_DISPATCH) without overwriting Member C!
+    const reconRes = await request(server)
+      .post(baseUrl(`/${h3Id}/task-transfers/${trId}/reconciliation`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ transferId: trId })
+      .expect(200);
+    etag = reconRes.headers['etag'];
+    expect((reconRes.body as { state: string }).state).toBe('CONFLICT');
+
+    const taskStillC = await taskDb
+      .collection(WORKSPACE_TASKS_COLLECTION)
+      .findOne({ _id: taskDriftId });
+    expect((taskStillC?.assigneeId as Types.ObjectId).toHexString()).toBe(
+      memberCId.toHexString(),
+    );
+
+    // Leader D removes drifted task from scope, publishes Revision #2, Leader D2 accepts (item acceptance carries forward!), and completes (F06)!
+    const draftNoTask = await request(server)
+      .put(baseUrl(`/${h3Id}/draft`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: 1,
+        selectedSources: [
+          {
+            kind: 'WORK_REPORT',
+            id: reportReapprovedId.toHexString(),
+            version: '2',
+          },
+          {
+            kind: 'TASK_NOTE',
+            id: noteVersionedId.toHexString(),
+            version: '2',
+          },
+        ],
+        taskIds: [],
+        items: [
+          {
+            itemId: itemLeaderId,
+            title: 'Confidential Member Report Handover Item',
+            body: 'Transferred between Project Leaders D and D2.',
+            requirement: 'Confirm operational continuity steps.',
+            isRequired: true,
+            evidenceRequired: false,
+            sources: [
+              {
+                kind: 'WORK_REPORT',
+                id: reportReapprovedId.toHexString(),
+                version: '2',
+              },
+              {
+                kind: 'TASK_NOTE',
+                id: noteVersionedId.toHexString(),
+                version: '2',
+              },
+            ],
+            citations: [
+              {
+                source: {
+                  kind: 'WORK_REPORT',
+                  id: reportReapprovedId.toHexString(),
+                  version: '2',
+                },
+                locator: { kind: 'SECTION', value: 'accomplishments' },
+              },
+            ],
+          },
+        ],
+      })
+      .expect(200);
+    etag = draftNoTask.headers['etag'];
+
+    const pub2Res = await request(server)
+      .post(baseUrl(`/${h3Id}/revisions`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        expectedDraftVersion: 2,
+        reviewNote: 'Removed task owned by Member C.',
+        itemReviews: [
+          {
+            itemId: itemLeaderId,
+            contentVersion: 1,
+            decision: 'CONTENT_APPROVED',
+            impact: 'UNCHANGED',
+            reason: 'Unchanged report item.',
+          },
+        ],
+        gapAssignments: [],
+      })
+      .expect(201);
+    etag = pub2Res.headers['etag'];
+    const rev2LeaderId = (pub2Res.body as { revisionId: string }).revisionId;
+
+    const acc2Res = await request(server)
+      .post(baseUrl(`/${h3Id}/acceptance`))
+      .set('Cookie', cookieFor('leaderD2'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ revisionId: rev2LeaderId })
+      .expect(200);
+    etag = acc2Res.headers['etag'];
+
+    const compLeaderSuccRes = await request(server)
+      .post(baseUrl(`/${h3Id}/completion`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: rev2LeaderId,
+        assignmentVersion: 1,
+        reviewNote: 'Completed cleanly with Project Leader successor D2.',
+      })
+      .expect(200);
+    expect((compLeaderSuccRes.body as { status: string }).status).toBe(
+      'COMPLETED',
     );
   });
 });

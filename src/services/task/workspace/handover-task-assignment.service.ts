@@ -123,6 +123,79 @@ export class HandoverTaskAssignmentService {
     };
   }
 
+  async inspectTasksCurrentState(
+    organizationId: string,
+    projectId: string,
+    taskIds: readonly string[],
+  ): Promise<
+    Map<
+      string,
+      {
+        exists: boolean;
+        status: string | null;
+        version: number | null;
+        assigneeId: string | null;
+      }
+    >
+  > {
+    const out = new Map<
+      string,
+      {
+        exists: boolean;
+        status: string | null;
+        version: number | null;
+        assigneeId: string | null;
+      }
+    >();
+    const normalizedIds = [
+      ...new Set(
+        taskIds
+          .map((id) => id.trim().toLowerCase())
+          .filter((id) => /^[a-f0-9]{24}$/.test(id)),
+      ),
+    ];
+    if (normalizedIds.length === 0) {
+      return out;
+    }
+
+    const db = this.repository.db;
+    const orgLower = organizationId.toLowerCase();
+    const rows = await db
+      .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
+      .find({
+        _id: { $in: normalizedIds.map((id) => new Types.ObjectId(id)) },
+        projectId: new Types.ObjectId(projectId.toLowerCase()),
+      })
+      .toArray();
+
+    for (const id of normalizedIds) {
+      out.set(id, {
+        exists: false,
+        status: null,
+        version: null,
+        assigneeId: null,
+      });
+    }
+    for (const row of rows) {
+      if (
+        row.organizationId &&
+        row.organizationId.toHexString().toLowerCase() !== orgLower
+      ) {
+        continue;
+      }
+      const hex = row._id.toHexString().toLowerCase();
+      out.set(hex, {
+        exists: true,
+        status: row.status,
+        version: row.version,
+        assigneeId: row.assigneeId
+          ? row.assigneeId.toHexString().toLowerCase()
+          : null,
+      });
+    }
+    return out;
+  }
+
   async assignTaskForHandover(
     input: HandoverTaskAssignmentInput,
   ): Promise<HandoverTaskAssignmentOutcome> {
@@ -401,7 +474,12 @@ export class HandoverTaskAssignmentService {
         const currentAssignee = currentTask?.assigneeId
           ? currentTask.assigneeId.toHexString().toLowerCase()
           : null;
-        if (!currentTask) {
+        if (
+          !currentTask ||
+          (currentTask.organizationId &&
+            currentTask.organizationId.toHexString() !==
+              input.organizationId.toLowerCase())
+        ) {
           return {
             state: 'FAILED',
             committedTaskVersion: null,

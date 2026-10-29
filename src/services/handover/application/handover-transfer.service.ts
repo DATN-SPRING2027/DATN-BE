@@ -637,12 +637,14 @@ export class HandoverTransferService {
       .lean<StoredOperationDoc[]>()
       .exec();
 
-    // Reconcile any PENDING / DISPATCHED / UNKNOWN child intents against owning Task receipt + current Task state (A10)
+    // Reconcile PENDING / DISPATCHED / UNKNOWN / COMMITTED child intents against owning Task receipt + current Task state (A10).
+    // Checking COMMITTED children detects post-transfer reassignment to C without ever overwriting C.
     for (const child of children) {
       if (
         child.state !== 'PENDING' &&
         child.state !== 'DISPATCHED' &&
-        child.state !== 'UNKNOWN'
+        child.state !== 'UNKNOWN' &&
+        child.state !== 'COMMITTED'
       ) {
         continue;
       }
@@ -808,5 +810,118 @@ export class HandoverTransferService {
       version: committed.version,
       replayed: false,
     };
+  }
+
+  async reverifyCurrentRevisionTransfers(input: {
+    organizationId: string;
+    projectId: string;
+    handover: StoredHandoverDoc;
+    revisionId: Types.ObjectId;
+    successorUserId: string;
+  }): Promise<boolean> {
+    const parents = await this.repository.operations
+      .find({
+        handoverId: input.handover._id,
+        projectId: input.handover.projectId,
+        kind: 'TASK_TRANSFER',
+        revisionId: input.revisionId,
+        assignmentVersion: input.handover.assignmentVersion,
+        successorUserId: input.successorUserId.toLowerCase(),
+      })
+      .lean<StoredOperationDoc[]>()
+      .exec();
+
+    let mutated = false;
+    for (const parent of parents) {
+      const children = await this.repository.operations
+        .find({ parentOperationId: parent._id, kind: 'TASK_TRANSFER_CHILD' })
+        .sort({ _id: 1 })
+        .lean<StoredOperationDoc[]>()
+        .exec();
+
+      let parentDirty = false;
+      for (const child of children) {
+        if (child.state !== 'COMMITTED' || !child.taskIntent) {
+          continue;
+        }
+        const outcome =
+          await this.taskAssignmentService.reconcileTaskForHandover({
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            actorId: parent.actorUserId,
+            intentId: child.key,
+            handoverId: input.handover._id.toHexString(),
+            revisionId: input.revisionId.toHexString(),
+            assignmentVersion: input.handover.assignmentVersion,
+            taskId: child.taskIntent.taskId.toHexString(),
+            expectedTaskVersion: child.taskIntent.expectedVersion,
+            targetAssigneeId: child.taskIntent.targetUserId,
+          });
+        if (outcome.state === 'CONFLICT') {
+          const code =
+            outcome.safeErrorCode ?? 'TASK_REASSIGNED_AFTER_DISPATCH';
+          await this.repository.operations.updateOne(
+            { _id: child._id },
+            {
+              $set: {
+                state: 'CONFLICT',
+                safeErrorCode: code,
+                taskOutcome: {
+                  state: 'CONFLICT',
+                  safeErrorCode: code,
+                },
+              },
+            },
+          );
+          parentDirty = true;
+        } else if (outcome.state === 'FAILED') {
+          const code = outcome.safeErrorCode ?? 'TASK_NOT_FOUND';
+          await this.repository.operations.updateOne(
+            { _id: child._id },
+            {
+              $set: {
+                state: 'FAILED',
+                safeErrorCode: code,
+                taskOutcome: {
+                  state: 'REJECTED',
+                  safeErrorCode: code,
+                },
+              },
+            },
+          );
+          parentDirty = true;
+        }
+      }
+
+      if (parentDirty) {
+        mutated = true;
+        const refreshed = await this.repository.operations
+          .find({ parentOperationId: parent._id, kind: 'TASK_TRANSFER_CHILD' })
+          .sort({ _id: 1 })
+          .lean<StoredOperationDoc[]>()
+          .exec();
+        const aggState = aggregateTaskTransferState(
+          refreshed.map((c) => this.mapChildDocToDto(c)),
+        );
+        const storedState = this.mapAggregateToStoredState(aggState);
+        await this.repository.operations.updateOne(
+          { _id: parent._id },
+          {
+            $set: {
+              state: storedState,
+              ...(parent.receipt
+                ? {
+                    receipt: {
+                      ...parent.receipt,
+                      outcome: aggState,
+                    },
+                  }
+                : {}),
+            },
+          },
+        );
+      }
+    }
+    return mutated;
   }
 }

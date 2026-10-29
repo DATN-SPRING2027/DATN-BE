@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   BadGatewayException,
   ConflictException,
@@ -5,8 +6,10 @@ import {
   HttpException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   OnModuleDestroy,
+  OnModuleInit,
   Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
@@ -83,12 +86,21 @@ interface SagHandoverAssistResponse {
 }
 
 @Injectable()
-export class HandoverAiService implements OnModuleDestroy {
+export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
+  private static readonly LEASE_DURATION_MS = 60_000;
+  private static readonly RECOVERY_SWEEP_MS = 15_000;
+  private static readonly MAX_AUTO_RECOVERY_ATTEMPTS = 3;
+  private static readonly MAX_REASON_CACHE_ENTRIES = 200;
+
+  private readonly logger = new Logger(HandoverAiService.name);
   private readonly inFlightJobs = new Set<Promise<void>>();
+  private readonly activeJobIds = new Set<string>();
   private readonly candidateReasonCache = new Map<
     string,
     Map<string, string>
   >();
+  private recoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private isDestroyed = false;
 
   constructor(
     private readonly repository: HandoverRepository,
@@ -99,13 +111,113 @@ export class HandoverAiService implements OnModuleDestroy {
     private readonly aiEngine?: AiEngineClient,
   ) {}
 
+  onModuleInit(): void {
+    this.recoveryTimer = setInterval(() => {
+      void this.recoverStalledJobs();
+    }, HandoverAiService.RECOVERY_SWEEP_MS);
+    this.recoveryTimer.unref?.();
+    setImmediate(() => {
+      if (!this.isDestroyed) {
+        void this.recoverStalledJobs();
+      }
+    });
+  }
+
   async onModuleDestroy(): Promise<void> {
+    this.isDestroyed = true;
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
     await this.flushPendingJobs();
   }
 
   async flushPendingJobs(): Promise<void> {
     while (this.inFlightJobs.size > 0) {
       await Promise.allSettled([...this.inFlightJobs]);
+    }
+  }
+
+  private setCandidateReasons(
+    jobHex: string,
+    reasons: Map<string, string>,
+  ): void {
+    if (this.candidateReasonCache.has(jobHex)) {
+      this.candidateReasonCache.delete(jobHex);
+    } else if (
+      this.candidateReasonCache.size >=
+      HandoverAiService.MAX_REASON_CACHE_ENTRIES
+    ) {
+      for (const oldestKey of this.candidateReasonCache.keys()) {
+        this.candidateReasonCache.delete(oldestKey);
+        break;
+      }
+    }
+    this.candidateReasonCache.set(jobHex, reasons);
+  }
+
+  async recoverStalledJobs(): Promise<void> {
+    if (this.isDestroyed || !this.repository) {
+      return;
+    }
+    try {
+      const jobsModel = this.repository.jobs;
+      if (!jobsModel) {
+        return;
+      }
+      const now = new Date();
+      await jobsModel.updateMany(
+        {
+          schemaVersion: 2,
+          state: 'RUNNING',
+          leaseExpiresAt: { $lte: now },
+          attempt: { $gte: HandoverAiService.MAX_AUTO_RECOVERY_ATTEMPTS },
+        },
+        {
+          $set: {
+            state: 'FAILED',
+            safeErrorCode: 'WORKER_LEASE_EXPIRED',
+            finishedAt: now,
+          },
+          $unset: {
+            leaseOwner: 1,
+            leaseExpiresAt: 1,
+          },
+        },
+      );
+
+      const reclaimable = await jobsModel
+        .find({
+          schemaVersion: 2,
+          $or: [
+            { state: 'PENDING' },
+            {
+              state: 'RUNNING',
+              leaseExpiresAt: { $lte: now },
+              attempt: { $lt: HandoverAiService.MAX_AUTO_RECOVERY_ATTEMPTS },
+            },
+          ],
+        })
+        .sort({ createdAt: 1 })
+        .limit(20)
+        .select({ _id: 1 })
+        .lean<Array<{ _id: Types.ObjectId }>>()
+        .exec();
+
+      for (const row of reclaimable) {
+        if (!this.activeJobIds.has(row._id.toHexString())) {
+          this.scheduleBackgroundJob(row._id);
+        }
+      }
+    } catch (err) {
+      if (err instanceof ServiceUnavailableException) {
+        return;
+      }
+      this.logger.warn(
+        `Handover AI job recovery sweep failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 
@@ -619,10 +731,17 @@ export class HandoverAiService implements OnModuleDestroy {
         details: {},
       });
     }
-    if (job.state !== 'FAILED') {
+    const retryNow = new Date();
+    const isExpiredRunningLease =
+      job.state === 'RUNNING' &&
+      Boolean(
+        job.leaseExpiresAt &&
+        job.leaseExpiresAt.getTime() <= retryNow.getTime(),
+      );
+    if (job.state !== 'FAILED' && !isExpiredRunningLease) {
       throw new ConflictException({
         code: 'JOB_NOT_RETRYABLE',
-        message: 'Only FAILED jobs can be retried.',
+        message: 'Only FAILED or lease-expired RUNNING jobs can be retried.',
         details: { state: job.state },
       });
     }
@@ -652,7 +771,13 @@ export class HandoverAiService implements OnModuleDestroy {
 
       const updJob = await this.repository.jobs
         .findOneAndUpdate(
-          { _id: job._id, state: 'FAILED' },
+          {
+            _id: job._id,
+            $or: [
+              { state: 'FAILED' },
+              { state: 'RUNNING', leaseExpiresAt: { $lte: retryNow } },
+            ],
+          },
           {
             $set: {
               state: 'PENDING',
@@ -664,6 +789,8 @@ export class HandoverAiService implements OnModuleDestroy {
             $unset: {
               safeErrorCode: 1,
               finishedAt: 1,
+              leaseOwner: 1,
+              leaseExpiresAt: 1,
             },
             $inc: { attempt: 1 },
           },
@@ -731,6 +858,52 @@ export class HandoverAiService implements OnModuleDestroy {
     };
   }
 
+  private async maybeNudgeStalledJob(job: StoredJobDoc): Promise<StoredJobDoc> {
+    const now = new Date();
+    const isExpiredLease =
+      job.state === 'RUNNING' &&
+      Boolean(
+        job.leaseExpiresAt && job.leaseExpiresAt.getTime() <= now.getTime(),
+      );
+    if (
+      isExpiredLease &&
+      job.attempt >= HandoverAiService.MAX_AUTO_RECOVERY_ATTEMPTS
+    ) {
+      const failed = await this.repository.jobs
+        .findOneAndUpdate(
+          {
+            _id: job._id,
+            state: 'RUNNING',
+            leaseExpiresAt: { $lte: now },
+          },
+          {
+            $set: {
+              state: 'FAILED',
+              safeErrorCode: 'WORKER_LEASE_EXPIRED',
+              finishedAt: now,
+            },
+            $unset: {
+              leaseOwner: 1,
+              leaseExpiresAt: 1,
+            },
+          },
+          { new: true },
+        )
+        .lean<StoredJobDoc>()
+        .exec();
+      if (failed) {
+        return failed;
+      }
+    }
+    if (
+      (job.state === 'PENDING' || isExpiredLease) &&
+      !this.activeJobIds.has(job._id.toHexString())
+    ) {
+      this.scheduleBackgroundJob(job._id);
+    }
+    return job;
+  }
+
   async getJob(input: {
     handover: StoredHandoverDoc;
     jobId: string;
@@ -752,7 +925,8 @@ export class HandoverAiService implements OnModuleDestroy {
         details: {},
       });
     }
-    return this.toJobDto(job);
+    const effectiveJob = await this.maybeNudgeStalledJob(job);
+    return this.toJobDto(effectiveJob);
   }
 
   async getCandidates(input: {
@@ -760,7 +934,7 @@ export class HandoverAiService implements OnModuleDestroy {
     handover: StoredHandoverDoc;
     jobId: string;
   }): Promise<SourceCandidatesDto> {
-    const job = await this.repository.jobs
+    const rawJob = await this.repository.jobs
       .findOne({
         _id: new Types.ObjectId(input.jobId),
         handoverId: input.handover._id,
@@ -770,13 +944,15 @@ export class HandoverAiService implements OnModuleDestroy {
       .lean<StoredJobDoc>()
       .exec();
 
-    if (!job || job.kind !== 'SOURCE_PROPOSAL') {
+    if (!rawJob || rawJob.kind !== 'SOURCE_PROPOSAL') {
       throw new NotFoundException({
         code: 'SOURCE_PROPOSAL_JOB_NOT_FOUND',
         message: 'Source proposal job not found.',
         details: {},
       });
     }
+
+    const job = await this.maybeNudgeStalledJob(rawJob);
 
     if (job.state !== 'SUCCEEDED' || !job.candidates?.length) {
       return {
@@ -1028,9 +1204,30 @@ export class HandoverAiService implements OnModuleDestroy {
   }
 
   private scheduleBackgroundJob(jobId: Types.ObjectId): void {
+    const jobHex = jobId.toHexString();
+    if (this.isDestroyed || this.activeJobIds.has(jobHex)) {
+      return;
+    }
+    this.activeJobIds.add(jobHex);
     const task = new Promise<void>((resolve) => {
       setImmediate(() => {
-        void this.runBackgroundJob(jobId).finally(resolve);
+        if (this.isDestroyed) {
+          this.activeJobIds.delete(jobHex);
+          resolve();
+          return;
+        }
+        this.runBackgroundJob(jobId)
+          .catch((err: unknown) => {
+            this.logger.error(
+              `Unhandled error in handover AI background job ${jobHex}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          })
+          .finally(() => {
+            this.activeJobIds.delete(jobHex);
+            resolve();
+          });
       });
     });
     this.inFlightJobs.add(task);
@@ -1039,51 +1236,151 @@ export class HandoverAiService implements OnModuleDestroy {
     });
   }
 
-  private async runBackgroundJob(jobId: Types.ObjectId): Promise<void> {
+  private async claimRunnableJob(
+    jobId: Types.ObjectId,
+    leaseOwner: string,
+  ): Promise<StoredJobDoc | null> {
     const now = new Date();
-    const job = await this.repository.jobs
+    const leaseExpiresAt = new Date(
+      now.getTime() + HandoverAiService.LEASE_DURATION_MS,
+    );
+
+    const pendingClaim = await this.repository.jobs
       .findOneAndUpdate(
         { _id: jobId, state: 'PENDING' },
         {
           $set: {
             state: 'RUNNING',
-            leaseOwner: 'handover-ai-worker',
-            leaseExpiresAt: new Date(now.getTime() + 60_000),
+            leaseOwner,
+            leaseExpiresAt,
           },
         },
         { new: true },
       )
       .lean<StoredJobDoc>()
       .exec();
+    if (pendingClaim) {
+      return pendingClaim;
+    }
+
+    const reclaimed = await this.repository.jobs
+      .findOneAndUpdate(
+        {
+          _id: jobId,
+          state: 'RUNNING',
+          leaseExpiresAt: { $lte: now },
+          attempt: { $lt: HandoverAiService.MAX_AUTO_RECOVERY_ATTEMPTS },
+        },
+        {
+          $set: {
+            state: 'RUNNING',
+            leaseOwner,
+            leaseExpiresAt,
+          },
+          $inc: { attempt: 1 },
+          $unset: {
+            safeErrorCode: 1,
+            finishedAt: 1,
+          },
+        },
+        { new: true },
+      )
+      .lean<StoredJobDoc>()
+      .exec();
+    if (reclaimed) {
+      return reclaimed;
+    }
+
+    await this.repository.jobs.updateOne(
+      {
+        _id: jobId,
+        state: 'RUNNING',
+        leaseExpiresAt: { $lte: now },
+        attempt: { $gte: HandoverAiService.MAX_AUTO_RECOVERY_ATTEMPTS },
+      },
+      {
+        $set: {
+          state: 'FAILED',
+          safeErrorCode: 'WORKER_LEASE_EXPIRED',
+          finishedAt: now,
+        },
+        $unset: {
+          leaseOwner: 1,
+          leaseExpiresAt: 1,
+        },
+      },
+    );
+    return null;
+  }
+
+  private async runBackgroundJob(jobId: Types.ObjectId): Promise<void> {
+    const leaseOwner = `worker:${process.pid}:${randomUUID()}`.slice(0, 100);
+    let job: StoredJobDoc | null = null;
+    try {
+      job = await this.claimRunnableJob(jobId, leaseOwner);
+    } catch (claimErr) {
+      this.logger.warn(
+        `Failed to claim handover AI job ${jobId.toHexString()}: ${
+          claimErr instanceof Error ? claimErr.message : String(claimErr)
+        }`,
+      );
+      return;
+    }
 
     if (!job) {
       return;
     }
 
+    const claimedJob = job;
+
     const markFailed = async (safeErrorCode: string) => {
-      await this.repository.jobs.updateOne(
-        { _id: job._id },
-        {
-          $set: {
-            state: 'FAILED',
-            safeErrorCode: safeErrorCode.slice(0, 100),
-            finishedAt: new Date(),
+      try {
+        await this.repository.jobs.updateOne(
+          { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
+          {
+            $set: {
+              state: 'FAILED',
+              safeErrorCode: safeErrorCode.slice(0, 100),
+              finishedAt: new Date(),
+            },
+            $unset: {
+              leaseOwner: 1,
+              leaseExpiresAt: 1,
+            },
           },
-        },
-      );
+        );
+      } catch (writeErr) {
+        this.logger.warn(
+          `Failed to persist FAILED state on job ${claimedJob._id.toHexString()}: ${
+            writeErr instanceof Error ? writeErr.message : String(writeErr)
+          }`,
+        );
+      }
     };
 
     const markSuperseded = async (safeErrorCode: string) => {
-      await this.repository.jobs.updateOne(
-        { _id: job._id },
-        {
-          $set: {
-            state: 'SUPERSEDED',
-            safeErrorCode: safeErrorCode.slice(0, 100),
-            finishedAt: new Date(),
+      try {
+        await this.repository.jobs.updateOne(
+          { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
+          {
+            $set: {
+              state: 'SUPERSEDED',
+              safeErrorCode: safeErrorCode.slice(0, 100),
+              finishedAt: new Date(),
+            },
+            $unset: {
+              leaseOwner: 1,
+              leaseExpiresAt: 1,
+            },
           },
-        },
-      );
+        );
+      } catch (writeErr) {
+        this.logger.warn(
+          `Failed to persist SUPERSEDED state on job ${claimedJob._id.toHexString()}: ${
+            writeErr instanceof Error ? writeErr.message : String(writeErr)
+          }`,
+        );
+      }
     };
 
     try {
@@ -1092,15 +1389,15 @@ export class HandoverAiService implements OnModuleDestroy {
         return;
       }
 
-      const orgIdStr = job.organizationId.toHexString();
-      const projectIdStr = job.projectId.toHexString();
+      const orgIdStr = claimedJob.organizationId.toHexString();
+      const projectIdStr = claimedJob.projectId.toHexString();
 
       // Re-verify initiator is still an eligible active Project Leader in IAM
       try {
         await this.iamScope.assertEligibleCoordinator(
           orgIdStr,
           projectIdStr,
-          job.initiatedBy,
+          claimedJob.initiatedBy,
         );
       } catch (err) {
         if (err instanceof ForbiddenException || err instanceof HttpException) {
@@ -1111,7 +1408,7 @@ export class HandoverAiService implements OnModuleDestroy {
       }
 
       const handover = await this.repository.handovers
-        .findOne({ _id: job.handoverId })
+        .findOne({ _id: claimedJob.handoverId })
         .lean<StoredHandoverDoc>()
         .exec();
       if (!handover || handover.status !== 'OPEN') {
@@ -1122,26 +1419,30 @@ export class HandoverAiService implements OnModuleDestroy {
       const viewer: HandoverSourceViewer = {
         organizationId: orgIdStr,
         projectId: projectIdStr,
-        userId: job.initiatedBy,
+        userId: claimedJob.initiatedBy,
         isProjectMember: true,
         isProjectLeader: true,
       };
 
-      if (job.kind === 'SOURCE_PROPOSAL') {
+      if (claimedJob.kind === 'SOURCE_PROPOSAL') {
         const discovered = await this.sourcesService.discoverOfficialCandidates(
           viewer,
           handover.departingUserId,
-          job.query ?? '',
+          claimedJob.query ?? '',
           30,
         );
         if (discovered.length === 0) {
           await this.repository.jobs.updateOne(
-            { _id: job._id },
+            { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
             {
               $set: {
                 state: 'SUCCEEDED',
                 candidates: [],
                 finishedAt: new Date(),
+              },
+              $unset: {
+                leaseOwner: 1,
+                leaseExpiresAt: 1,
               },
             },
           );
@@ -1163,17 +1464,43 @@ export class HandoverAiService implements OnModuleDestroy {
           path: `/api/v1/projects/${encodeURIComponent(projectIdStr)}/handover/assist`,
           method: 'POST',
           headers: this.buildSagScopeHeaders(
-            job.initiatedBy,
+            claimedJob.initiatedBy,
             orgIdStr,
             projectIdStr,
           ),
           body: {
             task: 'SOURCE_PROPOSAL',
-            query: job.query ?? '',
+            query: claimedJob.query ?? '',
             maxItems: 20,
             sources: sagSources,
           },
         });
+
+        try {
+          await this.iamScope.assertEligibleCoordinator(
+            orgIdStr,
+            projectIdStr,
+            claimedJob.initiatedBy,
+          );
+        } catch (err) {
+          if (
+            err instanceof ForbiddenException ||
+            err instanceof HttpException
+          ) {
+            await markFailed('INITIATOR_AUTHORITY_REVOKED');
+            return;
+          }
+          throw err;
+        }
+
+        const freshHandover = await this.repository.handovers
+          .findOne({ _id: claimedJob.handoverId })
+          .lean<StoredHandoverDoc>()
+          .exec();
+        if (!freshHandover || freshHandover.status !== 'OPEN') {
+          await markSuperseded('HANDOVER_CLOSED');
+          return;
+        }
 
         const allowedDiscovered = new Map(
           discovered.map((d) => [
@@ -1198,29 +1525,35 @@ export class HandoverAiService implements OnModuleDestroy {
             verifiedCandidates.push(ref);
           }
         }
-        this.candidateReasonCache.set(job._id.toHexString(), reasonMap);
 
         // Candidate proposals NEVER mutate selectedSources or draft items automatically (A03)
-        await this.repository.jobs.updateOne(
-          { _id: job._id },
+        const propUpd = await this.repository.jobs.updateOne(
+          { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
           {
             $set: {
               state: 'SUCCEEDED',
               candidates: verifiedCandidates,
               finishedAt: new Date(),
             },
+            $unset: {
+              leaseOwner: 1,
+              leaseExpiresAt: 1,
+            },
           },
         );
+        if (propUpd.matchedCount === 1) {
+          this.setCandidateReasons(claimedJob._id.toHexString(), reasonMap);
+        }
         return;
       }
 
       // GENERATION job
       const evalMap = await this.sourcesService.evaluateSourceRefsMap(
         viewer,
-        job.selectedSources,
+        claimedJob.selectedSources,
       );
       const sagGenSources = [];
-      for (const ref of job.selectedSources) {
+      for (const ref of claimedJob.selectedSources) {
         const ev = evalMap.get(sourceRefKey(ref));
         const verNum = parseSourceVersionNumber(ref.version);
         if (!ev || !ev.eligible || !ev.readable || !verNum || !ev.title) {
@@ -1245,7 +1578,7 @@ export class HandoverAiService implements OnModuleDestroy {
         path: `/api/v1/projects/${encodeURIComponent(projectIdStr)}/handover/assist`,
         method: 'POST',
         headers: this.buildSagScopeHeaders(
-          job.initiatedBy,
+          claimedJob.initiatedBy,
           orgIdStr,
           projectIdStr,
         ),
@@ -1339,27 +1672,49 @@ export class HandoverAiService implements OnModuleDestroy {
       }
 
       // Re-verify initiator authority & CAS apply against inputDraftVersion + sourceFingerprint (A12)
-      await this.iamScope.assertEligibleCoordinator(
-        orgIdStr,
-        projectIdStr,
-        job.initiatedBy,
-      );
+      try {
+        await this.iamScope.assertEligibleCoordinator(
+          orgIdStr,
+          projectIdStr,
+          claimedJob.initiatedBy,
+        );
+      } catch (err) {
+        if (err instanceof ForbiddenException || err instanceof HttpException) {
+          await markFailed('INITIATOR_AUTHORITY_REVOKED');
+          return;
+        }
+        throw err;
+      }
 
       await this.repository.withTransaction(async (session) => {
+        const freshJob = await this.repository.jobs
+          .findOne({ _id: claimedJob._id, state: 'RUNNING', leaseOwner })
+          .session(session)
+          .lean<StoredJobDoc>()
+          .exec();
+        if (!freshJob) {
+          // Lease was reclaimed by another worker; abort cleanly without touching draft!
+          return;
+        }
+
         const freshHandover = await this.repository.handovers
-          .findOne({ _id: job.handoverId })
+          .findOne({ _id: claimedJob.handoverId })
           .session(session)
           .lean<StoredHandoverDoc>()
           .exec();
 
         if (!freshHandover || freshHandover.status !== 'OPEN') {
           await this.repository.jobs.updateOne(
-            { _id: job._id },
+            { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
             {
               $set: {
                 state: 'SUPERSEDED',
                 safeErrorCode: 'HANDOVER_CLOSED',
                 finishedAt: new Date(),
+              },
+              $unset: {
+                leaseOwner: 1,
+                leaseExpiresAt: 1,
               },
             },
             { session },
@@ -1371,17 +1726,21 @@ export class HandoverAiService implements OnModuleDestroy {
           freshHandover.selectedSources,
         );
         if (
-          freshHandover.draftVersion !== job.inputDraftVersion ||
-          currentSourceFp !== job.sourceFingerprint
+          freshHandover.draftVersion !== claimedJob.inputDraftVersion ||
+          currentSourceFp !== claimedJob.sourceFingerprint
         ) {
           // Stale generation MUST NOT overwrite newer human/AI draft (Scenario A12)
           await this.repository.jobs.updateOne(
-            { _id: job._id },
+            { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
             {
               $set: {
                 state: 'SUPERSEDED',
                 safeErrorCode: 'DRAFT_SUPERSEDED',
                 finishedAt: new Date(),
+              },
+              $unset: {
+                leaseOwner: 1,
+                leaseExpiresAt: 1,
               },
             },
             { session },
@@ -1392,12 +1751,32 @@ export class HandoverAiService implements OnModuleDestroy {
         const nextDraftVersion = freshHandover.draftVersion + 1;
         const nextAggregateVersion = freshHandover.version + 1;
 
+        const jobUpd = await this.repository.jobs.updateOne(
+          { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
+          {
+            $set: {
+              state: 'SUCCEEDED',
+              resultItems: generatedSnapshots,
+              appliedDraftVersion: nextDraftVersion,
+              finishedAt: new Date(),
+            },
+            $unset: {
+              leaseOwner: 1,
+              leaseExpiresAt: 1,
+            },
+          },
+          { session },
+        );
+        if (jobUpd.matchedCount !== 1) {
+          return;
+        }
+
         const upd = await this.repository.handovers.updateOne(
           {
             _id: freshHandover._id,
             status: 'OPEN',
             version: freshHandover.version,
-            draftVersion: job.inputDraftVersion,
+            draftVersion: claimedJob.inputDraftVersion,
           },
           {
             $set: {
@@ -1410,12 +1789,18 @@ export class HandoverAiService implements OnModuleDestroy {
 
         if (upd.matchedCount !== 1) {
           await this.repository.jobs.updateOne(
-            { _id: job._id },
+            { _id: claimedJob._id },
             {
               $set: {
                 state: 'SUPERSEDED',
                 safeErrorCode: 'DRAFT_SUPERSEDED',
                 finishedAt: new Date(),
+              },
+              $unset: {
+                resultItems: 1,
+                appliedDraftVersion: 1,
+                leaseOwner: 1,
+                leaseExpiresAt: 1,
               },
             },
             { session },
@@ -1435,34 +1820,21 @@ export class HandoverAiService implements OnModuleDestroy {
             organizationId: freshHandover.organizationId,
             projectId: freshHandover.projectId,
             handoverId: freshHandover._id,
-            updatedBy: job.initiatedBy,
+            updatedBy: claimedJob.initiatedBy,
           })),
           { session, ordered: true },
-        );
-
-        await this.repository.jobs.updateOne(
-          { _id: job._id },
-          {
-            $set: {
-              state: 'SUCCEEDED',
-              resultItems: generatedSnapshots,
-              appliedDraftVersion: nextDraftVersion,
-              finishedAt: new Date(),
-            },
-          },
-          { session },
         );
 
         await this.repository.appendAuditAndOutbox(
           {
             organizationId: orgIdStr,
             projectId: projectIdStr,
-            actorUserId: job.initiatedBy,
+            actorUserId: claimedJob.initiatedBy,
             action: 'handover.draft_generation.succeeded',
             targetResource: 'handover',
             targetResourceId: freshHandover._id.toHexString(),
             metadata: {
-              jobId: job._id.toHexString(),
+              jobId: claimedJob._id.toHexString(),
               appliedDraftVersion: nextDraftVersion,
               itemCount: generatedSnapshots.length,
             },

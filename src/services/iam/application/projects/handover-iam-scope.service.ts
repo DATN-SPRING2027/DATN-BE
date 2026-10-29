@@ -313,4 +313,51 @@ export class HandoverIamScopeService {
       });
     }
   }
+
+  async resolveActiveProjectMemberScope(
+    organizationId: string,
+    projectId: string,
+    userId: string,
+  ): Promise<{ isProjectMember: boolean; isProjectLeader: boolean }> {
+    if (!OBJECT_ID_RE.test(userId)) {
+      return { isProjectMember: false, isProjectLeader: false };
+    }
+    const db = this.db();
+    const orgObjId = new Types.ObjectId(organizationId.toLowerCase());
+    const projectObjId = new Types.ObjectId(projectId.toLowerCase());
+    const userObjId = new Types.ObjectId(userId.toLowerCase());
+
+    const [user, orgMembership, projectMembership, leaderRole] =
+      await Promise.all([
+        db.collection('users').findOne({ _id: userObjId }),
+        db.collection('organization_memberships').findOne({
+          organizationId: orgObjId,
+          userId: userObjId,
+        }),
+        db.collection('project_memberships').findOne({
+          organizationId: orgObjId,
+          projectId: projectObjId,
+          userId: userObjId,
+          status: 'ACTIVE',
+        }),
+        db.collection('role_assignments').findOne({
+          organizationId: orgObjId,
+          projectId: projectObjId,
+          userId: userObjId,
+          roleCode: 'TEAM_LEADER',
+        }),
+      ]);
+
+    const isProjectMember = Boolean(
+      user &&
+      user.status === 'ACTIVE' &&
+      orgMembership &&
+      orgMembership.status === 'ACTIVE' &&
+      projectMembership,
+    );
+    return {
+      isProjectMember,
+      isProjectLeader: isProjectMember && Boolean(leaderRole),
+    };
+  }
 }

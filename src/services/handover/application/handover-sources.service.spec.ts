@@ -270,4 +270,113 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
     );
     expect(forMemberB.readable).toBe(false);
   });
+
+  it('never leaks newer v2 content when evaluating pinned v1 of TASK_NOTE or WORK_REPORT (F03)', async () => {
+    const noteId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d91');
+    const reapprovedReportId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d92');
+    const createdAt = new Date('2026-10-01T00:00:00Z');
+    const updatedAt = new Date('2026-10-10T00:00:00Z');
+
+    const noteLiveV2 = {
+      _id: noteId,
+      organizationId: orgId,
+      projectId,
+      status: 'CONFIRMED',
+      deletedAt: null,
+      title: 'Worker Retry Note v2 (MUTATED)',
+      whatDone: 'Replaced backoff with fixed circuit breaker in v2',
+      howSolved: 'v2 solution',
+      whyThisWay: 'v2 reason',
+      authorConfirmedAt: createdAt,
+      createdAt,
+      updatedAt,
+    };
+    const noteVersions = [
+      {
+        _id: new Types.ObjectId(),
+        workNoteId: noteId,
+        versionNumber: 1,
+        title: 'Worker Retry Note v1 (PINNED)',
+        whatDone: 'Implemented exponential jitter in v1',
+        howSolved: 'v1 solution',
+        whyThisWay: 'v1 reason',
+      },
+      {
+        _id: new Types.ObjectId(),
+        workNoteId: noteId,
+        versionNumber: 2,
+        title: 'Worker Retry Note v2 (MUTATED)',
+        whatDone: 'Replaced backoff with fixed circuit breaker in v2',
+        howSolved: 'v2 solution',
+        whyThisWay: 'v2 reason',
+      },
+    ];
+    const reportLiveV2 = {
+      _id: reapprovedReportId,
+      organizationId: orgId,
+      projectId,
+      memberUserId: departingId,
+      reportScope: 'MEMBER',
+      status: 'APPROVED',
+      periodStart: new Date('2026-10-01T00:00:00Z'),
+      accomplishments: 'Updated v2 report accomplishments',
+      reviewHistory: [{ action: 'APPROVED' }, { action: 'APPROVED' }],
+    };
+
+    const connection = {
+      db: {
+        collection: (name: string) => ({
+          findOne: jest.fn(() => {
+            if (name === 'work_notes') return Promise.resolve(noteLiveV2);
+            if (name === 'work_reports') return Promise.resolve(reportLiveV2);
+            return Promise.resolve(null);
+          }),
+          find: jest.fn(() => ({
+            toArray: () =>
+              Promise.resolve(
+                name === 'work_note_versions' ? noteVersions : [],
+              ),
+          })),
+        }),
+      },
+    };
+
+    const svc = new HandoverCaptureSourceService(connection as never);
+    const leaderViewer = {
+      organizationId: orgId.toHexString(),
+      projectId: projectId.toHexString(),
+      userId: leaderId.toHexString(),
+      isProjectMember: true,
+      isProjectLeader: true,
+    };
+
+    const pinnedNoteV1 = await svc.evaluateSource(leaderViewer, {
+      kind: 'TASK_NOTE',
+      id: noteId.toHexString(),
+      version: 1,
+    });
+    expect(pinnedNoteV1.eligible).toBe(true);
+    expect(pinnedNoteV1.readable).toBe(true);
+    expect(pinnedNoteV1.isCurrent).toBe(false);
+    expect(pinnedNoteV1.currentVersion).toBe(2);
+    expect(pinnedNoteV1.title).toBe('Worker Retry Note v1 (PINNED)');
+    expect(pinnedNoteV1.excerpts[0].content).toBe(
+      'Implemented exponential jitter in v1',
+    );
+    expect(pinnedNoteV1.excerpts.some((e) => e.content.includes('v2'))).toBe(
+      false,
+    );
+
+    // WORK_REPORT has no historical text snapshots: pinned v1 after re-approval to v2 MUST fail closed as unavailable
+    const pinnedReportV1 = await svc.evaluateSource(leaderViewer, {
+      kind: 'WORK_REPORT',
+      id: reapprovedReportId.toHexString(),
+      version: 1,
+    });
+    expect(pinnedReportV1.exists).toBe(true);
+    expect(pinnedReportV1.eligible).toBe(false);
+    expect(pinnedReportV1.readable).toBe(false);
+    expect(pinnedReportV1.currentVersion).toBe(2);
+    expect(pinnedReportV1.excerpts).toEqual([]);
+  });
 });

@@ -163,7 +163,9 @@ export class HandoverCaptureSourceService {
           h?.action === 'APPROVED' || h?.status === 'APPROVED',
       ).length;
       const currentVersion = Math.max(1, approvals);
-      if (ref.version > currentVersion) {
+      // work_reports does not store historical text snapshots across re-approvals;
+      // only the current approved version has verifiable content matching ref.version.
+      if (ref.version !== currentVersion) {
         return { ...unavailable(), exists: true, currentVersion };
       }
 
@@ -238,18 +240,77 @@ export class HandoverCaptureSourceService {
       .collection('work_note_versions')
       .find({ workNoteId: idObj })
       .toArray();
-    const maxHistVer = versions.reduce(
-      (acc, row) =>
-        typeof row.versionNumber === 'number' && row.versionNumber > acc
-          ? row.versionNumber
-          : acc,
-      1,
-    );
-    const currentVersion = Math.max(1, maxHistVer);
+    const asStr = (val: unknown): string =>
+      typeof val === 'string' ? val : '';
+    let maxHistVer = 0;
+    let latestHistDoc: Record<string, unknown> | null = null;
+    for (const row of versions) {
+      if (
+        typeof row.versionNumber === 'number' &&
+        row.versionNumber > maxHistVer
+      ) {
+        maxHistVer = row.versionNumber;
+        latestHistDoc = row;
+      }
+    }
+
+    let currentVersion = 1;
+    let liveNoteRepresentsCurrentVersion = true;
+    if (latestHistDoc && maxHistVer >= 1) {
+      const sameAsLatestSnapshot =
+        asStr(latestHistDoc.title) === asStr(note.title) &&
+        asStr(latestHistDoc.whatDone) === asStr(note.whatDone) &&
+        asStr(latestHistDoc.howSolved) === asStr(note.howSolved) &&
+        asStr(latestHistDoc.whyThisWay) === asStr(note.whyThisWay);
+      if (sameAsLatestSnapshot) {
+        currentVersion = maxHistVer;
+        liveNoteRepresentsCurrentVersion = false;
+      } else {
+        currentVersion = maxHistVer + 1;
+        liveNoteRepresentsCurrentVersion = true;
+      }
+    } else {
+      const baseDate =
+        note.authorConfirmedAt instanceof Date
+          ? note.authorConfirmedAt
+          : note.createdAt instanceof Date
+            ? note.createdAt
+            : null;
+      const updatedDate =
+        note.updatedAt instanceof Date ? note.updatedAt : null;
+      if (
+        baseDate &&
+        updatedDate &&
+        updatedDate.getTime() > baseDate.getTime()
+      ) {
+        // Edited in-place without archiving v1 in work_note_versions: current is v2, v1 snapshot is gone.
+        currentVersion = 2;
+      }
+    }
+
     if (ref.version > currentVersion) {
       return { ...unavailable(), exists: true, currentVersion };
     }
-    const title = String(note.title || 'Task Note').slice(0, 255);
+
+    const matchingSnapshot = versions.find(
+      (row) => row.versionNumber === ref.version,
+    );
+
+    let sourceRecord: Record<string, unknown> | null = null;
+    if (matchingSnapshot) {
+      sourceRecord = matchingSnapshot;
+    } else if (
+      ref.version === currentVersion &&
+      liveNoteRepresentsCurrentVersion
+    ) {
+      sourceRecord = note;
+    }
+
+    if (!sourceRecord) {
+      return { ...unavailable(), exists: true, currentVersion };
+    }
+
+    const title = (asStr(sourceRecord.title) || 'Task Note').slice(0, 255);
     const excerpts: HandoverSourceExcerpt[] = [];
     for (const [key, label] of [
       ['whatDone', 'What Was Done'],
@@ -259,7 +320,7 @@ export class HandoverCaptureSourceService {
       ['unfinished', 'Unfinished Work'],
       ['nextStep', 'Next Step'],
     ] as const) {
-      const val = typeof note[key] === 'string' ? note[key].trim() : '';
+      const val = asStr(sourceRecord[key]).trim();
       if (val) {
         excerpts.push({
           locatorKind: 'SECTION',
