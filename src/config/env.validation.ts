@@ -52,6 +52,7 @@ export interface EnvironmentVariables {
   AWS_SECRET_ACCESS_KEY?: string;
   BACKEND_TIMEOUT_MS: number;
   CAPTURE_FILE_TIMEOUT_MS: number;
+  SAG_CHAT_STREAM_TIMEOUT_MS: number;
   SAG_API_BASE_URL?: string;
   SAG_BFF_SERVICE_TOKEN?: string;
   CONTINUUM_WEB_BASE_URL?: string;
@@ -169,6 +170,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .min(1000)
     .max(600000)
     .default(120000),
+  SAG_CHAT_STREAM_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(300000)
+    .default(120000),
   SAG_API_BASE_URL: Joi.string()
     .trim()
     .uri({ scheme: ['http', 'https'] })
@@ -207,6 +213,14 @@ export function validateEnvironment(
     throw new Error(
       'Environment validation failed: SAG_API_BASE_URL and SAG_BFF_SERVICE_TOKEN must be configured together.',
     );
+  }
+  if (sagApiBaseUrl) {
+    const sagUrl = new URL(sagApiBaseUrl);
+    if (sagUrl.search || sagUrl.hash || sagUrl.username || sagUrl.password) {
+      throw new Error(
+        'Environment validation failed: SAG_API_BASE_URL must not contain credentials, query parameters, or fragments.',
+      );
+    }
   }
   for (const [name, value] of [
     ['CONTINUUM_WEB_BASE_URL', result.value.CONTINUUM_WEB_BASE_URL],

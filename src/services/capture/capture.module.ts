@@ -6,6 +6,7 @@ import { WorkNotesController } from './controllers/work-notes.controller';
 import { CaptureInfrastructureModule } from './infrastructure/capture.infrastructure.module';
 import { WorkNotesAuthorizationService } from './application/work-notes-authorization.service';
 import { WorkNotesService } from './application/work-notes.service';
+import { HandoverCaptureSourceService } from './application/handover-capture-source.service';
 import { WorkReportOverdueScheduler } from './application/work-report-overdue.scheduler';
 import { ProjectReportRosterService } from '../iam/application/projects/project-report-roster.service';
 import { IamInfrastructureModule } from '../iam/infrastructure/iam.infrastructure.module';
@@ -23,9 +24,10 @@ import { NotificationModule } from '../notification/notification.module';
     CaptureApplicationService,
     WorkNotesAuthorizationService,
     WorkNotesService,
+    HandoverCaptureSourceService,
     ProjectReportRosterService,
     WorkReportOverdueScheduler,
   ],
-  exports: [WorkNotesService],
+  exports: [WorkNotesService, HandoverCaptureSourceService],
 })
 export class CaptureModule {}

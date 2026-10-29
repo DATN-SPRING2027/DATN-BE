@@ -116,6 +116,8 @@ import {
   TaskWorkspaceRepository,
 } from '../task/workspace/task-workspace.repository';
 import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
+import { HandoverTaskAssignmentService } from '../task/workspace/handover-task-assignment.service';
+import { HandoverIamScopeService } from './application/projects/handover-iam-scope.service';
 import { NotificationCenterController } from '../notification/notification.controller';
 import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
 import {
@@ -297,6 +299,8 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
       useExisting: TaskWorkspaceIamBridge,
     },
     TaskWorkspaceService,
+    HandoverTaskAssignmentService,
+    HandoverIamScopeService,
     NotificationCenterRepository,
     { provide: NOTIFICATION_REALTIME_PUBLISHER, useExisting: RedisService },
     NotificationRealtimeBus,
@@ -308,6 +312,8 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
     ProjectService,
     TaskWorkspaceService,
     TaskWorkspaceRepository,
+    HandoverTaskAssignmentService,
+    HandoverIamScopeService,
     NotificationService,
     NotificationCenterRepository,
     NotificationRealtimeBus,

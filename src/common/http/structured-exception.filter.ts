@@ -21,6 +21,12 @@ export class StructuredExceptionFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const request = http.getRequest<RequestWithId>();
     const response = http.getResponse<Response>();
+    if (response.headersSent) {
+      if (!response.writableEnded) {
+        response.end();
+      }
+      return;
+    }
     const status =
       exception instanceof HttpException
         ? exception.getStatus()
