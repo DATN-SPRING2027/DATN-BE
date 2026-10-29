@@ -6,6 +6,7 @@ import type {
   AssessmentAnswer,
   AssessmentPurpose,
   AssessmentSource,
+  AssessmentView,
 } from '../../src/services/capture/application/work-note-agent/work-note-assessment.types';
 import type { AgentResult } from '../../src/services/capture/application/work-note-agent/work-note-agent.types';
 
@@ -51,6 +52,35 @@ export function loadAssessmentCorpus(): AssessmentCorpus {
   const corpus = JSON.parse(
     readFileSync(resolve(__dirname, 'cases-assessment-v4.json'), 'utf8'),
   ) as AssessmentCorpus;
+  // Versioned, reviewable development-only errata. Original corpus and historical
+  // reports remain immutable; no validation/holdout labels are tuned here.
+  const errata = JSON.parse(
+    readFileSync(resolve(__dirname, 'cases-assessment-v4-errata.json'), 'utf8'),
+  ) as {
+    version: string;
+    baseVersion: string;
+    changes: {
+      caseId: string;
+      turnIndex: number;
+      expected: Partial<AssessmentExpected>;
+      reason: string;
+    }[];
+  };
+  if (errata.baseVersion !== corpus.version)
+    throw Error('ASSESSMENT_ERRATA_BASE');
+  for (const change of errata.changes) {
+    const scenario = corpus.scenarios.find((s) => s.id === change.caseId);
+    const turn = scenario?.turns[change.turnIndex];
+    if (
+      !scenario ||
+      scenario.split !== 'development' ||
+      !turn ||
+      !change.reason
+    )
+      throw Error('ASSESSMENT_ERRATA_INVALID');
+    turn.expected = { ...turn.expected, ...change.expected };
+  }
+  corpus.version = errata.version;
   const counts = { development: 0, validation: 0, holdout: 0 };
   const turns = { 1: 0, 2: 0, 3: 0 };
   const ids = new Set<string>();
@@ -128,10 +158,23 @@ export function gradeAssessment(
   turnIndex: number,
   output: AssessmentModelOutput,
   input?: AssessmentModelInput,
+  runtime?: Pick<AssessmentView, 'state' | 'allowedActions'>,
 ): AssessmentGrade {
   const expected = c.turns[turnIndex].expected;
   const sources = new Map((input?.sources ?? c.sources).map((s) => [s.id, s]));
   const failures: string[] = [];
+  if (
+    runtime &&
+    output.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+    !runtime.allowedActions.includes('rewrite')
+  )
+    failures.push('RUNTIME_REWRITE_UNAVAILABLE');
+  if (
+    runtime &&
+    output.noteAdequacy === 'CONTRADICTORY' &&
+    runtime.state !== 'contradiction'
+  )
+    failures.push('RUNTIME_CONTRADICTION_LOST');
   if (!expected.taskContextStatus.includes(output.taskContextStatus))
     failures.push('TASK_CONTEXT_STATUS');
   if (!expected.noteAdequacy.includes(output.noteAdequacy))

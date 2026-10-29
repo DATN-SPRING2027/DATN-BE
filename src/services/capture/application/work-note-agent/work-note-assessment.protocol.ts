@@ -4,6 +4,7 @@ import {
   assessmentPurposePolicy,
 } from './work-note-assessment.prompt';
 import { createHash } from 'node:crypto';
+import { assessmentRequestContext } from './work-note-assessment.context';
 import type { AgentMessage } from './work-note-agent.types';
 import {
   ASSESSMENT_PURPOSES,
@@ -12,7 +13,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v9';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v12';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {
@@ -94,6 +95,7 @@ export function buildAssessmentMessages(
     previous,
     correction: input.correction ?? null,
     assessmentPolicy: assessmentPurposePolicy(input.purpose),
+    ...assessmentRequestContext(input),
   };
   if (JSON.stringify(payload).length > 65000) invalid('CONTEXT_LIMIT');
   return [
@@ -108,6 +110,7 @@ export function buildAssessmentMessages(
           ...example.input,
           correction: null,
           assessmentPolicy: assessmentPurposePolicy(example.input.purpose),
+          ...assessmentRequestContext(example.input),
         }),
       },
       { role: 'assistant' as const, content: JSON.stringify(example.output) },

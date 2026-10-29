@@ -45,6 +45,26 @@ const raw = (body: string) =>
   });
 
 describe('Runtime and evaluation share assessment Editor semantics', () => {
+  it('rejects dates invented from prompt versions and accepts dates actually supplied by the author', () => {
+    const input = buildAssessmentEditorInput(draft, null, {
+      ...assessment,
+      answers: [],
+      gaps: [],
+    });
+    const result = parseRewriteCompletion(
+      prepareAgentRequest(input),
+      raw(`${draft.body} Cập nhật ngày 2026-10-29.`),
+      false,
+    ).result;
+    expect(() => assertAssessmentEditorProposal(input, result)).toThrow(
+      'EDITOR_UNSOURCED_DATE',
+    );
+    const sourced = {
+      ...input,
+      draft: { ...draft, body: `${draft.body} Cập nhật ngày 2026-10-29.` },
+    };
+    expect(() => assertAssessmentEditorProposal(sourced, result)).not.toThrow();
+  });
   it('builds the same custom whole-note request including unknowns, answers and gaps', () => {
     const input = buildAssessmentEditorInput(draft, null, assessment);
     expect(input.operation).toBe('custom');

@@ -1,0 +1,18 @@
+{
+  "version": "task-note-assessment-eval/2026-10-29.v4.errata1",
+  "baseVersion": "task-note-assessment-eval/2026-10-29.v4",
+  "changes": [
+    {
+      "caseId": "assessment-release-claim-b",
+      "turnIndex": 0,
+      "expected": { "questionTopicPatterns": ["môi trường|environment|deploy|kiểm tra|staging|build|smoke\\s*test"] },
+      "reason": "Task description explicitly requires successful build and smoke test before staging. Asking their results is relevant; the previous keyword list excluded the Task's own terms. Gap kinds and adequacy expectations stay unchanged."
+    },
+    {
+      "caseId": "assessment-release-claim-b",
+      "turnIndex": 1,
+      "expected": { "question": "none" },
+      "reason": "The approved contradiction state stops automatic questions and offers targeted manual correction. A mandatory automatic question conflicted with that contract. CONTRADICTORY adequacy remains mandatory."
+    }
+  ]
+}

@@ -2,6 +2,7 @@ import { mkdtempSync, unlinkSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AssessmentPhaseBudget } from '../../../../../scripts/work-note-agent/assessment-phase-budget';
+import { AssessmentAttemptBudget } from '../../../../../scripts/work-note-agent/assessment-run';
 describe('Cumulative synthetic pilot budget survives process instances', () => {
   let directory: string, file: string;
   beforeEach(() => {
@@ -11,6 +12,20 @@ describe('Cumulative synthetic pilot budget survives process instances', () => {
   afterEach(() => {
     unlinkSync(file);
     rmdirSync(directory);
+  });
+  it('reports cumulative local exhaustion as a budget denial before HTTP, not a provider network error', async () => {
+    const phase = new AssessmentPhaseBudget(file, 1, 10000);
+    phase.settle(phase.reserve(1000), 200);
+    const network = jest.fn();
+    const attempt = new AssessmentAttemptBudget(29, 10000, network, phase);
+    await expect(
+      attempt.fetch('https://api.xkiro.com/v1/chat/completions', {
+        body: JSON.stringify({ max_tokens: 128 }),
+      }),
+    ).rejects.toThrow('PHASE_HTTP_ATTEMPT_BUDGET');
+    expect(attempt.denialCode).toBe('PHASE_HTTP_ATTEMPT_BUDGET');
+    expect(network).not.toHaveBeenCalled();
+    expect(attempt.snapshot().actualHttpAttempts).toBe(0);
   });
   it('shares an aggregate ceiling rather than resetting it between tuning batches', () => {
     const first = new AssessmentPhaseBudget(file, 2, 10000);

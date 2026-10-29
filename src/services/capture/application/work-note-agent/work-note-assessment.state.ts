@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hasNoNewInformation } from './work-note-assessment.context';
 import {
   assessmentHash,
   ASSESSMENT_PROMPT_VERSION,
@@ -51,12 +52,10 @@ const anchorKey = (refs: SourceRef[]) =>
 const gapKey = (
   g: Pick<AssessmentGap, 'kind' | 'owner' | 'target' | 'sourceRefs'>,
 ) =>
-  assessmentHash([
-    g.kind,
-    g.owner,
-    targetKey(g.target),
-    anchorKey(g.sourceRefs),
-  ]).slice(0, 24);
+  assessmentHash([g.owner, targetKey(g.target), anchorKey(g.sourceRefs)]).slice(
+    0,
+    24,
+  );
 const contentWords = (s: string) =>
   new Set(
     norm(s)
@@ -132,12 +131,57 @@ export function assembleAssessment(
         ? ('AUTHOR_REPORTED' as const)
         : ('NOT_INDEPENDENTLY_VERIFIED' as const),
   }));
+  const correctionAnswer =
+    input.correction &&
+    input.answers.find(
+      (a) =>
+        a.gapId === input.correction!.targetId &&
+        a.answer === input.correction!.text &&
+        a.purpose === out.purpose &&
+        a.taskContextHash === meta.taskContextHash &&
+        !hasNoNewInformation(a) &&
+        !prior?.answers.some((p) => p.id === a.id),
+    );
+  const correctionGrounded =
+    !!correctionAnswer &&
+    claims.some(
+      (c) =>
+        c.originKind === 'AUTHOR_REPORT' &&
+        c.supportRelation === 'FULL' &&
+        c.sourceRefs.some(
+          (r) =>
+            r.sourceId === `answer.${correctionAnswer.id}` &&
+            input.sources.some(
+              (s) =>
+                s.id === r.sourceId &&
+                s.kind === 'ANSWER' &&
+                s.loadStatus === 'LOADED' &&
+                s.includedInRequest &&
+                s.text === correctionAnswer.answer &&
+                s.text.includes(r.quote),
+            ),
+        ),
+    );
+  const completeCorrection =
+    correctionGrounded &&
+    out.purpose === 'COMPLETION' &&
+    out.taskContextStatus === 'CLEAR' &&
+    requirements.length > 0 &&
+    out.coverage.length === requirements.length &&
+    out.coverage.every((c) => c.status === 'SUPPORTED') &&
+    out.coverage.some((c) =>
+      c.sourceRefs.some((r) => r.sourceId === `answer.${correctionAnswer.id}`),
+    );
   const gaps: AssessmentGap[] = out.gaps.map((g) => {
-    const id = `gap-${gapKey(g)}`;
+    // Classification is not identity. Preserve old IDs across prompt versions and
+    // kind corrections; owner, normalized target and source anchors still differ.
+    const id =
+      prior?.gaps.find((p) => gapKey(p) === gapKey(g))?.id ??
+      `gap-${gapKey(g)}`;
     const answer = [...input.answers].reverse().find((a) => a.gapId === id);
     const priorGap = prior?.gaps.find((p) => p.id === id);
     const status =
-      answer?.disposition === 'unknown'
+      answer && hasNoNewInformation(answer) && answer.disposition !== 'skipped'
         ? 'unknown'
         : answer?.disposition === 'skipped'
           ? 'skipped'
@@ -152,7 +196,17 @@ export function assembleAssessment(
     if (a)
       gaps.push({
         ...g,
-        status: a.disposition === 'answered' ? 'answered' : a.disposition,
+        status:
+          correctionGrounded &&
+          g.owner === 'NOTE_AUTHOR' &&
+          out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+          (input.correction?.targetId === g.id || completeCorrection)
+            ? 'answered'
+            : a.disposition === 'skipped'
+              ? 'skipped'
+              : hasNoNewInformation(a)
+                ? 'unknown'
+                : 'answered',
       });
     else if (g.status !== 'open') gaps.push(g);
   }
@@ -177,6 +231,7 @@ export function assembleAssessment(
     const text = norm(a.answer ?? '');
     if (
       a.disposition !== 'answered' ||
+      hasNoNewInformation(a) ||
       a.purpose !== prior?.purpose ||
       a.taskContextHash !== meta.taskContextHash ||
       !text ||
@@ -294,6 +349,7 @@ export function assembleAssessment(
     noteAdequacy = 'UNDETERMINED';
   if (
     out.purpose === 'COMPLETION' &&
+    noteAdequacy !== 'CONTRADICTORY' &&
     (out.taskContextStatus !== 'CLEAR' ||
       !requirements.length ||
       coverage.length !== requirements.length ||
@@ -342,7 +398,7 @@ export function assembleAssessment(
   let reason = 'ASSESSMENT_READY';
   if (
     noteAdequacy === 'CONTRADICTORY' ||
-    coverage.some((c) => c.status === 'CONTRADICTORY')
+    gaps.some((g) => g.kind === 'CONTRADICTION' && g.status !== 'answered')
   ) {
     v.state = 'contradiction';
     reason = 'SOURCE_CONTRADICTION';

@@ -41,7 +41,12 @@ export class AssessmentAttemptBudget {
   private reportedTokens = 0;
   private unknownUsageAttempts = 0;
   private chargedTokens = 0;
-  denialCode: 'HTTP_ATTEMPT_BUDGET' | 'TOKEN_RESERVATION_BUDGET' | null = null;
+  denialCode:
+    | 'HTTP_ATTEMPT_BUDGET'
+    | 'TOKEN_RESERVATION_BUDGET'
+    | 'PHASE_HTTP_ATTEMPT_BUDGET'
+    | 'PHASE_TOKEN_RESERVATION_BUDGET'
+    | null = null;
   readonly fetch: typeof fetch;
   constructor(
     private readonly maxAttempts: number,
@@ -84,7 +89,18 @@ export class AssessmentAttemptBudget {
         this.denialCode = 'TOKEN_RESERVATION_BUDGET';
         throw Error(this.denialCode);
       }
-      const phaseTicket = this.phase?.reserve(reservation);
+      let phaseTicket: number | undefined;
+      try {
+        phaseTicket = this.phase?.reserve(reservation);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === 'PHASE_HTTP_ATTEMPT_BUDGET' ||
+            error.message === 'PHASE_TOKEN_RESERVATION_BUDGET')
+        )
+          this.denialCode = error.message;
+        throw error;
+      }
       this.actualHttpAttempts++;
       this.chargedTokens += reservation;
       let response: Response;
@@ -536,6 +552,7 @@ export async function runAssessmentEvaluation(
               : null,
           },
           input,
+          activeAssessment,
         );
         rows.push({
           caseId: c.id,
