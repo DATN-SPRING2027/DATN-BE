@@ -30,6 +30,30 @@ export const ASSESSMENT_OUTPUT_CONTRACT = {
     nextQuestion: ['gapIndex', 'text', 'reason', 'options'],
     sourceRef: ['sourceId', 'quote'],
   },
+  fieldTypes: {
+    'taskUnderstanding.objective': 'string',
+    'taskUnderstanding.scope': 'string, never object or array',
+    'taskUnderstanding.requirements':
+      'array of requirement objects; sibling of scope',
+    'taskUnderstanding.unknowns': 'array of strings; sibling of scope',
+    'requirement.text': 'string copied literally from a Task quote',
+    'claim.text':
+      'string copied literally from its quote, including punctuation',
+    'requirement/claim/gap.sourceRefs':
+      'array with 1..8 real source references',
+    'coverage.sourceRefs': 'array with 0..8 real source references',
+    'coverage.requirementIndex': 'integer, zero-based',
+    nextQuestion: 'null or question object',
+    'nextQuestion.gapIndex': 'integer pointing to a BLOCKING gap',
+    'nextQuestion.options': 'array of 0..4 strings',
+  },
+  consistency: [
+    'ENOUGH_FOR_PURPOSE => no BLOCKING gap and nextQuestion=null',
+    'CONTRADICTORY => nextQuestion=null',
+    'OPTIONAL gaps never create nextQuestion',
+    'A gap must cite the existing note or Task passage whose information is insufficient; never use an empty sourceRefs',
+    'requirements and unknowns belong beside scope, not inside scope',
+  ],
   enums: {
     purpose: [
       'PROGRESS',
@@ -139,6 +163,17 @@ export function assessmentPurposePolicy(purpose: AssessmentPurpose) {
                     ? 'Cần hiện tượng cụ thể và tình huống/phạm vi ảnh hưởng đủ hiểu sự cố. Chưa sửa/chưa biết nguyên nhân là giới hạn đã báo, không hỏi lại nguyên nhân hay bắt tác giả sửa. Một kết quả lỗi có thể đủ cho bản ghi INCIDENT.'
                     : 'Đủ hiểu mục đích bản ghi theo nội dung tác giả, không ép nghiệm thu toàn Task. Chỉ hỏi một thông tin thực sự cần, không tự tạo checklist triển khai.',
   };
+}
+
+/** Only trusted purpose enums select instructions; source/answer text is never
+ * interpolated into a system message. Keep the active goal ahead of Task coverage.
+ */
+export function assessmentSystemPrompt(purpose: AssessmentPurpose) {
+  const policy = assessmentPurposePolicy(purpose);
+  return `CURRENT ASSESSMENT GOAL: ${policy.clarificationGoal}
+Task acceptance coverage and note adequacy are separate decisions. A PARTIAL or NOT_REPORTED Task criterion is NOT automatically a BLOCKING note gap. For non-COMPLETION purposes, ask only what is necessary to understand that kind of note. A task requirement outside this note's purpose may stay uncovered without a question.
+\n${ASSESSMENT_SYSTEM_PROMPT}
+\nFINAL CHECK BEFORE JSON: scope is one string. requirements and unknowns are its siblings. Every requirement/claim/gap has at least one exact real sourceRef. Copy claim text and quote from the SAME literal passage, without changing commas to periods. If ENOUGH_FOR_PURPOSE, remove blocking gaps and set nextQuestion=null; if a real blocking gap remains, do not claim enough. Do not create a missing-source placeholder. Use [] for empty lists, never an invented object.`;
 }
 
 function source(
@@ -483,6 +518,46 @@ const artifactReady = example(
   'ENOUGH_FOR_PURPOSE',
   'SUPPORTED',
 );
+const progressVague = example(
+  'PROGRESS',
+  'Sửa bảng danh sách',
+  'Hiển thị ngày hạn theo múi giờ người dùng.',
+  'Xong rồi.',
+  'NEEDS_AUTHOR_INPUT',
+  'NOT_REPORTED',
+  {
+    kind: 'SCOPE',
+    target: 'phần việc đã cập nhật trong bảng danh sách',
+    text: 'Bạn đã cập nhật phần nào của bảng danh sách?',
+    owner: 'NOTE_AUTHOR',
+  },
+);
+const decisionMissingReason = example(
+  'DECISION',
+  'Chọn cách ghi log',
+  'Ghi lại quyết định chọn định dạng log và lý do.',
+  'Chọn JSON.',
+  'NEEDS_AUTHOR_INPUT',
+  'PARTIAL',
+  {
+    kind: 'IMPLEMENTATION',
+    target: 'lý do chọn định dạng log',
+    text: 'Ràng buộc hoặc lý do nào khiến bạn chọn JSON?',
+    owner: 'NOTE_AUTHOR',
+  },
+);
+const handoffUnknown = structuredClone(handoffMissing);
+handoffUnknown.input.answers = [
+  {
+    id: 'a',
+    gapId: 'example-gap',
+    target: handoffMissing.output.gaps[0].target,
+    disposition: 'unknown',
+    purpose: 'HANDOVER',
+    taskContextHash: 'example-task',
+  },
+];
+handoffUnknown.output.nextQuestion = null;
 ASSESSMENT_EXAMPLES.push(
   progressNotStarted,
   scopedQa,
@@ -490,6 +565,9 @@ ASSESSMENT_EXAMPLES.push(
   handoffReady,
   handoffMissing,
   artifactReady,
+  progressVague,
+  decisionMissingReason,
+  handoffUnknown,
 );
 
 /** Examples are selected by note purpose/turn, never by evaluation case/domain tags. */
@@ -510,7 +588,7 @@ export function selectAssessmentExamples(input: AssessmentModelInput) {
   ).slice(0, 2);
   switch (input.purpose) {
     case 'PROGRESS':
-      return [...progress, progressNotStarted, artifactReady];
+      return [progress[0], progressVague, progressNotStarted, progress[1]];
     case 'QA':
       return [ASSESSMENT_EXAMPLES[0], scopedQa, progressNotStarted, complete];
     case 'INCIDENT':
@@ -522,9 +600,21 @@ export function selectAssessmentExamples(input: AssessmentModelInput) {
         complete,
       ];
     case 'DECISION':
-      return [recordedDecision, progressNotStarted, handoffMissing, complete];
+      return [
+        recordedDecision,
+        decisionMissingReason,
+        progressNotStarted,
+        complete,
+      ];
     case 'HANDOVER':
-      return [handoffReady, handoffMissing, recordedDecision, complete];
+      return [
+        handoffReady,
+        handoffMissing,
+        input.answers.some(hasNoNewInformation)
+          ? handoffUnknown
+          : recordedDecision,
+        complete,
+      ];
     case 'COMPLETION':
       return [
         complete,

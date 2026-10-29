@@ -1,5 +1,5 @@
 import {
-  ASSESSMENT_SYSTEM_PROMPT,
+  assessmentSystemPrompt,
   ASSESSMENT_OUTPUT_CONTRACT,
   selectAssessmentExamples,
   assessmentPurposePolicy,
@@ -19,7 +19,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v13';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v14';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {
@@ -131,7 +131,7 @@ export function buildAssessmentMessages(
   return [
     {
       role: 'system',
-      content: ASSESSMENT_SYSTEM_PROMPT,
+      content: assessmentSystemPrompt(input.purpose),
     },
     ...selectAssessmentExamples(input).flatMap((example) => [
       {

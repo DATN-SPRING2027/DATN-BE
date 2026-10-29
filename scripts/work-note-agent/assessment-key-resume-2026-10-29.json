@@ -1,0 +1,887 @@
+{
+  "classification": "DEVELOPMENT_REGRESSION_COMPARISON_NOT_RELEASE_ACCEPTANCE",
+  "model": "mistralai/ministral-14b",
+  "selectedPromptVersion": "task-note-assessment/2026-10-29.v14",
+  "selectionReason": "Observed schema/loop recovery; v15/v16 did not fix purpose errors and v16 repeated an unnecessary correction-turn question. No claim of general improvement.",
+  "credentialsStatus": "NEW_ENV_CREDENTIAL_ACCEPTED_NO_SECRET_RECORDED",
+  "additionalHttpAttempts": 29,
+  "additionalCallCap": 29,
+  "versions": [
+    {
+      "version": "task-note-assessment/2026-10-29.v13",
+      "actualHttpAttempts": 8,
+      "analysisTurns": 7,
+      "validAnalysisOutputs": 4,
+      "analysisScenariosPassed": 1,
+      "attemptedScenarios": 5,
+      "editorAccepted": 1,
+      "cases": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "split": "development",
+          "family": "retry-upload",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "MISSING_SOURCE_REFERENCE"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6671,
+          "remainingCalls": 38,
+          "critical": true,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6526,
+          "remainingCalls": 37,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 2,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "INVALID_STRING"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6454,
+          "remainingCalls": 36,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "split": "development",
+          "family": "csv-unicode",
+          "expectedTurns": 2,
+          "attemptedTurns": 2,
+          "analysisPass": true,
+          "editor": "ACCEPTED",
+          "failures": [],
+          "actualCalls": 3,
+          "reportedTokens": 14562,
+          "remainingCalls": 33,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "split": "development",
+          "family": "permission-matrix",
+          "expectedTurns": 3,
+          "attemptedTurns": 2,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "SCHEMA_KEYS_OBJECTIVE"
+          ],
+          "actualCalls": 2,
+          "reportedTokens": 13985,
+          "remainingCalls": 31,
+          "critical": false,
+          "providerFailure": false
+        }
+      ],
+      "observations": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": "MISSING_SOURCE_REFERENCE",
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [
+            "MISSING_SOURCE_REFERENCE"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "f841bc513b53c804c9efa726d1fe455d1e5aa785bdddc08b84477e323dbee0af"
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "1426142c420c5a3f4076710f66613339a32b357931d4085c8e4d439a0ba1d566"
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": "INVALID_STRING",
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [
+            "INVALID_STRING"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "627a7a0bf6c048afe0eee2fadf204f728cfdb85999a1e6495c6afe0509e5ee4e"
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "21c1e5858b4adb0f1c5ef7612aae7cd940cb96f446f9a648db96f782072a658f"
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "21c1e5858b4adb0f1c5ef7612aae7cd940cb96f446f9a648db96f782072a658f"
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "editor",
+          "errorCode": null,
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [],
+          "editorAccepted": true,
+          "requestTemplateHash": null
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "4fe2dc3d8e67819d18acce97b661746c22b14a3b1f296e44411dcd25e211979d"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": "SCHEMA_KEYS_OBJECTIVE",
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [
+            "SCHEMA_KEYS_OBJECTIVE"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "b03f7184a21865e8e4ae7bc58f84ae45780b01c4fff06b9aa76fe76216f40304"
+        }
+      ],
+      "artifacts": [
+        {
+          "file": "assessment-v4-2026-10-29T05-40-03-277Z-e134a7dd.json",
+          "sha256": "38fded058c0f8338e56f9f8870567ebb0ae7717ea4d96741b00084bbb3a38201",
+          "systemPromptHash": "bee05d21b170f65d8bf47ed8d00f5bf55047caa191ab81f2ee2580eb00d97f8b",
+          "promptTemplateHash": "f841bc513b53c804c9efa726d1fe455d1e5aa785bdddc08b84477e323dbee0af"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-41-12-939Z-1f60548d.json",
+          "sha256": "3211f9e616029fb472b3a3459edce2e3b3f8b43671d59482eb62168af4208590",
+          "systemPromptHash": "bee05d21b170f65d8bf47ed8d00f5bf55047caa191ab81f2ee2580eb00d97f8b",
+          "promptTemplateHash": "1426142c420c5a3f4076710f66613339a32b357931d4085c8e4d439a0ba1d566"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-41-25-033Z-56fab2ab.json",
+          "sha256": "995a6864a6b3f5e80721dff541a7bbc14e568e5c1da1354a450f8ddf835d7a3c",
+          "systemPromptHash": "bee05d21b170f65d8bf47ed8d00f5bf55047caa191ab81f2ee2580eb00d97f8b",
+          "promptTemplateHash": "627a7a0bf6c048afe0eee2fadf204f728cfdb85999a1e6495c6afe0509e5ee4e"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-41-53-310Z-d95870c3.json",
+          "sha256": "b601e60d79cff6291f3889c532608c49f8ca3e1f90dbb758039648ca79f89530",
+          "systemPromptHash": "bee05d21b170f65d8bf47ed8d00f5bf55047caa191ab81f2ee2580eb00d97f8b",
+          "promptTemplateHash": "21c1e5858b4adb0f1c5ef7612aae7cd940cb96f446f9a648db96f782072a658f"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-42-17-884Z-5bf59cbc.json",
+          "sha256": "6e93a13fb4e101ecd39c2a26e21b160a3510ea9f94b379952b5c983f14d72755",
+          "systemPromptHash": "bee05d21b170f65d8bf47ed8d00f5bf55047caa191ab81f2ee2580eb00d97f8b",
+          "promptTemplateHash": "4fe2dc3d8e67819d18acce97b661746c22b14a3b1f296e44411dcd25e211979d"
+        }
+      ]
+    },
+    {
+      "version": "task-note-assessment/2026-10-29.v14",
+      "actualHttpAttempts": 11,
+      "analysisTurns": 9,
+      "validAnalysisOutputs": 9,
+      "analysisScenariosPassed": 2,
+      "attemptedScenarios": 5,
+      "editorAccepted": 2,
+      "cases": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "split": "development",
+          "family": "retry-upload",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "UNNECESSARY_QUESTION",
+            "QUESTION_RELEVANCE",
+            "NOTE_ADEQUACY"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6981,
+          "remainingCalls": 30,
+          "critical": true,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6897,
+          "remainingCalls": 29,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 2,
+          "attemptedTurns": 2,
+          "analysisPass": true,
+          "editor": "NOT_REQUESTED",
+          "failures": [],
+          "actualCalls": 2,
+          "reportedTokens": 14125,
+          "remainingCalls": 27,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "split": "development",
+          "family": "permission-matrix",
+          "expectedTurns": 3,
+          "attemptedTurns": 3,
+          "analysisPass": false,
+          "editor": "ACCEPTED",
+          "failures": [
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "actualCalls": 4,
+          "reportedTokens": 24416,
+          "remainingCalls": 23,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "split": "development",
+          "family": "csv-unicode",
+          "expectedTurns": 2,
+          "attemptedTurns": 2,
+          "analysisPass": true,
+          "editor": "ACCEPTED",
+          "failures": [],
+          "actualCalls": 3,
+          "reportedTokens": 15564,
+          "remainingCalls": 20,
+          "critical": false,
+          "providerFailure": false
+        }
+      ],
+      "observations": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "UNNECESSARY_QUESTION",
+            "QUESTION_RELEVANCE",
+            "NOTE_ADEQUACY"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "29db9925cf86614583656c2cdfbef18cb00113a7d37ab579bd82ac5c9da86772"
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "fe0436875c822b0178ecf358c4cb57c85db8f448d64463fcb81520a4c0962766"
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "13bde97ace2bb256173cb59950718a41498104d464332c56f297cb6c20fa3a94"
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "56e85346a29b611a4d2e87eadf1f513c6c1ee07c5fa44fb4a7661b70ea542ecb"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "abf7556df55416526ff5aae76ab9e829a5326bb4e011414713f9e69520758014"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "2f3f70756f6bfd6517618627f47899d7acd29287141d29b6074b1f03db59efc4"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "2f3f70756f6bfd6517618627f47899d7acd29287141d29b6074b1f03db59efc4"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "editor",
+          "errorCode": null,
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [],
+          "editorAccepted": true,
+          "requestTemplateHash": null
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "ff3918dcdb083dc7d162895beb6c56d4788dbeca0faa7b85736c7b5643010b61"
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "ff3918dcdb083dc7d162895beb6c56d4788dbeca0faa7b85736c7b5643010b61"
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "editor",
+          "errorCode": null,
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [],
+          "editorAccepted": true,
+          "requestTemplateHash": null
+        }
+      ],
+      "artifacts": [
+        {
+          "file": "assessment-v4-2026-10-29T05-44-49-570Z-b4603131.json",
+          "sha256": "a1e15d532b674b37c65b754bf9cc49dc53c2b723eb35c4df3a3e49ffdbc7d277",
+          "systemPromptHash": "db2258d0c296601e697ad118ccf3de7cdfc6845b05d57f644d131a60ba01dac4",
+          "promptTemplateHash": "29db9925cf86614583656c2cdfbef18cb00113a7d37ab579bd82ac5c9da86772"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-45-03-154Z-6653fd46.json",
+          "sha256": "7bc1a354be591bc6fba4a758dbe30ffa2352243a73d61f110a4d224c40cf41c0",
+          "systemPromptHash": "6cb33f97348bf4d591ea0ad28760322c26a48367f43bc0b5d3e098b6fdeab9dd",
+          "promptTemplateHash": "fe0436875c822b0178ecf358c4cb57c85db8f448d64463fcb81520a4c0962766"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-45-30-979Z-87c20ccf.json",
+          "sha256": "5ecdb669450aca6a3d107b748c204f3413692f3d5642e2221ef9217193b763ca",
+          "systemPromptHash": "8f25885aa6ab7f35555c0d3bbd5866e1dfbce79ed779275f1f06b075545612a2",
+          "promptTemplateHash": "13bde97ace2bb256173cb59950718a41498104d464332c56f297cb6c20fa3a94"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-46-19-230Z-fc3e4a90.json",
+          "sha256": "2d64a924091bfa38eb0355363ea0e359b1057ac30fa587215854d7f426aa6b73",
+          "systemPromptHash": "5df9af4784e5a0721fd2ee3d599e798519c03202a4c2c979c7f2fd4106266a60",
+          "promptTemplateHash": "abf7556df55416526ff5aae76ab9e829a5326bb4e011414713f9e69520758014"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-46-53-470Z-03e1e3a9.json",
+          "sha256": "63cdab7c5ca8e29ad847485b05760fd616bbc61ae60c43917614c67df21fefa5",
+          "systemPromptHash": "3b6d307a273d3ec0499842401157b18c7363e91af29caeb32169339ccba826b6",
+          "promptTemplateHash": "ff3918dcdb083dc7d162895beb6c56d4788dbeca0faa7b85736c7b5643010b61"
+        }
+      ]
+    },
+    {
+      "version": "task-note-assessment/2026-10-29.v15",
+      "actualHttpAttempts": 2,
+      "analysisTurns": 2,
+      "validAnalysisOutputs": 2,
+      "analysisScenariosPassed": 0,
+      "attemptedScenarios": 2,
+      "editorAccepted": 0,
+      "cases": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "split": "development",
+          "family": "retry-upload",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 7420,
+          "remainingCalls": 19,
+          "critical": true,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 7325,
+          "remainingCalls": 18,
+          "critical": false,
+          "providerFailure": false
+        }
+      ],
+      "observations": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "129e4b5f8d76e2b813a8cb84183b06a6a6d1578a46c38ede0e87352c703dc1f6"
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "1c1bce7736428a3db7ca0a44cf2a59cdca1d85495718759a753eb2d1a1fff72e"
+        }
+      ],
+      "artifacts": [
+        {
+          "file": "assessment-v4-2026-10-29T05-48-59-967Z-bf5fab43.json",
+          "sha256": "fb049be235b38987066d71a6ee86ec6b56abf8b9181d1f0dea2fa7fe519d0827",
+          "systemPromptHash": "db2258d0c296601e697ad118ccf3de7cdfc6845b05d57f644d131a60ba01dac4",
+          "promptTemplateHash": "129e4b5f8d76e2b813a8cb84183b06a6a6d1578a46c38ede0e87352c703dc1f6"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-49-15-363Z-0003fc44.json",
+          "sha256": "5d996fc3744ca6eae27a72169bf3c5c6bf98e09954ea96ede3c29ddf535de2ac",
+          "systemPromptHash": "6cb33f97348bf4d591ea0ad28760322c26a48367f43bc0b5d3e098b6fdeab9dd",
+          "promptTemplateHash": "1c1bce7736428a3db7ca0a44cf2a59cdca1d85495718759a753eb2d1a1fff72e"
+        }
+      ]
+    },
+    {
+      "version": "task-note-assessment/2026-10-29.v16",
+      "actualHttpAttempts": 8,
+      "analysisTurns": 7,
+      "validAnalysisOutputs": 7,
+      "analysisScenariosPassed": 1,
+      "attemptedScenarios": 4,
+      "editorAccepted": 1,
+      "cases": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "split": "development",
+          "family": "retry-upload",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6531,
+          "remainingCalls": 17,
+          "critical": true,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 1,
+          "attemptedTurns": 1,
+          "analysisPass": false,
+          "editor": "NOT_REQUESTED",
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION"
+          ],
+          "actualCalls": 1,
+          "reportedTokens": 6438,
+          "remainingCalls": 16,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "split": "development",
+          "family": "mail-queue",
+          "expectedTurns": 2,
+          "attemptedTurns": 2,
+          "analysisPass": true,
+          "editor": "NOT_REQUESTED",
+          "failures": [],
+          "actualCalls": 2,
+          "reportedTokens": 12522,
+          "remainingCalls": 14,
+          "critical": false,
+          "providerFailure": false
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "split": "development",
+          "family": "permission-matrix",
+          "expectedTurns": 3,
+          "attemptedTurns": 3,
+          "analysisPass": false,
+          "editor": "ACCEPTED",
+          "failures": [
+            "QUESTION_GAP_KIND",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_RELEVANCE"
+          ],
+          "actualCalls": 4,
+          "reportedTokens": 21569,
+          "remainingCalls": 10,
+          "critical": false,
+          "providerFailure": false
+        }
+      ],
+      "observations": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "1b2771c69fd135eddd02d4730c17a1b998dca56f4ff4100251be64f621088f0f"
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "a814a1e5de75e85bbbac668b888b5932baedaf8d7baff58dc98772df2c38e3b8"
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "66f63753153954963b746940b74285ccc12e00269fb36dc6499f26a180df78dd"
+        },
+        {
+          "caseId": "assessment-mail-queue-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "eeb56e5c238a621f6db37cfe8e594694f416f04165c6f8015169592d66313ee6"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 1,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "QUESTION_GAP_KIND"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "250837fe1c10269e2985fb3ed9634fa5c587561d207a94a1034f4f48d88a6973"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": false,
+          "runtimeRubricPass": false,
+          "failures": [
+            "UNNECESSARY_QUESTION",
+            "QUESTION_GAP_KIND",
+            "QUESTION_RELEVANCE"
+          ],
+          "editorAccepted": null,
+          "requestTemplateHash": "d9b90c7521492aba72ccacff93920bae6309a3b484906a789965c8e90d2c40eb"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "analysis",
+          "errorCode": null,
+          "protocolAccepted": true,
+          "rawRubricPass": true,
+          "runtimeRubricPass": true,
+          "failures": [],
+          "editorAccepted": null,
+          "requestTemplateHash": "d9b90c7521492aba72ccacff93920bae6309a3b484906a789965c8e90d2c40eb"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "editor",
+          "errorCode": null,
+          "protocolAccepted": false,
+          "rawRubricPass": null,
+          "runtimeRubricPass": null,
+          "failures": [],
+          "editorAccepted": true,
+          "requestTemplateHash": null
+        }
+      ],
+      "artifacts": [
+        {
+          "file": "assessment-v4-2026-10-29T05-52-18-029Z-98315e3d.json",
+          "sha256": "ad5650ae82c5cf57130b39f71892ed0771dde995fbfeacbdc5a30639143eb89d",
+          "systemPromptHash": "460e71839a32293e435852833f810d2d57d491c610788fb73ce29fd91950b592",
+          "promptTemplateHash": "1b2771c69fd135eddd02d4730c17a1b998dca56f4ff4100251be64f621088f0f"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-52-29-845Z-b0e2c63d.json",
+          "sha256": "ce4a30278351661b7803add491a028664f718c8a7b6a44a47b361042fcdf27d3",
+          "systemPromptHash": "c5d0a1fa267275eee2d83aaeabf7bc7665e98ffafaf1d31c05aa9020097743ea",
+          "promptTemplateHash": "a814a1e5de75e85bbbac668b888b5932baedaf8d7baff58dc98772df2c38e3b8"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-54-07-930Z-545fcfcf.json",
+          "sha256": "ae68ad8d75f5cb0549f8e8b637abdc4b2542a96365f3feeabe372656bcd2e536",
+          "systemPromptHash": "9b712e4c206598ed2926ce91d49740c44205760546715f23ae401c226791aecb",
+          "promptTemplateHash": "66f63753153954963b746940b74285ccc12e00269fb36dc6499f26a180df78dd"
+        },
+        {
+          "file": "assessment-v4-2026-10-29T05-54-55-677Z-4bd0513a.json",
+          "sha256": "ea8699eadd2c86cd41c36abd3f3a054a61dccc80cac55aa222ec70a99332fdd9",
+          "systemPromptHash": "f98609fac1f0c62f02f2cdfe22645d528828bd97c05ee1a9d5fb81f04190bc61",
+          "promptTemplateHash": "250837fe1c10269e2985fb3ed9634fa5c587561d207a94a1034f4f48d88a6973"
+        }
+      ]
+    }
+  ],
+  "selectedImplementationHashes": {
+    "src/services/capture/application/work-note-agent/work-note-assessment.prompt.ts": "b3d7b496ae531c3b030ca7e962400e222fb1ca97be6a97269544fbee484d478c",
+    "src/services/capture/application/work-note-agent/work-note-assessment.protocol.ts": "3b2ac6af08974e2d20251f3377f6d8acf9b8623dc4330bea5f6a47b3190c611f",
+    "src/services/capture/application/work-note-agent/work-note-assessment.context.ts": "842276ee0b36e6ae347fe42f7c3892e6e8097ba037095e985381d325947e8975",
+    "src/services/capture/application/work-note-agent/work-note-assessment.polarity.ts": "2b3a6a1ba8d0de9178c2a3144599a1178a5f8b913986f3cd08bf9d80350d6d17",
+    "src/services/capture/application/work-note-agent/work-note-assessment.state.ts": "180d134eeaaa1437a55936b55a01e28417d8f1ecabbbb036ff14b7780f663cdb"
+  },
+  "cumulativePhase": {
+    "id": "cross-domain-20261029",
+    "actualHttpAttempts": 166,
+    "maxHttpAttempts": 176,
+    "remainingCalls": 10,
+    "reportedTokens": 1286522,
+    "unknownUsageAttempts": 8,
+    "accountedTokens": 1675646,
+    "maxAccountedTokens": 2000000
+  },
+  "checks": {
+    "lint": true,
+    "typecheck": true,
+    "unitPassed": 1783,
+    "unitSkipped": 137,
+    "e2ePassed": 169,
+    "e2eSkipped": 4,
+    "build": true,
+    "focusedAssessmentPassed": 200
+  },
+  "releaseGate": "NOT_PASSED",
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "remainingFailures": [
+    "Progress note unnecessarily assessed as Task completion",
+    "Decision note asked to provide operational handover",
+    "Permission-matrix gap taxonomy and question relevance"
+  ],
+  "caveats": [
+    "All live cases are previously observed development regression cases, not unseen holdout or independent gold labels",
+    "One stochastic observation per case/version; no causal or significance claim",
+    "Editor harness acceptance is not a measured real-user Apply/Save or runtime parity guarantee",
+    "API server process/environment reload and browser/Atlas save were not exercised"
+  ],
+  "safety": {
+    "publicContractChanged": false,
+    "persistenceChanged": false,
+    "frontendChanged": false,
+    "atlasTouched": false,
+    "sharedActivation": false,
+    "modelFallback": false,
+    "budgetReset": false,
+    "autoApplyOrSave": false
+  }
+}

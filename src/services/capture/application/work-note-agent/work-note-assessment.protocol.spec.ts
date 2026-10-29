@@ -64,6 +64,84 @@ const output = (): AssessmentModelOutput => ({
   nextQuestion: null,
 });
 describe('Task assessment sourced protocol', () => {
+  it('separates editing permission from adequacy for the same unfinished Task', () => {
+    const partial = output();
+    partial.coverage[0].status = 'PARTIAL';
+    const pair = [
+      { input, output: partial },
+      {
+        input: { ...input, purpose: 'COMPLETION' as const },
+        output: {
+          ...partial,
+          purpose: 'COMPLETION' as const,
+          noteAdequacy: 'NEEDS_AUTHOR_INPUT' as const,
+        },
+      },
+    ];
+    expect(pair).toHaveLength(2);
+    expect(pair[0].input.sources).toEqual(pair[1].input.sources);
+    for (const e of pair) {
+      const parsed = parseAssessmentOutput(e.input, JSON.stringify(e.output));
+      const view = assembleAssessment(e.input, parsed, {
+        sourceRevision: 1,
+        taskContextHash: 'same-task',
+        model: 'fixture',
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      });
+      expect(view.coverage.some((c) => c.status !== 'SUPPORTED')).toBe(true);
+      expect(view.noteAdequacy === 'ENOUGH_FOR_PURPOSE').toBe(
+        e.input.purpose === 'PROGRESS',
+      );
+      // Manual editing with unresolved ambiguities does not certify completion.
+      expect(view.allowedActions).toContain('rewrite');
+      expect(view.signals.saved).toBe(false);
+      expect(view.signals.proposalApplied).toBe(false);
+      expect(view.nextQuestion).toBeNull();
+    }
+  });
+  it.each(['object-scope', 'nested-requirements', 'gap-without-citation'])(
+    'rejects observed provider shape %s without repairing its meaning',
+    (shape) => {
+      const malformed = JSON.parse(JSON.stringify(output())) as Record<
+        string,
+        unknown
+      >;
+      const understanding = malformed.taskUnderstanding as Record<
+        string,
+        unknown
+      >;
+      if (shape === 'object-scope') understanding.scope = { main: 'API' };
+      if (shape === 'nested-requirements') {
+        understanding.scope = {
+          requirements: understanding.requirements,
+          unknowns: understanding.unknowns,
+        };
+        delete understanding.requirements;
+        delete understanding.unknowns;
+      }
+      if (shape === 'gap-without-citation')
+        malformed.gaps = [
+          {
+            kind: 'RESULT',
+            target: 'API result',
+            impact: 'BLOCKING',
+            owner: 'NOTE_AUTHOR',
+            sourceRefs: [],
+          },
+        ];
+      const raw = JSON.stringify(malformed);
+      expect(() => parseAssessmentCompletion(input, raw, true)).toThrow();
+      expect(JSON.stringify(malformed)).toBe(raw);
+    },
+  );
+  it('never interpolates untrusted source text into the purpose-specific system message', () => {
+    const i = structuredClone(input);
+    const injection = 'UNTRUSTED_UNIQUE_NOTE_INSTRUCTION';
+    i.sources[0].text = injection;
+    const messages = buildAssessmentMessages(i);
+    expect(messages[0].content).not.toContain(injection);
+    expect(messages.at(-1)!.content).toContain(injection);
+  });
   it('teaches atomic claims in every few-shot rather than merging outcomes with unrelated limitations', () => {
     for (const e of ASSESSMENT_EXAMPLES)
       for (const claim of e.output.claims)
