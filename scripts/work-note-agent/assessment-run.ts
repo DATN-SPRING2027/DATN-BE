@@ -34,6 +34,7 @@ import {
   gradeAssessment,
   makeAssessmentWorksheet,
   type AssessmentEvaluationRow,
+  type AssessmentCorpus,
 } from './assessment-evaluation';
 
 export class AssessmentAttemptBudget {
@@ -257,6 +258,7 @@ export function parseAssessmentRunOptions(
 }
 
 type Dependencies = {
+  readCorpus?: () => AssessmentCorpus;
   readCredentials?: () => Promise<{
     apiKey: string;
     formattingRecovery?: boolean;
@@ -306,7 +308,7 @@ export async function runAssessmentEvaluation(
   dependencies: Dependencies = {},
 ) {
   const options = parseAssessmentRunOptions(args),
-    corpus = loadAssessmentCorpus();
+    corpus = (dependencies.readCorpus ?? loadAssessmentCorpus)();
   const eligible = corpus.scenarios.filter((c) =>
     options.batch === 'pilot'
       ? c.pilot
@@ -729,7 +731,7 @@ export async function runAssessmentEvaluation(
     });
     await writeFile(
       resolve(directory, `${filename}.review.json`),
-      sanitize(makeAssessmentWorksheet(rows)),
+      sanitize(makeAssessmentWorksheet(rows, corpus)),
       { flag: 'wx' },
     );
   }

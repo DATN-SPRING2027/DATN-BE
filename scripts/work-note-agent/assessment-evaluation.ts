@@ -300,8 +300,10 @@ export type AssessmentEvaluationRow = {
   answers?: AssessmentAnswer[];
   rawSyntheticResponse?: string;
 };
-export function makeAssessmentWorksheet(rows: AssessmentEvaluationRow[]) {
-  const corpus = loadAssessmentCorpus();
+export function makeAssessmentWorksheet(
+  rows: AssessmentEvaluationRow[],
+  corpus = loadAssessmentCorpus(),
+) {
   const seen = new Set<string>();
   return {
     classification: 'synthetic-assessment-human-review-worksheet',
