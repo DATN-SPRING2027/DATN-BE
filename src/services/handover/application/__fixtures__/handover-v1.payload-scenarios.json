@@ -1,0 +1,266 @@
+{
+  "status": "PAYLOAD_SCHEMA_ORACLES_NOT_RUNTIME_TESTS",
+  "cases": [
+    {
+      "id": "create-without-B",
+      "schema": "CreateHandover",
+      "valid": true,
+      "payload": {
+        "departingUserId": "111111111111111111111111",
+        "assignedLeaderId": "222222222222222222222222",
+        "successorUserId": null,
+        "teamId": null,
+        "targetCompletionDate": "2026-11-10T00:00:00Z",
+        "title": "Document processing handover"
+      }
+    },
+    {
+      "id": "create-unknown-actor-field",
+      "schema": "CreateHandover",
+      "valid": false,
+      "payload": {
+        "departingUserId": "111111111111111111111111",
+        "assignedLeaderId": "222222222222222222222222",
+        "successorUserId": null,
+        "teamId": null,
+        "targetCompletionDate": "2026-11-10T00:00:00Z",
+        "title": "Document processing handover",
+        "actorId": "333333333333333333333333"
+      }
+    },
+    {
+      "id": "create-fake-B",
+      "schema": "CreateHandover",
+      "valid": false,
+      "payload": {
+        "departingUserId": "111111111111111111111111",
+        "assignedLeaderId": "222222222222222222222222",
+        "successorUserId": "placeholder",
+        "teamId": null,
+        "targetCompletionDate": "2026-11-10T00:00:00Z",
+        "title": "Document processing handover"
+      }
+    },
+    {
+      "id": "create-many-recipients",
+      "schema": "CreateHandover",
+      "valid": false,
+      "payload": {
+        "departingUserId": "111111111111111111111111",
+        "assignedLeaderId": "222222222222222222222222",
+        "successorUserId": [
+          "222222222222222222222222",
+          "333333333333333333333333"
+        ],
+        "teamId": null,
+        "targetCompletionDate": "2026-11-10T00:00:00Z",
+        "title": "Document processing handover"
+      }
+    },
+    {
+      "id": "evidence-text-and-link",
+      "schema": "SubmitEvidence",
+      "valid": true,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "assignmentVersion": 1,
+        "resultText": "Checked the allowed test environment.",
+        "links": [
+          "https://example.invalid/evidence/1"
+        ]
+      }
+    },
+    {
+      "id": "evidence-no-file-upload",
+      "schema": "SubmitEvidence",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "assignmentVersion": 1,
+        "resultText": "Result",
+        "links": [],
+        "file": "binary"
+      }
+    },
+    {
+      "id": "evidence-javascript-link",
+      "schema": "SubmitEvidence",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "assignmentVersion": 1,
+        "resultText": "Result",
+        "links": [
+          "javascript:alert(1)"
+        ]
+      }
+    },
+    {
+      "id": "review-by-approved-outcome",
+      "schema": "ReviewEvidence",
+      "valid": true,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "evidenceId": "222222222222222222222222",
+        "outcome": "ACCEPTED",
+        "note": "Reviewed the evidence."
+      }
+    },
+    {
+      "id": "review-not-AI-approved",
+      "schema": "ReviewEvidence",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "evidenceId": "222222222222222222222222",
+        "outcome": "APPROVED_BY_AI",
+        "note": "Not valid."
+      }
+    },
+    {
+      "id": "optional-exception-complete",
+      "schema": "OptionalException",
+      "valid": true,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "reason": "Non-required background material pending.",
+        "ownerUserId": "222222222222222222222222",
+        "dueAt": "2026-11-15T00:00:00Z"
+      }
+    },
+    {
+      "id": "optional-exception-missing-owner",
+      "schema": "OptionalException",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "reason": "Pending",
+        "dueAt": "2026-11-15T00:00:00Z"
+      }
+    },
+    {
+      "id": "no-required-waiver-bypass-field",
+      "schema": "OptionalException",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "reason": "Pending",
+        "ownerUserId": "222222222222222222222222",
+        "dueAt": "2026-11-15T00:00:00Z",
+        "allowRequired": true
+      }
+    },
+    {
+      "id": "completion-does-not-take-client-progress",
+      "schema": "CompleteRequest",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "assignmentVersion": 1,
+        "reviewNote": "Ready",
+        "completionPercent": 100
+      }
+    },
+    {
+      "id": "completion-normal",
+      "schema": "CompleteRequest",
+      "valid": true,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "assignmentVersion": 1,
+        "reviewNote": "Ready"
+      }
+    },
+    {
+      "id": "unavailable-item-safe-shell",
+      "schema": "ItemProjection",
+      "valid": true,
+      "payload": {
+        "itemId": "111111111111111111111111",
+        "access": "UNAVAILABLE"
+      }
+    },
+    {
+      "id": "unavailable-item-no-source-title-leak",
+      "schema": "ItemProjection",
+      "valid": false,
+      "payload": {
+        "itemId": "111111111111111111111111",
+        "access": "UNAVAILABLE",
+        "title": "Protected source title"
+      }
+    },
+    {
+      "id": "followup-has-own-resolution",
+      "schema": "ResolveFollowUp",
+      "valid": true,
+      "payload": {
+        "resolutionNote": "Resolved with authorized owner; no external reference exists.",
+        "references": []
+      }
+    },
+    {
+      "id": "ack-no-forged-recipient",
+      "schema": "AcknowledgeRequest",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "contentVersion": 1,
+        "assignmentVersion": 1,
+        "decision": "UNDERSTOOD",
+        "note": "",
+        "userId": "333333333333333333333333"
+      }
+    },
+    {
+      "id": "draft-cannot-mark-resolved",
+      "schema": "DraftItem",
+      "valid": false,
+      "payload": {
+        "itemId": "111111111111111111111111",
+        "title": "Required process",
+        "body": "Context",
+        "isRequired": true,
+        "evidenceRequired": true,
+        "sources": [],
+        "citations": [],
+        "requirement": "Demonstrate the test workflow.",
+        "isResolved": true
+      }
+    },
+    {
+      "id": "new-draft-item-server-allocates-id",
+      "schema": "DraftItemInput",
+      "valid": true,
+      "payload": {
+        "itemId": null,
+        "title": "Required process",
+        "body": "",
+        "isRequired": true,
+        "evidenceRequired": true,
+        "sources": [],
+        "citations": [],
+        "requirement": "Demonstrate the allowed test workflow."
+      }
+    },
+    {
+      "id": "question-cannot-widen-selected-sources",
+      "schema": "QuestionRequest",
+      "valid": false,
+      "payload": {
+        "revisionId": "111111111111111111111111",
+        "assignmentVersion": 1,
+        "question": "Explain the selected process.",
+        "sourceIds": [
+          "333333333333333333333333"
+        ]
+      }
+    }
+  ]
+}

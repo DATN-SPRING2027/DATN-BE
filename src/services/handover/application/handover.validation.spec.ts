@@ -21,16 +21,33 @@ interface PayloadScenarioCase {
 }
 
 describe('Handover Contract Validation & 21 Payload Oracles', () => {
-  const scenariosPath = path.resolve(
+  const fixtureScenariosPath = path.resolve(
+    __dirname,
+    '__fixtures__/handover-v1.payload-scenarios.json',
+  );
+  const workspaceScenariosPath = path.resolve(
     __dirname,
     '../../../../../Document/research-docs/Workspace/contracts/handover-v1.payload-scenarios.json',
   );
-  const scenariosDoc = JSON.parse(fs.readFileSync(scenariosPath, 'utf8')) as {
+  const scenariosDoc = JSON.parse(
+    fs.readFileSync(fixtureScenariosPath, 'utf8'),
+  ) as {
+    status: string;
     cases: PayloadScenarioCase[];
   };
 
-  it('loads all 21 payload scenario cases from the workspace contract', () => {
+  it('loads all 21 payload scenario cases from the in-repo contract fixture (and matches Document workspace when present)', () => {
+    expect(scenariosDoc.status).toBe(
+      'PAYLOAD_SCHEMA_ORACLES_NOT_RUNTIME_TESTS',
+    );
     expect(scenariosDoc.cases).toHaveLength(21);
+
+    if (fs.existsSync(workspaceScenariosPath)) {
+      const workspaceDoc = JSON.parse(
+        fs.readFileSync(workspaceScenariosPath, 'utf8'),
+      ) as unknown;
+      expect(scenariosDoc).toEqual(workspaceDoc);
+    }
   });
 
   for (const scenario of scenariosDoc.cases) {
