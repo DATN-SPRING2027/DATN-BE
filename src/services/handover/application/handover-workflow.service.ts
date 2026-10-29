@@ -191,7 +191,43 @@ export class HandoverWorkflowService {
     };
   }
 
-  private toFollowUpDto(doc: StoredFollowUpDoc): FollowUpDto {
+  private async assertFollowUpReadable(
+    actor: HandoverProjectActorContext,
+    doc: Pick<StoredFollowUpDoc, 'handoverId' | 'revisionId' | 'itemId'>,
+  ): Promise<void> {
+    // Follow-ups outlive the current revision and even parent completion.
+    // Resolve the originating snapshot, then apply today's source ACL.
+    const revision = await this.repository.revisions
+      .findOne({ _id: doc.revisionId, handoverId: doc.handoverId })
+      .lean<StoredRevisionDoc>()
+      .exec();
+    const item = revision?.items.find((row) => row.itemId.equals(doc.itemId));
+    if (item) {
+      const refs = collectItemDependencyRefs(item);
+      const evaluations = await this.sourcesService.evaluateSourceRefsMap(
+        actor,
+        refs,
+      );
+      if (
+        refs.every((ref) => {
+          const evaluated = evaluations.get(sourceRefKey(ref));
+          return evaluated?.eligible && evaluated.readable;
+        })
+      )
+        return;
+    }
+    throw new ForbiddenException({
+      code: 'ITEM_DEPENDENCY_UNAVAILABLE',
+      message: 'Item dependencies are restricted or unavailable.',
+      details: {},
+    });
+  }
+
+  private async toFollowUpDto(
+    doc: StoredFollowUpDoc,
+    actor: HandoverProjectActorContext,
+  ): Promise<FollowUpDto> {
+    await this.assertFollowUpReadable(actor, doc);
     return {
       id: doc._id.toHexString(),
       handoverId: doc.handoverId.toHexString(),
@@ -3389,7 +3425,7 @@ export class HandoverWorkflowService {
         });
       }
       return {
-        body: this.toFollowUpDto(existingFollowUp),
+        body: await this.toFollowUpDto(existingFollowUp, actor),
         etag: formatFollowUpEtag(
           existingFollowUp._id.toHexString(),
           existingFollowUp.version,
@@ -3454,6 +3490,12 @@ export class HandoverWorkflowService {
         details: { itemId: cleanItemId },
       });
     }
+
+    await this.assertFollowUpReadable(actor, {
+      handoverId: handover._id,
+      revisionId: revision._id,
+      itemId: targetItem.itemId,
+    });
 
     await this.iamScope.assertEligibleActiveProjectMember(
       actor.organizationId,
@@ -3585,7 +3627,7 @@ export class HandoverWorkflowService {
     );
 
     return {
-      body: this.toFollowUpDto(savedFollowUp),
+      body: await this.toFollowUpDto(savedFollowUp, actor),
       etag: formatFollowUpEtag(
         savedFollowUp._id.toHexString(),
         savedFollowUp.version,
@@ -3652,9 +3694,22 @@ export class HandoverWorkflowService {
         ? this.encodeCursor(pageRows[pageRows.length - 1]._id)
         : null;
 
+    // Cursor follows scanned rows, including restricted rows, so a filtered
+    // empty page can still lead to readable follow-ups on subsequent pages.
+    const projected = await Promise.all(
+      pageRows.map(async (row) => {
+        try {
+          return await this.toFollowUpDto(row, actor);
+        } catch (error) {
+          if (error instanceof ForbiddenException) return null;
+          throw error;
+        }
+      }),
+    );
+
     return {
       body: {
-        data: pageRows.map((r) => this.toFollowUpDto(r)),
+        data: projected.filter((row): row is FollowUpDto => row !== null),
         nextCursor,
       },
       etag: formatHandoverEtag(handover._id.toHexString(), handover.version),
@@ -3712,6 +3767,7 @@ export class HandoverWorkflowService {
     }
 
     const namespace = `followup:${followUp._id.toHexString()}`;
+    await this.assertFollowUpReadable(actor, followUp);
     const fingerprint = computeCommandFingerprint({
       operation: 'resolveHandoverFollowUp',
       organizationId: actor.organizationId,
@@ -3741,7 +3797,7 @@ export class HandoverWorkflowService {
       const target = freshFollowUp ?? followUp;
       const ver = existingOp?.receipt?.resourceVersion ?? target.version;
       return {
-        body: this.toFollowUpDto({ ...target, version: ver }),
+        body: await this.toFollowUpDto({ ...target, version: ver }, actor),
         etag: formatFollowUpEtag(target._id.toHexString(), ver),
         replayed: true,
       };
@@ -3862,7 +3918,7 @@ export class HandoverWorkflowService {
     );
 
     return {
-      body: this.toFollowUpDto(updatedFollowUp),
+      body: await this.toFollowUpDto(updatedFollowUp, actor),
       etag: formatFollowUpEtag(
         updatedFollowUp._id.toHexString(),
         updatedFollowUp.version,

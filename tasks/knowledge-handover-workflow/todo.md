@@ -1,5 +1,14 @@
 # Knowledge Handover Workflow — Backend Todo
 
+## Review round 2 (2026-10-29)
+
+- [x] R2-BE01: sanitize Q&A status messages after live authorization; test revoked and uncited content.
+- [x] R2-BE02: authorize historical item dependencies on every follow-up projection, including command replays.
+- [x] R2-BE03: fail closed for edited Task Notes without an immutable matching snapshot.
+- [x] R2-BE04: recheck source eligibility, version and content after AI generation, before applying the draft.
+- [x] R2-X01: carry bounded coverage warnings to FE without changing the merged database schema.
+- [x] Focused regressions, full quality gates and independent security candidate review; see the handoff and Git history for PR #110 delivery.
+
 - [x] Verify PR #106 merge ancestor (`f41b57b36a61ad23bd971ef3ec5325caf61f0edc`), fast-forward `main`, create isolated worktree `DATN_BE-handover-workflow` on `feat/Thang-knowledge-handover-workflow-be-api`, and preserve all active AI Chat checkouts untouched.
 - [x] Slice C04: Implement & unit-test `HandoverIamScopeService` (including `resolveActiveProjectMemberScope` for Leader-successor `B` — `F06`), `HandoverCaptureSourceService` (strict pinned-version snapshots for `TASK_NOTE` and fail-closed `readable: false` for outdated `WORK_REPORT` — `F03`), and `HandoverLifecycleSourceService` across owning modules (`IAM`, `Capture`, `Lifecycle`) with zero cross-DB leakage.
 - [x] Slice B01: Implement & test Handover domain/repository/idempotency/CAS, core aggregate + draft (`DraftItemDto.contentVersion` — `F07`, normalized whitespace change check) + revision publish + live ACL fail-closed projection endpoints, 21 OpenAPI payload scenarios, and `GatewayHandoverController` (`ETag`, `If-Match`, `Idempotency-Key`, `Idempotency-Replayed`).

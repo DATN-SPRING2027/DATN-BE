@@ -645,6 +645,9 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       whyThisWay: 'Prevent downstream overload',
       status: 'CONFIRMED',
       deletedAt: null,
+      createdAt: new Date('2026-10-01T00:00:00Z'),
+      authorConfirmedAt: new Date('2026-10-01T00:00:00Z'),
+      updatedAt: new Date('2026-10-01T00:00:00Z'),
     });
 
     await captureDb.collection('task_notes').insertOne({

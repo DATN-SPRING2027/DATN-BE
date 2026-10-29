@@ -254,41 +254,39 @@ export class HandoverCaptureSourceService {
       }
     }
 
-    let currentVersion = 1;
-    let liveNoteRepresentsCurrentVersion = true;
+    // An in-place edit has no durable version identity. Never invent max+1:
+    // multiple edits could otherwise serve different text under the same pin.
+    let currentVersion: number | null = null;
+    let liveNoteRepresentsCurrentVersion = false;
     if (latestHistDoc && maxHistVer >= 1) {
-      const sameAsLatestSnapshot =
-        asStr(latestHistDoc.title) === asStr(note.title) &&
-        asStr(latestHistDoc.whatDone) === asStr(note.whatDone) &&
-        asStr(latestHistDoc.howSolved) === asStr(note.howSolved) &&
-        asStr(latestHistDoc.whyThisWay) === asStr(note.whyThisWay);
+      const sameAsLatestSnapshot = [
+        'title',
+        'whatDone',
+        'howSolved',
+        'whyThisWay',
+        'blocker',
+        'unfinished',
+        'nextStep',
+      ].every((key) => asStr(latestHistDoc[key]) === asStr(note[key]));
       if (sameAsLatestSnapshot) {
         currentVersion = maxHistVer;
-        liveNoteRepresentsCurrentVersion = false;
-      } else {
-        currentVersion = maxHistVer + 1;
-        liveNoteRepresentsCurrentVersion = true;
       }
     } else {
-      const baseDate =
-        note.authorConfirmedAt instanceof Date
-          ? note.authorConfirmedAt
-          : note.createdAt instanceof Date
-            ? note.createdAt
-            : null;
+      // Confirmation can occur again after edits; it is not a version counter.
+      const baseDate = note.createdAt instanceof Date ? note.createdAt : null;
       const updatedDate =
         note.updatedAt instanceof Date ? note.updatedAt : null;
       if (
         baseDate &&
         updatedDate &&
-        updatedDate.getTime() > baseDate.getTime()
+        updatedDate.getTime() <= baseDate.getTime()
       ) {
-        // Edited in-place without archiving v1 in work_note_versions: current is v2, v1 snapshot is gone.
-        currentVersion = 2;
+        currentVersion = 1;
+        liveNoteRepresentsCurrentVersion = true;
       }
     }
 
-    if (ref.version > currentVersion) {
+    if (currentVersion !== null && ref.version > currentVersion) {
       return { ...unavailable(), exists: true, currentVersion };
     }
 

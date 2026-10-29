@@ -20,6 +20,7 @@ import {
   type AiEngineClient,
 } from '../../../integrations/ai-engine/ai-engine.port';
 import type { HandoverSourceViewer } from '../../capture/application/handover-capture-source.service';
+import type { EvaluatedHandoverSource } from '../../capture/application/handover-capture-source.service';
 import {
   HandoverIamScopeService,
   type HandoverProjectActorContext,
@@ -38,6 +39,7 @@ import type {
   CitationDto,
   GenerateRequestDto,
   HandoverAnswerDto,
+  HandoverAiWarning,
   JobDto,
   QuestionRequestDto,
   RetryJobDto,
@@ -79,6 +81,11 @@ interface SagHandoverAssistResponse {
   }>;
   answerStatus?: 'ANSWERED' | 'INSUFFICIENT_EVIDENCE' | null;
   message?: string | null;
+  coverage?: {
+    truncated?: boolean;
+    skippedSources?: unknown[];
+    truncatedSources?: unknown[];
+  } | null;
   sections?: Array<{
     text: string;
     citations: SagCitationPayload[];
@@ -229,8 +236,34 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       state: job.state,
       inputDraftVersion: job.inputDraftVersion,
       safeErrorCode: job.safeErrorCode ?? null,
+      warnings:
+        job.state === 'SUCCEEDED' &&
+        job.safeErrorCode === 'AI_EVIDENCE_INCOMPLETE'
+          ? ['AI_EVIDENCE_INCOMPLETE']
+          : [],
       createdAt: job.createdAt.toISOString(),
     };
+  }
+
+  private coverageWarnings(
+    body: SagHandoverAssistResponse,
+  ): HandoverAiWarning[] {
+    const coverage = body.coverage;
+    return coverage?.truncated ||
+      coverage?.skippedSources?.length ||
+      coverage?.truncatedSources?.length
+      ? ['AI_EVIDENCE_INCOMPLETE']
+      : [];
+  }
+
+  private sourceEvidenceIdentity(source: EvaluatedHandoverSource): string {
+    return JSON.stringify({
+      currentVersion: source.currentVersion,
+      isCurrent: source.isCurrent,
+      title: source.title,
+      logicalSourceId: source.logicalSourceId ?? null,
+      excerpts: source.excerpts,
+    });
   }
 
   private buildSagScopeHeaders(
@@ -1136,15 +1169,73 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     const allowedKeys = new Set(
       permittedSources.map((s) => `${s.kind}:${s.id}:${s.version}`),
     );
-    // Reauthorize again before returning citations
+    // Refresh membership and aggregate scope after the long-running external call.
+    const currentScope = await this.iamScope.resolveActiveProjectMemberScope(
+      viewer.organizationId,
+      viewer.projectId,
+      viewer.userId,
+    );
+    const currentHandover = await this.repository.handovers
+      .findOne({
+        _id: input.handover._id,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
+        schemaVersion: 2,
+      })
+      .lean<StoredHandoverDoc>()
+      .exec();
+    if (
+      !currentHandover ||
+      !resolveHandoverCapabilities({
+        actorUserId: viewer.userId,
+        ...currentScope,
+        handover: currentHandover,
+        packageAcceptedByCurrentSuccessor: false,
+        isFollowUpOwner: false,
+      }).includes('READ')
+    ) {
+      throw new NotFoundException({
+        code: 'HANDOVER_NOT_FOUND',
+        message: 'Handover not found.',
+        details: {},
+      });
+    }
+    if (
+      currentHandover.publishedRevisionId?.toHexString() !==
+        input.dto.revisionId ||
+      currentHandover.assignmentVersion !== input.dto.assignmentVersion
+    ) {
+      throw new ConflictException({
+        code: 'STALE_REVISION_REFERENCE',
+        message:
+          'Handover scope changed while answering. Retry against the current revision.',
+        details: {},
+      });
+    }
+    // Reauthorize all LLM inputs, not just the sources cited by its output.
     const postEvalMap = await this.sourcesService.evaluateSourceRefsMap(
-      viewer,
+      { ...viewer, ...currentScope },
       permittedSources.map((s) => ({
         kind: s.kind,
         id: s.id,
         version: String(s.version),
       })),
     );
+
+    const warnings = this.coverageWarnings(sagRes.body);
+    const allInputsStillReadable = permittedSources.every((source) => {
+      const key = `${source.kind}:${source.id}:${source.version}`;
+      const before = evalMap.get(key);
+      const after = postEvalMap.get(key);
+      return (
+        before &&
+        after &&
+        after.eligible &&
+        after.readable &&
+        this.sourceEvidenceIdentity(before) ===
+          this.sourceEvidenceIdentity(after)
+      );
+    });
 
     const verifiedSections = (sagRes.body.sections ?? []).flatMap((sec) => {
       const validCitations: CitationDto[] = [];
@@ -1180,6 +1271,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (
+      !allInputsStillReadable ||
       sagRes.body.answerStatus !== 'ANSWERED' ||
       verifiedSections.length === 0
     ) {
@@ -1187,19 +1279,18 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         revisionId: revision._id.toHexString(),
         answerStatus: 'INSUFFICIENT_EVIDENCE',
         message:
-          (sagRes.body.message && sagRes.body.message.trim()) ||
           'Insufficient grounded evidence in the authorized published handover sources.',
         sections: [],
+        warnings,
       };
     }
 
     return {
       revisionId: revision._id.toHexString(),
       answerStatus: 'ANSWERED',
-      message:
-        (sagRes.body.message && sagRes.body.message.trim()) ||
-        'Answered from authorized published handover sources.',
+      message: 'Answered from authorized published handover sources.',
       sections: verifiedSections.slice(0, 20),
+      warnings,
     };
   }
 
@@ -1533,6 +1624,9 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
             $set: {
               state: 'SUCCEEDED',
               candidates: verifiedCandidates,
+              ...(this.coverageWarnings(sagRes.body).length
+                ? { safeErrorCode: 'AI_EVIDENCE_INCOMPLETE' }
+                : {}),
               finishedAt: new Date(),
             },
             $unset: {
@@ -1686,6 +1780,28 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         throw err;
       }
 
+      // Source ACLs and immutable pins may change while SAG is generating.
+      const postEvalMap = await this.sourcesService.evaluateSourceRefsMap(
+        viewer,
+        claimedJob.selectedSources,
+      );
+      for (const ref of claimedJob.selectedSources) {
+        const before = evalMap.get(sourceRefKey(ref));
+        const after = postEvalMap.get(sourceRefKey(ref));
+        if (!after || !after.eligible || !after.readable) {
+          await markFailed('SELECTED_SOURCE_UNAVAILABLE');
+          return;
+        }
+        if (
+          !before ||
+          this.sourceEvidenceIdentity(before) !==
+            this.sourceEvidenceIdentity(after)
+        ) {
+          await markSuperseded('SELECTED_SOURCE_CHANGED');
+          return;
+        }
+      }
+
       await this.repository.withTransaction(async (session) => {
         const freshJob = await this.repository.jobs
           .findOne({ _id: claimedJob._id, state: 'RUNNING', leaseOwner })
@@ -1757,6 +1873,9 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
             $set: {
               state: 'SUCCEEDED',
               resultItems: generatedSnapshots,
+              ...(this.coverageWarnings(sagRes.body).length
+                ? { safeErrorCode: 'AI_EVIDENCE_INCOMPLETE' }
+                : {}),
               appliedDraftVersion: nextDraftVersion,
               finishedAt: new Date(),
             },
