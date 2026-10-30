@@ -699,14 +699,19 @@ describe('Capture Work Notes Mongo workflows', () => {
       canConfigure: false,
     };
     const saved = await service.saveCurrentWorkReportDraft({}, projectId, {
-      accomplishments: 'Completed the API.',
-      approach: 'Added validation and a transaction.',
-      reason: 'Protect data integrity.',
-      blockers: 'Waiting for review.',
-      nextSteps: 'Add the FE integration.',
+      title: 'Sprint 10 API Delivery',
+      content:
+        'Completed the API with validation and transaction support. Waiting for review; next up is FE integration.',
     });
+    expect(saved.title).toBe('Sprint 10 API Delivery');
+    expect(saved.content).toContain('Completed the API');
+    expect(saved.memberId).toBe(memberId);
+    expect(saved.memberName).toBe('Mina Member');
+    expect(Number.isFinite(Date.parse(saved.createdAt))).toBe(true);
+    expect(Number.isFinite(Date.parse(saved.updatedAt))).toBe(true);
     const submitted = await service.submitWorkReport({}, projectId, saved.id);
     expect(submitted.status).toBe('PENDING_REVIEW');
+    expect(Number.isFinite(Date.parse(submitted.submittedAt ?? ''))).toBe(true);
 
     currentActor = {
       ...currentActor,
@@ -791,9 +796,8 @@ describe('Capture Work Notes Mongo workflows', () => {
     expect(leaderReports.data[0].permissions.canCreate).toBe(false);
     await expect(
       service.saveCurrentWorkReportDraft({}, projectId, {
-        accomplishments: 'Leader draft',
-        approach: 'Approach',
-        reason: 'Reason',
+        title: 'Leader draft',
+        content: 'Attempted member report save',
       }),
     ).rejects.toMatchObject({
       status: 403,
@@ -943,9 +947,8 @@ describe('Capture Work Notes Mongo workflows', () => {
     );
   });
 
-  it('supports flexible 1-7 day reporting cadences, Leader-to-Manager reporting, and report file uploads', async () => {
+  it('supports flexible 1-7 day reporting cadences and Leader-to-Manager free-form note reporting', async () => {
     const managerId = new Types.ObjectId().toHexString();
-    const linkedDocId = new Types.ObjectId().toHexString();
 
     currentActor = {
       ...currentActor,
@@ -1012,32 +1015,15 @@ describe('Capture Work Notes Mongo workflows', () => {
       {},
       projectId,
       {
-        accomplishments: 'Delivered sprint milestone and reviewed PRs.',
-        approach: 'Coordinated FE and BE contracts.',
-        reason: 'Keep release on track.',
-        blockers: 'None.',
-        nextSteps: 'Prepare UAT.',
-        documentIds: [linkedDocId],
+        title: 'Sprint Milestone Summary',
+        content:
+          'Delivered sprint milestone, coordinated FE and BE contracts, and prepared UAT.',
       },
       'LEADER',
     );
     expect(leaderDraft.reportScope).toBe('LEADER');
-    expect(leaderDraft.documentIds).toEqual([linkedDocId]);
-
-    const pdfBytes = Buffer.from('%PDF-1.4\nLeader report attachment');
-    const withFile = await service.uploadWorkReportFile(
-      {},
-      projectId,
-      leaderDraft.id,
-      'leader-sprint-summary.pdf',
-      'application/pdf',
-      pdfBytes,
-    );
-    expect(withFile.file).toEqual({
-      name: 'leader-sprint-summary.pdf',
-      contentType: 'application/pdf',
-      size: pdfBytes.length,
-    });
+    expect(leaderDraft.title).toBe('Sprint Milestone Summary');
+    expect(leaderDraft.content).toContain('Delivered sprint milestone');
 
     const submittedLeaderReport = await service.submitWorkReport(
       {},
@@ -1059,13 +1045,6 @@ describe('Capture Work Notes Mongo workflows', () => {
       isManager: true,
       isLeader: false,
     };
-    const downloaded = await service.downloadWorkReportFile(
-      {},
-      projectId,
-      leaderDraft.id,
-    );
-    expect(downloaded.name).toBe('leader-sprint-summary.pdf');
-    expect(downloaded.bytes.equals(pdfBytes)).toBe(true);
 
     const approvedLeaderReport = await service.reviewWorkReport(
       {},
@@ -1076,6 +1055,10 @@ describe('Capture Work Notes Mongo workflows', () => {
     );
     expect(approvedLeaderReport.status).toBe('APPROVED');
     expect(approvedLeaderReport.reviewComment).toBe('Great sprint summary.');
+    expect(approvedLeaderReport.reviewedBy).toBe(managerId);
+    expect(
+      Number.isFinite(Date.parse(approvedLeaderReport.reviewedAt ?? '')),
+    ).toBe(true);
   });
 
   it('keeps Leader and legacy Member reports distinct for the same author and period', async () => {
@@ -1101,17 +1084,15 @@ describe('Capture Work Notes Mongo workflows', () => {
       dueAt: new Date(periodStart.getTime() + 7 * 86_400_000),
       frequency: 'WEEKLY',
       status: 'APPROVED',
-      accomplishments: 'Legacy member report',
-      approach: 'Legacy approach',
-      reason: 'Legacy reason',
+      title: 'Legacy member report',
+      content: 'Legacy member report content',
     });
     const draft = await service.saveCurrentWorkReportDraft(
       {},
       projectId,
       {
-        accomplishments: 'Leader work',
-        approach: 'Leader approach',
-        reason: 'Leader reason',
+        title: 'Leader work',
+        content: 'Leader periodic summary',
       },
       'LEADER',
     );
@@ -1136,9 +1117,8 @@ describe('Capture Work Notes Mongo workflows', () => {
       {},
       projectId,
       {
-        accomplishments: 'Earlier work',
-        approach: 'Earlier approach',
-        reason: 'Earlier reason',
+        title: 'Earlier work',
+        content: 'Earlier periodic summary',
       },
       'LEADER',
     );
@@ -1164,9 +1144,8 @@ describe('Capture Work Notes Mongo workflows', () => {
       {},
       projectId,
       {
-        accomplishments: 'Later work',
-        approach: 'Later approach',
-        reason: 'Later reason',
+        title: 'Later work',
+        content: 'Later periodic summary',
       },
       'LEADER',
     );
@@ -1277,9 +1256,9 @@ describe('Capture Work Notes Mongo workflows', () => {
       {},
       projectId,
       {
-        accomplishments: 'Implemented RBAC endpoints',
-        approach: 'Added strict scope guards',
-        reason: 'Protect two-tier governance',
+        title: 'RBAC Governance Rollout',
+        content:
+          'Implemented RBAC endpoints with strict scope guards to protect two-tier governance.',
       },
       'MEMBER',
     );
@@ -1385,25 +1364,15 @@ describe('Capture Work Notes Mongo workflows', () => {
       }),
     );
 
-    // 5. Leader drafts, attaches file, and submits LEADER report -> Co-Leader is strictly blocked (IDOR 404)!
+    // 5. Leader drafts and submits LEADER report -> Co-Leader is strictly blocked (IDOR 404)!
     const leoLeaderDraft = await service.saveCurrentWorkReportDraft(
       {},
       projectId,
       {
-        accomplishments: 'Confidential Leader escalation summary',
-        approach: 'Prepared milestone metrics',
-        reason: 'Executive checkpoint',
+        title: 'Confidential Leader Escalation',
+        content: 'Prepared milestone metrics and executive checkpoint summary.',
       },
       'LEADER',
-    );
-    const pdfBytes = Buffer.from('%PDF-1.4\nConfidential leader attachment');
-    await service.uploadWorkReportFile(
-      {},
-      projectId,
-      leoLeaderDraft.id,
-      'confidential-leader.pdf',
-      'application/pdf',
-      pdfBytes,
     );
     await service.submitWorkReport({}, projectId, leoLeaderDraft.id);
     expect(emitSafe).toHaveBeenCalledWith(
@@ -1413,7 +1382,7 @@ describe('Capture Work Notes Mongo workflows', () => {
       }),
     );
 
-    // Switch to Co-Leader Cara -> cannot view, list, or download Leo's LEADER report!
+    // Switch to Co-Leader Cara -> cannot view or list Leo's LEADER report!
     currentActor = {
       userId: coLeaderId,
       userName: 'Cara CoLeader',
@@ -1427,9 +1396,6 @@ describe('Capture Work Notes Mongo workflows', () => {
     };
     await expect(
       service.getWorkReport({}, projectId, leoLeaderDraft.id),
-    ).rejects.toBeInstanceOf(NotFoundException);
-    await expect(
-      service.downloadWorkReportFile({}, projectId, leoLeaderDraft.id),
     ).rejects.toBeInstanceOf(NotFoundException);
     const caraLeaderList = await service.listWorkReports(
       {},
@@ -1459,9 +1425,8 @@ describe('Capture Work Notes Mongo workflows', () => {
       {},
       projectId,
       {
-        accomplishments: 'Dual manager-leader delivery',
-        approach: 'Direct governance',
-        reason: 'Cross-team alignment',
+        title: 'Dual Manager-Leader Delivery',
+        content: 'Direct governance and cross-team alignment notes.',
       },
       'LEADER',
     );

@@ -203,6 +203,48 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
     );
     expect(candidates.some((c) => c.kind === 'TASK_NOTE')).toBe(false);
     expect(candidates.some((c) => c.kind === 'PROJECT_DOCUMENT')).toBe(true);
+
+    // 4. Free-form { title, content } Work Report extracts user title and chunked body excerpts
+    const freeformReportId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d49');
+    collections.work_reports.push({
+      _id: freeformReportId,
+      organizationId: orgId,
+      projectId,
+      memberUserId: departingId,
+      reportScope: 'MEMBER',
+      status: 'APPROVED',
+      title: 'Sprint 14 Payment Cutover Notes',
+      content:
+        'Completed webhook signature verification.\n\nHanded off runbook to on-call rotation.',
+      periodStart: new Date('2026-10-08T00:00:00Z'),
+      periodEnd: new Date('2026-10-14T00:00:00Z'),
+    });
+    const freeformEvaluated = await svc.evaluateSource(
+      {
+        organizationId: orgId.toHexString(),
+        projectId: projectId.toHexString(),
+        userId: leaderId.toHexString(),
+        isProjectMember: true,
+        isProjectLeader: true,
+      },
+      { kind: 'WORK_REPORT', id: freeformReportId.toHexString(), version: 1 },
+    );
+    expect(freeformEvaluated.readable).toBe(true);
+    expect(freeformEvaluated.title).toBe('Sprint 14 Payment Cutover Notes');
+    expect(freeformEvaluated.excerpts).toEqual([
+      {
+        locatorKind: 'SECTION',
+        locatorValue: 'report-body-1',
+        heading: 'Sprint 14 Payment Cutover Notes',
+        content: 'Completed webhook signature verification.',
+      },
+      {
+        locatorKind: 'SECTION',
+        locatorValue: 'report-body-2',
+        heading: 'Sprint 14 Payment Cutover Notes',
+        content: 'Handed off runbook to on-call rotation.',
+      },
+    ]);
   });
 
   it('enforces Lifecycle KNOWLEDGE_OBJECT VERIFIED state and RESTRICTED confidentiality (A04 / A13)', async () => {

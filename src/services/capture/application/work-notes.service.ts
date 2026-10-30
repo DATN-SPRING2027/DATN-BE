@@ -3418,21 +3418,12 @@ export class WorkNotesService {
     const untouchedEmptyDraftCondition = {
       status: 'DRAFT',
       $and: [
+        { $or: [{ title: '' }, { title: { $exists: false } }] },
+        { $or: [{ content: '' }, { content: { $exists: false } }] },
         {
           $or: [
             { accomplishments: '' },
             { accomplishments: { $exists: false } },
-          ],
-        },
-        { $or: [{ approach: '' }, { approach: { $exists: false } }] },
-        { $or: [{ reason: '' }, { reason: { $exists: false } }] },
-        { $or: [{ blockers: '' }, { blockers: { $exists: false } }] },
-        { $or: [{ nextSteps: '' }, { nextSteps: { $exists: false } }] },
-        { $or: [{ file: null }, { file: { $exists: false } }] },
-        {
-          $or: [
-            { documentIds: { $size: 0 } },
-            { documentIds: { $exists: false } },
           ],
         },
       ],
@@ -3440,13 +3431,9 @@ export class WorkNotesService {
     const authoredOrSubmittedCondition = {
       $or: [
         { status: { $ne: 'DRAFT' } },
+        { title: { $nin: ['', null] } },
+        { content: { $nin: ['', null] } },
         { accomplishments: { $nin: ['', null] } },
-        { approach: { $nin: ['', null] } },
-        { reason: { $nin: ['', null] } },
-        { blockers: { $nin: ['', null] } },
-        { nextSteps: { $nin: ['', null] } },
-        { 'file.key': { $exists: true } },
-        { 'documentIds.0': { $exists: true } },
       ],
     };
 
@@ -3958,131 +3945,6 @@ export class WorkNotesService {
     return this.saveReportDraft(actor, row._id, input, 'MEMBER');
   }
 
-  async uploadWorkReportFile(
-    headers: CaptureRequestHeaders,
-    projectId: string,
-    reportId: string,
-    name: string,
-    contentType: string,
-    bytes: Buffer,
-  ): Promise<WorkReportRecord> {
-    const actor = await this.authorization.resolveProject(headers, projectId);
-    if (!validId(reportId)) throw reportNotFound();
-    const cleanName = name.trim();
-    const resolvedContentType =
-      bytes.length > 0 &&
-      bytes.length <= 20 * 1024 * 1024 &&
-      cleanName.length > 0 &&
-      cleanName.length <= 180 &&
-      !/[\\/]/.test(cleanName) &&
-      ![...cleanName].some((character) => character.charCodeAt(0) < 32)
-        ? resolveValidatedDocumentContentType(cleanName, contentType, bytes)
-        : null;
-    if (!resolvedContentType)
-      throw new BadRequestException({
-        code: 'DOCUMENT_FILE_INVALID',
-        message:
-          'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
-      });
-    const id = objectId(reportId);
-    const reports = this.database().collection('work_reports');
-    const existing = await reports.findOne({
-      _id: id,
-      organizationId: objectId(actor.organizationId),
-      projectId: objectId(projectId),
-      memberUserId: objectId(actor.userId),
-      status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
-    });
-    if (!existing) throw reportNotFound();
-    const existingScope: WorkReportScope =
-      text((existing as Record<string, unknown>).reportScope) === 'LEADER'
-        ? 'LEADER'
-        : 'MEMBER';
-    this.assertCanAuthorScope(actor, existingScope);
-    if (!this.documentStorage)
-      throw new ServiceUnavailableException(
-        'Project Document storage is unavailable.',
-      );
-    const key = `work-reports/${actor.organizationId}/${projectId}/${reportId}/${randomUUID()}`;
-    await this.documentStorage.put(key, bytes, resolvedContentType);
-    try {
-      await this.transaction(async (db, session) => {
-        const result = await db.collection('work_reports').updateOne(
-          {
-            _id: id,
-            organizationId: objectId(actor.organizationId),
-            projectId: objectId(projectId),
-            memberUserId: objectId(actor.userId),
-            status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
-          },
-          {
-            $set: {
-              file: {
-                key,
-                name: cleanName,
-                contentType: resolvedContentType,
-                size: bytes.length,
-              },
-              updatedAt: new Date(),
-            },
-          },
-          { session },
-        );
-        if (result.matchedCount !== 1)
-          throw conflict('The Work Report changed during file upload.');
-        await this.auditEvent(
-          actor,
-          'REPORT_FILE_UPLOADED',
-          'WORK_REPORT',
-          reportId,
-          { fileName: cleanName, size: bytes.length },
-          session,
-        );
-      });
-    } catch (error) {
-      await this.documentStorage.delete(key).catch(() => undefined);
-      throw error;
-    }
-    const oldKey = (existing.file as { key?: string } | undefined)?.key;
-    if (oldKey && oldKey !== key) {
-      await this.documentStorage.delete(oldKey).catch(() => undefined);
-    }
-    return this.getWorkReport(headers, projectId, reportId);
-  }
-
-  async downloadWorkReportFile(
-    headers: CaptureRequestHeaders,
-    projectId: string,
-    reportId: string,
-  ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
-    const actor = await this.authorization.resolveProject(headers, projectId);
-    if (!validId(reportId)) throw reportNotFound();
-    const report = record(
-      await this.database()
-        .collection('work_reports')
-        .findOne({
-          _id: objectId(reportId),
-          organizationId: objectId(actor.organizationId),
-          projectId: objectId(projectId),
-        }),
-    );
-    if (!report || !this.canViewWorkReportRow(actor, report)) {
-      throw reportNotFound();
-    }
-    const file = report.file as
-      { key?: string; name?: string; contentType?: string } | undefined;
-    if (!file?.key || !file.name || !file.contentType) throw reportNotFound();
-    if (!this.documentStorage)
-      throw new ServiceUnavailableException(
-        'Project Document storage is unavailable.',
-      );
-    return {
-      bytes: await this.documentStorage.get(file.key),
-      name: file.name,
-      contentType: file.contentType,
-    };
-  }
-
   async getWorkReport(
     headers: CaptureRequestHeaders,
     projectId: string,
@@ -4171,13 +4033,9 @@ export class WorkNotesService {
       const currentScope: WorkReportScope =
         text(current.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
       this.assertCanAuthorScope(actor, currentScope);
-      if (
-        !text(current.accomplishments).trim() ||
-        !text(current.approach).trim() ||
-        !text(current.reason).trim()
-      )
+      if (!text(current.title).trim() || !text(current.content).trim())
         throw conflict(
-          'Complete the three required report fields before submitting.',
+          'Complete the report title and content before submitting.',
         );
       const currentMemberId = String(current.memberUserId);
       const updated = await reports.updateOne(
@@ -4629,14 +4487,8 @@ export class WorkNotesService {
         },
         {
           $set: {
-            accomplishments: input.accomplishments,
-            approach: input.approach,
-            reason: input.reason,
-            blockers: input.blockers ?? '',
-            nextSteps: input.nextSteps ?? '',
-            ...(input.documentIds !== undefined
-              ? { documentIds: input.documentIds }
-              : {}),
+            title: input.title,
+            content: input.content,
             updatedAt: now,
           },
         },
@@ -4863,11 +4715,8 @@ export class WorkNotesService {
         .map(objectId);
       queryConditions.push({
         $or: [
-          { accomplishments: regex },
-          { approach: regex },
-          { reason: regex },
-          { blockers: regex },
-          { nextSteps: regex },
+          { title: regex },
+          { content: regex },
           { reviewComment: regex },
           ...(matchingPeopleIds.length > 0
             ? [{ memberUserId: { $in: matchingPeopleIds } }]
@@ -5371,12 +5220,8 @@ export class WorkNotesService {
                   periodStart: start,
                   periodEnd: end,
                   dueAt: end,
-                  accomplishments: '',
-                  approach: '',
-                  reason: '',
-                  blockers: '',
-                  nextSteps: '',
-                  documentIds: [],
+                  title: '',
+                  content: '',
                   status: 'DRAFT',
                   reviewHistory: [],
                   createdAt: now,
@@ -5484,29 +5329,8 @@ export class WorkNotesService {
       periodEnd: iso(value.periodEnd) ?? '',
       dueAt: iso(value.dueAt) ?? '',
       status,
-      accomplishments: text(value.accomplishments),
-      approach: text(value.approach),
-      reason: text(value.reason),
-      blockers: text(value.blockers),
-      nextSteps: text(value.nextSteps),
-      ...(Array.isArray(value.documentIds)
-        ? {
-            documentIds: (value.documentIds as unknown[])
-              .filter((id): id is string => typeof id === 'string')
-              .map((id) => id.trim()),
-          }
-        : {}),
-      ...(value.file && typeof value.file === 'object'
-        ? {
-            file: {
-              name: text((value.file as Record<string, unknown>).name),
-              contentType: text(
-                (value.file as Record<string, unknown>).contentType,
-              ),
-              size: Number((value.file as Record<string, unknown>).size),
-            },
-          }
-        : {}),
+      title: text(value.title),
+      content: text(value.content),
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
       ...(iso(value.submittedAt)

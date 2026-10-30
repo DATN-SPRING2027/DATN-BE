@@ -467,38 +467,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WorkReport' }
         default: { $ref: '#/components/responses/Error' }
-  /capture/projects/{projectId}/work-reports/{reportId}/file:
-    parameters:
-      - $ref: '#/components/parameters/ProjectId'
-      - $ref: '#/components/parameters/ReportId'
-    put:
-      tags: [WorkReports]
-      operationId: uploadWorkReportFile
-      description: Uploads a private attachment (up to 20 MB) to an owned editable Work Report draft.
-      parameters:
-        - $ref: '#/components/parameters/CsrfToken'
-        - name: X-File-Name
-          in: header
-          required: true
-          schema: { type: string, maxLength: 540 }
-      requestBody:
-        required: true
-        content:
-          application/octet-stream:
-            schema: { type: string, format: binary }
-      responses:
-        '200': { $ref: '#/components/responses/WorkReport' }
-        default: { $ref: '#/components/responses/Error' }
-    get:
-      tags: [WorkReports]
-      operationId: downloadWorkReportFile
-      responses:
-        '200':
-          description: Private Work Report attachment download
-          content:
-            application/octet-stream:
-              schema: { type: string, format: binary }
-        default: { $ref: '#/components/responses/Error' }
   /capture/projects/{projectId}/work-reports/{reportId}:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -953,61 +921,49 @@ components:
     WorkReportInput:
       type: object
       additionalProperties: false
-      required: [accomplishments, approach, reason]
+      required: [title, content]
       properties:
-        accomplishments: { type: string, minLength: 1, maxLength: 10000 }
-        approach: { type: string, minLength: 1, maxLength: 10000 }
-        reason: { type: string, minLength: 1, maxLength: 5000 }
-        blockers: { type: string, maxLength: 5000 }
-        nextSteps: { type: string, maxLength: 5000 }
-        documentIds:
-          type: array
-          maxItems: 20
-          items: { $ref: '#/components/schemas/ObjectId' }
+        title: { type: string, minLength: 1, maxLength: 240 }
+        content: { type: string, minLength: 1, maxLength: 100000 }
     WorkReport:
-      allOf:
-        - $ref: '#/components/schemas/WorkReportInput'
-        - type: object
-          required:
-            [
-              id,
-              projectId,
-              memberId,
-              memberName,
-              frequency,
-              periodStart,
-              periodEnd,
-              dueAt,
-              status,
-              createdAt,
-              updatedAt,
-              permissions,
-            ]
-          properties:
-            id: { $ref: '#/components/schemas/ObjectId' }
-            projectId: { $ref: '#/components/schemas/ObjectId' }
-            memberId: { $ref: '#/components/schemas/ObjectId' }
-            memberName: { type: string }
-            reportScope: { $ref: '#/components/schemas/WorkReportScope' }
-            frequency: { $ref: '#/components/schemas/ReportFrequency' }
-            periodStart: { type: string, format: date-time }
-            periodEnd: { type: string, format: date-time }
-            dueAt: { type: string, format: date-time }
-            status: { $ref: '#/components/schemas/WorkReportStatus' }
-            file:
-              type: object
-              required: [name, contentType, size]
-              properties:
-                name: { type: string }
-                contentType: { type: string }
-                size: { type: integer, minimum: 1, maximum: 20971520 }
-            createdAt: { type: string, format: date-time }
-            updatedAt: { type: string, format: date-time }
-            submittedAt: { type: [string, 'null'], format: date-time }
-            reviewedAt: { type: [string, 'null'], format: date-time }
-            reviewedBy: { type: [string, 'null'] }
-            reviewComment: { type: [string, 'null'] }
-            permissions: { $ref: '#/components/schemas/Permissions' }
-            reviewHistory:
-              type: array
-              items: { $ref: '#/components/schemas/ReviewEvent' }
+      type: object
+      required:
+        [
+          id,
+          projectId,
+          memberId,
+          memberName,
+          frequency,
+          periodStart,
+          periodEnd,
+          dueAt,
+          status,
+          title,
+          content,
+          createdAt,
+          updatedAt,
+          permissions,
+        ]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectId' }
+        projectId: { $ref: '#/components/schemas/ObjectId' }
+        memberId: { $ref: '#/components/schemas/ObjectId' }
+        memberName: { type: string }
+        reportScope: { $ref: '#/components/schemas/WorkReportScope' }
+        frequency: { $ref: '#/components/schemas/ReportFrequency' }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        dueAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/WorkReportStatus' }
+        title: { type: string, maxLength: 240 }
+        content: { type: string, maxLength: 100000 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        submittedAt: { type: [string, 'null'], format: date-time }
+        reviewedAt: { type: [string, 'null'], format: date-time }
+        reviewedBy: { type: [string, 'null'] }
+        reviewComment: { type: [string, 'null'] }
+        permissions: { $ref: '#/components/schemas/Permissions' }
+        reviewHistory:
+          type: array
+          items: { $ref: '#/components/schemas/ReviewEvent' }
