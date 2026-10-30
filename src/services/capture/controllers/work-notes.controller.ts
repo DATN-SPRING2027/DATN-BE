@@ -23,12 +23,15 @@ import {
   validCsrfPair,
 } from '../../iam/application/authentication/authentication.application.service';
 import type {
+  DocumentKnowledgeControlAction,
   DocumentStatus,
   WorkReportStatus,
 } from '../application/work-notes.types';
 import { WorkNotesService } from '../application/work-notes.service';
 import {
   positiveInteger,
+  validateDocumentConfirmUploadInput,
+  validateDocumentUploadIntentInput,
   validateProjectDocumentInput,
   validateReportFrequency,
   validateReportScope,
@@ -122,13 +125,64 @@ export class WorkNotesController {
     } catch {
       throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
     }
-    return this.service.uploadDocumentFile(
-      headers,
+    const expectedSha256 = headerValue(request.headers['x-content-sha256']);
+    const autoSyncSag = headerValue(request.headers['x-auto-sync-sag']) === 'true';
+    const options =
+      expectedSha256 || autoSyncSag
+        ? {
+            ...(expectedSha256 ? { expectedSha256 } : {}),
+            ...(autoSyncSag ? { autoSyncSag: true } : {}),
+          }
+        : undefined;
+    return options
+      ? this.service.uploadDocumentFile(
+          headers,
+          projectId,
+          documentId,
+          name,
+          request.headers['content-type'] ?? '',
+          Buffer.concat(chunks),
+          options,
+        )
+      : this.service.uploadDocumentFile(
+          headers,
+          projectId,
+          documentId,
+          name,
+          request.headers['content-type'] ?? '',
+          Buffer.concat(chunks),
+        );
+  }
+
+  @Post('documents/:documentId/file/upload-intent')
+  @HttpCode(HttpStatus.OK)
+  createDocumentUploadIntent(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.createDocumentUploadIntent(
+      this.mutationHeaders(request),
       projectId,
       documentId,
-      name,
-      request.headers['content-type'] ?? '',
-      Buffer.concat(chunks),
+      validateDocumentUploadIntentInput(body),
+    );
+  }
+
+  @Post('documents/:documentId/file/confirm-upload')
+  @HttpCode(HttpStatus.OK)
+  confirmDocumentUpload(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.confirmDocumentUpload(
+      this.mutationHeaders(request),
+      projectId,
+      documentId,
+      validateDocumentConfirmUploadInput(body),
     );
   }
 
@@ -138,21 +192,59 @@ export class WorkNotesController {
     @Res({ passthrough: true }) response: Response,
     @Param('projectId') projectId: string,
     @Param('documentId') documentId: string,
-    @Query() rawQuery: Record<string, unknown>,
+    @Query() rawQuery: Record<string, unknown> = {},
   ) {
-    assertQueryKeys(rawQuery, ['version']);
+    assertQueryKeys(rawQuery, ['version', 'proxy', 'format']);
     const version =
       rawQuery.version === undefined
         ? undefined
         : positiveInteger(rawQuery.version, 1, 100000);
+    if (
+      rawQuery.proxy !== undefined &&
+      rawQuery.proxy !== 'true' &&
+      rawQuery.proxy !== 'false'
+    ) {
+      invalid();
+    }
+    if (rawQuery.format !== undefined && rawQuery.format !== 'url') {
+      invalid();
+    }
+    const headers = this.requestHeaders(request);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+
+    if (rawQuery.format === 'url') {
+      return this.service.resolveDocumentFileDownloadUrl(
+        headers,
+        projectId,
+        documentId,
+        version,
+      );
+    }
+
+    if (
+      rawQuery.proxy !== 'true' &&
+      typeof this.service.resolveDocumentFileDownloadUrl === 'function'
+    ) {
+      const direct = await this.service.resolveDocumentFileDownloadUrl(
+        headers,
+        projectId,
+        documentId,
+        version,
+      );
+      if (direct.mode === 'DIRECT_GET' && direct.downloadUrl) {
+        response.setHeader('Location', direct.downloadUrl);
+        response.status(HttpStatus.FOUND);
+        return;
+      }
+    }
+
     const file = await this.service.downloadDocumentFile(
-      this.requestHeaders(request),
+      headers,
       projectId,
       documentId,
       version,
     );
-    response.setHeader('Cache-Control', 'private, no-store');
-    response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Type', file.contentType);
     response.setHeader(
       'Content-Disposition',
@@ -370,6 +462,20 @@ export class WorkNotesController {
     );
   }
 
+  @Delete('documents/:documentId')
+  @HttpCode(HttpStatus.OK)
+  deleteDocument(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+  ) {
+    return this.service.deleteDocument(
+      this.mutationHeaders(request),
+      projectId,
+      documentId,
+    );
+  }
+
   @Post('documents/:documentId/submit')
   @HttpCode(HttpStatus.OK)
   submitDocument(
@@ -462,6 +568,81 @@ export class WorkNotesController {
       this.mutationHeaders(request),
       projectId,
       documentId,
+    );
+  }
+
+  @Get('documents/:documentId/knowledge-status')
+  getDocumentKnowledgeStatus(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+  ) {
+    return this.service.getDocumentKnowledgeStatus(
+      this.requestHeaders(request),
+      projectId,
+      documentId,
+    );
+  }
+
+  @Get('documents/:documentId/knowledge-chunks')
+  getDocumentKnowledgeChunks(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
+  ) {
+    assertQueryKeys(rawQuery, ['limit', 'offset']);
+    const limit =
+      rawQuery.limit === undefined
+        ? 50
+        : positiveInteger(rawQuery.limit, 50, 200);
+    const offset =
+      rawQuery.offset === undefined
+        ? 0
+        : rawQuery.offset === '0' || rawQuery.offset === 0
+          ? 0
+          : positiveInteger(rawQuery.offset, 0, 100000);
+    return this.service.getDocumentKnowledgeChunks(
+      this.requestHeaders(request),
+      projectId,
+      documentId,
+      { limit, offset },
+    );
+  }
+
+  @Post('documents/:documentId/knowledge-sync')
+  @HttpCode(HttpStatus.OK)
+  syncDocumentToSag(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+  ) {
+    return this.service.syncDocumentToSag(
+      this.mutationHeaders(request),
+      projectId,
+      documentId,
+    );
+  }
+
+  @Post('documents/:documentId/knowledge-control')
+  @HttpCode(HttpStatus.OK)
+  controlDocumentKnowledge(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = record(body);
+    const action = optionalStatus<DocumentKnowledgeControlAction>(
+      payload.action,
+      ['PAUSE', 'RESUME', 'REPROCESS', 'REVOKE'],
+    );
+    if (!action) invalid();
+    return this.service.controlDocumentKnowledge(
+      this.mutationHeaders(request),
+      projectId,
+      documentId,
+      action,
     );
   }
 

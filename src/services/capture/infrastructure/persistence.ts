@@ -112,6 +112,7 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
 };
 
 export const CAPTURE_QUEUES: QueueName[] = [
+  'ingestion-queue',
   'jira-sync-queue',
   'dlq-failed-jobs',
 ];

@@ -18,6 +18,8 @@ const requestHeaders = [
   'authorization',
   'content-type',
   'cookie',
+  'x-auto-sync-sag',
+  'x-content-sha256',
   'x-csrf-token',
   'x-file-name',
   'x-organization-id',
@@ -99,6 +101,19 @@ export class GatewayCaptureController {
     return this.forward(request, response);
   }
 
+  @Post('documents/:documentId/file/upload-intent')
+  createDocumentUploadIntent(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Post('documents/:documentId/file/confirm-upload')
+  confirmDocumentUpload(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Get('documents/:documentId/file')
   downloadDocumentFile(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
@@ -106,6 +121,11 @@ export class GatewayCaptureController {
 
   @Post('documents/:documentId/submit')
   submitDocument(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('documents/:documentId/comment')
+  commentDocument(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 
@@ -126,6 +146,35 @@ export class GatewayCaptureController {
 
   @Post('documents/:documentId/archive')
   archiveDocument(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('documents/:documentId/knowledge-status')
+  getDocumentKnowledgeStatus(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Get('documents/:documentId/knowledge-chunks')
+  getDocumentKnowledgeChunks(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Post('documents/:documentId/knowledge-sync')
+  syncDocumentToSag(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('documents/:documentId/knowledge-control')
+  controlDocumentKnowledge(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
     return this.forward(request, response);
   }
 
@@ -223,6 +272,7 @@ export class GatewayCaptureController {
         headers,
         ...(body === undefined ? {} : { body }),
         ...(streamUpload ? { duplex: 'half' } : {}),
+        redirect: 'manual',
         signal: AbortSignal.timeout(
           this.config.getOrThrow<number>(
             fileTransfer ? 'CAPTURE_FILE_TIMEOUT_MS' : 'BACKEND_TIMEOUT_MS',
