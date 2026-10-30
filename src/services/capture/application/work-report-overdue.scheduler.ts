@@ -45,7 +45,10 @@ export class WorkReportOverdueScheduler
       try {
         for await (const project of this.roster.activeProjects()) {
           activeRosters.push(project);
-          if (project.members.length > 0) {
+          if (
+            project.members.length > 0 ||
+            (project.leaders?.length ?? 0) > 0
+          ) {
             try {
               await this.workNotes.ensureScheduledReportObligations(project);
             } catch (error) {

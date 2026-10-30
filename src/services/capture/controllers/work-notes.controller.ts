@@ -38,6 +38,7 @@ import {
   validateReviewInput,
   validateTaskNoteInput,
   validateWorkReportInput,
+  validateWorkReportsListFilters,
 } from '../application/work-notes.validation';
 
 const documentStatuses: readonly DocumentStatus[] = [
@@ -702,23 +703,46 @@ export class WorkNotesController {
     @Param('projectId') projectId: string,
     @Query() rawQuery: Record<string, unknown> = {},
   ) {
-    assertQueryKeys(rawQuery, ['page', 'pageSize', 'status', 'scope']);
+    assertQueryKeys(rawQuery, [
+      'page',
+      'pageSize',
+      'status',
+      'scope',
+      'memberId',
+      'period',
+      'search',
+    ]);
     const scope = validateReportScope(rawQuery.scope);
+    const filters = validateWorkReportsListFilters(rawQuery);
+    const page = positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER);
+    const pageSize = positiveInteger(rawQuery.pageSize, 20, 100);
+    const status = optionalStatus(rawQuery.status, workReportStatuses);
+    if (filters) {
+      return this.service.listWorkReports(
+        this.requestHeaders(request),
+        projectId,
+        page,
+        pageSize,
+        status,
+        scope ?? 'MEMBER',
+        filters,
+      );
+    }
     return scope
       ? this.service.listWorkReports(
           this.requestHeaders(request),
           projectId,
-          positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
-          positiveInteger(rawQuery.pageSize, 20, 100),
-          optionalStatus(rawQuery.status, workReportStatuses),
+          page,
+          pageSize,
+          status,
           scope,
         )
       : this.service.listWorkReports(
           this.requestHeaders(request),
           projectId,
-          positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
-          positiveInteger(rawQuery.pageSize, 20, 100),
-          optionalStatus(rawQuery.status, workReportStatuses),
+          page,
+          pageSize,
+          status,
         );
   }
 
