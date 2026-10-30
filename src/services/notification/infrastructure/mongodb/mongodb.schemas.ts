@@ -65,7 +65,6 @@ export const NOTIFICATION_TARGET_KINDS = [
   'PROJECT',
   'TASK',
   'WORK_NOTE',
-  'WORK_REPORT',
   'CHAT',
 ] as const;
 

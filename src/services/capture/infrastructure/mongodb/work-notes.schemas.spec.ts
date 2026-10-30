@@ -271,7 +271,7 @@ describe('Work Notes persistence contract', () => {
     expect(leaderSetting.validateSync()).toBeUndefined();
   });
 
-  it('registers additive WORK_REPORT notification types and target kind in continuum_notification schema', () => {
+  it('registers additive WORK_REPORT notification types in continuum_notification schema', () => {
     expect(NOTIFICATION_MVP_TYPES).toEqual(
       expect.arrayContaining([
         'WORK_REPORT_SUBMITTED',
@@ -282,7 +282,7 @@ describe('Work Notes persistence contract', () => {
         'WORK_REPORT_FREQUENCY_CHANGED',
       ]),
     );
-    expect(NOTIFICATION_TARGET_KINDS).toContain('WORK_REPORT');
+    expect(NOTIFICATION_TARGET_KINDS).toContain('PROJECT');
 
     const notificationDef = NOTIFICATION_PERSISTENCE.collections.find(
       (item) => item.name === 'notifications',
@@ -301,7 +301,7 @@ describe('Work Notes persistence contract', () => {
       title: 'Leader work report submitted',
       message: 'A Project Leader submitted a periodic work report for review.',
       target: {
-        kind: 'WORK_REPORT',
+        kind: 'PROJECT',
         url: '/projects/507f1f77bcf86cd799439011/work-reports',
         organizationId: '507f1f77bcf86cd799439012',
         projectId: '507f1f77bcf86cd799439011',
