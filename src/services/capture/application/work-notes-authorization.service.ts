@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   ForbiddenException,
   Injectable,
@@ -9,6 +10,8 @@ import { ConfigService } from '@nestjs/config';
 import type { CaptureRequestHeaders, WorkNotesActor } from './work-notes.types';
 
 const validId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
+const PROJECT_AUTH_CACHE_TTL_MS = 3_000;
+const PROJECT_AUTH_CACHE_MAX_ENTRIES = 512;
 
 interface IdentityResponse {
   id?: string;
@@ -28,6 +31,16 @@ interface MembershipResponse {
 
 @Injectable()
 export class WorkNotesAuthorizationService {
+  private readonly projectActorCache = new Map<
+    string,
+    { actor: WorkNotesActor; expiresAt: number }
+  >();
+
+  private readonly inFlightProjectResolutions = new Map<
+    string,
+    Promise<WorkNotesActor>
+  >();
+
   constructor(private readonly config: ConfigService) {}
 
   async resolveProject(
@@ -41,7 +54,83 @@ export class WorkNotesAuthorizationService {
       });
     }
     const normalizedProjectId = projectId.toLowerCase();
+    const cacheKey = this.buildProjectCacheKey(headers, normalizedProjectId);
+    if (cacheKey === null) {
+      return this.resolveProjectUncached(headers, normalizedProjectId);
+    }
 
+    const now = Date.now();
+    const cached = this.projectActorCache.get(cacheKey);
+    if (cached) {
+      if (cached.expiresAt > now) {
+        return { ...cached.actor };
+      }
+      this.projectActorCache.delete(cacheKey);
+    }
+
+    const existingInFlight = this.inFlightProjectResolutions.get(cacheKey);
+    if (existingInFlight) {
+      const sharedActor = await existingInFlight;
+      return { ...sharedActor };
+    }
+
+    const resolutionPromise = this.resolveProjectUncached(
+      headers,
+      normalizedProjectId,
+    );
+    this.inFlightProjectResolutions.set(cacheKey, resolutionPromise);
+    try {
+      const actor = await resolutionPromise;
+      this.storeCachedProjectActor(cacheKey, actor);
+      return { ...actor };
+    } finally {
+      this.inFlightProjectResolutions.delete(cacheKey);
+    }
+  }
+
+  private buildProjectCacheKey(
+    headers: CaptureRequestHeaders,
+    normalizedProjectId: string,
+  ): string | null {
+    const auth = headers.authorization?.trim() ?? '';
+    const cookie = headers.cookie?.trim() ?? '';
+    if (!auth && !cookie) {
+      return null;
+    }
+    const credentialDigest = createHash('sha256')
+      .update(`${auth}\0${cookie}`)
+      .digest('hex');
+    return `${credentialDigest}:${headers.organizationId ?? ''}:${normalizedProjectId}`;
+  }
+
+  private storeCachedProjectActor(
+    cacheKey: string,
+    actor: WorkNotesActor,
+  ): void {
+    const now = Date.now();
+    if (this.projectActorCache.size >= PROJECT_AUTH_CACHE_MAX_ENTRIES) {
+      for (const [key, entry] of this.projectActorCache) {
+        if (entry.expiresAt <= now) {
+          this.projectActorCache.delete(key);
+        }
+      }
+      if (this.projectActorCache.size >= PROJECT_AUTH_CACHE_MAX_ENTRIES) {
+        for (const oldestKey of this.projectActorCache.keys()) {
+          this.projectActorCache.delete(oldestKey);
+          break;
+        }
+      }
+    }
+    this.projectActorCache.set(cacheKey, {
+      actor: { ...actor },
+      expiresAt: now + PROJECT_AUTH_CACHE_TTL_MS,
+    });
+  }
+
+  private async resolveProjectUncached(
+    headers: CaptureRequestHeaders,
+    normalizedProjectId: string,
+  ): Promise<WorkNotesActor> {
     const identity = await this.request<IdentityResponse>(
       '/api/v1/auth/me',
       headers,
