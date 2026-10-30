@@ -944,8 +944,9 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     expect(storageDeleteMock).toHaveBeenCalledWith(sharedOrUniqueKey);
   });
 
-  it('reuses the resolved project actor during listDocuments live sync and skips terminal 100% SEARCH_READY documents', async () => {
+  it('reuses the resolved project actor during listDocuments live sync, skips settled READY documents, and keeps polling SEARCH_READY documents whose knowledgeStatus is still QUEUED', async () => {
     const activeDocId = new Types.ObjectId().toHexString();
+    const finalizingDocId = new Types.ObjectId().toHexString();
     const readyDocId = new Types.ObjectId().toHexString();
     const now = new Date('2026-10-30T06:00:00.000Z');
 
@@ -976,6 +977,36 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       },
     };
 
+    const finalizingDocRow: Record<string, unknown> = {
+      _id: new Types.ObjectId(finalizingDocId),
+      organizationId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'search-ready-knowledge-queued',
+      documentType: 'OTHER',
+      createdByUserId: new Types.ObjectId(leaderId),
+      updatedByUserId: new Types.ObjectId(leaderId),
+      currentVersionNumber: 1,
+      latestApprovedVersionNumber: 1,
+      status: 'APPROVED',
+      createdAt: now,
+      updatedAt: now,
+      knowledgeSync: {
+        documentId: finalizingDocId,
+        version: 1,
+        sagDocumentId: 'sag-finalizing-1',
+        sagVersionNo: 1,
+        status: 'SEARCH_READY',
+        searchStatus: 'SEARCH_READY',
+        knowledgeStatus: 'QUEUED',
+        searchReady: true,
+        knowledgeReady: false,
+        currentStage: 'COMPLETE',
+        documentStatus: 'ready',
+        progress: 100,
+        chunkCount: 18,
+      },
+    };
+
     const readyDocRow: Record<string, unknown> = {
       _id: new Types.ObjectId(readyDocId),
       organizationId: new Types.ObjectId(orgId),
@@ -996,7 +1027,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
         sagVersionNo: 1,
         status: 'SEARCH_READY',
         searchStatus: 'SEARCH_READY',
-        knowledgeStatus: 'NOT_STARTED',
+        knowledgeStatus: 'DATA_READY',
         searchReady: true,
         knowledgeReady: false,
         currentStage: 'COMPLETE',
@@ -1018,6 +1049,18 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       knowledgeSync: activeDocRow.knowledgeSync,
     };
 
+    const finalizingVersionRow: Record<string, unknown> = {
+      _id: new Types.ObjectId(),
+      documentId: new Types.ObjectId(finalizingDocId),
+      organizationId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId),
+      versionNumber: 1,
+      status: 'APPROVED',
+      editedByUserId: new Types.ObjectId(leaderId),
+      createdAt: now,
+      knowledgeSync: finalizingDocRow.knowledgeSync,
+    };
+
     const readyVersionRow: Record<string, unknown> = {
       _id: new Types.ObjectId(),
       documentId: new Types.ObjectId(readyDocId),
@@ -1032,10 +1075,12 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
 
     const docsById = new Map<string, Record<string, unknown>>([
       [activeDocId, activeDocRow],
+      [finalizingDocId, finalizingDocRow],
       [readyDocId, readyDocRow],
     ]);
     const versionsByDocId = new Map<string, Record<string, unknown>>([
       [activeDocId, activeVersionRow],
+      [finalizingDocId, finalizingVersionRow],
       [readyDocId, readyVersionRow],
     ]);
 
@@ -1052,12 +1097,16 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
                   skip: () => ({
                     limit: () => ({
                       toArray: () =>
-                        Promise.resolve([activeDocRow, readyDocRow]),
+                        Promise.resolve([
+                          activeDocRow,
+                          finalizingDocRow,
+                          readyDocRow,
+                        ]),
                     }),
                   }),
                 }),
               })),
-              countDocuments: jest.fn().mockResolvedValue(2),
+              countDocuments: jest.fn().mockResolvedValue(3),
               findOne: jest.fn((filter: { _id?: Types.ObjectId }) =>
                 Promise.resolve(
                   docsById.get(filter._id?.toHexString() ?? '') ?? null,
@@ -1070,7 +1119,11 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
             return {
               find: jest.fn(() => ({
                 toArray: () =>
-                  Promise.resolve([activeVersionRow, readyVersionRow]),
+                  Promise.resolve([
+                    activeVersionRow,
+                    finalizingVersionRow,
+                    readyVersionRow,
+                  ]),
               })),
               findOne: jest.fn((filter: { documentId?: Types.ObjectId }) =>
                 Promise.resolve(
@@ -1098,19 +1151,23 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       canConfigure: true,
     });
 
-    const getVersionStatusMock = jest.fn().mockResolvedValue({
-      documentId: 'sag-active-1',
-      versionNo: 1,
-      status: 'SEARCH_READY',
-      searchStatus: 'SEARCH_READY',
-      knowledgeStatus: 'NOT_STARTED',
-      searchReady: true,
-      knowledgeReady: false,
-      currentStage: 'COMPLETE',
-      documentStatus: 'ready',
-      progress: 100,
-      chunkCount: 5,
-    });
+    const getVersionStatusMock = jest
+      .fn()
+      .mockImplementation(({ sagDocumentId }: { sagDocumentId: string }) =>
+        Promise.resolve({
+          documentId: sagDocumentId,
+          versionNo: 1,
+          status: 'SEARCH_READY',
+          searchStatus: 'SEARCH_READY',
+          knowledgeStatus: 'DATA_READY',
+          searchReady: true,
+          knowledgeReady: false,
+          currentStage: 'COMPLETE',
+          documentStatus: 'ready',
+          progress: 100,
+          chunkCount: sagDocumentId === 'sag-finalizing-1' ? 18 : 5,
+        }),
+      );
 
     const service = new WorkNotesService(
       {
@@ -1138,17 +1195,33 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     // 1. Project authorization is resolved ONCE for the entire listDocuments call (no N+1 IAM storm!)
     expect(resolveProjectMock).toHaveBeenCalledTimes(1);
 
-    // 2. Only the in-progress document (35%) is polled in SAG; the 100% SEARCH_READY document is skipped!
-    expect(getVersionStatusMock).toHaveBeenCalledTimes(1);
+    // 2. Both the 35% in-progress document AND the SEARCH_READY+QUEUED document (99% finalizing on FE) are polled;
+    //    the settled DATA_READY 100% document is skipped!
+    expect(getVersionStatusMock).toHaveBeenCalledTimes(2);
     expect(getVersionStatusMock).toHaveBeenCalledWith(
       expect.objectContaining({ sagDocumentId: 'sag-active-1' }),
+    );
+    expect(getVersionStatusMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sagDocumentId: 'sag-finalizing-1' }),
+    );
+    expect(getVersionStatusMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sagDocumentId: 'sag-ready-1' }),
     );
     expect(
       listed.data.find((d) => d.id === activeDocId)?.knowledgeSync,
     ).toMatchObject({
       status: 'SEARCH_READY',
+      knowledgeStatus: 'DATA_READY',
       progress: 100,
       chunkCount: 5,
+    });
+    expect(
+      listed.data.find((d) => d.id === finalizingDocId)?.knowledgeSync,
+    ).toMatchObject({
+      status: 'SEARCH_READY',
+      knowledgeStatus: 'DATA_READY',
+      progress: 100,
+      chunkCount: 18,
     });
   });
 });

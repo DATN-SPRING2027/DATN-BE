@@ -902,18 +902,44 @@ export class WorkNotesService {
         const normalized = (sync.status || '').toUpperCase();
         const normalizedStage = (sync.currentStage || '').toUpperCase();
         const normalizedDocStatus = (sync.documentStatus || '').toUpperCase();
-        if (['FAILED', 'REVOKED'].includes(normalized)) return false;
+        const normalizedKnowledgeStatus = (
+          sync.knowledgeStatus || ''
+        ).toUpperCase();
+        if (
+          ['FAILED', 'INDEX_FAILED', 'ERROR', 'REVOKED'].includes(normalized) ||
+          normalizedDocStatus === 'FAILED'
+        ) {
+          return false;
+        }
         if (
           normalized === 'PAUSED' ||
           (normalizedStage === 'PAUSED' && normalizedDocStatus === 'PAUSED')
         ) {
           return false;
         }
+        const isDocInFlight = [
+          'PENDING',
+          'LOADING',
+          'EXTRACTING',
+          'PAUSING',
+          'PAUSED',
+        ].includes(normalizedDocStatus);
+        const isStagePaused = ['PAUSING', 'PAUSED'].includes(normalizedStage);
+        const isKnowledgeInFlight =
+          !sync.knowledgeReady &&
+          ['PROCESSING', 'EXTRACTING', 'RUNNING', 'QUEUED', 'PENDING'].includes(
+            normalizedKnowledgeStatus,
+          );
         const isTerminalReady =
-          (sync.knowledgeReady ||
-            (sync.searchReady &&
-              (normalized === 'READY' ||
-                normalized === 'SEARCH_READY' ||
+          !isDocInFlight &&
+          !isStagePaused &&
+          !isKnowledgeInFlight &&
+          (sync.knowledgeReady === true ||
+            normalized === 'COMPLETED' ||
+            normalized === 'KNOWLEDGE_READY' ||
+            normalized === 'READY' ||
+            (sync.searchReady === true &&
+              (normalized === 'SEARCH_READY' ||
                 normalizedStage === 'COMPLETE' ||
                 normalizedDocStatus === 'READY' ||
                 normalizedDocStatus === 'INDEXED'))) &&
