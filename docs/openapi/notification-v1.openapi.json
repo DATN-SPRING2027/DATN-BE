@@ -162,7 +162,13 @@
           "TASK_DEADLINE_APPROACHING",
           "TASK_DEADLINE_OVERDUE",
           "WORK_NOTE_MENTION",
-          "CHAT_MENTION"
+          "CHAT_MENTION",
+          "WORK_REPORT_SUBMITTED",
+          "WORK_REPORT_APPROVED",
+          "WORK_REPORT_CHANGES_REQUESTED",
+          "WORK_REPORT_REJECTED",
+          "WORK_REPORT_OVERDUE",
+          "WORK_REPORT_FREQUENCY_CHANGED"
         ]
       },
       "NotificationTargetKind": {

@@ -1490,6 +1490,7 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     const older = new Date('2026-10-10T10:00:00.000Z');
     const latest = new Date('2026-10-16T10:00:00.000Z');
     const otherLatest = new Date('2026-10-16T10:01:00.000Z');
+    const activeExpiresAt = new Date(Date.now() + 14 * 86_400_000);
     await connection.collection('refresh_sessions').insertMany([
       {
         userId: memberId,
@@ -1515,7 +1516,7 @@ describe('Platform administration Mongo projections and membership lifecycle', (
         ipAddress: '203.0.113.99',
         userAgent: 'private-browser-fingerprint',
         isRevoked: false,
-        expiresAt: new Date('2099-10-30T00:00:00.000Z'),
+        expiresAt: activeExpiresAt,
         createdAt: latest,
         updatedAt: latest,
       },
@@ -1526,7 +1527,7 @@ describe('Platform administration Mongo projections and membership lifecycle', (
         context: 'PLATFORM',
         tokenHash: 'other-refresh-hash-secret',
         isRevoked: false,
-        expiresAt: new Date('2099-10-30T00:00:00.000Z'),
+        expiresAt: activeExpiresAt,
         createdAt: otherLatest,
         updatedAt: otherLatest,
       },
@@ -1549,7 +1550,7 @@ describe('Platform administration Mongo projections and membership lifecycle', (
           status: 'ACTIVE',
           createdAt: otherLatest.toISOString(),
           updatedAt: otherLatest.toISOString(),
-          expiresAt: '2099-10-30T00:00:00.000Z',
+          expiresAt: activeExpiresAt.toISOString(),
         },
       ],
     });
@@ -1646,7 +1647,7 @@ describe('Platform administration Mongo projections and membership lifecycle', (
         context: index === 0 ? 'ACCOUNT' : 'PLATFORM',
         tokenHash: `all-revoke-hash-${index}`,
         isRevoked: false,
-        expiresAt: new Date('2099-10-30T00:00:00.000Z'),
+        expiresAt: new Date('2026-10-30T00:00:00.000Z'),
         createdAt: new Date('2026-10-15T00:00:00.000Z'),
         updatedAt: new Date('2026-10-15T00:00:00.000Z'),
       })),
@@ -1692,7 +1693,7 @@ describe('Platform administration Mongo projections and membership lifecycle', (
       context: 'ACCOUNT',
       tokenHash: 'late-stale-session-hash',
       isRevoked: false,
-      expiresAt: new Date('2099-10-30T00:00:00.000Z'),
+      expiresAt: new Date('2026-10-30T00:00:00.000Z'),
       createdAt: new Date('2026-10-16T12:00:01.000Z'),
       updatedAt: new Date('2026-10-16T12:00:01.000Z'),
     });
