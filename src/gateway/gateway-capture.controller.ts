@@ -203,16 +203,6 @@ export class GatewayCaptureController {
     return this.forward(request, response);
   }
 
-  @Put('work-reports/:reportId/file')
-  uploadWorkReportFile(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
-  @Get('work-reports/:reportId/file')
-  downloadWorkReportFile(@Req() request: Request, @Res() response: Response) {
-    return this.forward(request, response);
-  }
-
   @Patch('work-reports/:reportId')
   updateWorkReportDraft(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);

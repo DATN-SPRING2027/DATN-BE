@@ -52,13 +52,54 @@ describe('Work Notes request validation', () => {
     ).toThrow();
   });
 
-  it('requires the three core report fields and supports 1 to 7 day cadences', () => {
+  it('requires user-entered title and free-form content on Work Reports, rejects legacy question/attachment fields, and supports 1 to 7 day cadences', () => {
+    expect(
+      validateWorkReportInput({
+        title: '  Sprint 12 Weekly Note  ',
+        content:
+          '  Completed gateway refactor, fixed auth edge cases, and synced with QA.  ',
+      }),
+    ).toEqual({
+      title: 'Sprint 12 Weekly Note',
+      content:
+        'Completed gateway refactor, fixed auth edge cases, and synced with QA.',
+    });
+    expect(() =>
+      validateWorkReportInput({
+        title: '',
+        content: 'Some content',
+      }),
+    ).toThrow();
+    expect(() =>
+      validateWorkReportInput({
+        title: 'Report title',
+        content: '   ',
+      }),
+    ).toThrow();
+    expect(() =>
+      validateWorkReportInput({
+        title: 'x'.repeat(241),
+        content: 'Valid content',
+      }),
+    ).toThrow();
+    expect(() =>
+      validateWorkReportInput({
+        title: 'Valid title',
+        content: 'x'.repeat(100_001),
+      }),
+    ).toThrow();
     expect(() =>
       validateWorkReportInput({
         accomplishments: 'Shipped feature',
         approach: 'Incremental changes',
         reason: 'Reduce risk',
-        cadenceDays: 30,
+      }),
+    ).toThrow();
+    expect(() =>
+      validateWorkReportInput({
+        title: 'Valid title',
+        content: 'Valid content',
+        documentIds: ['507f1f77bcf86cd799439011'],
       }),
     ).toThrow();
     expect(() => validateReportFrequency('EVERY_30_DAYS')).toThrow();

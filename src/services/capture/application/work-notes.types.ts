@@ -133,12 +133,8 @@ export interface ReviewInput {
 }
 
 export interface WorkReportInput {
-  accomplishments: string;
-  approach: string;
-  reason: string;
-  blockers?: string;
-  nextSteps?: string;
-  documentIds?: string[];
+  title: string;
+  content: string;
 }
 
 export interface WorkNotesPagination {
@@ -328,8 +324,6 @@ export interface WorkReportRecord extends WorkReportInput {
   periodEnd: string;
   dueAt: string;
   status: WorkReportStatus;
-  file?: ProjectDocumentFileRecord;
-  documentIds?: string[];
   createdAt: string;
   updatedAt: string;
   submittedAt?: string;

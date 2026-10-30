@@ -194,23 +194,38 @@ export class HandoverCaptureSourceService {
         report.periodStart instanceof Date
           ? report.periodStart.toISOString().slice(0, 10)
           : 'period';
-      const title = `Work Report (${periodStr})`.slice(0, 255);
+      const customTitle =
+        typeof report.title === 'string' ? report.title.trim() : '';
+      const title = (customTitle || `Work Report (${periodStr})`).slice(0, 255);
       const excerpts: HandoverSourceExcerpt[] = [];
-      for (const [key, label] of [
-        ['accomplishments', 'Accomplishments'],
-        ['approach', 'Approach'],
-        ['reason', 'Decision Rationale'],
-        ['blockers', 'Blockers'],
-        ['nextSteps', 'Next Steps'],
-      ] as const) {
-        const val = typeof report[key] === 'string' ? report[key].trim() : '';
-        if (val) {
-          excerpts.push({
-            locatorKind: 'SECTION',
-            locatorValue: key,
-            heading: label,
-            content: val.slice(0, 15000),
-          });
+      const bodyContent =
+        typeof report.content === 'string' ? report.content.trim() : '';
+      if (bodyContent) {
+        excerpts.push(
+          ...this.chunkTextToExcerpts(
+            'SECTION',
+            'report-body',
+            title,
+            bodyContent,
+          ),
+        );
+      } else {
+        for (const [key, label] of [
+          ['accomplishments', 'Accomplishments'],
+          ['approach', 'Approach'],
+          ['reason', 'Decision Rationale'],
+          ['blockers', 'Blockers'],
+          ['nextSteps', 'Next Steps'],
+        ] as const) {
+          const val = typeof report[key] === 'string' ? report[key].trim() : '';
+          if (val) {
+            excerpts.push({
+              locatorKind: 'SECTION',
+              locatorValue: key,
+              heading: label,
+              content: val.slice(0, 15000),
+            });
+          }
         }
       }
       return {

@@ -164,6 +164,12 @@ describe('Work Notes persistence contract', () => {
     );
 
     const schema = createCollectionSchema(reportDefinition);
+    expect(schema.path('title')).toBeDefined();
+    expect(schema.path('content')).toBeDefined();
+    expect(schema.path('file.key')).toBeUndefined();
+    expect(schema.path('documentIds')).toBeUndefined();
+    expect(schema.path('accomplishments')).toBeUndefined();
+
     const ReportModel = new Mongoose().model('NormalizedWorkReport', schema);
     const now = new Date('2026-10-30T00:00:00.000Z');
     const report = new ReportModel({
@@ -175,6 +181,11 @@ describe('Work Notes persistence contract', () => {
       periodStart: now,
       periodEnd: new Date(now.getTime() + 4 * 86_400_000),
       dueAt: new Date(now.getTime() + 4 * 86_400_000),
+      title: 'Leader Sprint Checkpoint',
+      content:
+        'Free-form summary of team progress, risks, and upcoming deliverables.',
+      title: 'Leader Sprint Checkpoint',
+      content: 'Free-form summary of team progress, risks, and upcoming deliverables.',
       status: 'APPROVED',
       reviewHistory: [
         {

@@ -31,7 +31,6 @@ describe('WorkNotesController CSRF enforcement', () => {
         .fn()
         .mockResolvedValue({ frequency: 'DAILY' }),
       saveCurrentWorkReportDraft: jest.fn().mockResolvedValue({ id: reportId }),
-      uploadWorkReportFile: jest.fn().mockResolvedValue({ id: reportId }),
       updateWorkReportDraft: jest.fn().mockResolvedValue({ id: reportId }),
       submitWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
       reviewWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
@@ -77,9 +76,8 @@ describe('WorkNotesController CSRF enforcement', () => {
       content: 'Content',
     };
     const reportInput = {
-      accomplishments: 'Done',
-      approach: 'Approach',
-      reason: 'Reason',
+      title: 'Weekly Update',
+      content: 'Free-form work report note.',
     };
 
     for (const req of [missingCsrfReq, mismatchedCsrfReq]) {
@@ -151,11 +149,6 @@ describe('WorkNotesController CSRF enforcement', () => {
       ).toThrow(ForbiddenException);
       await expect(
         controller.uploadDocumentFile(req, projectId, documentId),
-      ).rejects.toMatchObject({
-        response: { code: 'CSRF_INVALID' },
-      });
-      await expect(
-        controller.uploadWorkReportFile(req, projectId, reportId),
       ).rejects.toMatchObject({
         response: { code: 'CSRF_INVALID' },
       });

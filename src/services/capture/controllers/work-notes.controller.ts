@@ -770,68 +770,6 @@ export class WorkNotesController {
         );
   }
 
-  @Put('work-reports/:reportId/file')
-  async uploadWorkReportFile(
-    @Req() request: Request,
-    @Param('projectId') projectId: string,
-    @Param('reportId') reportId: string,
-  ) {
-    const headers = this.mutationHeaders(request);
-    const limit = 20 * 1024 * 1024;
-    const declaredLength = Number(request.headers['content-length']);
-    if (Number.isFinite(declaredLength) && declaredLength > limit)
-      throw new BadRequestException({ code: 'DOCUMENT_FILE_TOO_LARGE' });
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of request) {
-      const bytes = Buffer.isBuffer(chunk)
-        ? chunk
-        : Buffer.from(chunk as Uint8Array);
-      size += bytes.length;
-      if (size > limit)
-        throw new BadRequestException({ code: 'DOCUMENT_FILE_TOO_LARGE' });
-      chunks.push(bytes);
-    }
-    let name: string;
-    try {
-      name = decodeURIComponent(
-        headerValue(request.headers['x-file-name']) ?? '',
-      );
-    } catch {
-      throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
-    }
-    return this.service.uploadWorkReportFile(
-      headers,
-      projectId,
-      reportId,
-      name,
-      request.headers['content-type'] ?? '',
-      Buffer.concat(chunks),
-    );
-  }
-
-  @Get('work-reports/:reportId/file')
-  async downloadWorkReportFile(
-    @Req() request: Request,
-    @Res({ passthrough: true }) response: Response,
-    @Param('projectId') projectId: string,
-    @Param('reportId') reportId: string,
-  ) {
-    const file = await this.service.downloadWorkReportFile(
-      this.requestHeaders(request),
-      projectId,
-      reportId,
-    );
-    response.setHeader('Cache-Control', 'private, no-store');
-    response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('Content-Type', file.contentType);
-    response.setHeader(
-      'Content-Disposition',
-      `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-    );
-    return new StreamableFile(file.bytes);
-  }
-
   @Get('work-reports/:reportId')
   getWorkReport(
     @Req() request: Request,

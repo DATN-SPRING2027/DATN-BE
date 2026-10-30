@@ -262,21 +262,8 @@ const captureSchemas: Record<string, Schema> = {
       periodStart: { type: Date, required: true },
       periodEnd: { type: Date, required: true },
       dueAt: { type: Date, required: true },
-      accomplishments: { type: String, default: '', maxlength: 10000 },
-      approach: { type: String, default: '', maxlength: 10000 },
-      reason: { type: String, default: '', maxlength: 5000 },
-      blockers: { type: String, default: '', maxlength: 5000 },
-      nextSteps: { type: String, default: '', maxlength: 5000 },
-      documentIds: { type: [String], default: [] },
-      file: {
-        key: String,
-        name: String,
-        contentType: {
-          type: String,
-          enum: [...SUPPORTED_DOCUMENT_CONTENT_TYPES],
-        },
-        size: { type: Number, min: 1, max: 20 * 1024 * 1024 },
-      },
+      title: { type: String, default: '', trim: true, maxlength: 240 },
+      content: { type: String, default: '', maxlength: 100000 },
       status: {
         type: String,
         enum: [
