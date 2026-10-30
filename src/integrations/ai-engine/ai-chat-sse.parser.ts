@@ -43,9 +43,7 @@ function sanitizeFailureEvent(
 
   const errorObj = isRecord(payload.error) ? payload.error : {};
   const normalizedCode =
-    typeof errorObj.code === 'string'
-      ? errorObj.code.trim().toUpperCase()
-      : '';
+    typeof errorObj.code === 'string' ? errorObj.code.trim().toUpperCase() : '';
   const rawCode = /^[A-Z0-9_]{2,64}$/.test(normalizedCode)
     ? normalizedCode
     : 'STREAM_ERROR';
