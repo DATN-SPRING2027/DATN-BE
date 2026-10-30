@@ -37,6 +37,14 @@ describe('WorkNotesController CSRF enforcement', () => {
       reviewWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
       listTaskNotes: jest.fn().mockResolvedValue({ data: [] }),
       listWorkReports: jest.fn().mockResolvedValue({ data: [] }),
+      getDocumentKnowledgeChunks: jest.fn().mockResolvedValue({
+        documentId,
+        version: 1,
+        sourceStage: 'SEARCH_UNITS',
+        totalChunks: 2,
+        totalTokens: 120,
+        items: [],
+      }),
     };
     controller = new WorkNotesController(
       service as unknown as WorkNotesService,
@@ -228,6 +236,37 @@ describe('WorkNotesController CSRF enforcement', () => {
     expect(() =>
       controller.listWorkReports(bearerReq, projectId, {
         memberId: 'not-an-object-id',
+      }),
+    ).toThrow();
+  });
+
+  it('forwards knowledge-chunks queries with validated limit and offset', async () => {
+    const req = makeRequest({
+      cookie: `continuum_session=session-1`,
+    });
+
+    await controller.getDocumentKnowledgeChunks(req, projectId, documentId, {});
+    expect(service.getDocumentKnowledgeChunks).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cookie: 'continuum_session=session-1' }),
+      projectId,
+      documentId,
+      { limit: 50, offset: 0 },
+    );
+
+    await controller.getDocumentKnowledgeChunks(req, projectId, documentId, {
+      limit: '25',
+      offset: '10',
+    });
+    expect(service.getDocumentKnowledgeChunks).toHaveBeenLastCalledWith(
+      expect.anything(),
+      projectId,
+      documentId,
+      { limit: 25, offset: 10 },
+    );
+
+    expect(() =>
+      controller.getDocumentKnowledgeChunks(req, projectId, documentId, {
+        unexpected: '1',
       }),
     ).toThrow();
   });

@@ -1241,6 +1241,9 @@ describe('Capture Work Notes Mongo workflows', () => {
       } as unknown as AuditService,
       storage,
       { emitSafe } as never,
+      undefined,
+      undefined,
+      undefined,
       roster as never,
     );
 

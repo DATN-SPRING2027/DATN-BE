@@ -197,6 +197,7 @@ const captureSchemas: Record<string, Schema> = {
         required: true,
       },
       updatedByUserId: { type: Schema.Types.ObjectId, required: true },
+      knowledgeSync: Schema.Types.Mixed,
     },
     { collection: 'project_documents', timestamps: true, strict: true },
   ),
@@ -218,7 +219,9 @@ const captureSchemas: Record<string, Schema> = {
           enum: SUPPORTED_DOCUMENT_CONTENT_TYPES,
         },
         size: { type: Number, min: 1, max: 20 * 1024 * 1024 },
+        sha256: { type: String, maxlength: 64 },
       },
+      knowledgeSync: Schema.Types.Mixed,
       status: {
         type: String,
         enum: [
