@@ -68,6 +68,26 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
           { name: 'work_reports_project_status_period' },
         ),
         index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            reportScope: 1,
+            status: 1,
+            periodStart: -1,
+          },
+          { name: 'work_reports_project_scope_status_period' },
+        ),
+        index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            reportScope: 1,
+            memberUserId: 1,
+            periodStart: -1,
+          },
+          { name: 'work_reports_project_scope_member_period' },
+        ),
+        index(
           { memberUserId: 1, projectId: 1, periodStart: -1 },
           { name: 'work_reports_member_period' },
         ),
@@ -78,15 +98,24 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
       name: 'work_report_settings',
       indexes: [
         index(
-          { projectId: 1, effectiveAt: 1 },
+          { projectId: 1, reportScope: 1, effectiveAt: 1 },
           {
             unique: true,
-            name: 'work_report_settings_project_effective_unique',
+            name: 'work_report_settings_project_scope_effective_unique',
           },
         ),
         index(
           { organizationId: 1, projectId: 1, effectiveAt: -1 },
           { name: 'work_report_settings_project_history' },
+        ),
+        index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            reportScope: 1,
+            effectiveAt: -1,
+          },
+          { name: 'work_report_settings_project_scope_history' },
         ),
       ],
     },
