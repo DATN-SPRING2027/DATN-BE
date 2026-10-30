@@ -344,4 +344,76 @@ describe('WorkNotesAuthorizationService', () => {
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('coalesces concurrent 10-file upload bursts into a single IAM resolution and isolates distinct credentials', async () => {
+    const user2Id = new Types.ObjectId().toHexString();
+    fetchSpy.mockImplementation((input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const auth = new Headers(init?.headers).get('authorization');
+      if (url.endsWith('/api/v1/auth/me')) {
+        return Promise.resolve(
+          response({
+            id: auth === 'Bearer user-2' ? user2Id : userId,
+            organizationId,
+            name: auth === 'Bearer user-2' ? 'Second User' : 'Leader One',
+          }),
+        );
+      }
+      if (url.endsWith(`/api/v1/iam/projects/${projectId}`)) {
+        return Promise.resolve(
+          response({ id: projectId, organizationId, status: 'ACTIVE' }),
+        );
+      }
+      if (url.endsWith(`/api/v1/iam/projects/${projectId}/settings-access`)) {
+        return Promise.resolve(
+          response({ canUpdateProject: auth !== 'Bearer user-2' }),
+        );
+      }
+      if (url.includes(`/api/v1/iam/projects/${projectId}/memberships`)) {
+        return Promise.resolve(
+          response({
+            data: [{ userId: user2Id, joinedAt: '2026-10-20T00:00:00.000Z' }],
+            pagination: { totalPages: 1 },
+          }),
+        );
+      }
+      return Promise.resolve(response({}, 404));
+    });
+
+    const leaderHeaders = {
+      authorization: 'Bearer leader-1',
+      cookie: '__Host-session=leader-1',
+      organizationId,
+    };
+
+    // 1. 10 concurrent calls (e.g. batch upload burst) coalesce into 1 IAM lookup (3 fetches)
+    const burstActors = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        service.resolveProject(leaderHeaders, projectId),
+      ),
+    );
+    expect(burstActors).toHaveLength(10);
+    expect(burstActors.every((actor) => actor.userId === userId)).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    // 2. Immediate follow-up upload-intent / confirm-upload calls hit the short burst cache (0 extra fetches)
+    const followUp = await service.resolveProject(leaderHeaders, projectId);
+    expect(followUp.userId).toBe(userId);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    // 3. A different user session is strictly isolated and resolved independently
+    const secondUserActor = await service.resolveProject(
+      {
+        authorization: 'Bearer user-2',
+        cookie: '__Host-session=user-2',
+        organizationId,
+      },
+      projectId,
+    );
+    expect(secondUserActor).toMatchObject({
+      userId: user2Id,
+      canReview: false,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(7);
+  });
 });

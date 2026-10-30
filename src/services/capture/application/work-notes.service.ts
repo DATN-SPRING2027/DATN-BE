@@ -909,7 +909,16 @@ export class WorkNotesService {
         ) {
           return false;
         }
-        if (sync.knowledgeReady && sync.progress >= 100) return false;
+        const isTerminalReady =
+          (sync.knowledgeReady ||
+            (sync.searchReady &&
+              (normalized === 'READY' ||
+                normalized === 'SEARCH_READY' ||
+                normalizedStage === 'COMPLETE' ||
+                normalizedDocStatus === 'READY' ||
+                normalizedDocStatus === 'INDEXED'))) &&
+          sync.progress >= 100;
+        if (isTerminalReady) return false;
         return (
           typeof this.sagTransport?.getProjectDocumentVersionStatus ===
             'function' || !sync.status
@@ -921,8 +930,8 @@ export class WorkNotesService {
       const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
       await Promise.allSettled(
         candidatesForLiveSync.map(async (item) => {
-          const live = await this.getDocumentKnowledgeStatus(
-            headers,
+          const live = await this.resolveDocumentKnowledgeStatusForActor(
+            actor,
             projectId,
             item.id,
           );
@@ -2674,6 +2683,18 @@ export class WorkNotesService {
     documentId: string,
   ): Promise<DocumentKnowledgeStatusRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
+    return this.resolveDocumentKnowledgeStatusForActor(
+      actor,
+      projectId,
+      documentId,
+    );
+  }
+
+  private async resolveDocumentKnowledgeStatusForActor(
+    actor: WorkNotesActor,
+    projectId: string,
+    documentId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
     if (!validId(documentId)) throw documentNotFound();
     const id = objectId(documentId);
     const db = this.database();
@@ -2756,15 +2777,17 @@ export class WorkNotesService {
             : {}),
           error: live.error ?? null,
         };
-        await db
-          .collection('project_document_versions')
-          .updateOne(
-            { _id: versionDoc._id },
-            { $set: { knowledgeSync: merged } },
-          );
-        await db
-          .collection('project_documents')
-          .updateOne({ _id: id }, { $set: { knowledgeSync: merged } });
+        if (JSON.stringify(merged) !== JSON.stringify(storedSync)) {
+          await db
+            .collection('project_document_versions')
+            .updateOne(
+              { _id: versionDoc._id },
+              { $set: { knowledgeSync: merged } },
+            );
+          await db
+            .collection('project_documents')
+            .updateOne({ _id: id }, { $set: { knowledgeSync: merged } });
+        }
         return merged;
       } catch {
         return storedSync;
@@ -2778,6 +2801,7 @@ export class WorkNotesService {
     const pendingOutbox = await db.collection('outbox_events').findOne({
       aggregateType: 'PROJECT_DOCUMENT',
       aggregateId: documentId,
+      eventName: 'KNOWLEDGE_SOURCE_APPROVED',
       status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
     });
 
@@ -2993,6 +3017,7 @@ export class WorkNotesService {
       const pendingOutbox = await db.collection('outbox_events').findOne({
         aggregateType: 'PROJECT_DOCUMENT',
         aggregateId: documentId,
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
         status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
       });
       const deliveryReceipt = (
