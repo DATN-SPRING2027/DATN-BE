@@ -309,6 +309,11 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
   ],
   exports: [
     AuthenticationApplicationService,
+    AUTH_SECURITY_STORE,
+    AuthorizationPolicy,
+    AUTHORIZATION_EVIDENCE_PROVIDER,
+    PlatformAuthorizationGuard,
+    PLATFORM_ADMINISTRATION_REPOSITORY,
     ProjectService,
     TaskWorkspaceService,
     TaskWorkspaceRepository,

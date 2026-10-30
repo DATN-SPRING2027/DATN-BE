@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   GatewayTimeoutException,
   HttpException,
   Injectable,
@@ -17,6 +18,9 @@ import type {
 
 const AGENT_ID_SEGMENT = '[A-Za-z0-9_-]{1,64}';
 const THREAD_ID_SEGMENT = '[A-Za-z0-9_-]{1,64}';
+const MESSAGE_ID_SEGMENT = '[A-Za-z0-9_-]{1,64}';
+const PROJECT_ID_SEGMENT = '[A-Za-z0-9_-]{1,64}';
+const SHARE_ID_SEGMENT = '[A-Za-z0-9_-]{1,64}';
 
 const AGENT_THREADS_COLLECTION_PATTERN = new RegExp(
   `^/api/v1/agents/${AGENT_ID_SEGMENT}/threads$`,
@@ -30,6 +34,29 @@ const AGENT_THREAD_MESSAGES_PATTERN = new RegExp(
 const AGENT_THREAD_ASK_PATTERN = new RegExp(
   `^/api/v1/agents/${AGENT_ID_SEGMENT}/threads/${THREAD_ID_SEGMENT}/ask$`,
 );
+const AGENT_MESSAGE_FEEDBACK_PATTERN = new RegExp(
+  `^/api/v1/agents/${AGENT_ID_SEGMENT}/threads/${THREAD_ID_SEGMENT}/messages/${MESSAGE_ID_SEGMENT}/feedback$`,
+);
+const AGENT_MESSAGE_SHARES_PATTERN = new RegExp(
+  `^/api/v1/agents/${AGENT_ID_SEGMENT}/threads/${THREAD_ID_SEGMENT}/messages/${MESSAGE_ID_SEGMENT}/shares$`,
+);
+const AGENT_MESSAGE_REGENERATE_PATTERN = new RegExp(
+  `^/api/v1/agents/${AGENT_ID_SEGMENT}/threads/${THREAD_ID_SEGMENT}/messages/${MESSAGE_ID_SEGMENT}/regenerate$`,
+);
+const PROJECT_SHARE_ITEM_PATTERN = new RegExp(
+  `^/api/v1/projects/${PROJECT_ID_SEGMENT}/shares/${SHARE_ID_SEGMENT}$`,
+);
+const PLATFORM_AI_FEEDBACK_PATH = '/api/v1/platform/ai/feedback';
+
+function isAnswerActionClientValidatedRoute(pathname: string): boolean {
+  return (
+    AGENT_MESSAGE_FEEDBACK_PATTERN.test(pathname) ||
+    AGENT_MESSAGE_SHARES_PATTERN.test(pathname) ||
+    AGENT_MESSAGE_REGENERATE_PATTERN.test(pathname) ||
+    PROJECT_SHARE_ITEM_PATTERN.test(pathname) ||
+    pathname === PLATFORM_AI_FEEDBACK_PATH
+  );
+}
 
 function hasRawTraversal(rawPath: string): boolean {
   const pathPart = rawPath.split('?')[0] ?? '';
@@ -77,13 +104,29 @@ function isAllowedJsonRoute(
   if (method === 'GET' && AGENT_THREAD_MESSAGES_PATTERN.test(pathname)) {
     return true;
   }
+  if (
+    (method === 'GET' || method === 'PUT' || method === 'DELETE') &&
+    AGENT_MESSAGE_FEEDBACK_PATTERN.test(pathname)
+  ) {
+    return true;
+  }
+  if (method === 'POST' && AGENT_MESSAGE_SHARES_PATTERN.test(pathname)) {
+    return true;
+  }
+  if (method === 'DELETE' && PROJECT_SHARE_ITEM_PATTERN.test(pathname)) {
+    return true;
+  }
+  if (method === 'GET' && pathname === PLATFORM_AI_FEEDBACK_PATH) {
+    return true;
+  }
   return false;
 }
 
 function requiresBffServiceToken(pathname: string): boolean {
   return (
     pathname === '/api/v1/auth/continuum-login' ||
-    pathname.startsWith('/api/v1/projects/')
+    pathname.startsWith('/api/v1/projects/') ||
+    pathname === PLATFORM_AI_FEEDBACK_PATH
   );
 }
 
@@ -184,7 +227,7 @@ export class HttpAiEngineClient implements AiEngineClient {
       throw new BadGatewayException('AI Engine returned an invalid response.');
     }
     if (!response.ok) {
-      this.throwSafeHttpError(response.status);
+      this.throwSafeHttpError(response.status, routePathname);
     }
     return { status: response.status, body: body as TResponse };
   }
@@ -195,7 +238,8 @@ export class HttpAiEngineClient implements AiEngineClient {
     const { target, routePathname } = this.resolveTarget(request.path);
     if (
       request.method !== 'POST' ||
-      !AGENT_THREAD_ASK_PATTERN.test(routePathname)
+      (!AGENT_THREAD_ASK_PATTERN.test(routePathname) &&
+        !AGENT_MESSAGE_REGENERATE_PATTERN.test(routePathname))
     ) {
       throw new BadGatewayException('AI Engine stream path is not allowed.');
     }
@@ -245,7 +289,7 @@ export class HttpAiEngineClient implements AiEngineClient {
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      this.throwSafeHttpError(response.status);
+      this.throwSafeHttpError(response.status, routePathname);
     }
 
     if (!response.body) {
@@ -261,7 +305,7 @@ export class HttpAiEngineClient implements AiEngineClient {
     };
   }
 
-  private throwSafeHttpError(status: number): never {
+  private throwSafeHttpError(status: number, routePathname: string): never {
     if (status === 404) {
       throw new HttpException(
         {
@@ -270,6 +314,22 @@ export class HttpAiEngineClient implements AiEngineClient {
         },
         404,
       );
+    }
+    if (status === 409) {
+      throw new HttpException(
+        {
+          code: 'AI_CHAT_CONFLICT',
+          message:
+            'Another AI generation is already active in this conversation.',
+        },
+        409,
+      );
+    }
+    if (status === 400 && isAnswerActionClientValidatedRoute(routePathname)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'Request could not be processed for the target AI answer.',
+      });
     }
     if (status === 429) {
       throw new HttpException(

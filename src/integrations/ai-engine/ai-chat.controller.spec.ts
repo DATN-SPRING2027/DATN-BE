@@ -9,6 +9,13 @@ describe('AiChatController', () => {
   function setup() {
     const createThreadMock = jest.fn();
     const openAskStreamMock = jest.fn();
+    const getOwnFeedbackMock = jest.fn();
+    const putOwnFeedbackMock = jest.fn();
+    const deleteOwnFeedbackMock = jest.fn();
+    const createShareMock = jest.fn();
+    const readSharedAnswerMock = jest.fn();
+    const revokeShareMock = jest.fn();
+    const openRegenerateStreamMock = jest.fn();
     const service = {
       listThreads: jest.fn(),
       createThread: createThreadMock,
@@ -16,9 +23,27 @@ describe('AiChatController', () => {
       deleteThread: jest.fn(),
       listMessages: jest.fn(),
       openAskStream: openAskStreamMock,
+      getOwnFeedback: getOwnFeedbackMock,
+      putOwnFeedback: putOwnFeedbackMock,
+      deleteOwnFeedback: deleteOwnFeedbackMock,
+      createShare: createShareMock,
+      readSharedAnswer: readSharedAnswerMock,
+      revokeShare: revokeShareMock,
+      openRegenerateStream: openRegenerateStreamMock,
     } as unknown as AiChatService;
     const controller = new AiChatController(service);
-    return { controller, createThreadMock, openAskStreamMock };
+    return {
+      controller,
+      createThreadMock,
+      openAskStreamMock,
+      getOwnFeedbackMock,
+      putOwnFeedbackMock,
+      deleteOwnFeedbackMock,
+      createShareMock,
+      readSharedAnswerMock,
+      revokeShareMock,
+      openRegenerateStreamMock,
+    };
   }
 
   function makeReq(headers: Record<string, string> = {}): Request {
@@ -183,5 +208,134 @@ describe('AiChatController', () => {
     expect(capturedSignal?.aborted).toBe(true);
     expect(chunks[0]).toBe('event: delta\ndata: {"text":"Xin chào"}\n\n');
     expect(isEnded()).toBe(true);
+  });
+
+  it('validates FeedbackInput rules, empty-body share/regenerate mutations, CSRF, and 201/200 share status codes', async () => {
+    const {
+      controller,
+      putOwnFeedbackMock,
+      createShareMock,
+      openRegenerateStreamMock,
+    } = setup();
+    const { res, headers, getStatus } = makeRes();
+
+    // LIKE cannot carry reasonCategory or reasonText
+    await expect(
+      controller.putOwnFeedback(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        't1',
+        'm1',
+        { rating: 'LIKE', reasonCategory: 'INACCURATE' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    // DISLIKE requires reasonCategory, and OTHER requires non-whitespace reasonText <= 1000
+    await expect(
+      controller.putOwnFeedback(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        't1',
+        'm1',
+        { rating: 'DISLIKE' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    await expect(
+      controller.putOwnFeedback(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        't1',
+        'm1',
+        { rating: 'DISLIKE', reasonCategory: 'OTHER', reasonText: '   ' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    // Cookie PUT without CSRF must fail 403
+    await expect(
+      controller.putOwnFeedback(
+        makeReq({ cookie: 'continuum_access=jwt; __Host-csrf=csrf1' }),
+        res,
+        'proj-1',
+        't1',
+        'm1',
+        { rating: 'LIKE' },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(putOwnFeedbackMock).not.toHaveBeenCalled();
+
+    // Valid DISLIKE with OTHER reasonText
+    putOwnFeedbackMock.mockResolvedValueOnce({
+      messageId: 'm1',
+      rating: 'DISLIKE',
+      reasonCategory: 'OTHER',
+      reasonText: 'Thiếu dữ liệu thực tế',
+      updatedAt: '2026-10-30T10:00:00Z',
+    });
+    const saved = await controller.putOwnFeedback(
+      makeReq({
+        cookie: 'continuum_access=jwt; __Host-csrf=csrf1',
+        'x-csrf-token': 'csrf1',
+      }),
+      res,
+      'proj-1',
+      't1',
+      'm1',
+      {
+        rating: 'DISLIKE',
+        reasonCategory: 'OTHER',
+        reasonText: '  Thiếu dữ liệu thực tế  ',
+      },
+    );
+    expect(saved.reasonText).toBe('Thiếu dữ liệu thực tế');
+    expect(headers['cache-control']).toBe('no-store');
+
+    // Share rejects unexpected body keys, and preserves 201 vs 200 status
+    await expect(
+      controller.createShare(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        't1',
+        'm1',
+        { unexpected: true },
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    createShareMock.mockResolvedValueOnce({
+      status: 201,
+      share: {
+        id: 'sh_1',
+        projectId: 'proj-1',
+        messageId: 'm1',
+        createdAt: '2026-10-30T10:00:00Z',
+      },
+    });
+    const createdShare = await controller.createShare(
+      makeReq({ authorization: 'Bearer token' }),
+      res,
+      'proj-1',
+      't1',
+      'm1',
+      {},
+    );
+    expect(getStatus()).toBe(201);
+    expect(createdShare.id).toBe('sh_1');
+
+    // Regenerate rejects non-empty body keys
+    await expect(
+      controller.regenerate(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        't1',
+        'm1',
+        { query: 'not allowed' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(openRegenerateStreamMock).not.toHaveBeenCalled();
   });
 });

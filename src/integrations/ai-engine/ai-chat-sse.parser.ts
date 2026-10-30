@@ -26,6 +26,16 @@ function sanitizeFailureEvent(
     typeof payload.message_id === 'string' && payload.message_id.trim()
       ? payload.message_id.trim().slice(0, 128)
       : undefined;
+  const replyToMessageId =
+    typeof payload.reply_to_message_id === 'string' &&
+    payload.reply_to_message_id.trim()
+      ? payload.reply_to_message_id.trim().slice(0, 128)
+      : undefined;
+  const regeneratedFromMessageId =
+    typeof payload.regenerated_from_message_id === 'string' &&
+    payload.regenerated_from_message_id.trim()
+      ? payload.regenerated_from_message_id.trim().slice(0, 128)
+      : undefined;
 
   if (eventType === 'run.cancelled') {
     return {
@@ -35,6 +45,8 @@ function sanitizeFailureEvent(
         message: SAFE_ERROR_MESSAGES.CANCELLED,
         retryable: true,
         ...(messageId ? { messageId } : {}),
+        ...(replyToMessageId ? { replyToMessageId } : {}),
+        ...(regeneratedFromMessageId ? { regeneratedFromMessageId } : {}),
       },
     };
   }
@@ -58,6 +70,8 @@ function sanitizeFailureEvent(
       message,
       retryable,
       ...(messageId ? { messageId } : {}),
+      ...(replyToMessageId ? { replyToMessageId } : {}),
+      ...(regeneratedFromMessageId ? { regeneratedFromMessageId } : {}),
     },
   };
 }
@@ -210,6 +224,16 @@ export async function* transformSagSseStream(
         typeof payload.message_id === 'string' && payload.message_id.trim()
           ? payload.message_id.trim().slice(0, 128)
           : '';
+      const replyToMessageId =
+        typeof payload.reply_to_message_id === 'string' &&
+        payload.reply_to_message_id.trim()
+          ? payload.reply_to_message_id.trim().slice(0, 128)
+          : undefined;
+      const regeneratedFromMessageId =
+        typeof payload.regenerated_from_message_id === 'string' &&
+        payload.regenerated_from_message_id.trim()
+          ? payload.regenerated_from_message_id.trim().slice(0, 128)
+          : undefined;
       const content = typeof payload.output === 'string' ? payload.output : '';
       const answerStatus =
         payload.answer_status === 'no_answer' ? 'no_answer' : 'answered';
@@ -222,6 +246,8 @@ export async function* transformSagSseStream(
         event: 'completed',
         data: {
           messageId,
+          ...(replyToMessageId ? { replyToMessageId } : {}),
+          ...(regeneratedFromMessageId ? { regeneratedFromMessageId } : {}),
           content,
           answerStatus,
           citations,
