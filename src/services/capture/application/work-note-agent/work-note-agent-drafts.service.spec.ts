@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Types, type Connection } from 'mongoose';
-import { WorkNoteAgentDraftsService } from './work-note-agent-drafts.service';
+import {
+  WorkNoteAgentDraftsService,
+  type DraftRow,
+} from './work-note-agent-drafts.service';
 import { WorkNoteAgentModel } from '../../infrastructure/ai/work-note-agent.model';
 import {
   parseAgentResult,
@@ -623,5 +626,102 @@ describe('Task Note Agent persisted local workflow', () => {
       (await service.versions(headers, projectId, taskId, saved.id, 1, 20))
         .data,
     ).toHaveLength(3);
+  });
+
+  it('rejects message completion when inferenceLeaseUntil expired and drops stale drafts on resume after restore', async () => {
+    const initial = await draft('First version text.');
+    const saved = await service.save(headers, projectId, initial.id, {
+      ...operation(),
+      expectedRevision: initial.revision,
+      discardOriginalConfirmed: false,
+    });
+    const secondDraft = await service.create(headers, projectId, {
+      ...operation(),
+      taskId,
+      noteId: saved.id,
+    });
+    const secondEdited = await service.update(
+      headers,
+      projectId,
+      secondDraft.id,
+      {
+        ...operation(),
+        expectedRevision: secondDraft.revision,
+        title: 'Version 2',
+        contentMarkdown: 'Second version text.',
+      },
+    );
+    await service.save(headers, projectId, secondDraft.id, {
+      ...operation(),
+      expectedRevision: secondEdited.revision,
+      discardOriginalConfirmed: false,
+    });
+
+    const staleOpen = await service.create(headers, projectId, {
+      ...operation(),
+      taskId,
+      noteId: saved.id,
+    });
+
+    // Verify message() sets a >= 70s lease and rejects with 409 if lease expired mid-flight
+    let releaseModel!: () => void;
+    let enteredModel!: () => void;
+    const modelEntered = new Promise<void>((resolve) => {
+      enteredModel = resolve;
+    });
+    model.rewrite.mockImplementationOnce(async (input) => {
+      enteredModel();
+      await new Promise<void>((resolve) => {
+        releaseModel = resolve;
+      });
+      return {
+        result: parseAgentResult(
+          prepareAgentRequest(input),
+          JSON.stringify({
+            status: 'SUGGESTION_READY',
+            message: 'Late proposal.',
+            suggestion: {
+              replacementText: 'Late text.',
+              suggestedTitle: null,
+              changeSummary: ['Late.'],
+            },
+            questions: [],
+            uncertainties: [],
+          }),
+        ),
+        provenance: {},
+      };
+    });
+
+    const startedAt = Date.now();
+    const pendingMessage = service
+      .message(headers, projectId, staleOpen.id, message(staleOpen.revision))
+      .catch((err) => err as { status: number });
+    await modelEntered;
+    const leasedRow = await connection
+      .db!.collection<DraftRow>('work_note_agent_drafts')
+      .findOne({ _id: staleOpen.id });
+    expect(
+      (leasedRow?.inferenceLeaseUntil as Date).getTime() - startedAt,
+    ).toBeGreaterThanOrEqual(70_000);
+
+    await connection
+      .db!.collection<DraftRow>('work_note_agent_drafts')
+      .updateOne(
+        { _id: staleOpen.id },
+        { $set: { inferenceLeaseUntil: new Date(Date.now() - 1) } },
+      );
+    releaseModel();
+    expect(await pendingMessage).toMatchObject({ status: 409 });
+
+    // Restore version 1 while staleOpen was still stored in DB; resume() must drop staleOpen and return null
+    await service.restore(headers, projectId, taskId, saved.id, {
+      ...operation(),
+      expectedVersion: 2,
+      versionNumber: 1,
+    });
+    expect(
+      await service.resume(headers, projectId, taskId, saved.id),
+    ).toBeNull();
   });
 });

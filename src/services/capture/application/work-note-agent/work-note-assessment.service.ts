@@ -389,8 +389,12 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
             inferenceOperationId: input.operationId,
             inferenceLeaseUntil: new Date(
               Date.now() +
-                ASSESSMENT_ANALYSIS_PROVIDER_POLICY.timeoutMs +
-                10000,
+                (this.config.get<string>('WORKNOTE_ASSESSMENT_ARCHITECTURE') ===
+                'split'
+                  ? 2
+                  : 1) *
+                  ASSESSMENT_ANALYSIS_PROVIDER_POLICY.timeoutMs +
+                15000,
             ),
             'state.assessment': provisional,
             'state.pendingQuestion': null,

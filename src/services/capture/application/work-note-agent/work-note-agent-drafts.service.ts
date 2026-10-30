@@ -14,6 +14,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { staleAssessment } from './work-note-assessment.state';
 import { assessmentHash } from './work-note-assessment.protocol';
+import { ASSESSMENT_EDITOR_PROVIDER_POLICY } from './work-note-assessment-editor';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types, type Connection, type ClientSession } from 'mongoose';
 import type { Document, Db } from 'mongodb';
@@ -546,7 +547,30 @@ export class WorkNoteAgentDraftsService {
       },
       { sort: { updatedAt: -1 } },
     );
-    return d ? this.get(headers, projectId, d._id) : null;
+    if (!d) return null;
+    if (noteId) {
+      const live = await this.db()
+        .collection('work_notes')
+        .findOne({
+          _id: oid(noteId),
+          organizationId: oid(actor.organizationId),
+          projectId: oid(projectId),
+          taskId: oid(taskId),
+          status: 'CONFIRMED',
+        });
+      if (
+        !live ||
+        d.baseNoteVersion !== Number(live.currentVersionNumber ?? 0) ||
+        d.state.baseNoteHash !== noteHash(live) ||
+        (d.baseNoteUpdatedAt &&
+          live.updatedAt instanceof Date &&
+          live.updatedAt.getTime() !== d.baseNoteUpdatedAt.getTime())
+      ) {
+        await this.drafts().deleteOne({ _id: d._id, revision: d.revision });
+        return null;
+      }
+    }
+    return this.get(headers, projectId, d._id);
   }
   protected async mutate<T>(
     headers: CaptureRequestHeaders,
@@ -814,7 +838,9 @@ export class WorkNoteAgentDraftsService {
         {
           $set: {
             inferenceOperationId: input.operationId,
-            inferenceLeaseUntil: new Date(Date.now() + 45000),
+            inferenceLeaseUntil: new Date(
+              Date.now() + ASSESSMENT_EDITOR_PROVIDER_POLICY.timeoutMs + 15000,
+            ),
           },
         },
         { session },
@@ -846,6 +872,7 @@ export class WorkNoteAgentDraftsService {
             revision: d.revision,
             expiresAt: { $gt: new Date() },
             inferenceOperationId: input.operationId,
+            inferenceLeaseUntil: { $gt: new Date() },
           },
           { session },
         );
@@ -877,15 +904,17 @@ export class WorkNoteAgentDraftsService {
         current.updatedAt = new Date();
         delete current.inferenceOperationId;
         delete current.inferenceLeaseUntil;
-        await this.drafts().replaceOne(
+        const replaced = await this.drafts().replaceOne(
           {
             _id: id,
             revision: d.revision,
             inferenceOperationId: input.operationId,
+            inferenceLeaseUntil: { $gt: new Date() },
           },
           current,
           { session },
         );
+        if (replaced.matchedCount !== 1) throw conflict();
         const response: MessageResponse = {
           ...result,
           questions: question ? [{ ...question, ...{ id: questionId } }] : [],
@@ -1213,10 +1242,11 @@ export class WorkNoteAgentDraftsService {
       delete row.whatDone;
       delete row.howSolved;
       delete row.whyThisWay;
-      if (previous)
-        await db.collection('work_notes').replaceOne(
+      if (previous) {
+        const replaced = await db.collection('work_notes').replaceOne(
           {
             _id: noteId,
+            status: 'CONFIRMED',
             currentVersionNumber: previous.currentVersionNumber ?? {
               $exists: false,
             },
@@ -1224,7 +1254,8 @@ export class WorkNoteAgentDraftsService {
           row,
           { session },
         );
-      else await db.collection('work_notes').insertOne(row, { session });
+        if (replaced.matchedCount !== 1) throw conflict();
+      } else await db.collection('work_notes').insertOne(row, { session });
       await db.collection('work_note_versions').insertOne(
         {
           workNoteId: noteId,
@@ -1395,13 +1426,16 @@ export class WorkNoteAgentDraftsService {
       delete row.whatDone;
       delete row.howSolved;
       delete row.whyThisWay;
-      await db
-        .collection('work_notes')
-        .replaceOne(
-          { _id: previous._id, currentVersionNumber: input.expectedVersion },
-          row,
-          { session },
-        );
+      const replaced = await db.collection('work_notes').replaceOne(
+        {
+          _id: previous._id,
+          status: 'CONFIRMED',
+          currentVersionNumber: input.expectedVersion,
+        },
+        row,
+        { session },
+      );
+      if (replaced.matchedCount !== 1) throw conflict();
       await db.collection('work_note_versions').insertOne(
         {
           workNoteId: previous._id,

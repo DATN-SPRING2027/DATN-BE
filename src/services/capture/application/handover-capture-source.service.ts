@@ -194,7 +194,12 @@ export class HandoverCaptureSourceService {
         report.periodStart instanceof Date
           ? report.periodStart.toISOString().slice(0, 10)
           : 'period';
-      const title = `Work Report (${periodStr})`.slice(0, 255);
+      const rawReportTitle =
+        typeof report.title === 'string' ? report.title.trim() : '';
+      const title = (rawReportTitle || `Work Report (${periodStr})`).slice(
+        0,
+        255,
+      );
       const excerpts: HandoverSourceExcerpt[] = [];
       for (const [key, label] of [
         ['accomplishments', 'Accomplishments'],
@@ -211,6 +216,22 @@ export class HandoverCaptureSourceService {
             heading: label,
             content: val.slice(0, 15000),
           });
+        }
+      }
+      if (excerpts.length === 0) {
+        const markdown =
+          typeof report.contentMarkdown === 'string'
+            ? report.contentMarkdown.trim()
+            : '';
+        if (markdown) {
+          excerpts.push(
+            ...this.chunkTextToExcerpts(
+              'SECTION',
+              'report-body',
+              title,
+              markdown,
+            ),
+          );
         }
       }
       return {
@@ -259,15 +280,19 @@ export class HandoverCaptureSourceService {
     let currentVersion: number | null = null;
     let liveNoteRepresentsCurrentVersion = false;
     if (latestHistDoc && maxHistVer >= 1) {
-      const sameAsLatestSnapshot = [
-        'title',
-        'whatDone',
-        'howSolved',
-        'whyThisWay',
-        'blocker',
-        'unfinished',
-        'nextStep',
-      ].every((key) => asStr(latestHistDoc[key]) === asStr(note[key]));
+      const sameAsLatestSnapshot =
+        Number(latestHistDoc.contentSchemaVersion ?? 1) ===
+          Number(note.contentSchemaVersion ?? 1) &&
+        [
+          'title',
+          'contentMarkdown',
+          'whatDone',
+          'howSolved',
+          'whyThisWay',
+          'blocker',
+          'unfinished',
+          'nextStep',
+        ].every((key) => asStr(latestHistDoc[key]) === asStr(note[key]));
       if (sameAsLatestSnapshot) {
         currentVersion = maxHistVer;
       }
@@ -326,6 +351,14 @@ export class HandoverCaptureSourceService {
           heading: label,
           content: val.slice(0, 15000),
         });
+      }
+    }
+    if (excerpts.length === 0) {
+      const markdown = asStr(sourceRecord.contentMarkdown).trim();
+      if (markdown) {
+        excerpts.push(
+          ...this.chunkTextToExcerpts('SECTION', 'note-body', title, markdown),
+        );
       }
     }
     return {

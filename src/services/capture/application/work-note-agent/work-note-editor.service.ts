@@ -270,7 +270,7 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
       String(resourceId),
       version,
       raw.currentVersionNumber,
-      raw.updatedAt,
+      workflow === 'PROJECT_DOCUMENT' ? raw.updatedAt : null,
       raw.status,
       raw.createdByUserId ?? raw.memberUserId,
       title,
@@ -377,7 +377,7 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
   ) {
     await this.storageReady();
     const actor = await this.authorization.resolveProject(headers, projectId);
-    await this.source(
+    const src = await this.source(
       actor,
       {
         workflow,
@@ -392,11 +392,20 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
         workflow,
         resourceId: resourceId ? oid(resourceId) : null,
         ...(!resourceId ? { 'context.documentType': documentType } : {}),
+        createdAt: { $gt: new Date(Date.now() - 86400000) },
         expiresAt: { $gt: new Date() },
       },
       { sort: { updatedAt: -1 } },
     );
-    return d ? this.get(headers, projectId, d._id) : null;
+    if (!d) return null;
+    if (
+      d.baseNoteVersion !== src.version ||
+      d.state.baseNoteHash !== src.hash
+    ) {
+      await this.drafts().deleteOne({ _id: d._id, revision: d.revision });
+      return null;
+    }
+    return this.get(headers, projectId, d._id);
   }
   private versionsCollection(workflow: EditorWorkflow) {
     return this.db().collection(

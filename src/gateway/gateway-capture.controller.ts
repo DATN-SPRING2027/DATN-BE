@@ -386,7 +386,10 @@ export class GatewayCaptureController {
           /\/(?:work-note-drafts|editor-drafts)\/[^/]+\/agent\/(?:messages(?:\?|$)|assessments(?:\/|\?|$))/.test(
             request.originalUrl,
           )
-            ? 35_000
+            ? Math.max(
+                185_000,
+                this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
+              )
             : this.config.getOrThrow<number>(
                 fileTransfer ? 'CAPTURE_FILE_TIMEOUT_MS' : 'BACKEND_TIMEOUT_MS',
               ),

@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Types, type Connection } from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { WorkNoteEditorService } from './work-note-editor.service';
+import type { DraftRow } from './work-note-agent-drafts.service';
 import { WorkNotesService } from '../work-notes.service';
 import type { WorkNotesAuthorizationService } from '../work-notes-authorization.service';
 import type { WorkNoteAgentModel } from '../../infrastructure/ai/work-note-agent.model';
@@ -444,5 +445,188 @@ describe('Document / Report editor transaction and workflow preservation', () =>
     await expect(
       service.updateReportLinks(headers, projectId, String(id), []),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('keeps open WORK_REPORT drafts saveable across updateReportLinks, hides peer-Leader report versions, and drops stale or >24h drafts on resumeEditor', async () => {
+    const reportId = new Types.ObjectId();
+    const docId = new Types.ObjectId();
+    const now = new Date();
+    await connection.db!.collection('project_documents').insertOne({
+      _id: docId,
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'Approved Architecture',
+      documentType: 'ARCHITECTURE',
+      status: 'APPROVED',
+      currentVersionNumber: 1,
+      latestApprovedVersionNumber: 1,
+      createdByUserId: new Types.ObjectId(userId),
+      updatedByUserId: new Types.ObjectId(userId),
+      createdAt: now,
+      updatedAt: now,
+    });
+    await connection.db!.collection('project_document_versions').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      documentId: docId,
+      versionNumber: 1,
+      title: 'Approved Architecture',
+      documentType: 'ARCHITECTURE',
+      status: 'APPROVED',
+      content: 'Approved doc body.',
+      editedByUserId: new Types.ObjectId(userId),
+      reviewHistory: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    await connection.db!.collection('work_reports').insertOne({
+      _id: reportId,
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      memberUserId: new Types.ObjectId(userId),
+      reportScope: 'MEMBER',
+      frequency: 'WEEKLY',
+      periodStart: now,
+      periodEnd: now,
+      dueAt: now,
+      status: 'DRAFT',
+      title: 'Initial Report',
+      contentMarkdown: 'Initial report text.',
+      contentSchemaVersion: 2,
+      currentVersionNumber: 1,
+      createdAt: now,
+      updatedAt: now,
+      reviewHistory: [],
+    });
+    await connection.db!.collection('work_report_versions').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      reportId,
+      versionNumber: 1,
+      title: 'Initial Report',
+      contentMarkdown: 'Initial report text.',
+      canonicalResult: { id: String(reportId), status: 'DRAFT' },
+      editedByUserId: new Types.ObjectId(userId),
+      createdAt: now,
+    });
+
+    const openDraft = await service.createEditor(headers, projectId, {
+      ...op(),
+      workflow: 'WORK_REPORT',
+      reportId: String(reportId),
+    });
+    const edited = await service.update(headers, projectId, openDraft.id, {
+      ...op(),
+      expectedRevision: openDraft.revision,
+      title: 'Updated Report',
+      contentMarkdown: 'Report text after linking document.',
+    });
+
+    // Updating linked documents while the report draft is open must not trigger 409
+    await service.updateReportLinks(headers, projectId, String(reportId), [
+      String(docId),
+    ]);
+
+    const saved = await service.saveEditor(headers, projectId, openDraft.id, {
+      ...op(),
+      expectedRevision: edited.revision,
+      discardOriginalConfirmed: false,
+    });
+    expect(saved).toMatchObject({
+      title: 'Updated Report',
+      contentMarkdown: 'Report text after linking document.',
+    });
+
+    // Stale draft left behind when source moves forward via restoreEditor is dropped on resumeEditor
+    const staleDraft = await service.createEditor(headers, projectId, {
+      ...op(),
+      workflow: 'WORK_REPORT',
+      reportId: String(reportId),
+    });
+    await service.restoreEditor(
+      headers,
+      projectId,
+      'WORK_REPORT',
+      String(reportId),
+      {
+        ...op(),
+        expectedVersion: staleDraft.baseNoteVersion,
+        expectedContentHash: staleDraft.baseContentHash!,
+        versionNumber: 1,
+      },
+    );
+    expect(
+      await service.resumeEditor(
+        headers,
+        projectId,
+        'WORK_REPORT',
+        String(reportId),
+      ),
+    ).toBeNull();
+
+    // >24h-old draft returns null from resumeEditor instead of throwing 404
+    const agedDraft = await service.createEditor(headers, projectId, {
+      ...op(),
+      workflow: 'WORK_REPORT',
+      reportId: String(reportId),
+    });
+    await connection
+      .db!.collection<DraftRow>('work_note_agent_drafts')
+      .updateOne(
+        { _id: agedDraft.id },
+        {
+          $set: {
+            createdAt: new Date(Date.now() - 86_401_000),
+            expiresAt: new Date(Date.now() + 86_400_000),
+          },
+        },
+      );
+    expect(
+      await service.resumeEditor(
+        headers,
+        projectId,
+        'WORK_REPORT',
+        String(reportId),
+      ),
+    ).toBeNull();
+
+    // Peer Leader cannot read another Leader's confidential LEADER-scope report version history
+    const peerLeaderReportId = new Types.ObjectId();
+    await connection.db!.collection('work_reports').insertOne({
+      _id: peerLeaderReportId,
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      memberUserId: new Types.ObjectId(),
+      reportScope: 'LEADER',
+      frequency: 'WEEKLY',
+      periodStart: now,
+      periodEnd: now,
+      dueAt: now,
+      status: 'APPROVED',
+      title: 'Confidential',
+      contentMarkdown: 'Leader-only.',
+      contentSchemaVersion: 2,
+      currentVersionNumber: 1,
+      createdAt: now,
+      updatedAt: now,
+      reviewHistory: [],
+    });
+    auth.resolveProject.mockResolvedValueOnce({
+      ...actor,
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+    } as never);
+    await expect(
+      service.editorVersions(
+        headers,
+        projectId,
+        'WORK_REPORT',
+        String(peerLeaderReportId),
+        1,
+        20,
+      ),
+    ).rejects.toMatchObject({ status: 404 });
   });
 });

@@ -621,4 +621,52 @@ describe('Persisted Task assessment scope and lifecycle', () => {
     expect(JSON.stringify(receipts)).not.toContain('Updated API');
     expect(JSON.stringify(receipts)).not.toContain('contextManifest');
   });
+  it('allocates a dual-call inference lease (>170s) when WORKNOTE_ASSESSMENT_ARCHITECTURE is split', async () => {
+    const splitService = new WorkNoteAssessmentService(
+      new ConfigService({
+        WORKNOTE_EDITOR_ENABLED: true,
+        WORKNOTE_ASSESSMENT_ENABLED: true,
+        WORKNOTE_ASSESSMENT_ARCHITECTURE: 'split',
+        XKIRO_MODEL: 'synthetic/model',
+      }),
+      {
+        resolveProject: jest.fn(async () => actor),
+        resolveTask: jest.fn(async () => actor),
+      } as unknown as WorkNotesAuthorizationService,
+      {} as WorkNotesService,
+      model as unknown as WorkNoteAgentModel,
+      {
+        consumeRateLimit: jest.fn(async () => true),
+      } as unknown as RedisService,
+      connection,
+    );
+    const d = await draft();
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((r) => {
+      entered = r;
+    });
+    model.assess.mockImplementationOnce(async (i: AssessmentModelInput) => {
+      entered();
+      await new Promise<void>((r) => {
+        release = r;
+      });
+      return { result: result(i), provenance: { httpAttempts: 1 } };
+    });
+    const startedAt = Date.now();
+    const pending = splitService.assess(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      purpose: 'PROGRESS',
+    });
+    await gate;
+    const row = await connection
+      .db!.collection<DraftRow>('work_note_agent_drafts')
+      .findOne({ _id: d.id });
+    expect(
+      (row?.inferenceLeaseUntil as Date).getTime() - startedAt,
+    ).toBeGreaterThanOrEqual(180_000);
+    release();
+    await pending;
+  });
 });

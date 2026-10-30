@@ -1621,4 +1621,151 @@ describe('Capture Work Notes Mongo workflows', () => {
       }),
     ).toBe(2);
   });
+
+  it('preserves authored v2 work report drafts during cadence changes, searches v2 report fields, and enforces peer-Leader privacy in editorSourceRecord', async () => {
+    const now = new Date();
+    const periodStart = new Date(now.getTime() - 86_400_000);
+    const periodEnd = new Date(now.getTime() + 5 * 86_400_000);
+    const otherLeaderId = new Types.ObjectId().toHexString();
+    const authoredV2Id = new Types.ObjectId();
+    const emptyShellId = new Types.ObjectId();
+    const peerLeaderReportId = new Types.ObjectId();
+
+    await connection.collection('work_report_settings').insertOne({
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      reportScope: 'MEMBER',
+      frequency: 'WEEKLY',
+      effectiveAt: new Date(now.getTime() - 7 * 86_400_000),
+      createdByUserId: new Types.ObjectId(leaderId),
+      updatedByUserId: new Types.ObjectId(leaderId),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await connection.collection('work_reports').insertMany([
+      {
+        _id: authoredV2Id,
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        memberUserId: new Types.ObjectId(memberId),
+        reportScope: 'MEMBER',
+        frequency: 'WEEKLY',
+        periodStart,
+        periodEnd,
+        dueAt: periodEnd,
+        status: 'DRAFT',
+        title: 'Authored Freeform Sprint Report',
+        contentMarkdown:
+          'Detailed v2 investigation body with unique-token-xyz.',
+        contentSchemaVersion: 2,
+        currentVersionNumber: 1,
+        reviewHistory: [],
+        createdAt: periodStart,
+        updatedAt: now,
+      },
+      {
+        _id: emptyShellId,
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        memberUserId: new Types.ObjectId(),
+        reportScope: 'MEMBER',
+        frequency: 'WEEKLY',
+        periodStart,
+        periodEnd,
+        dueAt: periodEnd,
+        status: 'DRAFT',
+        accomplishments: '',
+        approach: '',
+        reason: '',
+        reviewHistory: [],
+        createdAt: periodStart,
+        updatedAt: periodStart,
+      },
+      {
+        _id: peerLeaderReportId,
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        memberUserId: new Types.ObjectId(otherLeaderId),
+        reportScope: 'LEADER',
+        frequency: 'WEEKLY',
+        periodStart,
+        periodEnd,
+        dueAt: periodEnd,
+        status: 'DRAFT',
+        title: 'Confidential Peer Leader Report',
+        contentMarkdown: 'Private escalation notes.',
+        contentSchemaVersion: 2,
+        currentVersionNumber: 1,
+        reviewHistory: [],
+        createdAt: periodStart,
+        updatedAt: now,
+      },
+    ]);
+
+    currentActor = {
+      userId: leaderId,
+      userName: 'Leo Leader',
+      organizationId,
+      projectId,
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+    };
+
+    await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_3_DAYS',
+      'MEMBER',
+    );
+
+    expect(
+      await connection
+        .collection('work_reports')
+        .findOne({ _id: authoredV2Id }),
+    ).toMatchObject({
+      title: 'Authored Freeform Sprint Report',
+      contentMarkdown: 'Detailed v2 investigation body with unique-token-xyz.',
+      contentSchemaVersion: 2,
+    });
+    expect(
+      await connection
+        .collection('work_reports')
+        .findOne({ _id: emptyShellId }),
+    ).toBeNull();
+
+    const searchByMarkdown = await service.listWorkReports(
+      {},
+      projectId,
+      1,
+      20,
+      undefined,
+      'MEMBER',
+      { search: 'unique-token-xyz' },
+    );
+    expect(searchByMarkdown.data.map((r) => r.id)).toContain(
+      String(authoredV2Id),
+    );
+
+    const searchByTitle = await service.listWorkReports(
+      {},
+      projectId,
+      1,
+      20,
+      undefined,
+      'MEMBER',
+      { search: 'Freeform Sprint Report' },
+    );
+    expect(searchByTitle.data.map((r) => r.id)).toContain(String(authoredV2Id));
+
+    await expect(
+      service.editorSourceRecord(
+        currentActor,
+        'WORK_REPORT',
+        String(peerLeaderReportId),
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
 });

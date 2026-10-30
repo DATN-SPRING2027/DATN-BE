@@ -3437,6 +3437,17 @@ export class WorkNotesService {
     const untouchedEmptyDraftCondition = {
       status: 'DRAFT',
       $and: [
+        { contentSchemaVersion: { $ne: 2 } },
+        {
+          $or: [{ title: '' }, { title: null }, { title: { $exists: false } }],
+        },
+        {
+          $or: [
+            { contentMarkdown: '' },
+            { contentMarkdown: null },
+            { contentMarkdown: { $exists: false } },
+          ],
+        },
         {
           $or: [
             { accomplishments: '' },
@@ -3459,6 +3470,9 @@ export class WorkNotesService {
     const authoredOrSubmittedCondition = {
       $or: [
         { status: { $ne: 'DRAFT' } },
+        { contentSchemaVersion: 2 },
+        { title: { $nin: ['', null] } },
+        { contentMarkdown: { $nin: ['', null] } },
         { accomplishments: { $nin: ['', null] } },
         { approach: { $nin: ['', null] } },
         { reason: { $nin: ['', null] } },
@@ -4895,6 +4909,8 @@ export class WorkNotesService {
         .map(objectId);
       queryConditions.push({
         $or: [
+          { title: regex },
+          { contentMarkdown: regex },
           { accomplishments: regex },
           { approach: regex },
           { reason: regex },
@@ -5792,7 +5808,7 @@ export class WorkNotesService {
         },
         { session },
       );
-    if (!row) throw reportNotFound();
+    if (!row || !this.canViewWorkReportRow(actor, row)) throw reportNotFound();
     return this.workReportRecord(row, actor);
   }
   private async readDocument(
