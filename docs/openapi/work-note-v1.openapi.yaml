@@ -352,9 +352,13 @@ paths:
     get:
       tags: [WorkReports]
       operationId: getWorkReportSettings
+      parameters:
+        - name: scope
+          in: query
+          schema: { $ref: '#/components/schemas/WorkReportScope' }
       responses:
         '200':
-          description: Active reporting frequency and future schedule
+          description: Active reporting frequency and two-tier governance metadata
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkReportSettings' }
@@ -364,6 +368,9 @@ paths:
       operationId: updateWorkReportSettings
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
+        - name: scope
+          in: query
+          schema: { $ref: '#/components/schemas/WorkReportScope' }
       requestBody:
         required: true
         content:
@@ -374,9 +381,10 @@ paths:
               required: [frequency]
               properties:
                 frequency: { $ref: '#/components/schemas/ReportFrequency' }
+                scope: { $ref: '#/components/schemas/WorkReportScope' }
       responses:
         '200':
-          description: New frequency effective from the next period boundary
+          description: Updated reporting cadence for the selected governance tier
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkReportSettings' }
@@ -388,9 +396,21 @@ paths:
       tags: [WorkReports]
       operationId: listWorkReports
       parameters:
+        - name: scope
+          in: query
+          schema: { $ref: '#/components/schemas/WorkReportScope' }
         - name: status
           in: query
           schema: { $ref: '#/components/schemas/WorkReportStatus' }
+        - name: memberId
+          in: query
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - name: period
+          in: query
+          schema: { type: string, enum: [CURRENT, ALL] }
+        - name: search
+          in: query
+          schema: { type: string, maxLength: 200 }
         - name: page
           in: query
           schema: { type: integer, minimum: 1, default: 1 }
@@ -399,7 +419,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         '200':
-          description: Reports in the actor's allowed Project scope
+          description: Reports in the actor's allowed Project governance scope
           content:
             application/json:
               schema:
@@ -410,12 +430,31 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/WorkReport' }
                   pagination: { $ref: '#/components/schemas/Pagination' }
+                  scope: { $ref: '#/components/schemas/WorkReportScope' }
+                  summary:
+                    { $ref: '#/components/schemas/WorkReportSummaryCounts' }
+                  currentPeriod:
+                    type: object
+                    required: [periodStart, periodEnd, dueAt, frequency]
+                    properties:
+                      periodStart: { type: string, format: date-time }
+                      periodEnd: { type: string, format: date-time }
+                      dueAt: { type: string, format: date-time }
+                      frequency:
+                        { $ref: '#/components/schemas/ReportFrequency' }
+                  roster:
+                    type: array
+                    items:
+                      { $ref: '#/components/schemas/WorkReportRosterEntry' }
         default: { $ref: '#/components/responses/Error' }
     post:
       tags: [WorkReports]
       operationId: saveCurrentWorkReportDraft
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
+        - name: scope
+          in: query
+          schema: { $ref: '#/components/schemas/WorkReportScope' }
       requestBody:
         required: true
         content:
@@ -427,6 +466,38 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-reports/{reportId}/file:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ReportId'
+    put:
+      tags: [WorkReports]
+      operationId: uploadWorkReportFile
+      description: Uploads a private attachment (up to 20 MB) to an owned editable Work Report draft.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - name: X-File-Name
+          in: header
+          required: true
+          schema: { type: string, maxLength: 540 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200': { $ref: '#/components/responses/WorkReport' }
+        default: { $ref: '#/components/responses/Error' }
+    get:
+      tags: [WorkReports]
+      operationId: downloadWorkReportFile
+      responses:
+        '200':
+          description: Private Work Report attachment download
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
         default: { $ref: '#/components/responses/Error' }
   /capture/projects/{projectId}/work-reports/{reportId}:
     parameters:
@@ -747,21 +818,37 @@ components:
       type: object
       required: [action, reviewerId, at]
       properties:
-        action: { type: string, enum: [APPROVED, CHANGES_REQUESTED, REJECTED] }
+        action:
+          {
+            type: string,
+            enum: [PENDING_REVIEW, APPROVED, CHANGES_REQUESTED, REJECTED],
+          }
         reviewerId: { $ref: '#/components/schemas/ObjectId' }
+        reviewerRole: { type: string, enum: [MANAGER, LEADER] }
         comment: { type: string }
         at: { type: string, format: date-time }
+    WorkReportScope:
+      type: string
+      enum: [MEMBER, LEADER]
     ReportFrequency:
       type: string
-      enum: [DAILY, EVERY_3_DAYS, WEEKLY]
-    WorkReportSettings:
+      enum:
+        [
+          DAILY,
+          EVERY_2_DAYS,
+          EVERY_3_DAYS,
+          EVERY_4_DAYS,
+          EVERY_5_DAYS,
+          EVERY_6_DAYS,
+          WEEKLY,
+        ]
+    WorkReportTierSettingsSummary:
       type: object
-      required:
-        [projectId, frequency, effectiveAt, updatedBy, history, permissions]
+      required: [frequency, effectiveAt, updatedBy, history, permissions]
       properties:
-        projectId: { $ref: '#/components/schemas/ObjectId' }
         frequency: { $ref: '#/components/schemas/ReportFrequency' }
         effectiveAt: { type: string, format: date-time }
+        nextFrequency: { $ref: '#/components/schemas/ReportFrequency' }
         nextEffectiveAt: { type: string, format: date-time }
         updatedBy: { $ref: '#/components/schemas/ObjectId' }
         history:
@@ -778,6 +865,87 @@ components:
           required: [canConfigure]
           properties:
             canConfigure: { type: boolean }
+            canReview: { type: boolean }
+            canSubmit: { type: boolean }
+    WorkReportSettings:
+      type: object
+      required:
+        [projectId, frequency, effectiveAt, updatedBy, history, permissions]
+      properties:
+        projectId: { $ref: '#/components/schemas/ObjectId' }
+        scope: { $ref: '#/components/schemas/WorkReportScope' }
+        actorRole: { type: string, enum: [MANAGER, LEADER, MEMBER] }
+        isManager: { type: boolean }
+        isLeader: { type: boolean }
+        hasActiveLeaders: { type: boolean }
+        frequency: { $ref: '#/components/schemas/ReportFrequency' }
+        effectiveAt: { type: string, format: date-time }
+        nextFrequency: { $ref: '#/components/schemas/ReportFrequency' }
+        nextEffectiveAt: { type: string, format: date-time }
+        updatedBy: { $ref: '#/components/schemas/ObjectId' }
+        history:
+          type: array
+          items:
+            type: object
+            required: [frequency, effectiveAt, updatedBy]
+            properties:
+              frequency: { $ref: '#/components/schemas/ReportFrequency' }
+              effectiveAt: { type: string, format: date-time }
+              updatedBy: { $ref: '#/components/schemas/ObjectId' }
+        permissions:
+          type: object
+          required: [canConfigure]
+          properties:
+            canConfigure: { type: boolean }
+            canReview: { type: boolean }
+            canSubmit: { type: boolean }
+        memberSettings:
+          { $ref: '#/components/schemas/WorkReportTierSettingsSummary' }
+        leaderSettings:
+          { $ref: '#/components/schemas/WorkReportTierSettingsSummary' }
+    WorkReportSummaryCounts:
+      type: object
+      required:
+        [
+          total,
+          draft,
+          pendingReview,
+          changesRequested,
+          approved,
+          rejected,
+          overdue,
+        ]
+      properties:
+        total: { type: integer, minimum: 0 }
+        draft: { type: integer, minimum: 0 }
+        pendingReview: { type: integer, minimum: 0 }
+        changesRequested: { type: integer, minimum: 0 }
+        approved: { type: integer, minimum: 0 }
+        rejected: { type: integer, minimum: 0 }
+        overdue: { type: integer, minimum: 0 }
+    WorkReportRosterEntry:
+      type: object
+      required: [userId, fullName, joinedAt, status, dueAt]
+      properties:
+        userId: { $ref: '#/components/schemas/ObjectId' }
+        fullName: { type: string }
+        joinedAt: { type: string, format: date-time }
+        reportId: { $ref: '#/components/schemas/ObjectId' }
+        status:
+          type: string
+          enum:
+            [
+              NOT_STARTED,
+              DRAFT,
+              PENDING_REVIEW,
+              APPROVED,
+              CHANGES_REQUESTED,
+              REJECTED,
+              OVERDUE,
+            ]
+        dueAt: { type: string, format: date-time }
+        submittedAt: { type: string, format: date-time }
+        reviewedAt: { type: string, format: date-time }
     WorkReportStatus:
       type: string
       enum:
@@ -792,6 +960,10 @@ components:
         reason: { type: string, minLength: 1, maxLength: 5000 }
         blockers: { type: string, maxLength: 5000 }
         nextSteps: { type: string, maxLength: 5000 }
+        documentIds:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/ObjectId' }
     WorkReport:
       allOf:
         - $ref: '#/components/schemas/WorkReportInput'
@@ -816,11 +988,19 @@ components:
             projectId: { $ref: '#/components/schemas/ObjectId' }
             memberId: { $ref: '#/components/schemas/ObjectId' }
             memberName: { type: string }
+            reportScope: { $ref: '#/components/schemas/WorkReportScope' }
             frequency: { $ref: '#/components/schemas/ReportFrequency' }
             periodStart: { type: string, format: date-time }
             periodEnd: { type: string, format: date-time }
             dueAt: { type: string, format: date-time }
             status: { $ref: '#/components/schemas/WorkReportStatus' }
+            file:
+              type: object
+              required: [name, contentType, size]
+              properties:
+                name: { type: string }
+                contentType: { type: string }
+                size: { type: integer, minimum: 1, maximum: 20971520 }
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
             submittedAt: { type: [string, 'null'], format: date-time }

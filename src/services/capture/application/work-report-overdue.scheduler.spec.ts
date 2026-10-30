@@ -15,7 +15,7 @@ describe('Work Report scheduler', () => {
     };
     const scheduler = new WorkReportOverdueScheduler(
       workNotes as never,
-      roster,
+      roster as never,
     );
 
     await (scheduler as unknown as { sweep: () => Promise<void> }).sweep();
@@ -63,7 +63,7 @@ describe('Work Report scheduler', () => {
     };
     const scheduler = new WorkReportOverdueScheduler(
       workNotes as never,
-      roster,
+      roster as never,
     );
 
     await (scheduler as unknown as { sweep: () => Promise<void> }).sweep();
@@ -115,7 +115,7 @@ describe('Work Report scheduler', () => {
     };
     const scheduler = new WorkReportOverdueScheduler(
       workNotes as never,
-      roster,
+      roster as never,
     );
 
     await (scheduler as unknown as { sweep: () => Promise<void> }).sweep();
@@ -125,5 +125,44 @@ describe('Work Report scheduler', () => {
     );
     expect(workNotes.sweepOverdueReports).toHaveBeenCalledWith([project]);
     expect(calls).toEqual(['obligations', 'overdue']);
+  });
+
+  it('creates obligations when a project has active Leaders even if regular members list is empty', async () => {
+    const leaderOnlyProject = {
+      organizationId: '111111111111111111111111',
+      projectId: '222222222222222222222222',
+      projectCreatedBy: '333333333333333333333333',
+      members: [],
+      leaders: [
+        {
+          userId: '777777777777777777777777',
+          joinedAt: '2026-10-20T12:00:00.000Z',
+        },
+      ],
+    };
+    const workNotes = {
+      ensureScheduledReportObligations: jest.fn().mockResolvedValue(undefined),
+      sweepOverdueReports: jest.fn().mockResolvedValue(undefined),
+    };
+    const roster = {
+      activeProjects() {
+        return (async function* () {
+          yield await Promise.resolve(leaderOnlyProject);
+        })();
+      },
+    };
+    const scheduler = new WorkReportOverdueScheduler(
+      workNotes as never,
+      roster as never,
+    );
+
+    await (scheduler as unknown as { sweep: () => Promise<void> }).sweep();
+
+    expect(workNotes.ensureScheduledReportObligations).toHaveBeenCalledWith(
+      leaderOnlyProject,
+    );
+    expect(workNotes.sweepOverdueReports).toHaveBeenCalledWith([
+      leaderOnlyProject,
+    ]);
   });
 });

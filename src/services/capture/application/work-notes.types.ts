@@ -147,6 +147,7 @@ export interface DocumentVersionRecord {
   reviewHistory: Array<{
     action: 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
     reviewerId: string;
+    reviewerRole?: 'MANAGER' | 'LEADER';
     comment?: string;
     at: string;
   }>;
@@ -205,10 +206,7 @@ export interface WorkReportRecord extends WorkReportInput {
   permissions: WorkNotesPermissions;
 }
 
-export interface WorkReportSettingsRecord {
-  projectId: string;
-  scope?: WorkReportScope;
-  actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';
+export interface WorkReportTierSettingsSummary {
   frequency: WorkReportFrequency;
   effectiveAt: string;
   nextFrequency?: WorkReportFrequency;
@@ -219,16 +217,74 @@ export interface WorkReportSettingsRecord {
     effectiveAt: string;
     updatedBy: string;
   }>;
-  permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
-  leaderSettings?: {
+  permissions: Pick<WorkNotesPermissions, 'canConfigure'> & {
+    canReview?: boolean;
+    canSubmit?: boolean;
+  };
+}
+
+export interface WorkReportSettingsRecord {
+  projectId: string;
+  scope?: WorkReportScope;
+  actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';
+  isManager?: boolean;
+  isLeader?: boolean;
+  hasActiveLeaders?: boolean;
+  frequency: WorkReportFrequency;
+  effectiveAt: string;
+  nextFrequency?: WorkReportFrequency;
+  nextEffectiveAt?: string;
+  updatedBy: string;
+  history: Array<{
     frequency: WorkReportFrequency;
     effectiveAt: string;
     updatedBy: string;
-    history: Array<{
-      frequency: WorkReportFrequency;
-      effectiveAt: string;
-      updatedBy: string;
-    }>;
-    permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
+  }>;
+  permissions: Pick<WorkNotesPermissions, 'canConfigure'> & {
+    canReview?: boolean;
+    canSubmit?: boolean;
   };
+  memberSettings?: WorkReportTierSettingsSummary;
+  leaderSettings?: WorkReportTierSettingsSummary;
+}
+
+export type WorkReportPeriodFilter = 'CURRENT' | 'ALL';
+
+export interface WorkReportsListFilters {
+  memberId?: string;
+  period?: WorkReportPeriodFilter;
+  search?: string;
+}
+
+export interface WorkReportSummaryCounts {
+  total: number;
+  draft: number;
+  pendingReview: number;
+  changesRequested: number;
+  approved: number;
+  rejected: number;
+  overdue: number;
+}
+
+export interface WorkReportRosterEntry {
+  userId: string;
+  fullName: string;
+  joinedAt: string;
+  reportId?: string;
+  status: WorkReportStatus | 'NOT_STARTED';
+  dueAt: string;
+  submittedAt?: string;
+  reviewedAt?: string;
+}
+
+export interface WorkReportsPageRecord extends WorkNotesPage<WorkReportRecord> {
+  scope?: WorkReportScope;
+  summary?: WorkReportSummaryCounts;
+  currentPeriod?: {
+    periodStart: string;
+    periodEnd: string;
+    dueAt: string;
+    frequency: WorkReportFrequency;
+  };
+  roster?: WorkReportRosterEntry[];
 }

@@ -18,7 +18,8 @@ describe('Capture Work Notes Mongo workflows', () => {
   let authorization: Pick<
     WorkNotesAuthorizationService,
     'resolveProject' | 'resolveTask' | 'listActiveMembers'
-  >;
+  > &
+    Partial<Pick<WorkNotesAuthorizationService, 'listActiveLeaders'>>;
   const organizationId = new Types.ObjectId().toHexString();
   const projectId = new Types.ObjectId().toHexString();
   const taskId = new Types.ObjectId().toHexString();
@@ -61,7 +62,10 @@ describe('Capture Work Notes Mongo workflows', () => {
       );
     await connection
       .collection('work_report_settings')
-      .createIndex({ projectId: 1, effectiveAt: 1 }, { unique: true });
+      .createIndex(
+        { projectId: 1, reportScope: 1, effectiveAt: 1 },
+        { unique: true },
+      );
   });
 
   beforeEach(async () => {
@@ -87,7 +91,10 @@ describe('Capture Work Notes Mongo workflows', () => {
       );
     await connection
       .collection('work_report_settings')
-      .createIndex({ projectId: 1, effectiveAt: 1 }, { unique: true });
+      .createIndex(
+        { projectId: 1, reportScope: 1, effectiveAt: 1 },
+        { unique: true },
+      );
     currentActor = {
       userId: memberId,
       userName: 'Mina Member',
@@ -1172,8 +1179,396 @@ describe('Capture Work Notes Mongo workflows', () => {
       .collection('work_reports')
       .findOne({ _id: new Types.ObjectId(earlier.id) });
     expect(persistedEarlier?.frequency).toBe('WEEKLY');
+    expect(persistedEarlier?.status).toBe('DRAFT');
     expect(persistedEarlier?.periodEnd).toEqual(
       new Date(changed.history.at(-1)!.effectiveAt),
     );
+  });
+
+  it('enforces Option A two-tier RBAC, blocks Co-Leader IDOR on LEADER reports, and supports Pure Manager fallback when 0 active leaders exist', async () => {
+    const managerId = new Types.ObjectId().toHexString();
+    const coLeaderId = new Types.ObjectId().toHexString();
+    const dualManagerLeaderId = new Types.ObjectId().toHexString();
+    const joinedAt = new Date(Date.now() - 86_400_000).toISOString();
+
+    const objects = new Map<string, Buffer>();
+    const storage = {
+      put: jest.fn((key: string, bytes: Buffer) => {
+        objects.set(key, bytes);
+        return Promise.resolve();
+      }),
+      get: jest.fn((key: string) =>
+        Promise.resolve(objects.get(key) ?? Buffer.alloc(0)),
+      ),
+      delete: jest.fn((key: string) => {
+        objects.delete(key);
+        return Promise.resolve();
+      }),
+    } as unknown as ProjectDocumentStorage;
+    const emitSafe = jest.fn().mockResolvedValue([]);
+    const roster = {
+      listActiveProjectLeaderIds: jest
+        .fn()
+        .mockResolvedValue([leaderId, coLeaderId]),
+      listActiveOrganizationManagerIds: jest
+        .fn()
+        .mockResolvedValue([managerId, dualManagerLeaderId]),
+    };
+
+    authorization.listActiveLeaders = jest.fn(() =>
+      Promise.resolve([
+        { userId: leaderId, fullName: 'Leo Leader', joinedAt },
+        { userId: coLeaderId, fullName: 'Cara CoLeader', joinedAt },
+        { userId: dualManagerLeaderId, fullName: 'Dana Dual', joinedAt },
+      ]),
+    );
+
+    service = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      {
+        append: async (
+          event: Record<string, unknown>,
+          session?: mongoose.ClientSession,
+        ) => {
+          await connection
+            .collection('outbox_events')
+            .insertOne(event, session ? { session } : undefined);
+        },
+      } as unknown as OutboxService,
+      {
+        append: jest.fn().mockResolvedValue(undefined),
+      } as unknown as AuditService,
+      storage,
+      { emitSafe } as never,
+      roster as never,
+    );
+
+    // 1. Member cannot view or configure LEADER scope
+    currentActor = {
+      userId: memberId,
+      userName: 'Mina Member',
+      organizationId,
+      projectId,
+      canReview: false,
+      canConfigure: false,
+      isManager: false,
+      isLeader: false,
+      joinedAt,
+    };
+    await expect(
+      service.getWorkReportSettings({}, projectId, 'LEADER'),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      service.listWorkReports({}, projectId, 1, 20, undefined, 'LEADER'),
+    ).rejects.toMatchObject({ status: 403 });
+    const memberViewSettings = await service.getWorkReportSettings(
+      {},
+      projectId,
+      'MEMBER',
+    );
+    expect(memberViewSettings.leaderSettings).toBeUndefined();
+
+    // 2. Member drafts and submits own MEMBER report -> notifies active Leaders with WORK_REPORT_SUBMITTED
+    const memberDraft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Implemented RBAC endpoints',
+        approach: 'Added strict scope guards',
+        reason: 'Protect two-tier governance',
+      },
+      'MEMBER',
+    );
+    await service.submitWorkReport({}, projectId, memberDraft.id);
+    expect(emitSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'WORK_REPORT_SUBMITTED',
+        recipients: [leaderId, coLeaderId],
+      }),
+    );
+
+    // 3. Pure Manager (not TEAM_LEADER of project) is Read-only on MEMBER tier when active Leaders exist (Option A)
+    currentActor = {
+      userId: managerId,
+      userName: 'Morgan Manager',
+      organizationId,
+      projectId,
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: false,
+    };
+    const pureManagerMemberSettings = await service.getWorkReportSettings(
+      {},
+      projectId,
+      'MEMBER',
+    );
+    expect(pureManagerMemberSettings.permissions.canConfigure).toBe(false);
+    expect(
+      pureManagerMemberSettings.leaderSettings?.permissions.canConfigure,
+    ).toBe(true);
+    await expect(
+      service.updateWorkReportSettings({}, projectId, 'EVERY_3_DAYS', 'MEMBER'),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      service.reviewWorkReport({}, projectId, memberDraft.id, 'APPROVED', {}),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // Pure Manager CAN still monitor MEMBER reports (Read-only) with summary & compliance roster
+    const managerMemberMonitor = await service.listWorkReports(
+      {},
+      projectId,
+      1,
+      20,
+      undefined,
+      'MEMBER',
+      { period: 'CURRENT', search: 'RBAC' },
+    );
+    expect(managerMemberMonitor.data).toHaveLength(1);
+    expect(managerMemberMonitor.data[0]?.permissions.canReview).toBe(false);
+    expect(managerMemberMonitor.summary?.pendingReview).toBe(1);
+    expect(managerMemberMonitor.roster).toEqual([
+      expect.objectContaining({
+        userId: memberId,
+        status: 'PENDING_REVIEW',
+      }),
+    ]);
+
+    // 4. Project Leader configures all 1..7 day cadences on MEMBER tier and reviews Member report
+    currentActor = {
+      userId: leaderId,
+      userName: 'Leo Leader',
+      organizationId,
+      projectId,
+      canReview: true,
+      canConfigure: true,
+      isManager: false,
+      isLeader: true,
+      joinedAt,
+    };
+    for (const freq of [
+      'DAILY',
+      'EVERY_2_DAYS',
+      'EVERY_3_DAYS',
+      'EVERY_4_DAYS',
+      'EVERY_5_DAYS',
+      'EVERY_6_DAYS',
+      'WEEKLY',
+    ] as const) {
+      const updated = await service.updateWorkReportSettings(
+        {},
+        projectId,
+        freq,
+        'MEMBER',
+      );
+      expect(updated.frequency).toBe(freq);
+    }
+    const leaderReviewedMember = await service.reviewWorkReport(
+      {},
+      projectId,
+      memberDraft.id,
+      'APPROVED',
+      { comment: 'Verified by Leader.' },
+    );
+    expect(leaderReviewedMember.status).toBe('APPROVED');
+    expect(leaderReviewedMember.reviewHistory.at(-1)?.reviewerRole).toBe(
+      'LEADER',
+    );
+    expect(emitSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'WORK_REPORT_APPROVED',
+        recipients: [memberId],
+      }),
+    );
+
+    // 5. Leader drafts, attaches file, and submits LEADER report -> Co-Leader is strictly blocked (IDOR 404)!
+    const leoLeaderDraft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Confidential Leader escalation summary',
+        approach: 'Prepared milestone metrics',
+        reason: 'Executive checkpoint',
+      },
+      'LEADER',
+    );
+    const pdfBytes = Buffer.from('%PDF-1.4\nConfidential leader attachment');
+    await service.uploadWorkReportFile(
+      {},
+      projectId,
+      leoLeaderDraft.id,
+      'confidential-leader.pdf',
+      'application/pdf',
+      pdfBytes,
+    );
+    await service.submitWorkReport({}, projectId, leoLeaderDraft.id);
+    expect(emitSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'WORK_REPORT_SUBMITTED',
+        recipients: [managerId, dualManagerLeaderId],
+      }),
+    );
+
+    // Switch to Co-Leader Cara -> cannot view, list, or download Leo's LEADER report!
+    currentActor = {
+      userId: coLeaderId,
+      userName: 'Cara CoLeader',
+      organizationId,
+      projectId,
+      canReview: true,
+      canConfigure: true,
+      isManager: false,
+      isLeader: true,
+      joinedAt,
+    };
+    await expect(
+      service.getWorkReport({}, projectId, leoLeaderDraft.id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.downloadWorkReportFile({}, projectId, leoLeaderDraft.id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    const caraLeaderList = await service.listWorkReports(
+      {},
+      projectId,
+      1,
+      20,
+      undefined,
+      'LEADER',
+    );
+    expect(
+      caraLeaderList.data.some((report) => report.id === leoLeaderDraft.id),
+    ).toBe(false);
+
+    // 6. Dual-Role Manager + Project Leader can submit own LEADER report, review OTHER Leader's report, but CANNOT self-review!
+    currentActor = {
+      userId: dualManagerLeaderId,
+      userName: 'Dana Dual',
+      organizationId,
+      projectId,
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: true,
+      joinedAt,
+    };
+    const danaDualDraft = await service.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Dual manager-leader delivery',
+        approach: 'Direct governance',
+        reason: 'Cross-team alignment',
+      },
+      'LEADER',
+    );
+    await service.submitWorkReport({}, projectId, danaDualDraft.id);
+    await expect(
+      service.reviewWorkReport({}, projectId, danaDualDraft.id, 'APPROVED', {}),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'SELF_REVIEW_NOT_ALLOWED' },
+    });
+    const managerReviewedLeo = await service.reviewWorkReport(
+      {},
+      projectId,
+      leoLeaderDraft.id,
+      'CHANGES_REQUESTED',
+      { comment: 'Please include burn-down chart.' },
+    );
+    expect(managerReviewedLeo.status).toBe('CHANGES_REQUESTED');
+    expect(managerReviewedLeo.reviewHistory.at(-1)?.reviewerRole).toBe(
+      'MANAGER',
+    );
+    expect(emitSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'WORK_REPORT_CHANGES_REQUESTED',
+        recipients: [leaderId],
+      }),
+    );
+
+    // 7. Pure Manager fallback when project has 0 active Leaders
+    (authorization.listActiveLeaders as jest.Mock).mockResolvedValueOnce([]);
+    currentActor = {
+      userId: managerId,
+      userName: 'Morgan Manager',
+      organizationId,
+      projectId,
+      canReview: true,
+      canConfigure: true,
+      isManager: true,
+      isLeader: false,
+    };
+    const fallbackSettings = await service.updateWorkReportSettings(
+      {},
+      projectId,
+      'EVERY_6_DAYS',
+      'MEMBER',
+    );
+    expect(fallbackSettings.frequency).toBe('EVERY_6_DAYS');
+    expect(fallbackSettings.hasActiveLeaders).toBe(false);
+    expect(fallbackSettings.permissions.canConfigure).toBe(true);
+  });
+
+  it('materializes and sweeps overdue LEADER obligations alongside MEMBER obligations in background scheduler runs', async () => {
+    const now = Date.now();
+    await connection.collection('work_report_settings').insertMany([
+      {
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        reportScope: 'MEMBER',
+        frequency: 'DAILY',
+        effectiveAt: new Date(now - 2 * 86_400_000),
+        createdByUserId: new Types.ObjectId(leaderId),
+        updatedByUserId: new Types.ObjectId(leaderId),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        reportScope: 'LEADER',
+        frequency: 'DAILY',
+        effectiveAt: new Date(now - 2 * 86_400_000),
+        createdByUserId: new Types.ObjectId(leaderId),
+        updatedByUserId: new Types.ObjectId(leaderId),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const rosterEntry = {
+      organizationId,
+      projectId,
+      projectCreatedBy: leaderId,
+      members: [
+        {
+          userId: memberId,
+          joinedAt: new Date(now - 2 * 86_400_000).toISOString(),
+        },
+      ],
+      leaders: [
+        {
+          userId: leaderId,
+          joinedAt: new Date(now - 2 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+
+    await service.ensureScheduledReportObligations(rosterEntry);
+    const sweptCount = await service.sweepOverdueReports([rosterEntry]);
+    expect(sweptCount).toBe(4);
+    expect(
+      await connection.collection('work_reports').countDocuments({
+        reportScope: 'LEADER',
+        status: 'OVERDUE',
+      }),
+    ).toBe(2);
+    expect(
+      await connection.collection('work_reports').countDocuments({
+        reportScope: 'MEMBER',
+        status: 'OVERDUE',
+      }),
+    ).toBe(2);
   });
 });

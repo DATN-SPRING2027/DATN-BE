@@ -327,4 +327,21 @@ describe('WorkNotesAuthorizationService', () => {
       status: 503,
     });
   });
+
+  it('explicitly blocks PLATFORM_OPERATOR (Admin) from accessing project Work Reports', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      response({
+        id: userId,
+        organizationId,
+        name: 'Platform Admin',
+        roles: ['PLATFORM_OPERATOR'],
+      }),
+    );
+
+    await expect(service.resolveProject({}, projectId)).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'PLATFORM_OPERATOR_PROJECT_ACCESS_FORBIDDEN' },
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 });

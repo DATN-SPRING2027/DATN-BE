@@ -6,7 +6,9 @@ import type {
   ReviewInput,
   TaskNoteInput,
   WorkReportInput,
+  WorkReportPeriodFilter,
   WorkReportScope,
+  WorkReportsListFilters,
 } from './work-notes.types';
 
 const objectRecord = (value: unknown): Record<string, unknown> => {
@@ -128,6 +130,49 @@ export function validateReportScope(
   if (value === undefined) return undefined;
   if (value !== 'MEMBER' && value !== 'LEADER') return invalid();
   return value;
+}
+
+export function validateWorkReportsListFilters(rawQuery: {
+  memberId?: unknown;
+  period?: unknown;
+  search?: unknown;
+}): WorkReportsListFilters | undefined {
+  let memberId: string | undefined;
+  if (rawQuery.memberId !== undefined) {
+    if (
+      typeof rawQuery.memberId !== 'string' ||
+      !/^[a-f\d]{24}$/i.test(rawQuery.memberId.trim())
+    ) {
+      return invalid();
+    }
+    memberId = rawQuery.memberId.trim().toLowerCase();
+  }
+
+  let period: WorkReportPeriodFilter | undefined;
+  if (rawQuery.period !== undefined) {
+    if (rawQuery.period !== 'CURRENT' && rawQuery.period !== 'ALL') {
+      return invalid();
+    }
+    period = rawQuery.period;
+  }
+
+  let search: string | undefined;
+  if (rawQuery.search !== undefined) {
+    if (typeof rawQuery.search !== 'string' || rawQuery.search.length > 200) {
+      return invalid();
+    }
+    const trimmed = rawQuery.search.trim();
+    if (trimmed.length > 0) search = trimmed;
+  }
+
+  if (memberId === undefined && period === undefined && search === undefined) {
+    return undefined;
+  }
+  return {
+    ...(memberId !== undefined ? { memberId } : {}),
+    ...(period !== undefined ? { period } : {}),
+    ...(search !== undefined ? { search } : {}),
+  };
 }
 
 export function validateReviewInput(

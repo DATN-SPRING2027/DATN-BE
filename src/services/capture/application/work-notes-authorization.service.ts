@@ -61,6 +61,15 @@ export class WorkNotesAuthorizationService {
       });
     }
     if (
+      Array.isArray(identity.roles) &&
+      identity.roles.includes('PLATFORM_OPERATOR')
+    ) {
+      throw new ForbiddenException({
+        code: 'PLATFORM_OPERATOR_PROJECT_ACCESS_FORBIDDEN',
+        message: 'Platform operators cannot access project Work Reports.',
+      });
+    }
+    if (
       headers.organizationId !== undefined &&
       headers.organizationId !== organizationId
     ) {
@@ -171,6 +180,11 @@ export class WorkNotesAuthorizationService {
       });
     }
 
+    const fallbackJoinedAt =
+      actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
+        ? actor.joinedAt
+        : new Date().toISOString();
+
     const members = new Map<string, { fullName: string; joinedAt: string }>();
     let page = 1;
     let totalPages = 1;
@@ -185,17 +199,17 @@ export class WorkNotesAuthorizationService {
       for (const membership of result.data) {
         if (validId(membership.userId ?? '')) {
           const userId = membership.userId!.toLowerCase();
-          if (
-            !membership.joinedAt ||
-            !Number.isFinite(Date.parse(membership.joinedAt))
-          )
-            throw this.membersUnavailable();
+          const resolvedJoinedAt =
+            membership.joinedAt &&
+            Number.isFinite(Date.parse(membership.joinedAt))
+              ? membership.joinedAt
+              : fallbackJoinedAt;
           members.set(userId, {
             fullName:
               membership.user?.fullName?.trim() ||
               membership.user?.email?.trim() ||
               userId,
-            joinedAt: membership.joinedAt,
+            joinedAt: resolvedJoinedAt,
           });
         }
       }
@@ -242,6 +256,11 @@ export class WorkNotesAuthorizationService {
       });
     }
 
+    const fallbackJoinedAt =
+      actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
+        ? actor.joinedAt
+        : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
     const members = new Map<string, { fullName: string; joinedAt: string }>();
     let page = 1;
     let totalPages = 1;
@@ -256,17 +275,17 @@ export class WorkNotesAuthorizationService {
       for (const membership of result.data) {
         if (validId(membership.userId ?? '')) {
           const userId = membership.userId!.toLowerCase();
-          if (
-            !membership.joinedAt ||
-            !Number.isFinite(Date.parse(membership.joinedAt))
-          )
-            throw this.membersUnavailable();
+          const resolvedJoinedAt =
+            membership.joinedAt &&
+            Number.isFinite(Date.parse(membership.joinedAt))
+              ? membership.joinedAt
+              : fallbackJoinedAt;
           members.set(userId, {
             fullName:
               membership.user?.fullName?.trim() ||
               membership.user?.email?.trim() ||
               userId,
-            joinedAt: membership.joinedAt,
+            joinedAt: resolvedJoinedAt,
           });
         }
       }
@@ -292,10 +311,6 @@ export class WorkNotesAuthorizationService {
     if (!Array.isArray(leadersResponse?.data)) {
       throw this.membersUnavailable();
     }
-    const fallbackJoinedAt =
-      actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
-        ? actor.joinedAt
-        : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
     const activeLeaders: Array<{
       userId: string;
