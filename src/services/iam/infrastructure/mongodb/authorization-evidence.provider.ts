@@ -120,13 +120,55 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
     const user = new Types.ObjectId(userId);
     const organization = new Types.ObjectId(organizationId);
     const projectObjectId = new Types.ObjectId(projectId);
-    const project = await this.model<ProjectDocument>('projects')
-      .findOne(
-        { _id: projectObjectId, organizationId: organization },
-        { _id: 1, organizationId: 1, status: 1, visibility: 1 },
-      )
-      .lean()
-      .exec();
+    const [project, membership, projectMembership, assignments] =
+      await Promise.all([
+        this.model<ProjectDocument>('projects')
+          .findOne(
+            { _id: projectObjectId, organizationId: organization },
+            { _id: 1, organizationId: 1, status: 1, visibility: 1 },
+          )
+          .lean()
+          .exec(),
+        this.model<MembershipDocument>('organization_memberships')
+          .findOne(
+            { userId: user, organizationId: organization },
+            { userId: 1, organizationId: 1, status: 1 },
+          )
+          .lean()
+          .exec(),
+        this.model<ProjectMembershipDocument>('project_memberships')
+          .findOne(
+            {
+              userId: user,
+              organizationId: organization,
+              projectId: projectObjectId,
+            },
+            { userId: 1, organizationId: 1, projectId: 1, status: 1 },
+          )
+          .lean()
+          .exec(),
+        this.model<RoleAssignmentDocument>('role_assignments')
+          .find(
+            {
+              organizationId: organization,
+              userId: user,
+              $or: [
+                { projectId: { $exists: false } },
+                { projectId: null },
+                { projectId: projectObjectId },
+              ],
+            },
+            {
+              organizationId: 1,
+              userId: 1,
+              roleId: 1,
+              roleCode: 1,
+              projectId: 1,
+            },
+          )
+          .lean()
+          .exec(),
+      ]);
     if (!project) {
       return {
         project: null,
@@ -136,48 +178,6 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
         explicitDeny: 'CLEAR',
       };
     }
-
-    const [membership, projectMembership, assignments] = await Promise.all([
-      this.model<MembershipDocument>('organization_memberships')
-        .findOne(
-          { userId: user, organizationId: organization },
-          { userId: 1, organizationId: 1, status: 1 },
-        )
-        .lean()
-        .exec(),
-      this.model<ProjectMembershipDocument>('project_memberships')
-        .findOne(
-          {
-            userId: user,
-            organizationId: organization,
-            projectId: projectObjectId,
-          },
-          { userId: 1, organizationId: 1, projectId: 1, status: 1 },
-        )
-        .lean()
-        .exec(),
-      this.model<RoleAssignmentDocument>('role_assignments')
-        .find(
-          {
-            organizationId: organization,
-            userId: user,
-            $or: [
-              { projectId: { $exists: false } },
-              { projectId: null },
-              { projectId: projectObjectId },
-            ],
-          },
-          {
-            organizationId: 1,
-            userId: 1,
-            roleId: 1,
-            roleCode: 1,
-            projectId: 1,
-          },
-        )
-        .lean()
-        .exec(),
-    ]);
     const roleIds = assignments
       .map((assignment) => assignment.roleId)
       .filter((roleId) => roleId instanceof Types.ObjectId);

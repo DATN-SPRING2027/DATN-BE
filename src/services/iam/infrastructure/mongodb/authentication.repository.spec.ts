@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- Mongoose query doubles expose driver any types. */
 import { Types } from 'mongoose';
 import type { Connection } from 'mongoose';
+import { runWithRequestContext } from '../../../../common/http/request-context';
 import { AuthenticationRepository } from './authentication.repository';
 
 describe('AuthenticationRepository', () => {
@@ -551,5 +552,55 @@ describe('AuthenticationRepository', () => {
       status: 'ACTIVE',
       twoFactorEnabled: false,
     });
+  });
+
+  it('memoizes active organization membership IDs and organization options within a single HTTP request context', async () => {
+    const userId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const orgId = '651a2b3c4d5e6f7a8b9c0d1f';
+    const membershipChain = {
+      sort: jest.fn(),
+      lean: jest.fn(),
+      exec: jest
+        .fn()
+        .mockResolvedValue([{ organizationId: new Types.ObjectId(orgId) }]),
+    };
+    membershipChain.sort.mockReturnValue(membershipChain);
+    membershipChain.lean.mockReturnValue(membershipChain);
+
+    const orgChain = {
+      lean: jest.fn(),
+      exec: jest
+        .fn()
+        .mockResolvedValue([{ _id: new Types.ObjectId(orgId), name: 'Alpha' }]),
+    };
+    orgChain.lean.mockReturnValue(orgChain);
+
+    const membershipsModel = {
+      find: jest.fn().mockReturnValue(membershipChain),
+    };
+    const orgsModel = { find: jest.fn().mockReturnValue(orgChain) };
+    const connection = {
+      models: {
+        continuum_iam_organization_memberships: membershipsModel,
+        continuum_iam_organizations: orgsModel,
+      },
+    } as unknown as Connection;
+
+    const repository = new AuthenticationRepository(connection);
+
+    await runWithRequestContext(async () => {
+      const ids1 = await repository.findActiveOrganizationMembershipIds(userId);
+      const ids2 = await repository.findActiveOrganizationMembershipIds(userId);
+      const opts1 = await repository.findOrganizationOptions(ids1);
+      const opts2 = await repository.findOrganizationOptions(ids2);
+
+      expect(ids1).toEqual([orgId]);
+      expect(ids2).toEqual([orgId]);
+      expect(opts1).toEqual([{ id: orgId, name: 'Alpha' }]);
+      expect(opts2).toEqual([{ id: orgId, name: 'Alpha' }]);
+    });
+
+    expect(membershipsModel.find).toHaveBeenCalledTimes(1);
+    expect(orgsModel.find).toHaveBeenCalledTimes(1);
   });
 });

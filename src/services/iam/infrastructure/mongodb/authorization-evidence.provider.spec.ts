@@ -265,6 +265,60 @@ describe('MongoAuthorizationEvidenceProvider for Project access', () => {
     expect(mixedEvidence?.assignments[0].permissions).toEqual([]);
     expect(missingEvidence?.assignments[0].permissions).toEqual([]);
   });
+
+  it('starts project, membership, and role-assignment lookups concurrently in one round-trip', async () => {
+    const projectId = 'cccccccccccccccccccccccc';
+    let releaseProject!: (doc: unknown) => void;
+    const projectChain = {
+      lean: jest.fn(),
+      exec: jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseProject = resolve;
+          }),
+      ),
+    };
+    projectChain.lean.mockReturnValue(projectChain);
+
+    const projects = { findOne: jest.fn().mockReturnValue(projectChain) };
+    const organizationMemberships = {
+      findOne: jest.fn().mockReturnValue(query(null)),
+    };
+    const projectMemberships = {
+      findOne: jest.fn().mockReturnValue(query(null)),
+    };
+    const assignments = {
+      find: jest.fn().mockReturnValue(query([])),
+    };
+    const connection = {
+      models: {
+        continuum_iam_projects: projects,
+        continuum_iam_organization_memberships: organizationMemberships,
+        continuum_iam_project_memberships: projectMemberships,
+        continuum_iam_role_assignments: assignments,
+      },
+    } as unknown as Connection;
+
+    const pending = new MongoAuthorizationEvidenceProvider(
+      connection,
+    ).loadProjectAccess(userId, orgId, projectId);
+    await Promise.resolve();
+
+    expect(projects.findOne).toHaveBeenCalledTimes(1);
+    expect(organizationMemberships.findOne).toHaveBeenCalledTimes(1);
+    expect(projectMemberships.findOne).toHaveBeenCalledTimes(1);
+    expect(assignments.find).toHaveBeenCalledTimes(1);
+
+    releaseProject({
+      _id: new Types.ObjectId(projectId),
+      organizationId: new Types.ObjectId(orgId),
+      status: 'ACTIVE',
+      visibility: 'PUBLIC',
+    });
+    await expect(pending).resolves.toMatchObject({
+      project: { id: projectId, status: 'ACTIVE', visibility: 'PUBLIC' },
+    });
+  });
 });
 
 describe('MongoAuthorizationEvidenceProvider for platform permission', () => {

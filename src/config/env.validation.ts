@@ -232,6 +232,31 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
 }).unknown(true);
 
+const INTERNAL_SERVICE_URL_KEYS = [
+  'IAM_SERVICE_URL',
+  'CAPTURE_SERVICE_URL',
+  'JIRA_SERVICE_URL',
+  'LIFECYCLE_SERVICE_URL',
+  'CHAT_SERVICE_URL',
+  'HANDOVER_SERVICE_URL',
+  'INGESTION_SERVICE_URL',
+  'NOTIFICATION_SERVICE_URL',
+  'SAG_SERVICE_URL',
+  'SAG_API_BASE_URL',
+  'TASK_SERVICE_URL',
+] as const;
+
+function normalizeLoopbackServiceUrl(
+  value: string | undefined,
+): string | undefined {
+  if (!value) return value;
+  const parsed = new URL(value);
+  if (parsed.hostname.toLowerCase() !== 'localhost') {
+    return value;
+  }
+  return value.replace(/^(https?:\/\/)localhost(?=[:/?#]|$)/i, '$1127.0.0.1');
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): EnvironmentVariables {
@@ -243,6 +268,13 @@ export function validateEnvironment(
 
   if (result.error) {
     throw new Error(`Environment validation failed: ${result.error.message}`);
+  }
+
+  for (const key of INTERNAL_SERVICE_URL_KEYS) {
+    const current = result.value[key];
+    if (typeof current === 'string' && current.trim().length > 0) {
+      result.value[key] = normalizeLoopbackServiceUrl(current.trim()) as never;
+    }
   }
 
   const sagApiBaseUrl = result.value.SAG_API_BASE_URL?.trim();

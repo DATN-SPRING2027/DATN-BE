@@ -110,4 +110,22 @@ describe('validateEnvironment', () => {
       }),
     ).toThrow('SAG_API_BASE_URL must not contain credentials');
   });
+
+  it('normalizes localhost to 127.0.0.1 on internal service URLs to avoid Windows IPv6 fallback delays while preserving browser origins', () => {
+    const validated = validateEnvironment({
+      NODE_ENV: 'development',
+      IAM_SERVICE_URL: 'http://localhost:3001',
+      SAG_SERVICE_URL: 'http://localhost:8000',
+      SAG_API_BASE_URL: 'http://localhost:8000/',
+      SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      CONTINUUM_WEB_BASE_URL: 'http://localhost:3000',
+      SAG_WEB_BASE_URL: 'http://localhost:3002',
+    });
+
+    expect(validated.IAM_SERVICE_URL).toBe('http://127.0.0.1:3001');
+    expect(validated.SAG_SERVICE_URL).toBe('http://127.0.0.1:8000');
+    expect(validated.SAG_API_BASE_URL).toBe('http://127.0.0.1:8000/');
+    expect(validated.CONTINUUM_WEB_BASE_URL).toBe('http://localhost:3000');
+    expect(validated.SAG_WEB_BASE_URL).toBe('http://localhost:3002');
+  });
 });
