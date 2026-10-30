@@ -184,8 +184,6 @@ describe('Work Notes persistence contract', () => {
       title: 'Leader Sprint Checkpoint',
       content:
         'Free-form summary of team progress, risks, and upcoming deliverables.',
-      title: 'Leader Sprint Checkpoint',
-      content: 'Free-form summary of team progress, risks, and upcoming deliverables.',
       status: 'APPROVED',
       reviewHistory: [
         {
