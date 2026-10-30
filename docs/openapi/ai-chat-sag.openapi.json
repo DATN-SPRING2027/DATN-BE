@@ -803,6 +803,11 @@
         "additionalProperties": false,
         "required": ["kind", "label", "durationMs"],
         "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["running", "completed", "failed"]
+          },
           "kind": {
             "type": "string",
             "enum": ["session_context", "tool", "thinking", "answer"]
@@ -882,6 +887,11 @@
         "additionalProperties": false,
         "required": ["kind", "label", "durationMs"],
         "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["running", "completed", "failed"]
+          },
           "kind": {
             "type": "string",
             "enum": ["session_context", "tool", "thinking", "answer"]
