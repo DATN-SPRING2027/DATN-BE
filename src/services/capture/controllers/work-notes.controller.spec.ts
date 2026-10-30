@@ -36,6 +36,7 @@ describe('WorkNotesController CSRF enforcement', () => {
       submitWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
       reviewWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
       listTaskNotes: jest.fn().mockResolvedValue({ data: [] }),
+      listWorkReports: jest.fn().mockResolvedValue({ data: [] }),
       getDocumentKnowledgeChunks: jest.fn().mockResolvedValue({
         documentId,
         version: 1,
@@ -194,6 +195,49 @@ describe('WorkNotesController CSRF enforcement', () => {
       content: 'Content',
     });
     expect(service.createDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates and forwards extended Work Report query filters (scope, memberId, period, search)', async () => {
+    const bearerReq = makeRequest({
+      authorization: 'Bearer access-token-123',
+    });
+    const memberId = '507f1f77bcf86cd799439099';
+
+    await controller.listWorkReports(bearerReq, projectId, {
+      page: '1',
+      pageSize: '20',
+      status: 'PENDING_REVIEW',
+      scope: 'LEADER',
+      memberId,
+      period: 'CURRENT',
+      search: 'Sprint',
+    });
+
+    expect(service.listWorkReports).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: 'Bearer access-token-123' }),
+      projectId,
+      1,
+      20,
+      'PENDING_REVIEW',
+      'LEADER',
+      {
+        memberId,
+        period: 'CURRENT',
+        search: 'Sprint',
+      },
+    );
+
+    expect(() =>
+      controller.listWorkReports(bearerReq, projectId, {
+        period: 'INVALID_PERIOD',
+      }),
+    ).toThrow();
+
+    expect(() =>
+      controller.listWorkReports(bearerReq, projectId, {
+        memberId: 'not-an-object-id',
+      }),
+    ).toThrow();
   });
 
   it('forwards knowledge-chunks queries with validated limit and offset', async () => {
