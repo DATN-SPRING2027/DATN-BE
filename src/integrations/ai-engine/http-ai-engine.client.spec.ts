@@ -274,7 +274,8 @@ describe('HttpAiEngineClient', () => {
     });
     expect(putFeedback.status).toBe(200);
     const feedbackHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
-    expect(feedbackHeaders.get('X-SAG-BFF-Service-Token')).toBeNull();
+    expect(feedbackHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+    expect(feedbackHeaders.get('Authorization')).toBe('Bearer user.jwt.token');
 
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     const deleteShare = await client.request({
@@ -333,5 +334,71 @@ describe('HttpAiEngineClient', () => {
         body: {},
       }),
     ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it.each([
+    ['PUT', 'feedback'],
+    ['DELETE', 'feedback'],
+    ['POST', 'shares'],
+  ] as const)(
+    'authenticates answer mutation %s /%s with the configured service token and the original owner bearer',
+    async (method, action) => {
+      const client = makeClient();
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+      await client.request({
+        path: `/api/v1/agents/agent_1/threads/thread_1/messages/m1/${action}`,
+        method,
+        headers: {
+          Authorization: 'Bearer owner.jwt.token',
+          'X-SAG-BFF-Service-Token': 'untrusted-token',
+        },
+      });
+
+      const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+      expect(headers.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+      expect(headers.get('Authorization')).toBe('Bearer owner.jwt.token');
+    },
+  );
+
+  it('keeps feedback reads bearer-only and authenticates regeneration without adding a service token to ordinary ask streams', async () => {
+    const client = makeClient();
+    fetchMock.mockResolvedValueOnce(Response.json({ feedback: null }));
+    await client.request({
+      path: '/api/v1/agents/agent_1/threads/thread_1/messages/m1/feedback',
+      method: 'GET',
+      headers: {
+        Authorization: 'Bearer owner.jwt.token',
+        'X-SAG-BFF-Service-Token': 'untrusted-token',
+      },
+    });
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get(
+        'X-SAG-BFF-Service-Token',
+      ),
+    ).toBeNull();
+
+    for (const action of ['messages/m1/regenerate', 'ask']) {
+      fetchMock.mockResolvedValueOnce(
+        new Response('event: run.started\ndata: {}\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+      const opened = await client.requestStream({
+        path: `/api/v1/agents/agent_1/threads/thread_1/${action}`,
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner.jwt.token',
+          'X-SAG-BFF-Service-Token': 'untrusted-token',
+        },
+        body: {},
+      });
+      await opened.stream.cancel();
+      const headers = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers);
+      expect(headers.get('Authorization')).toBe('Bearer owner.jwt.token');
+      expect(headers.get('X-SAG-BFF-Service-Token')).toBe(
+        action === 'ask' ? null : 's'.repeat(40),
+      );
+    }
   });
 });

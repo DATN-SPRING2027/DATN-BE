@@ -122,11 +122,19 @@ function isAllowedJsonRoute(
   return false;
 }
 
-function requiresBffServiceToken(pathname: string): boolean {
+function requiresBffServiceToken(
+  pathname: string,
+  method: AiEngineHttpMethod,
+): boolean {
   return (
     pathname === '/api/v1/auth/continuum-login' ||
     pathname.startsWith('/api/v1/projects/') ||
-    pathname === PLATFORM_AI_FEEDBACK_PATH
+    pathname === PLATFORM_AI_FEEDBACK_PATH ||
+    ((method === 'PUT' || method === 'DELETE') &&
+      AGENT_MESSAGE_FEEDBACK_PATTERN.test(pathname)) ||
+    (method === 'POST' &&
+      (AGENT_MESSAGE_SHARES_PATTERN.test(pathname) ||
+        AGENT_MESSAGE_REGENERATE_PATTERN.test(pathname)))
   );
 }
 
@@ -180,7 +188,7 @@ export class HttpAiEngineClient implements AiEngineClient {
     }
 
     const headers = new Headers(request.headers);
-    if (requiresBffServiceToken(routePathname)) {
+    if (requiresBffServiceToken(routePathname, request.method)) {
       headers.set('X-SAG-BFF-Service-Token', serviceToken);
     } else {
       headers.delete('X-SAG-BFF-Service-Token');
@@ -235,7 +243,9 @@ export class HttpAiEngineClient implements AiEngineClient {
   async requestStream(
     request: AiEngineStreamRequest,
   ): Promise<AiEngineStreamResponse> {
-    const { target, routePathname } = this.resolveTarget(request.path);
+    const { target, routePathname, serviceToken } = this.resolveTarget(
+      request.path,
+    );
     if (
       request.method !== 'POST' ||
       (!AGENT_THREAD_ASK_PATTERN.test(routePathname) &&
@@ -245,7 +255,11 @@ export class HttpAiEngineClient implements AiEngineClient {
     }
 
     const headers = new Headers(request.headers);
-    headers.delete('X-SAG-BFF-Service-Token');
+    if (requiresBffServiceToken(routePathname, request.method)) {
+      headers.set('X-SAG-BFF-Service-Token', serviceToken);
+    } else {
+      headers.delete('X-SAG-BFF-Service-Token');
+    }
     headers.set('Accept', 'text/event-stream');
     if (request.body !== undefined) {
       headers.set('Content-Type', 'application/json');
