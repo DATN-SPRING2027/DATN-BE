@@ -1,19 +1,41 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  Inject,
   Injectable,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types, type ClientSession, type Connection } from 'mongoose';
-import { randomUUID } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import type { Document, Db } from 'mongodb';
 import { CAPTURE_PERSISTENCE } from '../infrastructure/persistence';
-import { AuditService } from '../infrastructure/audit/audit.service';
+import {
+  AuditService,
+  type AuditEventRecord,
+} from '../infrastructure/audit/audit.service';
+import {
+  SAG_KNOWLEDGE_SYNC_TRANSPORT,
+  type SagKnowledgeSyncTransport,
+  type SagProjectDocumentUploadReceipt,
+} from '../infrastructure/outbox/knowledge-outbox.consumer';
 import { OutboxService } from '../infrastructure/outbox/outbox.service';
+import {
+  CAPTURE_QUEUE_RUNTIME,
+  QUEUE_NAMES,
+  type CaptureQueuePublisher,
+} from '../infrastructure/queues/queue.names';
 import { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
 import { NotificationService } from '../../notification/notification.service';
 import {
@@ -26,7 +48,18 @@ import { WorkNotesAuthorizationService } from './work-notes-authorization.servic
 import type { ReportingProjectMembers } from '../../iam/application/projects/project-report-roster.service';
 import type {
   CaptureRequestHeaders,
+  DeleteProjectDocumentResult,
+  DocumentActivityAction,
+  DocumentActivityEvent,
+  DocumentConfirmUploadInput,
+  DocumentDownloadUrlResponse,
+  DocumentKnowledgeChunksResponse,
+  DocumentKnowledgeControlAction,
+  DocumentKnowledgeStatusRecord,
   DocumentStatus,
+  DocumentStorageReferenceRecord,
+  DocumentUploadIntentInput,
+  DocumentUploadIntentResponse,
   DocumentVersionRecord,
   ProjectDocumentInput,
   ProjectDocumentRecord,
@@ -307,11 +340,10 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
   },
 ];
 
-function resolveValidatedDocumentContentType(
+function resolveDocumentFormatRule(
   cleanName: string,
   rawContentType: string,
-  bytes: Buffer,
-): string | null {
+): DocumentFileFormatRule | null {
   const lowerName = cleanName.toLowerCase();
   const rule = DOCUMENT_FILE_FORMAT_RULES.find((candidate) =>
     candidate.extensions.some((ext) => lowerName.endsWith(ext)),
@@ -323,8 +355,32 @@ function resolveValidatedDocumentContentType(
     baseContentType === '' ||
     baseContentType === 'application/octet-stream' ||
     rule.acceptedContentTypes.includes(baseContentType);
-  if (!contentTypeAllowed || !rule.validateBytes(bytes)) return null;
+  if (!contentTypeAllowed) return null;
+  return rule;
+}
+
+function resolveValidatedDocumentContentType(
+  cleanName: string,
+  rawContentType: string,
+  bytes: Buffer,
+): string | null {
+  const rule = resolveDocumentFormatRule(cleanName, rawContentType);
+  if (!rule || !rule.validateBytes(bytes)) return null;
   return rule.canonicalContentType;
+}
+
+interface SignedDocumentUploadClaims {
+  orgId: string;
+  projId: string;
+  docId: string;
+  userId: string;
+  key: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+  deduplicated: boolean;
+  exp: number;
 }
 
 @Injectable()
@@ -338,6 +394,13 @@ export class WorkNotesService {
     @Optional() private readonly audit?: AuditService,
     @Optional() private readonly documentStorage?: ProjectDocumentStorage,
     @Optional() private readonly notifications?: NotificationService,
+    @Optional()
+    @Inject(SAG_KNOWLEDGE_SYNC_TRANSPORT)
+    private readonly sagTransport?: SagKnowledgeSyncTransport,
+    @Optional()
+    @Inject(CAPTURE_QUEUE_RUNTIME)
+    private readonly queueRuntime?: CaptureQueuePublisher,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async listTaskNotes(
@@ -721,8 +784,140 @@ export class WorkNotesService {
         .toArray(),
       collection.countDocuments(filter),
     ]);
+
+    const versionByKey = new Map<string, DocumentVersionRecord>();
+    const rawFileMetaByKey = new Map<
+      string,
+      { key?: string; sha256?: string }
+    >();
+    if (rows.length > 0) {
+      const versionQueries = rows.map((row) => {
+        const value = row as unknown as Record<string, unknown>;
+        return {
+          documentId: value._id as Types.ObjectId,
+          versionNumber: Number(value.currentVersionNumber),
+        };
+      });
+      const versionDocs = await this.database()
+        .collection('project_document_versions')
+        .find({
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          $or: versionQueries,
+        })
+        .toArray();
+      for (const versionDoc of versionDocs) {
+        const raw = versionDoc as unknown as Record<string, unknown>;
+        const parsed = this.documentVersion(versionDoc);
+        const mapKey = `${String(raw.documentId)}:${parsed.version}`;
+        versionByKey.set(mapKey, parsed);
+        const rawFile = raw.file as
+          { key?: unknown; sha256?: unknown } | undefined;
+        if (rawFile && typeof rawFile === 'object') {
+          rawFileMetaByKey.set(mapKey, {
+            ...(typeof rawFile.key === 'string' && rawFile.key.trim()
+              ? { key: rawFile.key.trim() }
+              : {}),
+            ...(typeof rawFile.sha256 === 'string' && rawFile.sha256.trim()
+              ? { sha256: rawFile.sha256.trim() }
+              : {}),
+          });
+        }
+      }
+    }
+
+    const storageRefsByDocId = await this.resolveStorageReferencesByDocument(
+      actor.organizationId,
+      rows.map((row) => {
+        const raw = row as unknown as Record<string, unknown>;
+        const docId = String(raw._id);
+        const ver = Number(raw.currentVersionNumber);
+        const meta = rawFileMetaByKey.get(`${docId}:${ver}`);
+        return {
+          documentId: docId,
+          keys: meta?.key ? [meta.key] : [],
+          ...(meta?.sha256 ? { currentSha256: meta.sha256 } : {}),
+        };
+      }),
+    );
+
+    const summaries = rows.map((row) => {
+      const summary = this.documentSummary(row, actor);
+      const currentVersion = versionByKey.get(
+        `${summary.id}:${summary.version}`,
+      );
+      const storageRef = storageRefsByDocId.get(summary.id);
+      if (!currentVersion) {
+        return storageRef
+          ? { ...summary, storageReference: storageRef }
+          : summary;
+      }
+      return {
+        ...summary,
+        ...(currentVersion.file ? { file: currentVersion.file } : {}),
+        ...(storageRef ? { storageReference: storageRef } : {}),
+        ...(currentVersion.submittedAt
+          ? { submittedAt: currentVersion.submittedAt }
+          : {}),
+        ...(currentVersion.reviewedBy
+          ? { reviewedBy: currentVersion.reviewedBy }
+          : {}),
+        ...(currentVersion.reviewedAt
+          ? { reviewedAt: currentVersion.reviewedAt }
+          : {}),
+        ...(typeof currentVersion.reviewComment === 'string'
+          ? { reviewComment: currentVersion.reviewComment }
+          : {}),
+      };
+    });
+
+    const candidatesForLiveSync = summaries
+      .filter((item) => {
+        if (item.status !== 'APPROVED') return false;
+        const sync = item.knowledgeSync;
+        if (!sync) return true;
+        const normalized = (sync.status || '').toUpperCase();
+        const normalizedStage = (sync.currentStage || '').toUpperCase();
+        const normalizedDocStatus = (sync.documentStatus || '').toUpperCase();
+        if (['FAILED', 'REVOKED'].includes(normalized)) return false;
+        if (
+          normalized === 'PAUSED' ||
+          (normalizedStage === 'PAUSED' && normalizedDocStatus === 'PAUSED')
+        ) {
+          return false;
+        }
+        if (sync.knowledgeReady && sync.progress >= 100) return false;
+        return (
+          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
+            'function' || !sync.status
+        );
+      })
+      .slice(0, 10);
+
+    if (candidatesForLiveSync.length > 0) {
+      const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
+      await Promise.allSettled(
+        candidatesForLiveSync.map(async (item) => {
+          const live = await this.getDocumentKnowledgeStatus(
+            headers,
+            projectId,
+            item.id,
+          );
+          if (live.status !== 'NOT_SYNCED' || item.knowledgeSync) {
+            refreshedById.set(item.id, live);
+          }
+        }),
+      );
+      for (let i = 0; i < summaries.length; i += 1) {
+        const live = refreshedById.get(summaries[i].id);
+        if (live) {
+          summaries[i] = { ...summaries[i], knowledgeSync: live };
+        }
+      }
+    }
+
     return {
-      data: rows.map((row) => this.documentSummary(row, actor)),
+      data: summaries,
       pagination: this.pagination(page, pageSize, totalItems),
     };
   }
@@ -782,7 +977,7 @@ export class WorkNotesService {
         'DOCUMENT_DRAFT_CREATED',
         'PROJECT_DOCUMENT',
         String(id),
-        undefined,
+        { version: 1 },
         session,
       );
     });
@@ -810,6 +1005,7 @@ export class WorkNotesService {
     name: string,
     contentType: string,
     bytes: Buffer,
+    options?: { expectedSha256?: string; autoSyncSag?: boolean },
   ): Promise<ProjectDocumentRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(documentId)) throw documentNotFound();
@@ -829,6 +1025,14 @@ export class WorkNotesService {
         message:
           'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
       });
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const expectedSha256 = options?.expectedSha256?.trim().toLowerCase();
+    if (expectedSha256 && expectedSha256 !== sha256) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_CHECKSUM_MISMATCH',
+        message: 'Uploaded file content does not match declared SHA-256 hash.',
+      });
+    }
     const id = objectId(documentId);
     const documents = this.database().collection('project_documents');
     const document = await documents.findOne({
@@ -850,12 +1054,26 @@ export class WorkNotesService {
       editedByUserId: objectId(actor.userId),
     });
     if (!previousVersion) throw documentNotFound();
-    const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
     if (!this.documentStorage)
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
       );
-    await this.documentStorage.put(key, bytes, resolvedContentType);
+    const existingWithSameHash = await versions.findOne({
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      'file.sha256': sha256,
+      'file.key': { $type: 'string', $ne: '' },
+    });
+    const existingKey = (
+      existingWithSameHash?.file as { key?: string } | undefined
+    )?.key;
+    const reusedExistingKey = Boolean(existingKey);
+    const key =
+      existingKey ||
+      `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
+    if (!reusedExistingKey) {
+      await this.documentStorage.put(key, bytes, resolvedContentType);
+    }
     try {
       await this.transaction(async (db, session) => {
         const result = await db
@@ -877,6 +1095,7 @@ export class WorkNotesService {
                   name: cleanName,
                   contentType: resolvedContentType,
                   size: bytes.length,
+                  sha256,
                 },
                 updatedAt: new Date(),
               },
@@ -890,12 +1109,20 @@ export class WorkNotesService {
           'DOCUMENT_FILE_UPLOADED',
           'PROJECT_DOCUMENT',
           documentId,
-          { version: versionNumber },
+          {
+            version: versionNumber,
+            fileName: cleanName,
+            size: bytes.length,
+            sha256,
+            deduplicated: reusedExistingKey,
+          },
           session,
         );
       });
     } catch (error) {
-      await this.documentStorage.delete(key).catch(() => undefined);
+      if (!reusedExistingKey) {
+        await this.documentStorage.delete(key).catch(() => undefined);
+      }
       throw error;
     }
     const oldKey = (previousVersion.file as { key?: string } | undefined)?.key;
@@ -908,9 +1135,414 @@ export class WorkNotesService {
       })) === 0
     )
       await this.documentStorage.delete(oldKey).catch(() => undefined);
+    if (options?.autoSyncSag && actor.canReview) {
+      await this.syncOrEnqueueApprovedDocument(
+        headers,
+        actor,
+        projectId,
+        documentId,
+        versionNumber,
+      );
+    }
     const updated = await this.readDocument(actor, id);
     if (!updated) throw documentNotFound();
     return updated;
+  }
+
+  async createDocumentUploadIntent(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    input: DocumentUploadIntentInput,
+  ): Promise<DocumentUploadIntentResponse> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const cleanName = input.fileName.trim();
+    const sha256 = input.sha256.trim().toLowerCase();
+    const rule =
+      input.size > 0 &&
+      input.size <= 20 * 1024 * 1024 &&
+      cleanName.length > 0 &&
+      cleanName.length <= 180 &&
+      !/[\\/]/.test(cleanName) &&
+      ![...cleanName].some((character) => character.charCodeAt(0) < 32) &&
+      /^[a-f0-9]{64}$/.test(sha256)
+        ? resolveDocumentFormatRule(cleanName, input.contentType)
+        : null;
+    if (!rule) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_INVALID',
+        message:
+          'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
+      });
+    }
+
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = await db.collection('project_documents').findOne({
+      _id: id,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      createdByUserId: objectId(actor.userId),
+    });
+    if (!document) throw documentNotFound();
+
+    const versionNumber = Number(document.currentVersionNumber);
+    const versions = db.collection('project_document_versions');
+    const draftVersion = await versions.findOne({
+      documentId: id,
+      versionNumber,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      editedByUserId: objectId(actor.userId),
+    });
+    if (!draftVersion) throw documentNotFound();
+
+    if (
+      !this.documentStorage ||
+      typeof this.documentStorage.isDirectCloudEnabled !== 'function' ||
+      !this.documentStorage.isDirectCloudEnabled()
+    ) {
+      return {
+        mode: 'LEGACY_PROXY',
+        canonicalContentType: rule.canonicalContentType,
+      };
+    }
+
+    const expiresInSeconds = Math.max(
+      60,
+      Math.min(
+        3600,
+        Number(
+          this.config?.get<number>('R2_PRESIGNED_UPLOAD_TTL_SECONDS') ?? 900,
+        ) || 900,
+      ),
+    );
+    const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+
+    const existingWithSameHash = await versions.findOne({
+      organizationId: objectId(actor.organizationId),
+      'file.sha256': sha256,
+      'file.size': input.size,
+      'file.key': { $type: 'string', $ne: '' },
+    });
+    const existingKey = (
+      existingWithSameHash?.file as { key?: string } | undefined
+    )?.key;
+    if (
+      existingKey &&
+      typeof this.documentStorage.inspectStoredPrefix === 'function'
+    ) {
+      const existingStored = await this.documentStorage
+        .inspectStoredPrefix(existingKey, 64)
+        .catch(() => null);
+      if (
+        existingStored &&
+        existingStored.size === input.size &&
+        resolveValidatedDocumentContentType(
+          cleanName,
+          rule.canonicalContentType,
+          existingStored.prefix,
+        ) === rule.canonicalContentType
+      ) {
+        const uploadToken = this.signDocumentUploadClaims({
+          orgId: actor.organizationId,
+          projId: projectId,
+          docId: documentId,
+          userId: actor.userId,
+          key: existingKey,
+          fileName: cleanName,
+          contentType: rule.canonicalContentType,
+          size: input.size,
+          sha256,
+          deduplicated: true,
+          exp,
+        });
+        return {
+          mode: 'DEDUPLICATED',
+          uploadToken,
+          expiresInSeconds,
+          canonicalContentType: rule.canonicalContentType,
+        };
+      }
+    }
+
+    const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
+    const uploadUrl = await this.documentStorage.createDirectUploadUrl(
+      key,
+      rule.canonicalContentType,
+      expiresInSeconds,
+    );
+    const uploadToken = this.signDocumentUploadClaims({
+      orgId: actor.organizationId,
+      projId: projectId,
+      docId: documentId,
+      userId: actor.userId,
+      key,
+      fileName: cleanName,
+      contentType: rule.canonicalContentType,
+      size: input.size,
+      sha256,
+      deduplicated: false,
+      exp,
+    });
+
+    return {
+      mode: 'DIRECT_PUT',
+      uploadToken,
+      uploadUrl,
+      headers: {
+        'Content-Type': rule.canonicalContentType,
+      },
+      expiresInSeconds,
+      canonicalContentType: rule.canonicalContentType,
+    };
+  }
+
+  async confirmDocumentUpload(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    input: DocumentConfirmUploadInput,
+  ): Promise<ProjectDocumentRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const claims = this.verifyDocumentUploadClaims(input.uploadToken);
+    if (
+      claims.orgId !== actor.organizationId ||
+      claims.projId !== projectId ||
+      claims.docId !== documentId ||
+      claims.userId !== actor.userId
+    ) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token does not match the target document or user.',
+      });
+    }
+    if (
+      !this.documentStorage ||
+      typeof this.documentStorage.inspectStoredPrefix !== 'function'
+    ) {
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    }
+
+    const stored = await this.documentStorage
+      .inspectStoredPrefix(claims.key, 64)
+      .catch(() => null);
+    if (!stored) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_NOT_FOUND',
+        message: 'Uploaded file was not found in cloud storage.',
+      });
+    }
+
+    const validatedContentType =
+      stored.size === claims.size &&
+      stored.size > 0 &&
+      stored.size <= 20 * 1024 * 1024
+        ? resolveValidatedDocumentContentType(
+            claims.fileName,
+            claims.contentType,
+            stored.prefix,
+          )
+        : null;
+    if (validatedContentType !== claims.contentType) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_INVALID',
+        message:
+          'Uploaded file size or magic-byte signature does not match the declared document format.',
+      });
+    }
+
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = await db.collection('project_documents').findOne({
+      _id: id,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      createdByUserId: objectId(actor.userId),
+    });
+    if (!document) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw documentNotFound();
+    }
+    const versionNumber = Number(document.currentVersionNumber);
+    const versions = db.collection('project_document_versions');
+    const previousVersion = await versions.findOne({
+      documentId: id,
+      versionNumber,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      editedByUserId: objectId(actor.userId),
+    });
+    if (!previousVersion) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw documentNotFound();
+    }
+
+    try {
+      await this.transaction(async (txDb, session) => {
+        const result = await txDb
+          .collection('project_document_versions')
+          .updateOne(
+            {
+              documentId: id,
+              versionNumber,
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+              status: 'DRAFT',
+              editedByUserId: objectId(actor.userId),
+              updatedAt: previousVersion.updatedAt,
+            },
+            {
+              $set: {
+                file: {
+                  key: claims.key,
+                  name: claims.fileName,
+                  contentType: claims.contentType,
+                  size: claims.size,
+                  sha256: claims.sha256,
+                },
+                updatedAt: new Date(),
+              },
+            },
+            { session },
+          );
+        if (result.modifiedCount !== 1) {
+          throw conflict('The Document changed during upload confirmation.');
+        }
+        await this.auditEvent(
+          actor,
+          'DOCUMENT_FILE_UPLOADED',
+          'PROJECT_DOCUMENT',
+          documentId,
+          {
+            version: versionNumber,
+            fileName: claims.fileName,
+            size: claims.size,
+            sha256: claims.sha256,
+            deduplicated: claims.deduplicated,
+            directCloud: true,
+          },
+          session,
+        );
+      });
+    } catch (error) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw error;
+    }
+
+    const oldKey = (previousVersion.file as { key?: string } | undefined)?.key;
+    if (
+      oldKey &&
+      oldKey !== claims.key &&
+      (await versions.countDocuments({
+        'file.key': oldKey,
+        _id: { $ne: previousVersion._id },
+      })) === 0
+    ) {
+      await this.documentStorage.delete(oldKey).catch(() => undefined);
+    }
+
+    if (input.autoSyncSag && actor.canReview) {
+      await this.syncOrEnqueueApprovedDocument(
+        headers,
+        actor,
+        projectId,
+        documentId,
+        versionNumber,
+      );
+    }
+
+    const updated = await this.readDocument(actor, id);
+    if (!updated) throw documentNotFound();
+    return updated;
+  }
+
+  async resolveDocumentFileDownloadUrl(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    versionNumber?: number,
+  ): Promise<DocumentDownloadUrlResponse> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const document = await this.database()
+      .collection('project_documents')
+      .findOne({
+        _id: objectId(documentId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      });
+    if (!document) throw documentNotFound();
+    const version = await this.database()
+      .collection('project_document_versions')
+      .findOne({
+        documentId: objectId(documentId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        versionNumber: versionNumber ?? Number(document.currentVersionNumber),
+      });
+    const file = version?.file as
+      { key?: string; name?: string; contentType?: string } | undefined;
+    if (!file?.key || !file.name || !file.contentType) throw documentNotFound();
+    if (!this.documentStorage) {
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    }
+    if (
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+    ) {
+      const expiresInSeconds = Math.max(
+        30,
+        Math.min(
+          3600,
+          Number(
+            this.config?.get<number>('R2_PRESIGNED_DOWNLOAD_TTL_SECONDS') ??
+              120,
+          ) || 120,
+        ),
+      );
+      const downloadUrl = await this.documentStorage.createDirectDownloadUrl(
+        file.key,
+        expiresInSeconds,
+        {
+          fileName: file.name,
+          contentType: file.contentType,
+          disposition: 'attachment',
+        },
+      );
+      return {
+        mode: 'DIRECT_GET',
+        downloadUrl,
+        fileName: file.name,
+        contentType: file.contentType,
+        expiresInSeconds,
+      };
+    }
+    return {
+      mode: 'LEGACY_PROXY',
+      fileName: file.name,
+      contentType: file.contentType,
+    };
   }
 
   async downloadDocumentFile(
@@ -1078,7 +1710,10 @@ export class WorkNotesService {
         'DOCUMENT_DRAFT_UPDATED',
         'PROJECT_DOCUMENT',
         documentId,
-        undefined,
+        {
+          version: nextVersionNumber,
+          createdNewVersion: nextVersionNumber > currentVersionNumber,
+        },
         session,
       );
     });
@@ -1185,7 +1820,7 @@ export class WorkNotesService {
         'DOCUMENT_SUBMITTED',
         'PROJECT_DOCUMENT',
         documentId,
-        undefined,
+        { version: versionNumber },
         session,
       );
     });
@@ -1279,7 +1914,7 @@ export class WorkNotesService {
         'DOCUMENT_REVIEW_COMMENTED',
         'PROJECT_DOCUMENT',
         documentId,
-        { version: sourceVersion },
+        { version: sourceVersion, comment },
         session,
       );
     });
@@ -1460,10 +2095,20 @@ export class WorkNotesService {
         {
           authorId,
           version: sourceVersion,
+          ...(input.comment ? { comment: input.comment } : {}),
         },
         session,
       );
     });
+    if (action === 'APPROVED' && sourceVersion >= 1) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        documentId,
+        'KNOWLEDGE_SOURCE_APPROVED',
+        sourceVersion,
+        headers.requestId,
+      );
+    }
     const reviewed = await this.readDocument(actor, id);
     if (!reviewed) throw documentNotFound();
     return reviewed;
@@ -1564,9 +2209,1098 @@ export class WorkNotesService {
         session,
       );
     });
+    await this.dispatchKnowledgeIngestionJob(
+      projectId,
+      documentId,
+      'KNOWLEDGE_SOURCE_REVOKED',
+      0,
+      headers.requestId,
+    );
     const archived = await this.readDocument(actor, id);
     if (!archived) throw documentNotFound();
     return archived;
+  }
+
+  async deleteDocument(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+  ): Promise<DeleteProjectDocumentResult> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+
+    const authorId = String(document.createdByUserId);
+    const docStatus = text(document.status);
+    const canDelete =
+      actor.canReview ||
+      actor.canConfigure ||
+      (authorId === actor.userId &&
+        docStatus !== 'APPROVED' &&
+        docStatus !== 'ARCHIVED');
+    if (!canDelete) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_DELETE_FORBIDDEN',
+        message:
+          'Only a Project Leader or the author of an unapproved Document can permanently delete it.',
+      });
+    }
+
+    const versionRows = await db
+      .collection('project_document_versions')
+      .find({
+        documentId: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      })
+      .toArray();
+
+    const candidateKeys = new Set<string>();
+    let hasSagSync = Boolean(
+      (document.knowledgeSync as { sagDocumentId?: string } | undefined)
+        ?.sagDocumentId ||
+      docStatus === 'APPROVED' ||
+      docStatus === 'ARCHIVED',
+    );
+    for (const row of versionRows) {
+      const file = (row as Record<string, unknown>).file as
+        { key?: unknown } | undefined;
+      if (typeof file?.key === 'string' && file.key.trim()) {
+        candidateKeys.add(file.key.trim());
+      }
+      const verSync = (row as Record<string, unknown>).knowledgeSync as
+        { sagDocumentId?: unknown } | undefined;
+      if (typeof verSync?.sagDocumentId === 'string' && verSync.sagDocumentId) {
+        hasSagSync = true;
+      }
+    }
+
+    let sagRevoked = false;
+    if (
+      hasSagSync &&
+      typeof this.sagTransport?.revokeProjectDocument === 'function'
+    ) {
+      const revoked = await this.sagTransport
+        .revokeProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: Number(document.currentVersionNumber) || 1,
+          logicalSourceId: `continuum:project_document:${documentId}`,
+          actorUserId: actor.userId,
+          reason: 'DOCUMENT_DELETED',
+        })
+        .then(() => true)
+        .catch(() => false);
+      sagRevoked = revoked;
+    }
+
+    await this.transaction(async (txDb, session) => {
+      await txDb.collection('project_document_versions').deleteMany(
+        {
+          documentId: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { session },
+      );
+      const deletedDoc = await txDb.collection('project_documents').deleteOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { session },
+      );
+      if (deletedDoc.deletedCount !== 1) {
+        throw documentNotFound();
+      }
+      await txDb.collection('outbox_events').deleteMany(
+        {
+          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateId: documentId,
+          status: { $in: ['PENDING', 'FAILED'] },
+        },
+        { session },
+      );
+    });
+
+    let r2DeletedKeys = 0;
+    let r2RetainedSharedKeys = 0;
+    if (candidateKeys.size > 0) {
+      const versionsCollection = db.collection('project_document_versions');
+      for (const key of candidateKeys) {
+        const remainingRefs = await versionsCollection.countDocuments({
+          'file.key': key,
+        });
+        if (remainingRefs === 0) {
+          if (this.documentStorage) {
+            const deletedFromCloud = await this.documentStorage
+              .delete(key)
+              .then(() => true)
+              .catch(() => false);
+            if (deletedFromCloud) {
+              r2DeletedKeys += 1;
+            }
+          }
+        } else {
+          r2RetainedSharedKeys += 1;
+        }
+      }
+    }
+
+    await this.auditEvent(
+      actor,
+      'DOCUMENT_DELETED',
+      'PROJECT_DOCUMENT',
+      documentId,
+      {
+        title: text(document.title),
+        version: Number(document.currentVersionNumber) || 1,
+        sagRevoked,
+        storageKeysChecked: candidateKeys.size,
+        r2DeletedKeys,
+        r2RetainedSharedKeys,
+      },
+    );
+
+    return {
+      deletedDocumentId: documentId,
+      sagRevoked,
+      r2DeletedKeys,
+      r2RetainedSharedKeys,
+    };
+  }
+
+  async syncDocumentToSag(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    if (!this.sagTransport) {
+      throw new ServiceUnavailableException({
+        code: 'SAG_SYNC_UNAVAILABLE',
+        message: 'SAG Knowledge synchronization service is unavailable.',
+      });
+    }
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    if (text(document.status) === 'ARCHIVED') {
+      throw conflict('Archived documents cannot be synchronized to SAG.');
+    }
+    if (!actor.canReview && text(document.status) !== 'APPROVED') {
+      throw new ForbiddenException({
+        code: 'LEADER_APPROVAL_REQUIRED',
+        message:
+          'Only a Project Leader can add documents directly to SAG. Members must submit a review request to the Project Leader first.',
+      });
+    }
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+    if (actor.canReview && text(document.status) !== 'APPROVED') {
+      const now = new Date();
+      await db.collection('project_document_versions').updateOne(
+        { _id: versionDoc._id },
+        {
+          $set: {
+            status: 'APPROVED',
+            reviewedByUserId: objectId(actor.userId),
+            reviewedAt: now,
+            updatedAt: now,
+          },
+        },
+      );
+      await db.collection('project_documents').updateOne(
+        { _id: id },
+        {
+          $set: {
+            status: 'APPROVED',
+            latestApprovedVersionNumber: versionNumber,
+            updatedByUserId: objectId(actor.userId),
+            updatedAt: now,
+          },
+        },
+      );
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_AUTO_APPROVED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        { version: versionNumber },
+      );
+    }
+
+    const fileMeta = versionDoc.file as
+      | {
+          key?: string;
+          name?: string;
+          contentType?: string;
+          size?: number;
+          sha256?: string;
+        }
+      | undefined;
+
+    const existingSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+    const needsFreshIdempotencyKey = Boolean(
+      existingSync &&
+      ['REVOKED', 'FAILED', 'INDEX_FAILED'].some(
+        (terminalState) =>
+          String(existingSync.status ?? '').toUpperCase() === terminalState ||
+          String(existingSync.searchStatus ?? '').toUpperCase() ===
+            terminalState,
+      ),
+    );
+    const resyncSuffix = needsFreshIdempotencyKey
+      ? `:resync:${Date.now()}`
+      : '';
+
+    const logicalSourceId = `continuum:project_document:${documentId}`;
+    const canDirectObjectIngest = Boolean(
+      fileMeta?.key &&
+      fileMeta.name &&
+      fileMeta.contentType &&
+      fileMeta.sha256 &&
+      typeof fileMeta.size === 'number' &&
+      fileMeta.size > 0 &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+      typeof this.sagTransport.ingestProjectDocumentObject === 'function',
+    );
+
+    let fileHash: string;
+    let receipt: SagProjectDocumentUploadReceipt;
+
+    if (canDirectObjectIngest && fileMeta && this.documentStorage) {
+      fileHash = fileMeta.sha256!;
+      const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ) || 1800,
+      );
+      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
+        fileMeta.key!,
+        sagIngestUrlTtlSeconds,
+        {
+          fileName: fileMeta.name,
+          contentType: fileMeta.contentType,
+        },
+      );
+      try {
+        receipt = await this.sagTransport.ingestProjectDocumentObject!({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: versionNumber,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId: actor.userId,
+          sourceUrl,
+          fileName: fileMeta.name!,
+          contentType: fileMeta.contentType!,
+          expectedSha256: fileHash,
+          expectedSizeBytes: fileMeta.size!,
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+      }
+    } else {
+      let bytes: Buffer;
+      let fileName: string;
+      let contentType: string;
+      if (fileMeta?.key && fileMeta.name && fileMeta.contentType) {
+        if (!this.documentStorage) {
+          throw new ServiceUnavailableException(
+            'Project Document storage is unavailable.',
+          );
+        }
+        bytes = await this.documentStorage.get(fileMeta.key);
+        fileName = fileMeta.name;
+        contentType = fileMeta.contentType;
+      } else {
+        const markdown = text(versionDoc.content).trim();
+        if (!markdown) {
+          throw conflict(
+            'A Document needs text or an uploaded file before syncing to SAG.',
+          );
+        }
+        const baseTitle = (
+          text(versionDoc.title) ||
+          text(document.title) ||
+          documentId
+        )
+          .replace(/[^a-zA-Z0-9._-]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 120);
+        bytes = Buffer.from(markdown, 'utf-8');
+        fileName = `${baseTitle || documentId}.md`;
+        contentType = 'text/markdown';
+      }
+
+      fileHash =
+        fileMeta?.sha256 || createHash('sha256').update(bytes).digest('hex');
+      const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
+
+      try {
+        receipt = await this.sagTransport.uploadProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: versionNumber,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId: actor.userId,
+          fileName,
+          contentType,
+          bytes,
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+      }
+    }
+
+    const syncedAt = new Date().toISOString();
+    const searchStatus = receipt.searchStatus ?? 'PENDING';
+    const knowledgeStatus = receipt.knowledgeStatus ?? 'NOT_STARTED';
+    const searchReady = Boolean(
+      receipt.searchReady || searchStatus === 'SEARCH_READY',
+    );
+    const knowledgeReady =
+      knowledgeStatus === 'KNOWLEDGE_READY' || knowledgeStatus === 'READY';
+
+    const syncRecord: DocumentKnowledgeStatusRecord = {
+      documentId,
+      version: versionNumber,
+      sagDocumentId: receipt.documentId,
+      sagVersionId: receipt.versionId,
+      sagVersionNo: receipt.versionNo,
+      ...(receipt.runId ? { runId: receipt.runId } : {}),
+      fileHash: receipt.fileHash ?? fileHash,
+      status: receipt.status,
+      searchStatus,
+      knowledgeStatus,
+      searchReady,
+      knowledgeReady,
+      isDuplicate: Boolean(receipt.isDuplicate),
+      currentStage: receipt.isDuplicate ? 'DUPLICATE' : 'RECEIVE',
+      progress: searchReady ? 100 : 0,
+      syncedAt,
+    };
+
+    await db
+      .collection('project_document_versions')
+      .updateOne(
+        { _id: versionDoc._id },
+        { $set: { knowledgeSync: syncRecord } },
+      );
+    await db
+      .collection('project_documents')
+      .updateOne({ _id: id }, { $set: { knowledgeSync: syncRecord } });
+
+    await this.auditEvent(
+      actor,
+      'DOCUMENT_KNOWLEDGE_SYNCED',
+      'PROJECT_DOCUMENT',
+      documentId,
+      {
+        version: versionNumber,
+        sagDocumentId: receipt.documentId,
+        sagVersionNo: receipt.versionNo,
+        isDuplicate: Boolean(receipt.isDuplicate),
+      },
+    );
+
+    return syncRecord;
+  }
+
+  async getDocumentKnowledgeStatus(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+
+    const storedSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+    const fileSha256 = (versionDoc.file as { sha256?: string } | undefined)
+      ?.sha256;
+
+    if (
+      storedSync?.sagDocumentId &&
+      storedSync.sagVersionNo &&
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function'
+    ) {
+      try {
+        const live = await this.sagTransport.getProjectDocumentVersionStatus({
+          organizationId: actor.organizationId,
+          projectId,
+          sagDocumentId: storedSync.sagDocumentId,
+          versionNo: storedSync.sagVersionNo,
+          actorUserId: actor.userId,
+        });
+        const merged: DocumentKnowledgeStatusRecord = {
+          ...storedSync,
+          documentId,
+          version: versionNumber,
+          sagDocumentId: live.documentId,
+          sagVersionNo: live.versionNo,
+          status: live.status,
+          searchStatus: live.searchStatus,
+          knowledgeStatus: live.knowledgeStatus,
+          searchReady: live.searchReady,
+          knowledgeReady: live.knowledgeReady,
+          currentStage: live.currentStage ?? storedSync.currentStage ?? null,
+          progress:
+            typeof live.progress === 'number'
+              ? live.progress
+              : live.searchReady
+                ? 100
+                : (storedSync.progress ?? 10),
+          ...(live.documentStatus !== undefined
+            ? { documentStatus: live.documentStatus }
+            : {}),
+          ...(live.parserProvider !== undefined
+            ? { parserProvider: live.parserProvider }
+            : {}),
+          ...(live.parserStatus !== undefined
+            ? { parserStatus: live.parserStatus }
+            : {}),
+          ...(typeof live.chunkCount === 'number'
+            ? { chunkCount: live.chunkCount }
+            : {}),
+          ...(typeof live.eventCount === 'number'
+            ? { eventCount: live.eventCount }
+            : {}),
+          ...(typeof live.tokenUsage === 'number'
+            ? { tokenUsage: live.tokenUsage }
+            : {}),
+          ...(live.stageProgress !== undefined
+            ? { stageProgress: live.stageProgress }
+            : {}),
+          error: live.error ?? null,
+        };
+        await db
+          .collection('project_document_versions')
+          .updateOne(
+            { _id: versionDoc._id },
+            { $set: { knowledgeSync: merged } },
+          );
+        await db
+          .collection('project_documents')
+          .updateOne({ _id: id }, { $set: { knowledgeSync: merged } });
+        return merged;
+      } catch {
+        return storedSync;
+      }
+    }
+
+    if (storedSync) {
+      return storedSync;
+    }
+
+    const pendingOutbox = await db.collection('outbox_events').findOne({
+      aggregateType: 'PROJECT_DOCUMENT',
+      aggregateId: documentId,
+      status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
+    });
+
+    if (pendingOutbox) {
+      const deliveryReceipt = (
+        pendingOutbox.payload as
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
+      )?.delivery?.receipt;
+      if (
+        deliveryReceipt &&
+        typeof deliveryReceipt.documentId === 'string' &&
+        typeof deliveryReceipt.versionNo === 'number'
+      ) {
+        let recovered: DocumentKnowledgeStatusRecord = {
+          documentId,
+          version: versionNumber,
+          sagDocumentId: deliveryReceipt.documentId,
+          sagVersionId:
+            typeof deliveryReceipt.versionId === 'string'
+              ? deliveryReceipt.versionId
+              : undefined,
+          sagVersionNo: deliveryReceipt.versionNo,
+          status:
+            typeof deliveryReceipt.status === 'string'
+              ? deliveryReceipt.status
+              : 'SEARCH_READY',
+          searchStatus:
+            typeof deliveryReceipt.searchStatus === 'string'
+              ? deliveryReceipt.searchStatus
+              : 'SEARCH_READY',
+          knowledgeStatus:
+            typeof deliveryReceipt.knowledgeStatus === 'string'
+              ? deliveryReceipt.knowledgeStatus
+              : 'NOT_STARTED',
+          searchReady: Boolean(deliveryReceipt.searchReady ?? true),
+          knowledgeReady:
+            deliveryReceipt.knowledgeStatus === 'KNOWLEDGE_READY' ||
+            deliveryReceipt.knowledgeStatus === 'READY',
+          progress: 100,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+        };
+        if (
+          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
+          'function'
+        ) {
+          try {
+            const live =
+              await this.sagTransport.getProjectDocumentVersionStatus({
+                organizationId: actor.organizationId,
+                projectId,
+                sagDocumentId: deliveryReceipt.documentId,
+                versionNo: deliveryReceipt.versionNo,
+                actorUserId: actor.userId,
+              });
+            recovered = {
+              ...recovered,
+              status: live.status,
+              searchStatus: live.searchStatus,
+              knowledgeStatus: live.knowledgeStatus,
+              searchReady: live.searchReady,
+              knowledgeReady: live.knowledgeReady,
+              currentStage: live.currentStage ?? null,
+              progress:
+                typeof live.progress === 'number'
+                  ? live.progress
+                  : live.searchReady
+                    ? 100
+                    : 15,
+              ...(live.documentStatus !== undefined
+                ? { documentStatus: live.documentStatus }
+                : {}),
+              ...(live.parserProvider !== undefined
+                ? { parserProvider: live.parserProvider }
+                : {}),
+              ...(live.parserStatus !== undefined
+                ? { parserStatus: live.parserStatus }
+                : {}),
+              ...(typeof live.chunkCount === 'number'
+                ? { chunkCount: live.chunkCount }
+                : {}),
+              ...(typeof live.eventCount === 'number'
+                ? { eventCount: live.eventCount }
+                : {}),
+              ...(typeof live.tokenUsage === 'number'
+                ? { tokenUsage: live.tokenUsage }
+                : {}),
+              ...(live.stageProgress !== undefined
+                ? { stageProgress: live.stageProgress }
+                : {}),
+              error: live.error ?? null,
+            };
+          } catch {
+            // Fall back to recovered outbox receipt
+          }
+        }
+        await db
+          .collection('project_document_versions')
+          .updateOne(
+            { _id: versionDoc._id },
+            { $set: { knowledgeSync: recovered } },
+          );
+        await db
+          .collection('project_documents')
+          .updateOne({ _id: id }, { $set: { knowledgeSync: recovered } });
+        return recovered;
+      }
+      if (pendingOutbox.status === 'PENDING') {
+        return {
+          documentId,
+          version: versionNumber,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+          status: 'QUEUED_OUTBOX',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_QUEUE',
+          progress: 5,
+        };
+      }
+      if (pendingOutbox.status === 'FAILED') {
+        return {
+          documentId,
+          version: versionNumber,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+          status: 'FAILED',
+          searchStatus: 'FAILED',
+          knowledgeStatus: 'FAILED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_DELIVERY',
+          progress: 0,
+          error: {
+            message: String(
+              pendingOutbox.lastError ??
+                'Failed to deliver document to processing engine.',
+            ),
+          },
+        };
+      }
+    }
+
+    return {
+      documentId,
+      version: versionNumber,
+      ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+      status: 'NOT_SYNCED',
+      searchStatus: 'NOT_STARTED',
+      knowledgeStatus: 'NOT_STARTED',
+      searchReady: false,
+      knowledgeReady: false,
+      currentStage: null,
+      progress: 0,
+    };
+  }
+
+  async getDocumentKnowledgeChunks(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    options?: { limit?: number; offset?: number },
+  ): Promise<DocumentKnowledgeChunksResponse> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+
+    let sagDocumentId: string | undefined;
+    let sagVersionNo: number | undefined;
+    const storedSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+
+    if (storedSync?.status === 'REVOKED') {
+      return {
+        documentId,
+        version: versionNumber,
+        ...(storedSync.sagDocumentId
+          ? { sagDocumentId: storedSync.sagDocumentId }
+          : {}),
+        ...(storedSync.sagVersionNo
+          ? { sagVersionNo: storedSync.sagVersionNo }
+          : {}),
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+
+    if (storedSync?.sagDocumentId && storedSync.sagVersionNo) {
+      sagDocumentId = storedSync.sagDocumentId;
+      sagVersionNo = storedSync.sagVersionNo;
+    } else {
+      const pendingOutbox = await db.collection('outbox_events').findOne({
+        aggregateType: 'PROJECT_DOCUMENT',
+        aggregateId: documentId,
+        status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
+      });
+      const deliveryReceipt = (
+        pendingOutbox?.payload as
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
+      )?.delivery?.receipt;
+      if (
+        deliveryReceipt &&
+        typeof deliveryReceipt.documentId === 'string' &&
+        typeof deliveryReceipt.versionNo === 'number'
+      ) {
+        sagDocumentId = deliveryReceipt.documentId;
+        sagVersionNo = deliveryReceipt.versionNo;
+      }
+    }
+
+    if (
+      !sagDocumentId ||
+      !sagVersionNo ||
+      typeof this.sagTransport?.getProjectDocumentVersionChunks !== 'function'
+    ) {
+      return {
+        documentId,
+        version: versionNumber,
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+
+    try {
+      const chunksReceipt =
+        await this.sagTransport.getProjectDocumentVersionChunks({
+          organizationId: actor.organizationId,
+          projectId,
+          sagDocumentId,
+          versionNo: sagVersionNo,
+          actorUserId: actor.userId,
+          limit: options?.limit ?? 50,
+          offset: options?.offset ?? 0,
+        });
+      return {
+        documentId,
+        version: versionNumber,
+        sagDocumentId: chunksReceipt.documentId,
+        sagVersionNo: chunksReceipt.versionNo,
+        sourceStage: chunksReceipt.sourceStage,
+        totalChunks: chunksReceipt.totalChunks,
+        totalTokens: chunksReceipt.totalTokens,
+        items: chunksReceipt.items,
+      };
+    } catch {
+      return {
+        documentId,
+        version: versionNumber,
+        sagDocumentId,
+        sagVersionNo,
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+  }
+
+  async controlDocumentKnowledge(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    action: DocumentKnowledgeControlAction,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    if (!this.sagTransport) {
+      throw new ServiceUnavailableException({
+        code: 'SAG_SYNC_UNAVAILABLE',
+        message: 'SAG Knowledge synchronization service is unavailable.',
+      });
+    }
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    if (String(document.createdByUserId) !== actor.userId && !actor.canReview) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only the Document owner or a Project reviewer can control SAG processing.',
+      });
+    }
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+
+    const storedSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+    const logicalSourceId = `continuum:project_document:${documentId}`;
+
+    if (action === 'REVOKE') {
+      let revokeReceipt;
+      try {
+        revokeReceipt = await this.sagTransport.revokeProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: versionNumber,
+          logicalSourceId,
+          actorUserId: actor.userId,
+          reason: 'MANUAL_REVOKE',
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_REVOKE_FAILED');
+      }
+      const revokedRecord: DocumentKnowledgeStatusRecord = {
+        ...(storedSync ?? {}),
+        documentId,
+        version: versionNumber,
+        ...(revokeReceipt.documentId
+          ? { sagDocumentId: revokeReceipt.documentId }
+          : {}),
+        status: 'REVOKED',
+        searchStatus: 'REVOKED',
+        knowledgeStatus: 'REVOKED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'REVOKED',
+        progress: 0,
+        syncedAt: new Date().toISOString(),
+      };
+      await db
+        .collection('project_document_versions')
+        .updateOne(
+          { _id: versionDoc._id },
+          { $set: { knowledgeSync: revokedRecord } },
+        );
+      await db
+        .collection('project_documents')
+        .updateOne({ _id: id }, { $set: { knowledgeSync: revokedRecord } });
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_KNOWLEDGE_REVOKED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        {
+          version: versionNumber,
+          ...(revokeReceipt.documentId
+            ? { sagDocumentId: revokeReceipt.documentId }
+            : {}),
+        },
+      );
+      return revokedRecord;
+    }
+
+    if (
+      action === 'REPROCESS' &&
+      actor.canReview &&
+      (!storedSync ||
+        storedSync.status === 'NOT_SYNCED' ||
+        storedSync.status === 'REVOKED' ||
+        storedSync.searchStatus === 'REVOKED')
+    ) {
+      return this.syncDocumentToSag(headers, projectId, documentId);
+    }
+
+    if (typeof this.sagTransport.controlProjectDocument !== 'function') {
+      throw new ServiceUnavailableException({
+        code: 'SAG_CONTROL_UNSUPPORTED',
+        message: 'SAG Knowledge control transport is not available.',
+      });
+    }
+
+    const fileMeta = versionDoc.file as
+      | {
+          key?: string;
+          name?: string;
+          contentType?: string;
+          size?: number;
+          sha256?: string;
+        }
+      | undefined;
+
+    let reprocessSourceUrl: string | undefined;
+    if (
+      action === 'REPROCESS' &&
+      fileMeta?.key &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+    ) {
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ) || 1800,
+      );
+      reprocessSourceUrl = await this.documentStorage
+        .createDirectDownloadUrl(fileMeta.key, sagIngestUrlTtlSeconds, {
+          ...(fileMeta.name ? { fileName: fileMeta.name } : {}),
+          ...(fileMeta.contentType
+            ? { contentType: fileMeta.contentType }
+            : {}),
+        })
+        .catch(() => undefined);
+    }
+
+    const sagDocumentId = storedSync?.sagDocumentId || logicalSourceId;
+    try {
+      await this.sagTransport.controlProjectDocument({
+        organizationId: actor.organizationId,
+        projectId,
+        sagDocumentId,
+        actorUserId: actor.userId,
+        action: action.toLowerCase() as 'pause' | 'resume' | 'reprocess',
+        ...(reprocessSourceUrl ? { sourceUrl: reprocessSourceUrl } : {}),
+        ...(fileMeta?.name ? { fileName: fileMeta.name } : {}),
+        ...(fileMeta?.contentType ? { contentType: fileMeta.contentType } : {}),
+        ...(fileMeta?.sha256 ? { expectedSha256: fileMeta.sha256 } : {}),
+        ...(typeof fileMeta?.size === 'number' && fileMeta.size > 0
+          ? { expectedSizeBytes: fileMeta.size }
+          : {}),
+      });
+    } catch (error) {
+      this.mapSagTransportError(error, 'SAG_CONTROL_FAILED');
+    }
+
+    const controlAuditAction =
+      action === 'REPROCESS'
+        ? 'DOCUMENT_KNOWLEDGE_REPROCESSED'
+        : action === 'PAUSE'
+          ? 'DOCUMENT_KNOWLEDGE_PAUSED'
+          : 'DOCUMENT_KNOWLEDGE_RESUMED';
+    await this.auditEvent(
+      actor,
+      controlAuditAction,
+      'PROJECT_DOCUMENT',
+      documentId,
+      {
+        version: versionNumber,
+        sagDocumentId,
+      },
+    );
+
+    if (action === 'REPROCESS') {
+      const resetRecord: DocumentKnowledgeStatusRecord = {
+        ...(storedSync ?? {}),
+        documentId,
+        version: versionNumber,
+        sagDocumentId,
+        status: 'RECEIVED',
+        searchStatus: 'PENDING',
+        knowledgeStatus: storedSync?.knowledgeStatus ?? 'NOT_STARTED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'RECEIVE',
+        documentStatus: 'pending',
+        progress: 0,
+        chunkCount: 0,
+        stageProgress: {},
+        error: null,
+        syncedAt: new Date().toISOString(),
+      };
+      await db
+        .collection('project_document_versions')
+        .updateOne(
+          { _id: versionDoc._id },
+          { $set: { knowledgeSync: resetRecord } },
+        );
+      await db
+        .collection('project_documents')
+        .updateOne({ _id: id }, { $set: { knowledgeSync: resetRecord } });
+      return resetRecord;
+    }
+
+    return this.getDocumentKnowledgeStatus(headers, projectId, documentId);
+  }
+
+  private mapSagTransportError(error: unknown, fallbackCode: string): never {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+    const rawMessage =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : '';
+    const match = /^SAG_[A-Z_]+_FAILED_(\d{3}):([\s\S]*)$/.exec(rawMessage);
+    if (match) {
+      const statusCode = Number(match[1]);
+      const detail =
+        (match[2] || '').trim() || 'Upstream SAG operation failed.';
+      if (statusCode === 400 || statusCode === 422) {
+        throw new BadRequestException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 403) {
+        throw new ForbiddenException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 404) {
+        throw new NotFoundException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 409) {
+        throw new ConflictException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 502 || statusCode === 503 || statusCode === 504) {
+        throw new ServiceUnavailableException({
+          code: fallbackCode,
+          message: detail,
+        });
+      }
+      throw new BadGatewayException({ code: fallbackCode, message: detail });
+    }
+    throw new BadGatewayException({
+      code: fallbackCode,
+      message: rawMessage || 'SAG processing service request failed.',
+    });
   }
 
   async getWorkReportSettings(
@@ -3228,6 +4962,11 @@ export class WorkNotesService {
       createdBy,
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
+      ...(value.knowledgeSync && typeof value.knowledgeSync === 'object'
+        ? {
+            knowledgeSync: value.knowledgeSync as DocumentKnowledgeStatusRecord,
+          }
+        : {}),
       permissions: {
         ...this.permissions(actor, createdBy, status),
         canEdit:
@@ -3235,6 +4974,12 @@ export class WorkNotesService {
           ['DRAFT', 'CHANGES_REQUESTED', 'APPROVED', 'REJECTED'].includes(
             status,
           ),
+        canDelete:
+          actor.canReview ||
+          actor.canConfigure ||
+          (createdBy === actor.userId &&
+            status !== 'APPROVED' &&
+            status !== 'ARCHIVED'),
         canSubmit: createdBy === actor.userId && status === 'DRAFT',
       },
     };
@@ -3253,15 +4998,30 @@ export class WorkNotesService {
       }),
     );
     if (!document) return null;
-    const versions = await db
-      .collection('project_document_versions')
-      .find({
-        documentId: id,
-        organizationId: objectId(actor.organizationId),
-        projectId: objectId(actor.projectId),
-      })
-      .sort({ versionNumber: 1 })
-      .toArray();
+    const [versions, auditRows] = await Promise.all([
+      db
+        .collection('project_document_versions')
+        .find({
+          documentId: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(actor.projectId),
+        })
+        .sort({ versionNumber: 1 })
+        .toArray(),
+      typeof this.audit?.listForTarget === 'function'
+        ? this.audit
+            .listForTarget(
+              {
+                organizationId: actor.organizationId,
+                projectId: actor.projectId,
+                targetResource: 'PROJECT_DOCUMENT',
+                targetResourceId: String(id),
+              },
+              150,
+            )
+            .catch(() => [] as AuditEventRecord[])
+        : Promise.resolve([] as AuditEventRecord[]),
+    ]);
     const versionRecords = versions.map((item) =>
       this.documentVersion(item as Document),
     );
@@ -3270,6 +5030,40 @@ export class WorkNotesService {
     );
     if (!current) throw documentNotFound();
     const summary = this.documentSummary(document, actor);
+    const allDocKeys: string[] = [];
+    let currentSha256: string | undefined;
+    for (const rawVer of versions) {
+      const verObj = rawVer as unknown as Record<string, unknown>;
+      const rawFile = verObj.file as
+        { key?: unknown; sha256?: unknown } | undefined;
+      if (typeof rawFile?.key === 'string' && rawFile.key.trim()) {
+        allDocKeys.push(rawFile.key.trim());
+      }
+      if (
+        Number(verObj.versionNumber) ===
+          Number(document.currentVersionNumber) &&
+        typeof rawFile?.sha256 === 'string' &&
+        rawFile.sha256.trim()
+      ) {
+        currentSha256 = rawFile.sha256.trim();
+      }
+    }
+    const storageRefsByDoc = await this.resolveStorageReferencesByDocument(
+      actor.organizationId,
+      [
+        {
+          documentId: summary.id,
+          keys: allDocKeys,
+          ...(currentSha256 ? { currentSha256 } : {}),
+        },
+      ],
+    );
+    const storageReference = storageRefsByDoc.get(summary.id);
+    const activityHistory = this.buildDocumentActivityHistory(
+      summary,
+      versionRecords,
+      auditRows,
+    );
     return {
       ...summary,
       submittedAt: current.submittedAt,
@@ -3278,6 +5072,7 @@ export class WorkNotesService {
       reviewComment: current.reviewComment,
       content: current.content,
       ...(current.file ? { file: current.file } : {}),
+      ...(storageReference ? { storageReference } : {}),
       versions: versionRecords.map(
         ({ version, status, createdAt, editedBy, file }) => ({
           version,
@@ -3290,7 +5085,363 @@ export class WorkNotesService {
       reviewHistory: versionRecords
         .flatMap((item) => item.reviewHistory)
         .sort((left, right) => left.at.localeCompare(right.at)),
+      activityHistory,
     };
+  }
+
+  private async resolveStorageReferencesByDocument(
+    organizationId: string,
+    entries: Array<{
+      documentId: string;
+      keys: string[];
+      currentSha256?: string;
+    }>,
+  ): Promise<Map<string, DocumentStorageReferenceRecord>> {
+    const result = new Map<string, DocumentStorageReferenceRecord>();
+    const uniqueKeys = Array.from(
+      new Set(
+        entries
+          .flatMap((entry) => entry.keys)
+          .map((key) => key.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (uniqueKeys.length === 0) return result;
+
+    const uniqueKeySet = new Set(uniqueKeys);
+    const distinctDocsByKey = new Map<string, Set<string>>();
+    for (const key of uniqueKeys) {
+      distinctDocsByKey.set(key, new Set<string>());
+    }
+
+    try {
+      const versionsCol = this.database().collection(
+        'project_document_versions',
+      );
+      if (typeof versionsCol.find === 'function') {
+        const cursor = versionsCol.find({
+          organizationId: objectId(organizationId),
+          'file.key': { $in: uniqueKeys },
+        });
+        const rows =
+          cursor && typeof cursor.toArray === 'function'
+            ? await cursor.toArray()
+            : [];
+        for (const row of rows) {
+          const raw = row as unknown as Record<string, unknown>;
+          const rawFile = raw.file as { key?: unknown } | undefined;
+          const key =
+            typeof rawFile?.key === 'string' ? rawFile.key.trim() : '';
+          const docId = idText(raw.documentId);
+          if (key && docId && uniqueKeySet.has(key)) {
+            distinctDocsByKey.get(key)?.add(docId);
+          }
+        }
+      }
+    } catch {
+      // Fall back to local document ownership if projection query fails on stubbed collections.
+    }
+
+    const provider: 'CLOUDFLARE_R2' | 'LOCAL' =
+      typeof this.documentStorage?.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled()
+        ? 'CLOUDFLARE_R2'
+        : 'LOCAL';
+
+    for (const entry of entries) {
+      const docUniqueKeys = Array.from(
+        new Set(entry.keys.map((k) => k.trim()).filter(Boolean)),
+      );
+      if (docUniqueKeys.length === 0) continue;
+
+      let deletableObjectCount = 0;
+      let sharedObjectCount = 0;
+      const allReferencingDocs = new Set<string>([entry.documentId]);
+      const externalDocs = new Set<string>();
+
+      for (const key of docUniqueKeys) {
+        const refSet = distinctDocsByKey.get(key) ?? new Set<string>();
+        refSet.add(entry.documentId);
+        let hasExternal = false;
+        for (const refDocId of refSet) {
+          allReferencingDocs.add(refDocId);
+          if (refDocId !== entry.documentId) {
+            externalDocs.add(refDocId);
+            hasExternal = true;
+          }
+        }
+        if (hasExternal) {
+          sharedObjectCount += 1;
+        } else {
+          deletableObjectCount += 1;
+        }
+      }
+
+      result.set(entry.documentId, {
+        provider,
+        objectCount: docUniqueKeys.length,
+        deletableObjectCount,
+        sharedObjectCount,
+        refCount: allReferencingDocs.size,
+        externalDocumentRefs: externalDocs.size,
+        willDeleteFromStorage: deletableObjectCount > 0,
+        ...(entry.currentSha256 ? { sha256: entry.currentSha256 } : {}),
+      });
+    }
+
+    return result;
+  }
+
+  private buildDocumentActivityHistory(
+    summary: ProjectDocumentSummaryRecord,
+    versionRecords: DocumentVersionRecord[],
+    auditRows: AuditEventRecord[],
+  ): DocumentActivityEvent[] {
+    const versionByNo = new Map(
+      versionRecords.map((ver) => [ver.version, ver]),
+    );
+    const events: DocumentActivityEvent[] = [];
+
+    const mapAuditAction = (
+      rawAction: string,
+    ): DocumentActivityAction | null => {
+      switch (rawAction) {
+        case 'DOCUMENT_DRAFT_CREATED':
+          return 'CREATED';
+        case 'DOCUMENT_DRAFT_UPDATED':
+          return 'UPDATED';
+        case 'DOCUMENT_FILE_UPLOADED':
+          return 'FILE_UPLOADED';
+        case 'DOCUMENT_SUBMITTED':
+          return 'SUBMITTED';
+        case 'DOCUMENT_REVIEW_COMMENTED':
+          return 'COMMENTED';
+        case 'DOCUMENT_APPROVED':
+          return 'APPROVED';
+        case 'DOCUMENT_AUTO_APPROVED':
+          return 'AUTO_APPROVED';
+        case 'DOCUMENT_CHANGES_REQUESTED':
+          return 'CHANGES_REQUESTED';
+        case 'DOCUMENT_REJECTED':
+          return 'REJECTED';
+        case 'DOCUMENT_ARCHIVED':
+          return 'ARCHIVED';
+        case 'DOCUMENT_KNOWLEDGE_SYNCED':
+          return 'KNOWLEDGE_SYNCED';
+        case 'DOCUMENT_KNOWLEDGE_REPROCESSED':
+          return 'KNOWLEDGE_REPROCESSED';
+        case 'DOCUMENT_KNOWLEDGE_PAUSED':
+          return 'KNOWLEDGE_PAUSED';
+        case 'DOCUMENT_KNOWLEDGE_RESUMED':
+          return 'KNOWLEDGE_RESUMED';
+        case 'DOCUMENT_KNOWLEDGE_REVOKED':
+          return 'KNOWLEDGE_REVOKED';
+        default:
+          return null;
+      }
+    };
+
+    for (const row of auditRows) {
+      const mapped = mapAuditAction(row.action);
+      if (!mapped) continue;
+      const meta = row.metadata ?? {};
+      const verNum =
+        typeof meta.version === 'number' && meta.version > 0
+          ? meta.version
+          : mapped === 'CREATED'
+            ? 1
+            : undefined;
+      const matchingVersion = verNum ? versionByNo.get(verNum) : undefined;
+      const fileName =
+        typeof meta.fileName === 'string' && meta.fileName.trim()
+          ? meta.fileName.trim()
+          : mapped === 'FILE_UPLOADED' && matchingVersion?.file?.name
+            ? matchingVersion.file.name
+            : undefined;
+      const comment =
+        typeof meta.comment === 'string' && meta.comment.trim()
+          ? meta.comment.trim()
+          : undefined;
+      const deduplicated =
+        typeof meta.deduplicated === 'boolean'
+          ? meta.deduplicated
+          : typeof meta.isDuplicate === 'boolean'
+            ? meta.isDuplicate
+            : undefined;
+
+      const occurredAtIso =
+        row.occurredAt instanceof Date
+          ? row.occurredAt.toISOString()
+          : new Date(String(row.occurredAt)).toISOString();
+
+      events.push({
+        id: `audit-${row.id}`,
+        action: mapped,
+        actorId: row.actorUserId || summary.createdBy,
+        ...(verNum ? { version: verNum } : {}),
+        ...(fileName ? { fileName } : {}),
+        ...(comment ? { comment } : {}),
+        ...(deduplicated !== undefined ? { deduplicated } : {}),
+        at: occurredAtIso,
+      });
+    }
+
+    const hasActionForVersion = (
+      actions: readonly DocumentActivityAction[],
+      ver?: number,
+    ) =>
+      events.some(
+        (ev) =>
+          actions.includes(ev.action) &&
+          (ver === undefined || ev.version === undefined || ev.version === ver),
+      );
+
+    if (!events.some((ev) => ev.action === 'CREATED')) {
+      const firstVersion = versionRecords[0];
+      events.push({
+        id: `synth-created-${summary.id}`,
+        action: 'CREATED',
+        actorId: summary.createdBy,
+        version: firstVersion?.version ?? 1,
+        at: firstVersion?.createdAt || summary.createdAt,
+      });
+    }
+
+    for (const ver of versionRecords) {
+      if (ver.version > 1 && !hasActionForVersion(['UPDATED'], ver.version)) {
+        events.push({
+          id: `synth-version-${summary.id}-v${ver.version}`,
+          action: 'UPDATED',
+          actorId: ver.editedBy || summary.createdBy,
+          version: ver.version,
+          at: ver.createdAt,
+        });
+      }
+
+      if (ver.file && !hasActionForVersion(['FILE_UPLOADED'], ver.version)) {
+        events.push({
+          id: `synth-upload-${summary.id}-v${ver.version}`,
+          action: 'FILE_UPLOADED',
+          actorId: ver.editedBy || summary.createdBy,
+          version: ver.version,
+          fileName: ver.file.name,
+          at: ver.createdAt,
+        });
+      }
+
+      if (ver.submittedAt && !hasActionForVersion(['SUBMITTED'], ver.version)) {
+        events.push({
+          id: `synth-submit-${summary.id}-v${ver.version}`,
+          action: 'SUBMITTED',
+          actorId: ver.editedBy || summary.createdBy,
+          version: ver.version,
+          at: ver.submittedAt,
+        });
+      }
+
+      for (let idx = 0; idx < ver.reviewHistory.length; idx += 1) {
+        const rh = ver.reviewHistory[idx];
+        const rhAction: DocumentActivityAction =
+          rh.action === 'PENDING_REVIEW' ? 'COMMENTED' : rh.action;
+        const rhMs = new Date(rh.at).getTime();
+        const existingMatch = events.find(
+          (ev) =>
+            ev.action === rhAction &&
+            (ev.version === undefined || ev.version === ver.version) &&
+            Math.abs(new Date(ev.at).getTime() - rhMs) <= 15_000,
+        );
+        if (existingMatch) {
+          if (!existingMatch.comment && rh.comment) {
+            existingMatch.comment = rh.comment;
+          }
+          if (!existingMatch.version) {
+            existingMatch.version = ver.version;
+          }
+        } else {
+          events.push({
+            id: `synth-review-${summary.id}-v${ver.version}-${idx}`,
+            action: rhAction,
+            actorId: rh.reviewerId,
+            version: ver.version,
+            ...(rh.comment ? { comment: rh.comment } : {}),
+            at: rh.at,
+          });
+        }
+      }
+
+      if (
+        ver.status === 'APPROVED' &&
+        ver.reviewedAt &&
+        !hasActionForVersion(['APPROVED', 'AUTO_APPROVED'], ver.version)
+      ) {
+        events.push({
+          id: `synth-auto-approve-${summary.id}-v${ver.version}`,
+          action: 'AUTO_APPROVED',
+          actorId: ver.reviewedBy || summary.createdBy,
+          version: ver.version,
+          ...(ver.reviewComment ? { comment: ver.reviewComment } : {}),
+          at: ver.reviewedAt,
+        });
+      }
+    }
+
+    if (
+      summary.knowledgeSync?.syncedAt &&
+      summary.knowledgeSync.status !== 'NOT_SYNCED' &&
+      !events.some((ev) => ev.action.startsWith('KNOWLEDGE_'))
+    ) {
+      const isRevoked =
+        summary.knowledgeSync.status === 'REVOKED' ||
+        summary.knowledgeSync.searchStatus === 'REVOKED';
+      events.push({
+        id: `synth-knowledge-${summary.id}`,
+        action: isRevoked ? 'KNOWLEDGE_REVOKED' : 'KNOWLEDGE_SYNCED',
+        actorId: summary.createdBy,
+        version: summary.knowledgeSync.version || summary.version,
+        ...(summary.knowledgeSync.isDuplicate ? { deduplicated: true } : {}),
+        at: summary.knowledgeSync.syncedAt,
+      });
+    }
+
+    if (
+      summary.status === 'ARCHIVED' &&
+      !events.some((ev) => ev.action === 'ARCHIVED')
+    ) {
+      events.push({
+        id: `synth-archived-${summary.id}`,
+        action: 'ARCHIVED',
+        actorId: summary.createdBy,
+        version: summary.version,
+        at: summary.updatedAt,
+      });
+    }
+
+    const actionOrder: Record<DocumentActivityAction, number> = {
+      CREATED: 1,
+      UPDATED: 2,
+      FILE_UPLOADED: 3,
+      SUBMITTED: 4,
+      COMMENTED: 5,
+      AUTO_APPROVED: 6,
+      APPROVED: 7,
+      CHANGES_REQUESTED: 8,
+      REJECTED: 9,
+      KNOWLEDGE_SYNCED: 10,
+      KNOWLEDGE_REPROCESSED: 11,
+      KNOWLEDGE_PAUSED: 12,
+      KNOWLEDGE_RESUMED: 13,
+      KNOWLEDGE_REVOKED: 14,
+      ARCHIVED: 15,
+    };
+
+    return events.sort((a, b) => {
+      const diff = new Date(a.at).getTime() - new Date(b.at).getTime();
+      if (Math.abs(diff) > 100) return diff;
+      if ((a.version ?? 0) !== (b.version ?? 0)) {
+        return (a.version ?? 0) - (b.version ?? 0);
+      }
+      return (actionOrder[a.action] ?? 99) - (actionOrder[b.action] ?? 99);
+    });
   }
 
   private documentVersion(row: Document): DocumentVersionRecord {
@@ -3448,6 +5599,222 @@ export class WorkNotesService {
         ...(metadata ? { metadata } : {}),
       },
       session,
+    );
+  }
+
+  private uploadIntentSigningKey(): Buffer {
+    const rawSecret =
+      this.config?.get<string>('DOCUMENT_UPLOAD_TOKEN_SECRET')?.trim() ||
+      this.config?.get<string>('JWT_SECRET')?.trim() ||
+      process.env.DOCUMENT_UPLOAD_TOKEN_SECRET?.trim() ||
+      process.env.JWT_SECRET?.trim() ||
+      (process.env.NODE_ENV === 'production'
+        ? ''
+        : 'continuum-dev-document-upload-intent-secret');
+    if (!rawSecret) {
+      throw new ServiceUnavailableException({
+        code: 'DOCUMENT_UPLOAD_SIGNING_KEY_MISSING',
+        message: 'Document upload signing secret is not configured.',
+      });
+    }
+    return createHmac('sha256', rawSecret)
+      .update('continuum:document-upload-intent:v1')
+      .digest();
+  }
+
+  private signDocumentUploadClaims(claims: SignedDocumentUploadClaims): string {
+    const encodedPayload = Buffer.from(
+      JSON.stringify(claims),
+      'utf-8',
+    ).toString('base64url');
+    const signature = createHmac('sha256', this.uploadIntentSigningKey())
+      .update(`v1.${encodedPayload}`)
+      .digest('base64url');
+    return `v1.${encodedPayload}.${signature}`;
+  }
+
+  private verifyDocumentUploadClaims(
+    token: string,
+  ): SignedDocumentUploadClaims {
+    const parts = token.trim().split('.');
+    if (parts.length !== 3 || parts[0] !== 'v1' || !parts[1] || !parts[2]) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token is malformed.',
+      });
+    }
+    const expectedSig = createHmac('sha256', this.uploadIntentSigningKey())
+      .update(`v1.${parts[1]}`)
+      .digest();
+    let providedSig: Buffer;
+    try {
+      providedSig = Buffer.from(parts[2], 'base64url');
+    } catch {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token signature is invalid.',
+      });
+    }
+    if (
+      providedSig.length !== expectedSig.length ||
+      !timingSafeEqual(providedSig, expectedSig)
+    ) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token signature is invalid.',
+      });
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+    } catch {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token payload is invalid.',
+      });
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token payload is invalid.',
+      });
+    }
+    const claims = parsed as SignedDocumentUploadClaims;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (typeof claims.exp !== 'number' || claims.exp < nowSec) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_EXPIRED',
+        message: 'Upload token has expired. Please start the upload again.',
+      });
+    }
+    return claims;
+  }
+
+  private async dispatchKnowledgeIngestionJob(
+    projectId: string,
+    documentId: string,
+    event: string,
+    version: number,
+    requestId?: string,
+  ): Promise<void> {
+    if (!this.queueRuntime) return;
+    await this.queueRuntime
+      .add(
+        QUEUE_NAMES.ingestion,
+        'knowledge-outbox-sync',
+        {
+          event,
+          payload: {
+            projectId,
+            documentId,
+            version,
+          },
+          ...(requestId ? { requestId } : {}),
+        },
+        {
+          jobId: `knowledge:${documentId}:${event}:v${version}:${Date.now()}`,
+        },
+      )
+      .catch(() => undefined);
+  }
+
+  private async syncOrEnqueueApprovedDocument(
+    headers: CaptureRequestHeaders,
+    actor: WorkNotesActor,
+    projectId: string,
+    documentId: string,
+    versionNumber: number,
+  ): Promise<void> {
+    if (this.sagTransport) {
+      const synced = await this.syncDocumentToSag(
+        headers,
+        projectId,
+        documentId,
+      ).catch(() => null);
+      if (synced) return;
+    }
+
+    if (!this.outbox) return;
+    const id = objectId(documentId);
+    const now = new Date();
+    await this.transaction(async (db, session) => {
+      await db.collection('project_document_versions').updateOne(
+        {
+          documentId: id,
+          versionNumber,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        {
+          $set: {
+            status: 'APPROVED',
+            reviewedByUserId: objectId(actor.userId),
+            reviewedAt: now,
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      await db.collection('project_documents').updateOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        {
+          $set: {
+            status: 'APPROVED',
+            latestApprovedVersionNumber: versionNumber,
+            updatedByUserId: objectId(actor.userId),
+            updatedAt: now,
+            knowledgeSync: {
+              documentId,
+              version: versionNumber,
+              status: 'QUEUED',
+              searchStatus: 'PENDING',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: false,
+              knowledgeReady: false,
+              currentStage: 'QUEUED',
+              progress: 0,
+              syncedAt: now.toISOString(),
+            },
+          },
+        },
+        { session },
+      );
+      await this.appendOutbox(
+        {
+          eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateId: documentId,
+          payload: {
+            sourceType: 'PROJECT_DOCUMENT',
+            sourceId: documentId,
+            organizationId: actor.organizationId,
+            projectId,
+            version: versionNumber,
+            approvedAt: now.toISOString(),
+          },
+        },
+        session,
+      );
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_AUTO_APPROVED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        { version: versionNumber },
+        session,
+      );
+    }).catch(() => undefined);
+
+    await this.dispatchKnowledgeIngestionJob(
+      projectId,
+      documentId,
+      'KNOWLEDGE_SOURCE_APPROVED',
+      versionNumber,
+      headers.requestId,
     );
   }
 }
