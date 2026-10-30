@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   BadGatewayException,
   BadRequestException,
@@ -26,6 +28,7 @@ describe('AiChatService', () => {
     organizationId: '507f1f77bcf86cd799439022',
     name: 'Continuum Core',
     code: 'CORE',
+    status: 'ACTIVE' as const,
   };
 
   function setup() {
@@ -913,5 +916,101 @@ describe('AiChatService', () => {
       ],
       nextCursor: 'cur.sig',
     });
+  });
+
+  it('rejects answer actions when Project is ARCHIVED even if a SAG session was previously cached (Finding #5)', async () => {
+    const { service, getProject, requestMock, requestStreamMock } = setup();
+
+    // Warm session cache while ACTIVE
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'header.payload.signature' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_default_1' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { feedback: null },
+      });
+    await service.getOwnFeedback(
+      { authorization: 'Bearer continuum-jwt' },
+      project.id,
+      't1',
+      'm2',
+    );
+    requestMock.mockClear();
+
+    // Archive project -> every answer-action session endpoint fails closed with 404 NotFoundException
+    const archivedProject = { ...project, status: 'ARCHIVED' as const };
+    getProject.mockResolvedValue(archivedProject);
+
+    await expect(
+      service.createShare(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.putOwnFeedback(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+        { rating: 'LIKE' },
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.deleteOwnFeedback(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.getOwnFeedback(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.openRegenerateStream(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    expect(requestMock).not.toHaveBeenCalled();
+    expect(requestStreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps BFF OpenAPI FeedbackInput conditional allOf rules in sync with approved spec (Finding #9)', () => {
+    const raw = readFileSync(
+      resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as {
+      components?: {
+        schemas?: {
+          FeedbackInput?: { allOf?: unknown[] };
+        };
+      };
+    };
+    const allOf = parsed.components?.schemas?.FeedbackInput?.allOf;
+    expect(Array.isArray(allOf)).toBe(true);
+    expect(allOf).toHaveLength(3);
   });
 });

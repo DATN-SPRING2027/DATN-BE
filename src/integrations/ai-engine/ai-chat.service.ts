@@ -99,6 +99,7 @@ export class AiChatService {
   private async resolveSagSession(
     headers: AiChatRequestHeaders,
     projectId: string,
+    options?: { requireActiveProject?: boolean },
   ): Promise<{
     agentId: string;
     bearerHeaders: Record<string, string>;
@@ -109,6 +110,12 @@ export class AiChatService {
       headers.cookie,
     );
     const project = await this.projects.get(actor, projectId);
+    if (options?.requireActiveProject && project.status !== 'ACTIVE') {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
     const sanitizedName = sanitizeContinuumActorHeaderName(actor.name);
     const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${sanitizedName}`;
 
@@ -469,6 +476,7 @@ export class AiChatService {
     const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
       headers,
       projectId,
+      { requireActiveProject: true },
     );
     let result: { status: number; body: unknown };
     try {
@@ -501,6 +509,7 @@ export class AiChatService {
     const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
       headers,
       projectId,
+      { requireActiveProject: true },
     );
     let result: { status: number; body: unknown };
     try {
@@ -539,6 +548,7 @@ export class AiChatService {
     const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
       headers,
       projectId,
+      { requireActiveProject: true },
     );
     try {
       await this.aiEngine.request<void>({
@@ -561,6 +571,7 @@ export class AiChatService {
     const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
       headers,
       projectId,
+      { requireActiveProject: true },
     );
     let result: { status: number; body: unknown };
     try {
@@ -678,6 +689,7 @@ export class AiChatService {
     const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
       headers,
       projectId,
+      { requireActiveProject: true },
     );
     let upstream: Awaited<ReturnType<AiEngineClient['requestStream']>>;
     try {

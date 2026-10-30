@@ -928,7 +928,65 @@
             "maxLength": 1000,
             "pattern": "\\S"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "rating": {
+                  "const": "DISLIKE"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reasonCategory"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rating": {
+                  "const": "LIKE"
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "reasonCategory"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "reasonText"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "reasonCategory"
+              ],
+              "properties": {
+                "reasonCategory": {
+                  "const": "OTHER"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reasonText"
+              ]
+            }
+          }
+        ]
       },
       "Feedback": {
         "type": "object",
