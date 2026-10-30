@@ -168,6 +168,47 @@ export type PlatformAiFeedbackPageDto = Readonly<{
   nextCursor: string | null;
 }>;
 
+export type AiChatMindMapStatus = 'ready' | 'empty';
+
+export type AiChatMindMapGenerationMode = 'llm' | 'outline_fallback' | 'none';
+
+export type AiChatMindMapFallbackReason =
+  'LLM_UNAVAILABLE' | 'LLM_INVALID_OUTPUT' | null;
+
+export type AiChatMindMapInputDto = Readonly<{
+  topic?: string;
+}>;
+
+export type AiChatMindMapCoverageDto = Readonly<{
+  accessibleReadyDocumentCount: number;
+  usedDocumentCount: number;
+  omittedDocumentCount: number;
+  pendingDocumentCount: number;
+  truncatedDocumentCount: number;
+  evidenceUnitCount: number;
+}>;
+
+export type AiChatMindMapNodeDto = Readonly<{
+  id: string;
+  label: string;
+  summary: string | null;
+  citationNumbers: readonly number[];
+  children: readonly AiChatMindMapNodeDto[];
+}>;
+
+export type AiChatMindMapResponseDto = Readonly<{
+  projectId: string;
+  topic: string | null;
+  status: AiChatMindMapStatus;
+  generationMode: AiChatMindMapGenerationMode;
+  fallbackReason: AiChatMindMapFallbackReason;
+  scopeFingerprint: string;
+  coverage: AiChatMindMapCoverageDto;
+  tree: AiChatMindMapNodeDto | null;
+  citations: readonly AiChatCitationDto[];
+  generatedAt: string;
+}>;
+
 export type AiChatSseFrame =
   | Readonly<{ event: 'started'; data: AiChatStartedEventData }>
   | Readonly<{ event: 'step'; data: AiChatStepEventData }>
@@ -724,5 +765,238 @@ export function mapSagAdminFeedbackPage(
     totals: { likes, dislikes },
     items,
     nextCursor,
+  };
+}
+
+const SAFE_MIND_MAP_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_MIND_MAP_DEPTH = 3;
+const MAX_MIND_MAP_CHILDREN = 8;
+const MAX_MIND_MAP_TOTAL_NODES = 60;
+
+function nonNegativeSafeInteger(value: unknown): number | null {
+  if (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    Number.isSafeInteger(value) &&
+    value >= 0
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function mapSagMindMapNode(
+  raw: unknown,
+  depth: number,
+  validCitationNumbers: ReadonlySet<number>,
+  state: { count: number; seenIds: Set<string> },
+): AiChatMindMapNodeDto | null {
+  if (!isRecord(raw) || depth > MAX_MIND_MAP_DEPTH) {
+    return null;
+  }
+  state.count += 1;
+  if (state.count > MAX_MIND_MAP_TOTAL_NODES) {
+    return null;
+  }
+
+  const id = nonEmptyString(raw.id, 64);
+  const label = nonEmptyString(raw.label, 80);
+  if (
+    !id ||
+    !SAFE_MIND_MAP_ID_PATTERN.test(id) ||
+    state.seenIds.has(id) ||
+    !label
+  ) {
+    return null;
+  }
+  state.seenIds.add(id);
+
+  let summary: string | null = null;
+  if (raw.summary !== null && raw.summary !== undefined) {
+    if (typeof raw.summary !== 'string') return null;
+    summary = nonEmptyString(raw.summary, 320) ?? null;
+  }
+
+  const rawCitationNumbers = raw.citationNumbers ?? raw.citation_numbers;
+  if (!Array.isArray(rawCitationNumbers)) return null;
+  const citationNumbers: number[] = [];
+  const seenCites = new Set<number>();
+  for (const num of rawCitationNumbers) {
+    const parsed = positiveInt(num);
+    if (!parsed || !validCitationNumbers.has(parsed)) {
+      return null;
+    }
+    if (!seenCites.has(parsed)) {
+      seenCites.add(parsed);
+      citationNumbers.push(parsed);
+    }
+  }
+
+  if (
+    !Array.isArray(raw.children) ||
+    raw.children.length > MAX_MIND_MAP_CHILDREN
+  ) {
+    return null;
+  }
+  if (depth === MAX_MIND_MAP_DEPTH && raw.children.length > 0) {
+    return null;
+  }
+  const children: AiChatMindMapNodeDto[] = [];
+  for (const rawChild of raw.children) {
+    const child = mapSagMindMapNode(
+      rawChild,
+      depth + 1,
+      validCitationNumbers,
+      state,
+    );
+    if (!child) return null;
+    children.push(child);
+  }
+
+  return {
+    id,
+    label,
+    summary,
+    citationNumbers,
+    children,
+  };
+}
+
+export function mapSagMindMapResponse(
+  raw: unknown,
+): AiChatMindMapResponseDto | null {
+  if (!isRecord(raw)) return null;
+
+  const projectId = nonEmptyString(raw.projectId ?? raw.project_id, 64);
+  if (!projectId || !SAFE_MIND_MAP_ID_PATTERN.test(projectId)) return null;
+
+  let topic: string | null = null;
+  if (raw.topic !== null && raw.topic !== undefined) {
+    if (typeof raw.topic !== 'string') return null;
+    topic = nonEmptyString(raw.topic, 200) ?? null;
+  }
+
+  const status =
+    raw.status === 'ready' || raw.status === 'empty' ? raw.status : null;
+  const rawMode = raw.generationMode ?? raw.generation_mode;
+  const generationMode =
+    rawMode === 'llm' || rawMode === 'outline_fallback' || rawMode === 'none'
+      ? rawMode
+      : null;
+  if (!status || !generationMode) return null;
+
+  const rawFallbackReason = raw.fallbackReason ?? raw.fallback_reason ?? null;
+  if (
+    rawFallbackReason !== null &&
+    rawFallbackReason !== 'LLM_UNAVAILABLE' &&
+    rawFallbackReason !== 'LLM_INVALID_OUTPUT'
+  ) {
+    return null;
+  }
+  const fallbackReason: AiChatMindMapFallbackReason = rawFallbackReason;
+
+  const rawFingerprint = raw.scopeFingerprint ?? raw.scope_fingerprint;
+  if (
+    typeof rawFingerprint !== 'string' ||
+    rawFingerprint.trim().length < 16 ||
+    rawFingerprint.trim().length > 128
+  ) {
+    return null;
+  }
+  const scopeFingerprint = rawFingerprint.trim();
+
+  if (!isRecord(raw.coverage)) return null;
+  const accessibleReadyDocumentCount = nonNegativeSafeInteger(
+    raw.coverage.accessibleReadyDocumentCount ??
+      raw.coverage.accessible_ready_document_count,
+  );
+  const usedDocumentCount = nonNegativeSafeInteger(
+    raw.coverage.usedDocumentCount ?? raw.coverage.used_document_count,
+  );
+  const omittedDocumentCount = nonNegativeSafeInteger(
+    raw.coverage.omittedDocumentCount ?? raw.coverage.omitted_document_count,
+  );
+  const pendingDocumentCount = nonNegativeSafeInteger(
+    raw.coverage.pendingDocumentCount ?? raw.coverage.pending_document_count,
+  );
+  const truncatedDocumentCount = nonNegativeSafeInteger(
+    raw.coverage.truncatedDocumentCount ??
+      raw.coverage.truncated_document_count,
+  );
+  const evidenceUnitCount = nonNegativeSafeInteger(
+    raw.coverage.evidenceUnitCount ?? raw.coverage.evidence_unit_count,
+  );
+  if (
+    accessibleReadyDocumentCount === null ||
+    usedDocumentCount === null ||
+    omittedDocumentCount === null ||
+    pendingDocumentCount === null ||
+    truncatedDocumentCount === null ||
+    evidenceUnitCount === null
+  ) {
+    return null;
+  }
+
+  if (!Array.isArray(raw.citations)) return null;
+  const citations: AiChatCitationDto[] = [];
+  const validCitationNumbers = new Set<number>();
+  for (const rawCite of raw.citations) {
+    const mappedCite = mapSagCitation(rawCite);
+    if (!mappedCite || validCitationNumbers.has(mappedCite.number)) {
+      return null;
+    }
+    validCitationNumbers.add(mappedCite.number);
+    citations.push(mappedCite);
+  }
+
+  const generatedAt = nonEmptyString(raw.generatedAt ?? raw.generated_at, 64);
+  if (!generatedAt) return null;
+
+  let tree: AiChatMindMapNodeDto | null = null;
+  if (status === 'empty') {
+    if (
+      generationMode !== 'none' ||
+      fallbackReason !== null ||
+      raw.tree !== null ||
+      citations.length > 0
+    ) {
+      return null;
+    }
+  } else {
+    if (
+      (generationMode !== 'llm' && generationMode !== 'outline_fallback') ||
+      raw.tree === null ||
+      raw.tree === undefined
+    ) {
+      return null;
+    }
+    if (generationMode === 'llm' && fallbackReason !== null) {
+      return null;
+    }
+    tree = mapSagMindMapNode(raw.tree, 0, validCitationNumbers, {
+      count: 0,
+      seenIds: new Set<string>(),
+    });
+    if (!tree) return null;
+  }
+
+  return {
+    projectId,
+    topic,
+    status,
+    generationMode,
+    fallbackReason,
+    scopeFingerprint,
+    coverage: {
+      accessibleReadyDocumentCount,
+      usedDocumentCount,
+      omittedDocumentCount,
+      pendingDocumentCount,
+      truncatedDocumentCount,
+      evidenceUnitCount,
+    },
+    tree,
+    citations,
+    generatedAt,
   };
 }

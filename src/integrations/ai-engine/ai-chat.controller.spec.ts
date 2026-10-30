@@ -16,6 +16,7 @@ describe('AiChatController', () => {
     const readSharedAnswerMock = jest.fn();
     const revokeShareMock = jest.fn();
     const openRegenerateStreamMock = jest.fn();
+    const generateMindMapMock = jest.fn();
     const service = {
       listThreads: jest.fn(),
       createThread: createThreadMock,
@@ -30,6 +31,7 @@ describe('AiChatController', () => {
       readSharedAnswer: readSharedAnswerMock,
       revokeShare: revokeShareMock,
       openRegenerateStream: openRegenerateStreamMock,
+      generateMindMap: generateMindMapMock,
     } as unknown as AiChatService;
     const controller = new AiChatController(service);
     return {
@@ -43,6 +45,7 @@ describe('AiChatController', () => {
       readSharedAnswerMock,
       revokeShareMock,
       openRegenerateStreamMock,
+      generateMindMapMock,
     };
   }
 
@@ -337,5 +340,99 @@ describe('AiChatController', () => {
       ),
     ).rejects.toThrow(BadRequestException);
     expect(openRegenerateStreamMock).not.toHaveBeenCalled();
+  });
+
+  it('validates generateMindMap body, enforces CSRF on cookie POST, sets Cache-Control: no-store, and trims topic', async () => {
+    const { controller, generateMindMapMock } = setup();
+    const { res, headers } = makeRes();
+
+    // Cookie POST without CSRF must fail 403 before calling service
+    await expect(
+      controller.generateMindMap(
+        makeReq({ cookie: 'continuum_access=jwt; __Host-csrf=csrf1' }),
+        res,
+        'proj-1',
+        {},
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(generateMindMapMock).not.toHaveBeenCalled();
+
+    // Rejects unexpected body keys (e.g. sourceIds / partitionId)
+    for (const invalidBody of [
+      ['not-an-object'],
+      { sourceIds: ['src-1'] },
+      { topic: '   ' },
+      { topic: 'x'.repeat(201) },
+      { topic: 123 },
+    ]) {
+      await expect(
+        controller.generateMindMap(
+          makeReq({ authorization: 'Bearer token' }),
+          res,
+          'proj-1',
+          invalidBody,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    }
+    expect(generateMindMapMock).not.toHaveBeenCalled();
+
+    // Invalid projectId fails 400
+    await expect(
+      controller.generateMindMap(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        '../bad',
+        {},
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    // Valid overview ({} / undefined) + valid trimmed topic with cookie + CSRF
+    const mockMap = {
+      projectId: 'proj-1',
+      topic: 'Kiến trúc bàn giao',
+      status: 'ready' as const,
+      generationMode: 'llm' as const,
+      fallbackReason: null,
+      scopeFingerprint: 'a'.repeat(64),
+      coverage: {
+        accessibleReadyDocumentCount: 2,
+        usedDocumentCount: 2,
+        omittedDocumentCount: 0,
+        pendingDocumentCount: 0,
+        truncatedDocumentCount: 0,
+        evidenceUnitCount: 6,
+      },
+      tree: {
+        id: 'root',
+        label: 'Kiến trúc bàn giao',
+        summary: 'Tổng quan dự án',
+        citationNumbers: [1],
+        children: [],
+      },
+      citations: [],
+      generatedAt: '2026-10-30T16:00:00Z',
+    };
+    generateMindMapMock.mockResolvedValueOnce(mockMap);
+
+    const out = await controller.generateMindMap(
+      makeReq({
+        cookie: 'continuum_access=jwt; __Host-csrf=csrf1',
+        'x-csrf-token': 'csrf1',
+      }),
+      res,
+      'proj-1',
+      { topic: '   Kiến trúc   bàn giao  ' },
+    );
+
+    expect(headers['cache-control']).toBe('no-store');
+    expect(generateMindMapMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cookie: 'continuum_access=jwt; __Host-csrf=csrf1',
+        csrfToken: 'csrf1',
+      }),
+      'proj-1',
+      { topic: 'Kiến trúc bàn giao' },
+    );
+    expect(out).toEqual(mockMap);
   });
 });

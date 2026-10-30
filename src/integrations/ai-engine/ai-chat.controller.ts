@@ -25,6 +25,7 @@ import {
   AI_CHAT_FEEDBACK_REASON_CATEGORIES,
   type AiChatFeedbackInputDto,
   type AiChatFeedbackReasonCategory,
+  type AiChatMindMapInputDto,
   type AiChatRequestHeaders,
   type AiChatSseFrame,
 } from './ai-chat.types';
@@ -167,6 +168,38 @@ function validateEmptyBody(body: unknown): void {
       message: 'Request body must be an empty JSON object.',
     });
   }
+}
+
+function validateGenerateMindMapBody(body: unknown): AiChatMindMapInputDto {
+  if (body === undefined || body === null) return {};
+  if (!isPlainRecord(body)) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Request body must be a JSON object.',
+    });
+  }
+  const unknownKeys = Object.keys(body).filter((key) => key !== 'topic');
+  if (unknownKeys.length > 0) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Unexpected properties in request body.',
+    });
+  }
+  if (body.topic === undefined || body.topic === null) return {};
+  if (typeof body.topic !== 'string') {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'topic must be a string between 1 and 200 characters.',
+    });
+  }
+  const normalized = body.topic.trim().replace(/\s+/g, ' ');
+  if (normalized.length < 1 || normalized.length > 200) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'topic must be between 1 and 200 characters.',
+    });
+  }
+  return { topic: normalized };
 }
 
 function validateFeedbackBody(body: unknown): AiChatFeedbackInputDto {
@@ -507,6 +540,24 @@ export class AiChatController {
       this.mutationHeaders(request),
       validProjectId,
       validShareId,
+    );
+  }
+
+  @Post('mind-map')
+  @HttpCode(HttpStatus.OK)
+  async generateMindMap(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Body() body: unknown,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const input = validateGenerateMindMapBody(body);
+    return this.aiChat.generateMindMap(
+      this.mutationHeaders(request),
+      validProjectId,
+      input,
     );
   }
 

@@ -1013,4 +1013,153 @@ describe('AiChatService', () => {
     expect(Array.isArray(allOf)).toBe(true);
     expect(allOf).toHaveLength(3);
   });
+
+  it('authorizes active Project read access on generateMindMap, forwards BFF scope headers, and validates tree/citation invariants', async () => {
+    const { service, getCurrentIdentity, getProject, requestMock } = setup();
+
+    // Unauthenticated -> 401 without calling SAG
+    getCurrentIdentity.mockRejectedValueOnce(new UnauthorizedException());
+    await expect(
+      service.generateMindMap({ cookie: 'bad' }, project.id, {}),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Missing/forbidden project -> 403/404 without calling SAG
+    getProject.mockRejectedValueOnce(new ForbiddenException());
+    await expect(
+      service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {}),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Archived project -> safe 404 without calling SAG
+    getProject.mockResolvedValueOnce({
+      ...project,
+      status: 'ARCHIVED' as const,
+    });
+    await expect(
+      service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {}),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Active project -> calls POST /api/v1/projects/:id/mind-map with verified Continuum BFF headers and sanitizes payload
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: 'Bàn giao hệ thống',
+        status: 'ready',
+        generationMode: 'outline_fallback',
+        fallbackReason: 'LLM_UNAVAILABLE',
+        scopeFingerprint: 'f'.repeat(64),
+        coverage: {
+          accessibleReadyDocumentCount: 3,
+          usedDocumentCount: 2,
+          omittedDocumentCount: 1,
+          pendingDocumentCount: 1,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 8,
+        },
+        tree: {
+          id: 'root',
+          label: 'Continuum Core',
+          summary: 'Sơ đồ theo mục lục tài liệu',
+          citationNumbers: [],
+          children: [
+            {
+              id: 'branch_1',
+              label: 'Quy trình bàn giao',
+              summary: 'Chi tiết checklist bàn giao',
+              citationNumbers: [1],
+              children: [],
+            },
+          ],
+        },
+        citations: [
+          {
+            number: 1,
+            sourceId: 'src-1',
+            documentId: '507f1f77bcf86cd799439088',
+            documentName: 'Handover Guide.pdf',
+            versionNo: 2,
+            heading: '1. Quy trình bàn giao',
+            snippet: 'Checklist bàn giao gồm 5 bước xác minh.',
+            pageFrom: 3,
+            pageTo: 4,
+          },
+        ],
+        generatedAt: '2026-10-30T16:10:00Z',
+      },
+    });
+
+    const mindMap = await service.generateMindMap(
+      { authorization: 'Bearer ok' },
+      project.id,
+      { topic: 'Bàn giao hệ thống' },
+    );
+
+    expect(requestMock).toHaveBeenCalledWith({
+      path: `/api/v1/projects/${project.id}/mind-map`,
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': project.organizationId,
+        'X-Continuum-Tenant-Id': project.organizationId,
+        'X-Continuum-Project-Id': project.id,
+        'X-Continuum-Security-Partition': project.id,
+      },
+      body: { topic: 'Bàn giao hệ thống' },
+    });
+    expect(mindMap.generationMode).toBe('outline_fallback');
+    expect(mindMap.fallbackReason).toBe('LLM_UNAVAILABLE');
+    expect(mindMap.tree?.children[0]?.citationNumbers).toEqual([1]);
+    expect(mindMap.citations[0]?.documentId).toBe('507f1f77bcf86cd799439088');
+
+    // Malformed upstream tree (e.g. ready status with null tree, or depth > 3) fails closed with 502 BadGatewayException
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: null,
+        status: 'ready',
+        generationMode: 'llm',
+        fallbackReason: null,
+        scopeFingerprint: 'f'.repeat(64),
+        coverage: {
+          accessibleReadyDocumentCount: 1,
+          usedDocumentCount: 1,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 2,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-30T16:10:00Z',
+      },
+    });
+    await expect(
+      service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {}),
+    ).rejects.toThrow(BadGatewayException);
+  });
+
+  it('keeps BFF OpenAPI MindMap route and schemas synchronized with approved contract', () => {
+    const raw = readFileSync(
+      resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as {
+      paths?: Record<string, { post?: { operationId?: string } }>;
+      components?: {
+        schemas?: Record<string, unknown>;
+      };
+    };
+    expect(
+      parsed.paths?.['/api/v1/ai-chat/projects/{projectId}/mind-map']?.post
+        ?.operationId,
+    ).toBe('generateAiChatMindMap');
+    expect(parsed.components?.schemas?.GenerateMindMapRequest).toBeDefined();
+    expect(parsed.components?.schemas?.MindMapCoverage).toBeDefined();
+    expect(parsed.components?.schemas?.MindMapNode).toBeDefined();
+    expect(parsed.components?.schemas?.MindMapResponse).toBeDefined();
+  });
 });
