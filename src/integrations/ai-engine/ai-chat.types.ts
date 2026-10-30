@@ -32,7 +32,11 @@ export type AiChatSessionCitationDto = Readonly<{
   claimLevel?: 'claim' | 'run';
 }>;
 
+export type AiChatStepStatus = 'running' | 'completed' | 'failed';
+
 export type AiChatRetrievalStepDto = Readonly<{
+  id?: string;
+  status?: AiChatStepStatus;
   kind: 'session_context' | 'tool' | 'thinking' | 'answer';
   label: string;
   durationMs: number;
@@ -475,7 +479,11 @@ export function extractSanitizedStepsAndSessionCitations(rawSteps: unknown): {
         step.count >= 0
           ? step.count
           : undefined;
+      const hasError =
+        (typeof step.error === 'string' && step.error.trim().length > 0) ||
+        isRecord(step.error);
       retrievalSteps.push({
+        ...(hasError ? { status: 'failed' } : {}),
         kind: 'tool',
         label,
         durationMs: nonNegativeInt(step.ms ?? step.duration_ms),
