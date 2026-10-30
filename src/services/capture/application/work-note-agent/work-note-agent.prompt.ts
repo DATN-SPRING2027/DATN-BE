@@ -53,7 +53,7 @@ export const OPERATION_POLICY: Record<AgentOperation, string> = {
     'Biên tập cho người tiếp nhận: điều đã làm, hạn chế, evidence và bước tiếp theo chỉ khi nguồn có; không tự điền mục trống.',
   title: 'Gợi ý tiêu đề ngắn, đúng nguồn và mức chắc chắn; không rewrite body.',
   custom:
-    'Đáp ứng chỉ dẫn hiện tại trong scope. Phân biệt câu hỏi cần ANSWER với yêu cầu chỉnh sửa; không bịa dữ kiện để làm theo.',
+    'Đáp ứng chỉ dẫn hiện tại trong scope. Phân biệt câu hỏi cần ANSWER với yêu cầu chỉnh sửa; không bịa dữ kiện để làm theo. Khi source.text đang trống, có thể dùng ANSWER hoặc CLARIFICATION_REQUIRED để giải đáp về Task, gợi ý các mục nên viết, hoặc trả SUGGESTION_READY với khung dàn ý trung tính khi được yêu cầu rõ (tuyệt đối không tự ghi nhận kết quả đã hoàn thành khi tác giả chưa cung cấp).',
 };
 
 // Synthetic examples are behavioral demonstrations, never user/workspace facts.

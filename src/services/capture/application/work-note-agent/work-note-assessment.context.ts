@@ -6,6 +6,7 @@ import {
   literalAssessmentPassages,
   hasExplicitUncertainty,
 } from './work-note-assessment.polarity';
+import { extractGapNeedCode } from './work-note-assessment.rubric';
 
 /** Narrow whole-reply recognition, not a general intent or entailment classifier.
  * A mixed reply containing a new fact must not be discarded as "no information".
@@ -78,6 +79,7 @@ export function assessmentRequestContext(input: AssessmentModelInput) {
     passageAidsComplete: complete,
     clarificationLedger: input.answers.map((a) => ({
       gapId: a.gapId,
+      needCode: extractGapNeedCode(a.gapId),
       target: a.target,
       disposition: a.disposition,
       information: hasNoNewInformation(a)

@@ -142,4 +142,74 @@ describe('Runtime and evaluation share assessment Editor semantics', () => {
       'EDITOR_PROPOSAL_REQUIRED',
     );
   });
+  it('keeps prose numbers protected when there is no author correction, and allows updating corrected prose numbers while keeping inline code immutable when an author correction exists', () => {
+    const numericDraft = {
+      revision: 3,
+      title: 'Partition spec',
+      body: 'Đặc tả chạy `archive_partitions()` chuyển kho lạnh sau 3 tháng. Chưa kiểm thử staging.',
+    };
+    const noCorrectionPrepared = prepareAssessmentEditorRequest(
+      buildAssessmentEditorInput(numericDraft, null, {
+        ...assessment,
+        answers: [],
+        gaps: [],
+      }),
+    );
+    expect(noCorrectionPrepared.fragments).toHaveLength(2);
+    expect(() =>
+      parseRewriteCompletion(
+        noCorrectionPrepared,
+        raw(
+          `Đặc tả chạy ${noCorrectionPrepared.fragments[0].marker} chuyển kho lạnh sau **3** tháng. Chưa kiểm thử staging.`,
+        ),
+        false,
+      ),
+    ).toThrow('Protected fragments must occur exactly once');
+
+    const withCorrectionInput = buildAssessmentEditorInput(numericDraft, null, {
+      ...assessment,
+      answers: [
+        {
+          id: 'correction-1',
+          gapId: 'claim-1',
+          target: 'author correction',
+          disposition: 'answered',
+          answer:
+            'Đính chính: tôi ghi nhầm 3 tháng; đặc tả thực tế giữ dữ liệu nóng tối thiểu 12 tháng.',
+          purpose: 'COMPLETION',
+          taskContextHash: 'hash',
+        },
+      ],
+      gaps: [],
+    });
+    const withCorrectionPrepared =
+      prepareAssessmentEditorRequest(withCorrectionInput);
+    expect(withCorrectionPrepared.fragments).toHaveLength(1);
+    expect(withCorrectionPrepared.fragments[0].text).toBe(
+      '`archive_partitions()`',
+    );
+    const codeMarker = withCorrectionPrepared.fragments[0].marker;
+    const updated = parseRewriteCompletion(
+      withCorrectionPrepared,
+      raw(
+        `Đặc tả chạy ${codeMarker} giữ dữ liệu nóng tối thiểu 12 tháng trước khi chuyển kho lạnh. Chưa kiểm thử staging.`,
+      ),
+      false,
+    ).result;
+    expect(() =>
+      assertAssessmentEditorProposal(withCorrectionInput, updated),
+    ).not.toThrow();
+    expect(updated.suggestion?.replacementText).toContain(
+      '`archive_partitions()` giữ dữ liệu nóng tối thiểu 12 tháng',
+    );
+    expect(() =>
+      parseRewriteCompletion(
+        withCorrectionPrepared,
+        raw(
+          'Đặc tả chạy archive_partitions() giữ dữ liệu nóng tối thiểu 12 tháng. Chưa kiểm thử staging.',
+        ),
+        false,
+      ),
+    ).toThrow('Protected fragments must occur exactly once');
+  });
 });

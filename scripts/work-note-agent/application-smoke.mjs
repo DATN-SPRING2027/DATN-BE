@@ -28,11 +28,173 @@ export async function runApplicationSmoke() {
   const require = createRequire(import.meta.url);
   const { MongoMemoryReplSet } = require('mongodb-memory-server'),
     mongoose = require('mongoose');
+  const providerMode =
+    process.env.WORKNOTE_AGENT_SMOKE_PROVIDER_MODE === 'mock' ? 'mock' : 'live';
   const { parse } = require('dotenv');
-  const credential = parse(
-    readFileSync(resolve(root, '.env'), 'utf8'),
-  ).XKIRO_API_KEY;
+  const credential =
+    providerMode === 'mock'
+      ? 'synthetic-mock-xkiro-key'
+      : parse(readFileSync(resolve(root, '.env'), 'utf8')).XKIRO_API_KEY;
   if (!credential) throw Error('Local xKiro credential required');
+  const originalFetch = globalThis.fetch;
+  if (providerMode === 'mock') {
+    globalThis.fetch = async (input, init) => {
+      const url =
+        typeof input === 'string' ? input : String(input?.url ?? input);
+      if (url === 'https://api.xkiro.com/v1/chat/completions') {
+        const reqBody = JSON.parse(String(init?.body ?? '{}'));
+        const lastMsg = String(reqBody.messages?.at(-1)?.content ?? '');
+        const parsedUser = JSON.parse(lastMsg);
+        let contentObj;
+        if (parsedUser.outputContract) {
+          const noteSrc =
+            parsedUser.sources?.find((s) => s.id === 'note.body')?.text ?? '';
+          const taskDesc =
+            parsedUser.sources?.find((s) => s.id === 'task.description')
+              ?.text ?? '';
+          const hasUnknown =
+            Array.isArray(parsedUser.answers) &&
+            parsedUser.answers.some((a) => a.disposition === 'unknown');
+          if (noteSrc === 'Xong rồi.') {
+            contentObj = {
+              purpose: 'PROGRESS',
+              taskUnderstanding: {
+                objective: 'Synthetic retry verification',
+                scope: taskDesc,
+                requirements: [
+                  {
+                    text: taskDesc,
+                    sourceRefs: [
+                      { sourceId: 'task.description', quote: taskDesc },
+                    ],
+                  },
+                ],
+                unknowns: [],
+              },
+              claims: [
+                {
+                  text: 'Xong rồi.',
+                  sourceRefs: [{ sourceId: 'note.body', quote: 'Xong rồi.' }],
+                  originKind: 'AUTHOR_REPORT',
+                  supportRelation: 'FULL',
+                },
+              ],
+              coverage: [
+                { requirementIndex: 0, status: 'NOT_REPORTED', sourceRefs: [] },
+              ],
+              gaps: [
+                {
+                  kind: 'SCOPE',
+                  needCode: 'scope.completed_part',
+                  target: 'phần việc cụ thể đã thực hiện',
+                  impact: 'BLOCKING',
+                  owner: 'NOTE_AUTHOR',
+                  sourceRefs: [{ sourceId: 'note.body', quote: 'Xong rồi.' }],
+                },
+              ],
+              taskContextStatus: 'CLEAR',
+              noteAdequacy: 'NEEDS_AUTHOR_INPUT',
+              nextQuestion: hasUnknown
+                ? null
+                : {
+                    gapIndex: 0,
+                    text: 'Bạn đã thực hiện phần việc cụ thể nào?',
+                    reason: 'Cần xác định phạm vi tiến độ.',
+                    options: [],
+                  },
+            };
+          } else {
+            const c1 = 'Đã thêm nút tải lại cho từng phần lỗi';
+            const c2 = 'chưa kiểm thử lỗi mất mạng.';
+            contentObj = {
+              purpose: 'PROGRESS',
+              taskUnderstanding: {
+                objective: 'Synthetic retry verification',
+                scope: taskDesc,
+                requirements: [
+                  {
+                    text: taskDesc,
+                    sourceRefs: [
+                      { sourceId: 'task.description', quote: taskDesc },
+                    ],
+                  },
+                ],
+                unknowns: [],
+              },
+              claims: [
+                {
+                  text: c1,
+                  sourceRefs: [{ sourceId: 'note.body', quote: c1 }],
+                  originKind: 'AUTHOR_REPORT',
+                  supportRelation: 'FULL',
+                },
+                {
+                  text: c2,
+                  sourceRefs: [{ sourceId: 'note.body', quote: c2 }],
+                  originKind: 'AUTHOR_REPORT',
+                  supportRelation: 'FULL',
+                },
+              ],
+              coverage: [
+                {
+                  requirementIndex: 0,
+                  status: 'PARTIAL',
+                  sourceRefs: [{ sourceId: 'note.body', quote: c1 }],
+                },
+              ],
+              gaps: [],
+              taskContextStatus: 'CLEAR',
+              noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+              nextQuestion: null,
+            };
+          }
+        } else {
+          const srcText = String(parsedUser.source?.text ?? '');
+          const replacement = srcText.includes('Đả thêm')
+            ? srcText.replace('Đả thêm', 'Đã thêm')
+            : srcText;
+          contentObj = {
+            status: 'SUGGESTION_READY',
+            message:
+              'Đã biên tập câu chữ và giữ nguyên giới hạn chưa kiểm thử.',
+            suggestion: {
+              replacementText: replacement,
+              suggestedTitle: null,
+              changeSummary: ['Giữ nguyên dữ kiện và giới hạn chưa kiểm thử.'],
+            },
+            questions: [],
+            uncertainties: [],
+          };
+        }
+        return new Response(
+          JSON.stringify({
+            id: `chatcmpl-mock-${randomUUID()}`,
+            model: 'mistralai/ministral-14b',
+            choices: [
+              {
+                index: 0,
+                finish_reason: 'stop',
+                message: {
+                  role: 'assistant',
+                  content: JSON.stringify(contentObj),
+                },
+              },
+            ],
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 200,
+              total_tokens: 700,
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      return originalFetch(input, init);
+    };
+  }
   const repl = await MongoMemoryReplSet.create({
     binary: { version: '7.0.24' },
     replSet: { count: 1 },
@@ -67,6 +229,7 @@ export async function runApplicationSmoke() {
       WORKNOTE_EDITOR_ENABLED: 'true',
       WORKNOTE_SHARED_EDITOR_ENABLED: 'true',
       WORKNOTE_AGENT_ENABLED: 'true',
+      WORKNOTE_ASSESSMENT_ENABLED: 'true',
       WORKNOTE_AGENT_FORMATTING_RECOVERY: 'true',
       XKIRO_API_KEY: credential,
       XKIRO_MODEL: 'mistralai/ministral-14b',
@@ -103,26 +266,7 @@ export async function runApplicationSmoke() {
     connection = await mongoose
       .createConnection(repl.getUri(), { dbName: 'continuum_iam' })
       .asPromise();
-    mark('ISOLATED_SCHEMA_INITIALIZATION');
-    await init.initializeServiceOwnedDatabases(connection);
-    mark('ISOLATED_ACCOUNT_SEED');
-    await init.seedDevelopmentDataset(connection, password);
-    const workspaceMigration =
-      await import('../migrations/20261022-task-workspace-fields.mjs');
-    await workspaceMigration.applyWorkspaceMigration(
-      connection.getClient().db('continuum_task'),
-      connection.db,
-    );
-    const taskCatalog = require(
-      resolve(root, 'src/services/task/workspace/task-workspace.types.ts'),
-    ).WORKSPACE_INDEX_CATALOGUE;
-    for (const [name, indexes] of Object.entries(taskCatalog))
-      for (const { key, ...options } of indexes)
-        await connection
-          .getClient()
-          .db('continuum_task')
-          .collection(name)
-          .createIndex(key, options);
+    mark('ISOLATED_WORKNOTE_MIGRATIONS');
     const migration = await import(
       pathToFileURL(
         resolve(dbPackage, 'scripts/migrations/20261027-work-note-agent.mjs'),
@@ -133,12 +277,46 @@ export async function runApplicationSmoke() {
         resolve(dbPackage, 'scripts/migrations/20261028-work-note-editor.mjs'),
       ).href
     );
+    const assessmentMigration = await import(
+      pathToFileURL(
+        resolve(
+          dbPackage,
+          'scripts/migrations/20261029-work-note-assessment.mjs',
+        ),
+      ).href
+    );
     await migration.migrateWorkNoteAgent(connection.getClient(), {
       apply: true,
     });
     await extension.migrateWorkNoteEditor(connection.getClient(), {
       apply: true,
     });
+    await assessmentMigration.migrateWorkNoteAssessment(
+      connection.getClient(),
+      { apply: true },
+    );
+    mark('ISOLATED_SCHEMA_INITIALIZATION');
+    await init.initializeServiceOwnedDatabases(connection);
+    mark('ISOLATED_ACCOUNT_SEED');
+    await init.seedDevelopmentDataset(connection, password);
+    mark('ISOLATED_WORKSPACE_MIGRATION');
+    const workspaceMigration =
+      await import('../migrations/20261022-task-workspace-fields.mjs');
+    await workspaceMigration.applyWorkspaceMigration(
+      connection.getClient().db('continuum_task'),
+      connection.db,
+    );
+    mark('ISOLATED_TASK_INDEXES');
+    const taskCatalog = require(
+      resolve(root, 'src/services/task/workspace/task-workspace.types.ts'),
+    ).WORKSPACE_INDEX_CATALOGUE;
+    for (const [name, indexes] of Object.entries(taskCatalog))
+      for (const { key, ...options } of indexes)
+        await connection
+          .getClient()
+          .db('continuum_task')
+          .collection(name)
+          .createIndex(key, options);
     mark('REAL_APPLICATION_BOOTSTRAP');
     const { NestFactory } = require('@nestjs/core'),
       { ConfigService, ConfigModule } = require('@nestjs/config');
@@ -235,7 +413,11 @@ export async function runApplicationSmoke() {
     const task = await json(
       `/tasks/projects/${p}/tasks`,
       'POST',
-      { title: 'Synthetic retry verification' },
+      {
+        title: 'Synthetic retry verification',
+        description:
+          'Hỗ trợ tải lại phần tệp bị lỗi và khôi phục phiên tải khi mất mạng.',
+      },
       { ...headers, 'idempotency-key': randomUUID() },
       201,
     );
@@ -251,12 +433,142 @@ export async function runApplicationSmoke() {
       headers,
       201,
     );
+    const initialBody =
+      'Đã thêm nút tải lại cho từng phần lỗi; chưa kiểm thử lỗi mất mạng.';
     const edited = await json(
       `${draftRoot}/${draft.value.id}`,
       'PATCH',
       {
         operationId: randomUUID(),
         expectedRevision: draft.value.revision,
+        title: 'Synthetic retry note',
+        contentMarkdown: initialBody,
+      },
+      headers,
+    );
+    completed.push(stage);
+    mark('TASK_NOTE_ASSESSMENT_AND_REWRITE');
+    const assessRoot = `${draftRoot}/${draft.value.id}/agent/assessments`;
+    const assessed = await json(
+      assessRoot,
+      'POST',
+      {
+        operationId: randomUUID(),
+        expectedRevision: edited.value.revision,
+        purpose: 'PROGRESS',
+      },
+      headers,
+    );
+    const av = assessed.value;
+    if (
+      !av ||
+      av.noteAdequacy !== 'ENOUGH_FOR_PURPOSE' ||
+      av.state !== 'ready_to_edit' ||
+      av.signals?.saved !== false ||
+      av.signals?.proposalApplied !== false ||
+      av.reviewerSemanticAssessment !== 'NOT_ESTABLISHED' ||
+      Date.parse(av.expiresAt) - Date.parse(av.createdAt) > 86400000
+    )
+      throw Error('INVALID_ASSESSMENT_LIFECYCLE');
+    const assessedRewrite = await json(
+      `${assessRoot}/${av.id}/rewrite`,
+      'POST',
+      {
+        operationId: randomUUID(),
+        expectedRevision: edited.value.revision,
+        expectedAssessmentRevision: av.revision,
+      },
+      headers,
+    );
+    if (
+      assessedRewrite.value.status !== 'SUGGESTION_READY' ||
+      !assessedRewrite.value.suggestion?.replacementText?.includes('chưa')
+    )
+      throw Error('INVALID_ASSESSED_EDITOR_PROPOSAL');
+    const afterRewriteRead = await json(
+      `${draftRoot}/${draft.value.id}`,
+      'GET',
+      undefined,
+      headers,
+    );
+    if (afterRewriteRead.value.contentMarkdown !== initialBody)
+      throw Error('UNEXPECTED_AUTO_APPLY');
+    const validatedAuthor = await json(
+      `${assessRoot}/${av.id}/validate-author`,
+      'POST',
+      {
+        operationId: randomUUID(),
+        expectedRevision: edited.value.revision,
+        expectedAssessmentRevision:
+          afterRewriteRead.value.assessment?.revision ?? av.revision + 1,
+      },
+      headers,
+    );
+    const valView = validatedAuthor.value;
+    if (
+      valView?.authorValidated !== true ||
+      valView?.reviewerSemanticAssessment !== 'NOT_ESTABLISHED' ||
+      valView?.signals?.saved !== false
+    )
+      throw Error('AUTHOR_SIGNAL_CONFLATED_WITH_SEMANTIC_REVIEW');
+    completed.push(stage);
+    mark('TASK_NOTE_ASSESSMENT_STALE_AND_UNKNOWN_FALLBACK');
+    const vagueEdit = await json(
+      `${draftRoot}/${draft.value.id}`,
+      'PATCH',
+      {
+        operationId: randomUUID(),
+        expectedRevision: edited.value.revision,
+        title: 'Synthetic retry note',
+        contentMarkdown: 'Xong rồi.',
+      },
+      headers,
+    );
+    await json(
+      `${assessRoot}/${av.id}/rewrite`,
+      'POST',
+      {
+        operationId: randomUUID(),
+        expectedRevision: vagueEdit.value.revision,
+        expectedAssessmentRevision: valView.revision,
+      },
+      headers,
+      409,
+    );
+    const vagueAssessed = await json(
+      assessRoot,
+      'POST',
+      {
+        operationId: randomUUID(),
+        expectedRevision: vagueEdit.value.revision,
+        purpose: 'PROGRESS',
+      },
+      headers,
+    );
+    const vagueView = vagueAssessed.value;
+    if (vagueView?.state !== 'waiting_for_answer' || !vagueView?.nextQuestion)
+      throw Error('EXPECTED_CLARIFICATION_QUESTION');
+    const unknownReplied = await json(
+      `${assessRoot}/${vagueView.id}/replies`,
+      'POST',
+      {
+        operationId: randomUUID(),
+        expectedRevision: vagueEdit.value.revision,
+        expectedAssessmentRevision: vagueView.revision,
+        gapId: vagueView.nextQuestion.gapId,
+        questionId: vagueView.nextQuestion.id,
+        disposition: 'unknown',
+      },
+      headers,
+    );
+    if (unknownReplied.value?.nextQuestion !== null)
+      throw Error('UNKNOWN_NEED_REASKED');
+    const restoredEdit = await json(
+      `${draftRoot}/${draft.value.id}`,
+      'PATCH',
+      {
+        operationId: randomUUID(),
+        expectedRevision: vagueEdit.value.revision,
         title: 'Synthetic retry note',
         contentMarkdown: 'Đả thêm nút retry; chưa kiểm thử lỗi mất mạng.',
       },
@@ -269,7 +581,7 @@ export async function runApplicationSmoke() {
       'POST',
       {
         operationId: randomUUID(),
-        expectedRevision: edited.value.revision,
+        expectedRevision: restoredEdit.value.revision,
         operation: 'grammar',
         scope: 'whole_note',
         instruction: 'Sửa chính tả, giữ thông tin chưa kiểm thử.',
@@ -288,7 +600,7 @@ export async function runApplicationSmoke() {
       'POST',
       {
         operationId: randomUUID(),
-        expectedRevision: edited.value.revision,
+        expectedRevision: restoredEdit.value.revision,
         action: 'replace_body',
         applyTitle: false,
       },
@@ -358,7 +670,9 @@ export async function runApplicationSmoke() {
       realCapture: true,
       realRedis: true,
       disposableMongoDB: true,
-      realProvider: true,
+      realProvider: providerMode === 'live',
+      providerMode:
+        providerMode === 'live' ? 'LIVE_XKIRO' : 'MOCK_XKIRO_FULL_APP_STACK',
       gateway: 'Separate HTTP transport suite; monolith AppModule used here',
       completed,
       sharedAtlasMigration: false,
@@ -378,6 +692,10 @@ export async function runApplicationSmoke() {
           ? error.message
           : 'APPLICATION_SMOKE_FAILED',
       errorType: error?.name,
+      ...(Number.isInteger(error?.code) ? { mongoCode: error.code } : {}),
+      ...(typeof error?.codeName === 'string'
+        ? { mongoCodeName: error.codeName }
+        : {}),
       errorLocation: error?.stack
         ?.split('\n')
         .find((line) => line.trim().startsWith('at '))
@@ -392,6 +710,7 @@ export async function runApplicationSmoke() {
     );
     return result;
   } finally {
+    globalThis.fetch = originalFetch;
     await app?.close();
     await connection?.close();
     await repl.stop();

@@ -106,7 +106,14 @@ export function validateAgentInput(value: AgentInput): void {
     !validString(value.draft.body, LIMITS.body)
   )
     bad();
-  if (value.operation !== 'title' && !value.draft.body.trim()) bad();
+  const allowEmptyBody =
+    value.scope === 'whole_note' &&
+    (value.operation === 'title' || value.operation === 'custom');
+  if (!allowEmptyBody && !value.draft.body.trim())
+    fail(
+      'Vui lòng nhập nội dung ghi chú trước khi sử dụng công cụ chỉnh sửa văn bản này.',
+      'INVALID_INPUT',
+    );
   if (value.scope === 'selection') {
     const s = value.selection;
     if (
@@ -247,7 +254,7 @@ export function prepareAgentRequest(input: AgentInput): PreparedAgentRequest {
   const serialized = JSON.stringify(payload);
   if (serialized.length > LIMITS.context)
     fail(
-      'Context exceeds the request budget; source was not silently truncated.',
+      'Ngữ cảnh gửi đến AI vượt quá giới hạn cho phép. Vui lòng chọn đoạn văn ngắn hơn hoặc rút gọn nội dung.',
       'INVALID_INPUT',
     );
   const messages: AgentMessage[] = [

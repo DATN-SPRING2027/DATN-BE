@@ -9,7 +9,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
-import { randomUUID } from 'node:crypto';
 import type { Connection } from 'mongoose';
 import {
   WorkNoteAgentDraftsService,
@@ -36,14 +35,26 @@ import type {
   AssessmentSource,
   AssessmentView,
 } from './work-note-assessment.types';
+import { assessmentHash } from './work-note-assessment.protocol';
 import {
-  assessmentHash,
-  buildAssessmentMessages,
-} from './work-note-assessment.protocol';
-import {
+  ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
+  ASSESSMENT_EDITOR_PROVIDER_POLICY,
   buildAssessmentEditorInput,
   assertAssessmentEditorProposal,
 } from './work-note-assessment-editor';
+import {
+  AssessmentPipelineError,
+  buildAssessmentSources,
+  canRequestAssessmentRewrite,
+  computeAssessmentTaskHash,
+  finalizeAssessmentTurn,
+  prepareCorrectionAssessmentInput,
+  prepareInitialAssessmentInput,
+  prepareReplyAssessmentInput,
+  prepareResetAssessmentInput,
+  validateAssessmentRequestBudget,
+  type AssessmentArchitecture,
+} from './work-note-assessment.pipeline';
 import {
   assembleAssessment,
   assessmentActions,
@@ -60,11 +71,34 @@ const stale = () =>
 const invalid = (message = 'Assessment input is invalid.') =>
   new UnprocessableEntityException({ code: 'VALIDATION_FAILED', message });
 const taskHash = (a: WorkNotesActor) =>
-  assessmentHash([
-    a.taskContext,
-    a.taskContextVersion,
-    Boolean(a.taskContextInvalid),
-  ]);
+  computeAssessmentTaskHash({
+    taskContext: a.taskContext,
+    taskContextVersion: a.taskContextVersion,
+    taskContextInvalid: Boolean(a.taskContextInvalid),
+  });
+const rethrowPipelineError = (error: unknown): never => {
+  if (error instanceof AssessmentPipelineError) {
+    switch (error.code) {
+      case 'ASSESSMENT_CONTEXT_INVALID':
+      case 'CONTEXT_UNAVAILABLE':
+        throw new ServiceUnavailableException({
+          code: 'ASSESSMENT_CONTEXT_INVALID',
+          message: error.message,
+        });
+      case 'ASSESSMENT_STALE':
+        throw stale();
+      case 'VALIDATION_FAILED':
+        throw invalid(error.message);
+      case 'ASSESSMENT_CONTEXT_LIMIT':
+        throw new UnprocessableEntityException({
+          code: 'ASSESSMENT_CONTEXT_LIMIT',
+          message: error.message,
+        });
+    }
+  }
+  throw error;
+};
+
 @Injectable()
 export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
   constructor(
@@ -87,6 +121,12 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         code: 'WORKNOTE_ASSESSMENT_DISABLED',
         message: 'Assessment is unavailable. You can still save.',
       });
+  }
+  private architecture(): AssessmentArchitecture {
+    const candidate = this.model as unknown as {
+      getAssessmentArchitecture?: () => AssessmentArchitecture;
+    };
+    return candidate.getAssessmentArchitecture?.() ?? 'combined';
   }
   private current(
     d: DraftRow,
@@ -129,73 +169,21 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     a: WorkNotesActor,
     answers: AssessmentAnswer[],
   ): AssessmentSource[] {
-    if (a.taskContextInvalid || !a.taskContext)
-      throw new ServiceUnavailableException({
-        code: 'ASSESSMENT_CONTEXT_INVALID',
-        message:
-          'Task context could not be loaded correctly. This is not missing authored requirements. Retry; your note can still be saved.',
+    try {
+      return buildAssessmentSources({
+        taskContext: a.taskContext,
+        taskContextVersion: a.taskContextVersion,
+        taskContextInvalid: Boolean(a.taskContextInvalid),
+        note: {
+          revision: d.revision,
+          title: d.state.title,
+          contentMarkdown: d.state.contentMarkdown,
+        },
+        answers,
       });
-    const t = a.taskContext,
-      h = taskHash(a),
-      v = a.taskContextVersion ?? h;
-    const source = (
-      id: string,
-      kind: AssessmentSource['kind'],
-      label: string,
-      text: string,
-      version: string,
-    ): AssessmentSource => ({
-      id,
-      kind,
-      label,
-      text,
-      version,
-      loadStatus: 'LOADED',
-      includedInRequest: true,
-    });
-    return [
-      source('task.title', 'TASK', 'Task title', t.title, v),
-      source(
-        'task.description',
-        'TASK',
-        'Task description',
-        t.description ?? '',
-        v,
-      ),
-      source(
-        'task.status',
-        'TASK',
-        'Task status (not execution evidence)',
-        t.status,
-        v,
-      ),
-      ...t.steps.map((s, i) =>
-        source(`task.step.${i}`, 'TASK', `Checklist ${i + 1}`, s.text, v),
-      ),
-      source(
-        'note.title',
-        'NOTE',
-        'Note title',
-        d.state.title,
-        String(d.revision),
-      ),
-      source(
-        'note.body',
-        'NOTE',
-        'Note content',
-        d.state.contentMarkdown,
-        String(d.revision),
-      ),
-      ...answers.map((x) =>
-        source(
-          `answer.${x.id}`,
-          'ANSWER',
-          `Author clarification: ${x.target}`,
-          x.disposition === 'answered' ? (x.answer ?? '') : x.disposition,
-          String(d.revision),
-        ),
-      ),
-    ];
+    } catch (error) {
+      return rethrowPipelineError(error);
+    }
   }
   async assess(
     headers: CaptureRequestHeaders,
@@ -204,12 +192,12 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     input: AssessmentInput,
   ) {
     this.enabled();
-    return this.infer(headers, p, id, input, 'assess', null, (d, a) => ({
-      sources: this.sources(d, a, []),
-      purpose: input.purpose,
-      previous: null,
-      answers: [],
-    }));
+    return this.infer(headers, p, id, input, 'assess', null, (d, a) =>
+      prepareInitialAssessmentInput({
+        purpose: input.purpose,
+        sourcesBuilder: (answers) => this.sources(d, a, answers),
+      }),
+    );
   }
   async reply(
     headers: CaptureRequestHeaders,
@@ -221,33 +209,18 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     this.enabled();
     return this.infer(headers, p, id, input, 'reply', assessmentId, (d, a) => {
       const v = this.current(d, a, assessmentId, input);
-      if (
-        v.state !== 'waiting_for_answer' ||
-        !v.nextQuestion ||
-        v.nextQuestion.id !== input.questionId ||
-        v.nextQuestion.gapId !== input.gapId
-      )
-        throw stale();
-      const g = v.gaps.find((g) => g.id === input.gapId);
-      if (!g || v.answers.some((x) => x.gapId === g.id)) throw stale();
-      const answer: AssessmentAnswer = {
-        id: randomUUID(),
-        gapId: g.id,
-        target: g.target,
-        disposition: input.disposition,
-        ...(input.disposition === 'answered' ? { answer: input.answer } : {}),
-        purpose: v.purpose,
-        taskContextHash: v.taskContextHash,
-      };
-      const answers = [...v.answers, answer];
-      if (answers.length > 20)
-        throw invalid('Start a new assessment before adding more answers.');
-      return {
-        sources: this.sources(d, a, answers),
-        purpose: v.purpose,
-        previous: v,
-        answers,
-      };
+      try {
+        return prepareReplyAssessmentInput({
+          current: v,
+          questionId: input.questionId,
+          gapId: input.gapId,
+          disposition: input.disposition,
+          answer: input.answer,
+          sourcesBuilder: (answers) => this.sources(d, a, answers),
+        });
+      } catch (error) {
+        return rethrowPipelineError(error);
+      }
     });
   }
   async correct(
@@ -267,36 +240,16 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       assessmentId,
       (d, a) => {
         const v = this.current(d, a, assessmentId, input);
-        if (
-          ![...v.claims, ...v.gaps].some(
-            (c) => c.id === input.targetClaimOrGapId,
-          )
-        )
-          throw invalid('Correction target is not part of this assessment.');
-        const answer: AssessmentAnswer = {
-          id: randomUUID(),
-          gapId: input.targetClaimOrGapId,
-          target: 'author correction',
-          disposition: 'answered',
-          answer: input.correctionText,
-          purpose: v.purpose,
-          taskContextHash: v.taskContextHash,
-        };
-        const answers = [...v.answers, answer];
-        if (answers.length > 20)
-          throw invalid(
-            'Start a new assessment before adding more corrections.',
-          );
-        return {
-          sources: this.sources(d, a, answers),
-          purpose: v.purpose,
-          previous: v,
-          answers,
-          correction: {
-            targetId: input.targetClaimOrGapId,
-            text: input.correctionText,
-          },
-        };
+        try {
+          return prepareCorrectionAssessmentInput({
+            current: v,
+            targetClaimOrGapId: input.targetClaimOrGapId,
+            correctionText: input.correctionText,
+            sourcesBuilder: (answers) => this.sources(d, a, answers),
+          });
+        } catch (error) {
+          return rethrowPipelineError(error);
+        }
       },
     );
   }
@@ -317,32 +270,17 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       assessmentId,
       (d, a) => {
         const v = this.current(d, a, assessmentId, input, true);
-        const answers = input.carryAnswerIds.map((x) => {
-          const answer = v.answers.find((v) => v.id === x);
-          if (
-            !answer ||
-            answer.disposition !== 'answered' ||
-            answer.taskContextHash !== taskHash(a)
-          )
-            throw invalid('Answer cannot be carried into the new context.');
-          if (
-            input.newPurpose !== v.purpose &&
-            (input.newPurpose === 'QA' ||
-              v.purpose === 'QA' ||
-              input.newPurpose === 'OTHER' ||
-              v.purpose === 'OTHER')
-          )
-            throw invalid(
-              'Answer relevance is not established for the new purpose.',
-            );
-          return answer;
-        });
-        return {
-          sources: this.sources(d, a, answers),
-          purpose: input.newPurpose,
-          previous: null,
-          answers,
-        };
+        try {
+          return prepareResetAssessmentInput({
+            current: v,
+            currentTaskContextHash: taskHash(a),
+            newPurpose: input.newPurpose,
+            carryAnswerIds: input.carryAnswerIds,
+            sourcesBuilder: (answers) => this.sources(d, a, answers),
+          });
+        } catch (error) {
+          return rethrowPipelineError(error);
+        }
       },
     );
   }
@@ -384,13 +322,9 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     if (d.revision !== input.expectedRevision) throw stale();
     const modelInput = build(d, actor);
     try {
-      buildAssessmentMessages(modelInput);
-    } catch {
-      throw new UnprocessableEntityException({
-        code: 'ASSESSMENT_CONTEXT_LIMIT',
-        message:
-          'The complete context exceeds the analysis budget. No requirements were silently omitted.',
-      });
+      validateAssessmentRequestBudget(modelInput, this.architecture());
+    } catch (error) {
+      rethrowPipelineError(error);
     }
     if (!(await this.consumeAgentQuota(actor)))
       throw new HttpException(
@@ -453,7 +387,11 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         {
           $set: {
             inferenceOperationId: input.operationId,
-            inferenceLeaseUntil: new Date(Date.now() + 45000),
+            inferenceLeaseUntil: new Date(
+              Date.now() +
+                ASSESSMENT_ANALYSIS_PROVIDER_POLICY.timeoutMs +
+                10000,
+            ),
             'state.assessment': provisional,
             'state.pendingQuestion': null,
           },
@@ -480,44 +418,18 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       const completion = await this.model.assess(modelInput);
       const fresh = await this.owned(headers, p, id);
       if (taskHash(fresh.actor) !== taskHash(actor)) throw stale();
-      const v = assembleAssessment(modelInput, completion.result, {
+      const v = finalizeAssessmentTurn({
+        input: modelInput,
+        modelResult: completion.result,
         sourceRevision: d.revision,
         taskContextHash: taskHash(actor),
-        model: this.config.get<string>('XKIRO_MODEL') ?? '',
+        modelName: this.config.get<string>('XKIRO_MODEL') ?? '',
         expiresAt: new Date(
           Math.min(d.expiresAt.getTime(), d.createdAt.getTime() + DAY),
         ).toISOString(),
+        provisionalId: provisional.id,
+        provenance: completion.provenance,
       });
-      if (!modelInput.previous) v.id = provisional.id;
-      v.trace = [
-        ...v.trace,
-        {
-          phase: 'analysis',
-          reasonCode: 'MODEL_COMPLETED',
-          at: new Date().toISOString(),
-          ...completion.provenance,
-        },
-      ]
-        .map(
-          ({
-            phase,
-            reasonCode,
-            at,
-            durationMs,
-            promptTokens,
-            completionTokens,
-            httpAttempts,
-          }) => ({
-            phase,
-            reasonCode,
-            at,
-            ...(durationMs !== undefined ? { durationMs } : {}),
-            ...(promptTokens !== undefined ? { promptTokens } : {}),
-            ...(completionTokens !== undefined ? { completionTokens } : {}),
-            ...(httpAttempts !== undefined ? { httpAttempts } : {}),
-          }),
-        )
-        .slice(-40);
       return await this.transaction(async (_db, session) => {
         const changed = await this.drafts().updateOne(
           {
@@ -607,7 +519,7 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       return replay.result;
     }
     const v = this.current(d, actor, assessmentId, input);
-    if (!v.allowedActions.includes('rewrite')) throw stale();
+    if (!canRequestAssessmentRewrite(v)) throw stale();
     if (!(await this.consumeAgentQuota(actor)))
       throw new HttpException({ code: 'AGENT_RATE_LIMIT' }, 429);
     await this.transaction(async (_db, session) => {
@@ -627,7 +539,9 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         {
           $set: {
             inferenceOperationId: input.operationId,
-            inferenceLeaseUntil: new Date(Date.now() + 45000),
+            inferenceLeaseUntil: new Date(
+              Date.now() + ASSESSMENT_EDITOR_PROVIDER_POLICY.timeoutMs + 10000,
+            ),
           },
         },
         { session },

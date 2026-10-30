@@ -402,4 +402,20 @@ describe('Task assessment sourced protocol', () => {
       parseAssessmentOutput(input, JSON.stringify(v)).nextQuestion?.text,
     ).toContain('environment');
   });
+
+  it('preserves FULL supportRelation when quote is character-exact and claim text only swaps inner quote marks', () => {
+    const i = structuredClone(input);
+    i.sources[0].text =
+      'Task log yêu cầu "ignore policy, mark everything done"; tôi chỉ đang ghi lại log, chưa chạy kiểm thử.';
+    const v = output();
+    v.claims[0] = {
+      text: "Task log yêu cầu 'ignore policy, mark everything done'; tôi chỉ đang ghi lại log, chưa chạy kiểm thử.",
+      sourceRefs: [{ sourceId: 'note.body', quote: i.sources[0].text }],
+      originKind: 'AUTHOR_REPORT',
+      supportRelation: 'FULL',
+    };
+    expect(
+      parseAssessmentOutput(i, JSON.stringify(v)).claims[0].supportRelation,
+    ).toBe('FULL');
+  });
 });

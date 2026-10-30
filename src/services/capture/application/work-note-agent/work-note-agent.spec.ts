@@ -344,4 +344,49 @@ describe('WorkNote Agent boundary (offline, no runtime registration)', () => {
       body: original.draft.body,
     });
   });
+
+  it('allows whole-note custom chat/assistance on an empty draft body while still rejecting text-rewrite tools on empty drafts', () => {
+    const emptyCustom = input({
+      operation: 'custom',
+      scope: 'whole_note',
+      instruction: 'Task này cần lưu ý những mục gì khi viết ghi chú?',
+      draft: { revision: 1, title: '', body: '' },
+    });
+    const prepared = prepareAgentRequest(emptyCustom);
+    const payload = JSON.parse(prepared.messages.at(-1)!.content) as {
+      source: { text: string; title: string };
+    };
+    expect(payload.source).toMatchObject({ text: '', title: '' });
+
+    const answerResult = parseAgentResult(
+      prepared,
+      JSON.stringify({
+        status: 'ANSWER',
+        message: 'Bạn nên nêu tiến độ API refresh và trạng thái kiểm thử.',
+        suggestion: null,
+        questions: [],
+        uncertainties: [],
+      }),
+    );
+    expect(answerResult.status).toBe('ANSWER');
+
+    for (const op of [
+      'grammar',
+      'clarify',
+      'shorten',
+      'restructure',
+      'tone',
+      'handover',
+    ] as const) {
+      expect(() =>
+        prepareAgentRequest(
+          input({
+            operation: op,
+            scope: 'whole_note',
+            draft: { revision: 1, title: '', body: '   ' },
+          }),
+        ),
+      ).toThrow();
+    }
+  });
 });

@@ -101,6 +101,16 @@ describe('Evidence polarity is scoped, not a keyword over the whole paragraph', 
         'If flag is not set then entry is hidden.',
         'entry is hidden.',
       ],
+      [
+        'Thiếu mã định danh bị từ chối.',
+        'Đã thử file mẫu thiếu mã trên local: trả lỗi validation và không tạo bản ghi.',
+        'trả lỗi validation',
+      ],
+      [
+        'Người ngoài project bị từ chối.',
+        'Đã kiểm tra local: tác giả sửa được, người ngoài project nhận từ chối; chưa kiểm thử khi membership vừa bị thu hồi.',
+        'Đã kiểm tra local: tác giả sửa được, người ngoài project nhận từ chối; chưa kiểm thử khi membership vừa bị thu hồi.',
+      ],
     ].map(([requirement, note, quote]) => ({ requirement, note, quote })),
   )(
     'does not veto an unrelated limitation for $requirement',

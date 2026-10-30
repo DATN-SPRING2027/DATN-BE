@@ -15,22 +15,39 @@ import {
 import { AgentValidationError } from '../../src/services/capture/application/work-note-agent/work-note-agent';
 import {
   buildAssessmentMessages,
-  parseAssessmentCompletion,
   ASSESSMENT_PROMPT_VERSION,
 } from '../../src/services/capture/application/work-note-agent/work-note-assessment.protocol';
-import { assembleAssessment } from '../../src/services/capture/application/work-note-agent/work-note-assessment.state';
 import {
-  buildAssessmentEditorInput,
-  prepareAssessmentEditorRequest,
+  SPLIT_ASSESSMENT_PROMPT_VERSION,
+  buildTaskInterpreterMessages,
+  type TaskInterpreterOutput,
+} from '../../src/services/capture/application/work-note-agent/work-note-assessment-split';
+import {
+  AssessmentPipelineError,
+  buildAssessmentSources,
+  computeAssessmentTaskHash,
+  executeAssessmentEditorCall,
+  executeAssessmentModelCall,
+  extractSnapshotsFromSources,
+  finalizeAssessmentTurn,
+  isEligibleForAutomatedEditorEvaluation,
+  prepareCorrectionAssessmentInput,
+  prepareInitialAssessmentInput,
+  prepareReplyAssessmentInput,
+  prepareResetAssessmentInput,
+  validateAssessmentRequestBudget,
+  type AssessmentArchitecture,
+} from '../../src/services/capture/application/work-note-agent/work-note-assessment.pipeline';
+import {
   ASSESSMENT_EDITOR_SYSTEM_PROMPT,
-  assertAssessmentEditorProposal,
   ASSESSMENT_EDITOR_PROVIDER_POLICY,
   ASSESSMENT_EDITOR_INSTRUCTION_VERSION,
   ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
 } from '../../src/services/capture/application/work-note-agent/work-note-assessment-editor';
-import { parseRewriteCompletion } from '../../src/services/capture/application/work-note-agent/work-note-agent.completion';
 import {
   loadAssessmentCorpus,
+  loadRegression80Corpus,
+  loadRelease60Corpus,
   gradeAssessment,
   makeAssessmentWorksheet,
   type AssessmentEvaluationRow,
@@ -175,38 +192,55 @@ export class AssessmentAttemptBudget {
 
 export type AssessmentRunOptions = {
   live: boolean;
-  batch: 'pilot' | 'full';
+  corpus: 'v4' | 'regression80' | 'release60';
+  batch: 'pilot' | 'full' | 'release';
   split: 'development' | 'validation' | 'holdout' | 'all';
+  architecture: AssessmentArchitecture;
   model?: string;
   maxAttempts: number;
+  maxPhaseAttempts?: number;
   maxTokens: number;
   maxTotalTokens: number;
   timeoutMs: number;
   phaseId?: string;
   caseIds?: string;
+  maxTurns?: number;
+  editorLimit?: number;
+  disableInterpreterCache?: boolean;
+  interCallDelayMs?: number;
+  noFailFast?: boolean;
 };
+
 export function parseAssessmentRunOptions(
   args: readonly string[],
 ): AssessmentRunOptions {
   const o: AssessmentRunOptions = {
     live: false,
+    corpus: 'v4',
     batch: 'pilot',
     split: 'development',
+    architecture: 'combined',
     maxAttempts: 29,
     maxTokens: 8192,
     maxTotalTokens: 500000,
-    timeoutMs: 30000,
+    timeoutMs: ASSESSMENT_ANALYSIS_PROVIDER_POLICY.timeoutMs,
   };
   const names: Record<string, keyof AssessmentRunOptions> = {
+    '--corpus': 'corpus',
     '--batch': 'batch',
     '--split': 'split',
+    '--architecture': 'architecture',
     '--model': 'model',
     '--max-attempts': 'maxAttempts',
+    '--max-phase-attempts': 'maxPhaseAttempts',
     '--max-tokens': 'maxTokens',
     '--max-total-tokens': 'maxTotalTokens',
     '--timeout-ms': 'timeoutMs',
     '--phase-id': 'phaseId',
     '--cases': 'caseIds',
+    '--max-turns': 'maxTurns',
+    '--editor-limit': 'editorLimit',
+    '--inter-call-delay-ms': 'interCallDelayMs',
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') {
@@ -217,6 +251,14 @@ export function parseAssessmentRunOptions(
       o.live = false;
       continue;
     }
+    if (args[i] === '--disable-interpreter-cache') {
+      o.disableInterpreterCache = true;
+      continue;
+    }
+    if (args[i] === '--no-fail-fast') {
+      o.noFailFast = true;
+      continue;
+    }
     const field = names[args[i]],
       value = args[++i];
     if (!field || !value || value.startsWith('--'))
@@ -224,30 +266,54 @@ export function parseAssessmentRunOptions(
     Object.assign(o, {
       [field]: [
         'maxAttempts',
+        'maxPhaseAttempts',
         'maxTokens',
         'maxTotalTokens',
         'timeoutMs',
+        'maxTurns',
+        'editorLimit',
+        'interCallDelayMs',
       ].includes(field)
         ? Number(value)
         : value,
     });
   }
+  const attemptCeiling =
+    o.batch === 'pilot' ? 29 : o.batch === 'full' ? 176 : 280;
   if (
-    !['pilot', 'full'].includes(o.batch) ||
+    !['v4', 'regression80', 'release60'].includes(o.corpus) ||
+    !['pilot', 'full', 'release'].includes(o.batch) ||
     !['development', 'validation', 'holdout', 'all'].includes(o.split) ||
+    !['combined', 'split'].includes(o.architecture) ||
     (o.batch === 'pilot' && o.split !== 'development') ||
     !Number.isSafeInteger(o.maxAttempts) ||
     o.maxAttempts < 1 ||
-    o.maxAttempts > (o.batch === 'pilot' ? 29 : 176) ||
+    o.maxAttempts > attemptCeiling ||
+    (o.maxPhaseAttempts !== undefined &&
+      (!Number.isSafeInteger(o.maxPhaseAttempts) ||
+        o.maxPhaseAttempts < o.maxAttempts ||
+        o.maxPhaseAttempts > attemptCeiling)) ||
     !Number.isSafeInteger(o.maxTokens) ||
     o.maxTokens < 128 ||
     o.maxTokens > 8192 ||
     !Number.isSafeInteger(o.maxTotalTokens) ||
     o.maxTotalTokens < 500 ||
-    o.maxTotalTokens > 2_000_000 ||
+    o.maxTotalTokens > 4_000_000 ||
     !Number.isSafeInteger(o.timeoutMs) ||
     o.timeoutMs < 1000 ||
-    o.timeoutMs > 30000 ||
+    o.timeoutMs > 90000 ||
+    (o.maxTurns !== undefined &&
+      (!Number.isSafeInteger(o.maxTurns) ||
+        o.maxTurns < 1 ||
+        o.maxTurns > 3)) ||
+    (o.editorLimit !== undefined &&
+      (!Number.isSafeInteger(o.editorLimit) ||
+        o.editorLimit < 0 ||
+        o.editorLimit > 80)) ||
+    (o.interCallDelayMs !== undefined &&
+      (!Number.isSafeInteger(o.interCallDelayMs) ||
+        o.interCallDelayMs < 0 ||
+        o.interCallDelayMs > 5000)) ||
     (o.model !== undefined && !/^[\w.-]+\/[\w.:-]+$/.test(o.model))
   )
     throw Error('ASSESSMENT_ARGUMENT_LIMIT');
@@ -266,9 +332,17 @@ type Dependencies = {
   fetcher?: typeof fetch;
   writeReport?: boolean;
 };
+
 const fingerprint = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+const delay = (ms: number) =>
+  ms > 0
+    ? new Promise<void>((resolve) => setTimeout(resolve, ms))
+    : Promise.resolve();
+
 const safeCode = (e: unknown): string => {
+  if (e instanceof AssessmentPipelineError) return e.code;
   if (e instanceof XkiroError) {
     const status =
       typeof e.status === 'number' &&
@@ -287,28 +361,18 @@ const safeCode = (e: unknown): string => {
     : 'ASSESSMENT_PROVIDER_OR_PROTOCOL_FAILURE';
 };
 
-// Uses the production state algorithm; this still does not impersonate IAM/API transactions.
-function evaluationView(
-  input: AssessmentModelInput,
-  output: AssessmentModelOutput,
-  revision: number,
-): AssessmentView {
-  return assembleAssessment(input, output, {
-    sourceRevision: revision,
-    taskContextHash: fingerprint(
-      input.sources.filter((s) => s.kind === 'TASK'),
-    ),
-    model: 'evaluation/synthetic',
-    expiresAt: new Date(Date.now() + 86400000).toISOString(),
-  });
-}
-
 export async function runAssessmentEvaluation(
   args: readonly string[],
   dependencies: Dependencies = {},
 ) {
   const options = parseAssessmentRunOptions(args),
-    corpus = (dependencies.readCorpus ?? loadAssessmentCorpus)();
+    defaultCorpusLoader =
+      options.corpus === 'release60'
+        ? loadRelease60Corpus
+        : options.corpus === 'regression80'
+          ? loadRegression80Corpus
+          : loadAssessmentCorpus,
+    corpus = (dependencies.readCorpus ?? defaultCorpusLoader)();
   const eligible = corpus.scenarios.filter((c) =>
     options.batch === 'pilot'
       ? c.pilot
@@ -324,18 +388,49 @@ export async function runAssessmentEvaluation(
   const scenarios = ids
     ? ids.map((id) => eligible.find((c) => c.id === id)!)
     : eligible;
-  const analyses = scenarios.reduce((n, c) => n + c.turns.length, 0);
+  const effectiveTurnCount = (turnsLen: number) =>
+    options.maxTurns !== undefined
+      ? Math.min(turnsLen, options.maxTurns)
+      : turnsLen;
+  const scriptedTurns = scenarios.reduce(
+    (n, c) => n + effectiveTurnCount(c.turns.length),
+    0,
+  );
+  const analyses =
+    options.architecture === 'combined'
+      ? scriptedTurns
+      : options.disableInterpreterCache
+        ? scriptedTurns * 2
+        : scenarios.length + scriptedTurns;
+  const plannedEditors =
+    options.editorLimit !== undefined
+      ? Math.min(scenarios.length, options.editorLimit)
+      : scenarios.length;
   const ceiling = {
     scenarios: scenarios.length,
     analysisCalls: analyses,
-    editorCalls: scenarios.length,
-    logicalCalls: analyses + scenarios.length,
-    httpAttempts: analyses + scenarios.length,
+    editorCalls: plannedEditors,
+    logicalCalls: analyses + plannedEditors,
+    httpAttempts: analyses + plannedEditors,
     retries: 0,
   };
+  const activePromptVersion =
+    options.architecture === 'split'
+      ? SPLIT_ASSESSMENT_PROMPT_VERSION
+      : ASSESSMENT_PROMPT_VERSION;
+  const firstMessages =
+    options.architecture === 'split'
+      ? buildTaskInterpreterMessages({ sources: scenarios[0].sources })
+      : buildAssessmentMessages({
+          sources: scenarios[0].sources,
+          purpose: scenarios[0].purpose,
+          previous: null,
+          answers: [],
+        });
   const base = {
     mode: options.live ? 'live' : 'dry-run',
     classification: 'synthetic-only',
+    architecture: options.architecture,
     corpusVersion: corpus.version,
     corpusHash: fingerprint(corpus),
     ceiling,
@@ -345,27 +440,20 @@ export async function runAssessmentEvaluation(
       maxOutputTokensPerCall: options.maxTokens,
       maxAccountedTokenReservation: options.maxTotalTokens,
     },
-    promptVersion: ASSESSMENT_PROMPT_VERSION,
-    systemPromptHash: fingerprint(
-      buildAssessmentMessages({
-        sources: scenarios[0].sources,
-        purpose: scenarios[0].purpose,
-        previous: null,
-        answers: [],
-      })[0],
-    ),
-    promptTemplateHash: fingerprint(
-      buildAssessmentMessages({
-        sources: scenarios[0].sources,
-        purpose: scenarios[0].purpose,
-        previous: null,
-        answers: [],
-      }).slice(0, -1),
-    ),
+    promptVersion: activePromptVersion,
+    systemPromptHash: fingerprint(firstMessages[0]),
+    promptTemplateHash: fingerprint(firstMessages.slice(0, -1)),
   };
   if (!options.live) return { ...base, rows: [] as AssessmentEvaluationRow[] };
   if (!dependencies.fetcher && !options.phaseId)
     throw Error('ASSESSMENT_PHASE_ID_REQUIRED');
+  const phaseCeiling =
+    options.maxPhaseAttempts ??
+    (options.batch === 'pilot'
+      ? 29
+      : options.batch === 'full'
+        ? 176
+        : options.maxAttempts);
   const phase = options.phaseId
     ? new AssessmentPhaseBudget(
         resolve(
@@ -373,7 +461,7 @@ export async function runAssessmentEvaluation(
           '.worknote-agent-evals',
           options.phaseId + '.budget.json',
         ),
-        options.batch === 'pilot' ? 29 : 176,
+        phaseCeiling,
         options.maxTotalTokens,
       )
     : undefined;
@@ -415,136 +503,184 @@ export async function runAssessmentEvaluation(
     },
     budget.fetch,
   );
+  const completeMessage = async (
+    messages: Parameters<typeof client.complete>[0],
+    role: 'analysis' | 'interpreter' | 'assessor' | 'editor',
+  ) => {
+    if (options.interCallDelayMs && budget.snapshot().actualHttpAttempts > 0) {
+      await delay(options.interCallDelayMs);
+    }
+    if (role === 'editor') {
+      return editorClient.complete(
+        messages,
+        `assessment-editor-${randomUUID()}`,
+      );
+    }
+    return client.complete(messages, `assessment-${role}-${randomUUID()}`);
+  };
+
   const rows: AssessmentEvaluationRow[] = [];
   let stop = false,
-    consecutiveErrors = 0;
+    consecutiveErrors = 0,
+    editorRuns = 0;
+  const maxEditorRuns =
+    options.editorLimit !== undefined ? options.editorLimit : scenarios.length;
+
   for (const c of scenarios) {
     if (stop) {
       rows.push({ caseId: c.id, turn: 1, skipped: true });
       continue;
     }
-    let input: AssessmentModelInput = {
-      sources: structuredClone(c.sources),
+    const extracted = extractSnapshotsFromSources(c.sources, {
+      revision: 1,
+      stepDoneByIndex: c.stepDoneByIndex,
+    });
+    const taskContext = extracted.taskContext;
+    const taskContextVersion = extracted.taskContextVersion;
+    let noteSnapshot = extracted.note;
+    let sourceOverrides = structuredClone(c.sources);
+    const currentTaskHash = computeAssessmentTaskHash({
+      taskContext,
+      taskContextVersion,
+      taskContextInvalid: false,
+    });
+    const sourcesBuilder = (answers: AssessmentModelInput['answers']) =>
+      buildAssessmentSources({
+        taskContext,
+        taskContextVersion,
+        taskContextInvalid: false,
+        note: noteSnapshot,
+        answers,
+        sourceOverrides,
+      });
+    const interpreterCache = options.disableInterpreterCache
+      ? undefined
+      : new Map<string, TaskInterpreterOutput>();
+
+    let input: AssessmentModelInput = prepareInitialAssessmentInput({
       purpose: c.purpose,
-      previous: null,
-      answers: [],
-    };
+      sourcesBuilder,
+    });
     let output: AssessmentModelOutput | null = null;
     let activeAssessment: AssessmentView | null = null;
-    let sourceRevision = 1;
-    for (let i = 0; i < c.turns.length; i++) {
+    const turnLimit = effectiveTurnCount(c.turns.length);
+
+    for (let i = 0; i < turnLimit; i++) {
       const turn = c.turns[i];
-      input = {
-        ...input,
-        answers: [...input.answers],
-        sources: [...input.sources],
-      };
       const started = Date.now();
       let rawSyntheticResponse: string | undefined;
       let requestTemplateHash: string | undefined;
+      const stageRawResponses: string[] = [];
       try {
         if (turn.noteReplacement) {
-          sourceRevision++;
-          input.previous = null;
-          input.answers = [];
-          input.sources = input.sources
-            .filter((s) => s.kind !== 'ANSWER')
-            .map((s) =>
-              s.id === 'note.body'
-                ? {
-                    ...s,
-                    text: turn.noteReplacement!,
-                    version: `note-${i + 1}`,
-                  }
-                : s,
-            );
-        }
-        if (i > 0 && ['answer', 'unknown', 'skip'].includes(turn.action)) {
-          const question = input.previous?.nextQuestion,
-            gap = input.previous?.gaps.find((g) => g.id === question?.gapId);
-          if (!question || !gap) throw Error('SCRIPTED_QUESTION_NOT_PRODUCED');
+          noteSnapshot = {
+            ...noteSnapshot,
+            revision: noteSnapshot.revision + 1,
+            contentMarkdown: turn.noteReplacement,
+          };
+          sourceOverrides = sourceOverrides.map((s) =>
+            s.id === 'note.body'
+              ? {
+                  ...s,
+                  text: turn.noteReplacement!,
+                  version: `note-${i + 1}`,
+                }
+              : s,
+          );
+          input = prepareInitialAssessmentInput({
+            purpose: input.purpose,
+            sourcesBuilder,
+          });
+          activeAssessment = null;
+        } else if (i === 0) {
+          input = prepareInitialAssessmentInput({
+            purpose: c.purpose,
+            sourcesBuilder,
+          });
+        } else if (
+          turn.action === 'answer' ||
+          turn.action === 'unknown' ||
+          turn.action === 'skip'
+        ) {
+          if (!activeAssessment?.nextQuestion)
+            throw Error('SCRIPTED_QUESTION_NOT_PRODUCED');
           const disposition =
             turn.action === 'answer'
               ? 'answered'
               : turn.action === 'unknown'
                 ? 'unknown'
                 : 'skipped';
-          input.answers.push({
-            id: `answer-${i}`,
-            gapId: gap.id,
-            target: gap.target,
+          input = prepareReplyAssessmentInput({
+            current: activeAssessment,
+            questionId: activeAssessment.nextQuestion.id,
+            gapId: activeAssessment.nextQuestion.gapId,
             disposition,
-            ...(disposition === 'answered' ? { answer: turn.answer } : {}),
-            purpose: input.purpose,
-            taskContextHash: input.previous!.taskContextHash,
+            answer: turn.answer,
+            answerId: `answer-${i}`,
+            sourcesBuilder,
           });
-          input.sources.push({
-            id: `answer.answer-${i}`,
-            kind: 'ANSWER',
-            label: 'Synthetic author clarification',
-            text: disposition === 'answered' ? turn.answer! : disposition,
-            version: `answer-${i}`,
-            loadStatus: 'LOADED',
-            includedInRequest: true,
+        } else if (turn.action === 'correct') {
+          const targetId =
+            activeAssessment?.claims[0]?.id ?? activeAssessment?.gaps[0]?.id;
+          if (!activeAssessment || !targetId)
+            throw Error('SCRIPTED_CORRECTION_TARGET_MISSING');
+          input = prepareCorrectionAssessmentInput({
+            current: activeAssessment,
+            targetClaimOrGapId: targetId,
+            correctionText: turn.correctionText!,
+            answerId: `correction-${i}`,
+            sourcesBuilder,
           });
-        }
-        if (turn.action === 'correct') {
-          input.correction = {
-            targetId:
-              input.previous?.claims[0]?.id ??
-              input.previous?.gaps[0]?.id ??
-              'synthetic-claim',
-            text: turn.correctionText!,
-          };
-          input.answers.push({
-            id: `correction-${i}`,
-            gapId: input.correction.targetId,
-            target: 'author correction',
-            disposition: 'answered',
-            answer: turn.correctionText!,
-            purpose: input.purpose,
-            taskContextHash: fingerprint(
-              input.sources.filter((s) => s.kind === 'TASK'),
-            ),
-          });
-          input.sources.push({
-            id: `answer.correction-${i}`,
-            kind: 'ANSWER',
-            label: 'Synthetic author correction',
-            text: turn.correctionText!,
-            version: `correction-${i}`,
-            loadStatus: 'LOADED',
-            includedInRequest: true,
+        } else if (turn.action === 'reset') {
+          if (!activeAssessment) throw Error('SCRIPTED_RESET_MISSING_PRIOR');
+          const carryAnswerIds = turn.carryAnswered
+            ? activeAssessment.answers
+                .filter((a) => a.disposition === 'answered')
+                .map((a) => a.id)
+            : [];
+          input = prepareResetAssessmentInput({
+            current: activeAssessment,
+            currentTaskContextHash: currentTaskHash,
+            newPurpose: turn.newPurpose!,
+            carryAnswerIds,
+            sourcesBuilder,
           });
         }
-        if (turn.action === 'reset') {
-          input = {
-            ...input,
-            purpose: turn.newPurpose!,
-            previous: null,
-            answers: [],
-          };
-          input.sources = input.sources.filter((s) => s.kind !== 'ANSWER');
-          delete input.correction;
-        }
-        const messages = buildAssessmentMessages(input);
-        requestTemplateHash = fingerprint(messages.slice(0, -1));
-        const completion = await client.complete(
-          messages,
-          `assessment-${randomUUID()}`,
-        );
-        rawSyntheticResponse = completion.content
-          .split(credentials.apiKey)
-          .join('[REDACTED]');
-        const parsedCompletion = parseAssessmentCompletion(
+
+        validateAssessmentRequestBudget(input, options.architecture);
+        const executed = await executeAssessmentModelCall({
           input,
-          completion.content,
-          credentials.formattingRecovery === true,
-        );
-        const parsedOutput = parsedCompletion.result;
+          architecture: options.architecture,
+          formattingRecovery: credentials.formattingRecovery === true,
+          modelName: options.model!,
+          complete: completeMessage,
+          interpreterCache,
+          onStageProgress: (stage) => {
+            requestTemplateHash = stage.requestTemplateHash;
+            if (stage.rawResponse !== undefined) {
+              const sanitized = stage.rawResponse
+                .split(credentials.apiKey)
+                .join('[REDACTED]');
+              stageRawResponses.push(sanitized);
+              rawSyntheticResponse =
+                options.architecture === 'split'
+                  ? JSON.stringify(stageRawResponses)
+                  : sanitized;
+            }
+          },
+        });
+        const parsedOutput = executed.result;
         output = parsedOutput;
         const grade = gradeAssessment(c, i, parsedOutput, input);
-        activeAssessment = evaluationView(input, parsedOutput, sourceRevision);
+        activeAssessment = finalizeAssessmentTurn({
+          input,
+          modelResult: parsedOutput,
+          sourceRevision: noteSnapshot.revision,
+          taskContextHash: currentTaskHash,
+          modelName: 'evaluation/synthetic',
+          expiresAt: new Date(Date.now() + 86400000).toISOString(),
+          provenance: executed.provenance,
+        });
         const runtimeGrade = gradeAssessment(
           c,
           i,
@@ -564,7 +700,7 @@ export async function runAssessmentEvaluation(
           role: 'analysis',
           rawSyntheticResponse,
           requestTemplateHash,
-          formattingRecovery: parsedCompletion.formattingRecovery,
+          formattingRecovery: executed.provenance.formattingRecovery,
           runtimeState: {
             state: activeAssessment.state,
             noteAdequacy: activeAssessment.noteAdequacy,
@@ -579,13 +715,13 @@ export async function runAssessmentEvaluation(
         });
         consecutiveErrors = 0;
         if (
+          !options.noFailFast &&
           c.critical &&
           (!grade.automatedPass || !runtimeGrade.automatedPass)
         ) {
           stop = true;
           break;
         }
-        input.previous = activeAssessment;
       } catch (e) {
         const errorCode = budget.denialCode ?? safeCode(e);
         if (
@@ -601,6 +737,7 @@ export async function runAssessmentEvaluation(
             elapsedMs: Date.now() - started,
           });
           output = null;
+          activeAssessment = null;
           break;
         }
         rows.push({
@@ -615,72 +752,60 @@ export async function runAssessmentEvaluation(
           answers: structuredClone(input.answers),
         });
         consecutiveErrors++;
-        if (/BUDGET/.test(errorCode) || consecutiveErrors >= 3 || c.critical)
+        if (
+          /BUDGET/.test(errorCode) ||
+          consecutiveErrors >= 3 ||
+          (!options.noFailFast && c.critical)
+        )
           stop = true;
         output = null;
+        activeAssessment = null;
         break;
       }
     }
+
     if (
       !stop &&
-      output?.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-      activeAssessment?.allowedActions.includes('rewrite') &&
-      !activeAssessment.nextQuestion
+      output &&
+      editorRuns < maxEditorRuns &&
+      isEligibleForAutomatedEditorEvaluation(activeAssessment)
     ) {
+      editorRuns++;
       let rawEditorResponse: string | undefined;
       const editorStarted = Date.now();
       try {
-        const text = (id: string) =>
-          input.sources.find((s) => s.id === id)?.text ?? '';
-        const editorInput = buildAssessmentEditorInput(
-          {
-            revision: sourceRevision,
-            title: text('note.title'),
-            body: text('note.body'),
+        const executedEditor = await executeAssessmentEditorCall({
+          note: noteSnapshot,
+          taskContext,
+          assessment: activeAssessment,
+          formattingRecovery: credentials.formattingRecovery === true,
+          modelName: options.model!,
+          complete: completeMessage,
+          onRawResponse: (raw) => {
+            rawEditorResponse = raw
+              .split(credentials.apiKey)
+              .join('[REDACTED]');
           },
-          {
-            title: text('task.title'),
-            description: text('task.description') || null,
-            status: text('task.status'),
-            steps: input.sources
-              .filter((s) => s.id.startsWith('task.step.'))
-              .map((s) => ({ text: s.text, done: false })),
-          },
-          activeAssessment,
-        );
-        const prepared = prepareAssessmentEditorRequest(editorInput);
-        const completion = await editorClient.complete(
-          prepared.messages,
-          `assessment-editor-${randomUUID()}`,
-        );
-        rawEditorResponse = completion.content
-          .split(credentials.apiKey)
-          .join('[REDACTED]');
-        const parsed = parseRewriteCompletion(
-          prepared,
-          completion.content,
-          credentials.formattingRecovery === true,
-        );
-        assertAssessmentEditorProposal(editorInput, parsed.result);
-        const editorOutput = parsed.result;
+        });
         rows.push({
           caseId: c.id,
-          turn: c.turns.length,
+          turn: turnLimit,
           role: 'editor',
           elapsedMs: Date.now() - editorStarted,
-          editorOutput,
+          editorOutput: executedEditor.result,
           editorValidation: {
             runtimeProposalAccepted: true,
-            formattingRecovery: parsed.formattingRecovery,
+            formattingRecovery: executedEditor.formattingRecovery,
           },
           sources: structuredClone(input.sources),
           answers: structuredClone(input.answers),
         });
+        consecutiveErrors = 0;
       } catch (e) {
         const code = budget.denialCode ?? safeCode(e);
         rows.push({
           caseId: c.id,
-          turn: c.turns.length,
+          turn: turnLimit,
           role: 'editor',
           elapsedMs: Date.now() - editorStarted,
           ...(rawEditorResponse
@@ -691,7 +816,11 @@ export async function runAssessmentEvaluation(
           errorCode: code,
         });
         consecutiveErrors++;
-        if (/BUDGET/.test(code) || consecutiveErrors >= 3 || c.critical)
+        if (
+          /BUDGET/.test(code) ||
+          consecutiveErrors >= 3 ||
+          (!options.noFailFast && c.critical)
+        )
           stop = true;
       }
     }
@@ -699,7 +828,7 @@ export async function runAssessmentEvaluation(
   const report = {
     ...base,
     model: options.model,
-    promptVersion: ASSESSMENT_PROMPT_VERSION,
+    promptVersion: activePromptVersion,
     createdAt: new Date().toISOString(),
     promptTemplateSelection: 'PER_PURPOSE_MAX4_EXAMPLES',
     promptTemplateHashScope: 'FIRST_SELECTED_SCENARIO_INITIAL_TURN',
@@ -750,6 +879,7 @@ if (require.main === module) {
       console.log(
         JSON.stringify({
           mode: report.mode,
+          architecture: report.architecture,
           classification: report.classification,
           ceiling: report.ceiling,
           limits: report.limits,

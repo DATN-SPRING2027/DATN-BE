@@ -11,17 +11,24 @@ import {
   ASSESSMENT_EDITOR_PROVIDER_POLICY,
   prepareAssessmentEditorRequest,
 } from '../../application/work-note-agent/work-note-assessment-editor';
-import { WorkNoteXkiroClient } from './work-note-xkiro.client';
 import {
-  buildAssessmentMessages,
-  parseAssessmentCompletion,
-  ASSESSMENT_PROMPT_VERSION,
-} from '../../application/work-note-agent/work-note-assessment.protocol';
+  executeAssessmentModelCall,
+  type AssessmentArchitecture,
+} from '../../application/work-note-agent/work-note-assessment.pipeline';
 import type { AssessmentModelInput } from '../../application/work-note-agent/work-note-assessment.types';
+import { WorkNoteXkiroClient } from './work-note-xkiro.client';
 
 @Injectable()
 export class WorkNoteAgentModel {
   constructor(private readonly config: ConfigService) {}
+
+  getAssessmentArchitecture(): AssessmentArchitecture {
+    return this.config.get<string>('WORKNOTE_ASSESSMENT_ARCHITECTURE') ===
+      'split'
+      ? 'split'
+      : 'combined';
+  }
+
   async assess(input: AssessmentModelInput) {
     const enabled = this.config.get<boolean | string>('WORKNOTE_AGENT_ENABLED');
     const apiKey = this.config.get<string>('XKIRO_API_KEY'),
@@ -31,33 +38,28 @@ export class WorkNoteAgentModel {
         code: 'WORKNOTE_AGENT_UNAVAILABLE',
         message: 'Agent is unavailable. You can still save your note.',
       });
-    const messages = buildAssessmentMessages(input);
-    const completion = await new WorkNoteXkiroClient({
+    const client = new WorkNoteXkiroClient({
       apiKey,
       model,
       ...ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
-    }).complete(messages, `assessment-${randomUUID()}`);
+    });
     const recovery = this.config.get<boolean | string>(
       'WORKNOTE_AGENT_FORMATTING_RECOVERY',
     );
-    const parsed = parseAssessmentCompletion(
+    const executed = await executeAssessmentModelCall({
       input,
-      completion.content,
-      recovery === true || recovery === 'true',
-    );
+      architecture: this.getAssessmentArchitecture(),
+      formattingRecovery: recovery === true || recovery === 'true',
+      modelName: model,
+      complete: (messages) =>
+        client.complete(messages, `assessment-${randomUUID()}`),
+    });
     return {
-      result: parsed.result,
-      provenance: {
-        model,
-        promptVersion: ASSESSMENT_PROMPT_VERSION,
-        formattingRecovery: parsed.formattingRecovery,
-        promptTokens: completion.promptTokens,
-        completionTokens: completion.completionTokens,
-        httpAttempts: completion.attempts,
-        durationMs: completion.elapsedMs,
-      },
+      result: executed.result,
+      provenance: executed.provenance,
     };
   }
+
   async rewrite(input: AgentInput, mode: 'editor' | 'assessment' = 'editor') {
     const enabled = this.config.get<string | boolean>('WORKNOTE_AGENT_ENABLED');
     const key = this.config.get<string>('XKIRO_API_KEY'),

@@ -12,6 +12,7 @@ import {
   coveragePolarityConflict,
 } from './work-note-assessment.polarity';
 import type { AgentMessage } from './work-note-agent.types';
+import { ASSESSMENT_NEED_CODES } from './work-note-assessment.rubric';
 import {
   ASSESSMENT_PURPOSES,
   type AssessmentModelInput,
@@ -19,7 +20,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-29.v14';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-30.v24';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {
@@ -31,6 +32,8 @@ const normalize = (s: string) =>
     .toLocaleLowerCase()
     .replace(/[\s.!?]+/g, ' ')
     .trim();
+const normalizeClaimQuote = (s: string) =>
+  normalize(s).replace(/["'“”‘’]/gu, "'");
 function object(v: unknown, keys: string[]): Record<string, unknown> {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return invalid();
   const o = v as Record<string, unknown>;
@@ -102,7 +105,15 @@ export function buildAssessmentMessages(
   const previous = input.previous
     ? {
         purpose: input.previous.purpose,
-        gaps: input.previous.gaps,
+        gaps: input.previous.gaps.map(
+          ({ kind, target, impact, owner, sourceRefs }) => ({
+            kind,
+            target,
+            impact,
+            owner,
+            sourceRefs,
+          }),
+        ),
         counters: input.previous.counters,
         ...(input.correction
           ? {
@@ -280,7 +291,9 @@ export function parseAssessmentOutput(
       return invalid('SEMANTIC_POLARITY_MISMATCH');
     if (
       supportRelation === 'FULL' &&
-      !sourceRefs.some((r) => normalize(r.quote) === normalize(text))
+      !sourceRefs.some(
+        (r) => normalizeClaimQuote(r.quote) === normalizeClaimQuote(text),
+      )
     )
       supportRelation = 'PARTIAL';
     return { text, sourceRefs, originKind, supportRelation };
@@ -341,7 +354,17 @@ export function parseAssessmentOutput(
   if (new Set(coverage.map((c) => c.requirementIndex)).size !== coverage.length)
     return invalid('DUPLICATE_COVERAGE');
   const gaps = list(o.gaps, 8).map((v) => {
-    const x = object(v, ['kind', 'target', 'impact', 'owner', 'sourceRefs']);
+    const hasNeedCode =
+      !!v &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      Object.hasOwn(v, 'needCode');
+    const x = object(
+      v,
+      hasNeedCode
+        ? ['kind', 'needCode', 'target', 'impact', 'owner', 'sourceRefs']
+        : ['kind', 'target', 'impact', 'owner', 'sourceRefs'],
+    );
     return {
       kind: en(x.kind, [
         'SCOPE',
@@ -351,6 +374,9 @@ export function parseAssessmentOutput(
         'CONTRADICTION',
         'PURPOSE',
       ] as const),
+      ...(hasNeedCode
+        ? { needCode: en(x.needCode, ASSESSMENT_NEED_CODES) }
+        : {}),
       target: str(x.target, 160),
       impact: en(x.impact, ['BLOCKING', 'OPTIONAL'] as const),
       owner: en(x.owner, ['NOTE_AUTHOR', 'TASK_REQUIREMENT_OWNER'] as const),

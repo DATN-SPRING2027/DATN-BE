@@ -422,4 +422,204 @@ describe('Code-driven assessment states', () => {
       reviewerSemanticAssessment: 'NOT_ESTABLISHED',
     });
   });
+  it('transitions to ready_to_edit when the 3rd answer makes the note ENOUGH_FOR_PURPOSE instead of trapping in paused', () => {
+    const prior = assemble();
+    prior.counters.questionCount = 3;
+    const answerText = 'Tested on staging environment with author account.';
+    const next = assemble(
+      {
+        previous: prior,
+        sources: [
+          ...input.sources,
+          {
+            id: 'answer.a3',
+            kind: 'ANSWER',
+            label: 'Answer 3',
+            text: answerText,
+            version: '1',
+            loadStatus: 'LOADED',
+            includedInRequest: true,
+          },
+        ],
+        answers: [
+          {
+            id: 'a3',
+            gapId: prior.gaps[0].id,
+            target: prior.gaps[0].target,
+            disposition: 'answered',
+            answer: answerText,
+            purpose: 'PROGRESS',
+            taskContextHash: 'task',
+          },
+        ],
+      },
+      {
+        ...out,
+        taskContextStatus: 'CLEAR',
+        claims: [
+          ...out.claims,
+          {
+            text: answerText,
+            sourceRefs: [{ sourceId: 'answer.a3', quote: answerText }],
+            originKind: 'AUTHOR_REPORT',
+            supportRelation: 'FULL',
+          },
+        ],
+        gaps: [],
+        nextQuestion: null,
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+      },
+    );
+    expect(next.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(next.state).toBe('ready_to_edit');
+    expect(next.allowedActions).toContain('rewrite');
+  });
+  it('downgrades inconsistent ENOUGH_FOR_PURPOSE + BLOCKING gap output to UNDETERMINED with manual edit and no bogus question', () => {
+    const inconsistent = assemble(
+      {},
+      {
+        ...out,
+        taskContextStatus: 'CLEAR',
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+      },
+    );
+    expect(inconsistent.noteAdequacy).toBe('UNDETERMINED');
+    expect(inconsistent.nextQuestion).toBeNull();
+    expect(inconsistent.state).toBe('missing_context');
+    expect(inconsistent.allowedActions).toContain('rewrite');
+  });
+  it('never asks a question tied to an OPTIONAL gap', () => {
+    const optionalQuestion = assemble(
+      {},
+      {
+        ...out,
+        taskContextStatus: 'CLEAR',
+        gaps: [{ ...out.gaps[0], impact: 'OPTIONAL' }],
+        noteAdequacy: 'NEEDS_AUTHOR_INPUT',
+      },
+    );
+    expect(optionalQuestion.nextQuestion).toBeNull();
+    expect(optionalQuestion.state).toBe('missing_context');
+  });
+  it('suppresses re-asking an unknown/skipped needCode even when re-anchored from note.body to a Task step', () => {
+    const baseSources = [
+      ...input.sources,
+      {
+        id: 'task.step.0',
+        kind: 'TASK' as const,
+        label: 'Step 1',
+        text: 'Tác giả chỉnh sửa được.',
+        version: '1',
+        loadStatus: 'LOADED' as const,
+        includedInRequest: true,
+      },
+    ];
+    const prior = assemble(
+      { sources: baseSources },
+      {
+        ...out,
+        gaps: [
+          {
+            kind: 'EVIDENCE',
+            target: 'actor đã dùng để kiểm tra quyền',
+            impact: 'BLOCKING',
+            owner: 'NOTE_AUTHOR',
+            sourceRefs: [{ sourceId: 'note.body', quote: 'Updated the form.' }],
+          },
+        ],
+      },
+    );
+    const next = assemble(
+      {
+        sources: baseSources,
+        previous: prior,
+        answers: [
+          {
+            id: 'a1',
+            gapId: prior.gaps[0].id,
+            target: prior.gaps[0].target,
+            disposition: 'unknown',
+            purpose: 'PROGRESS',
+            taskContextHash: 'task',
+          },
+        ],
+      },
+      {
+        ...out,
+        gaps: [
+          {
+            kind: 'RESULT',
+            target: 'kết quả kiểm tra cho tác giả chỉnh sửa',
+            impact: 'BLOCKING',
+            owner: 'NOTE_AUTHOR',
+            sourceRefs: [
+              { sourceId: 'task.step.0', quote: 'Tác giả chỉnh sửa được.' },
+            ],
+          },
+        ],
+      },
+    );
+    expect(next.gaps[0].status).toBe('unknown');
+    expect(next.nextQuestion).toBeNull();
+  });
+  it('allows a grounded correction to resolve a prior unknown gap on non-COMPLETION purposes', () => {
+    const prior = assemble();
+    const unknownAnswer = {
+      id: 'u1',
+      gapId: prior.gaps[0].id,
+      target: prior.gaps[0].target,
+      disposition: 'unknown' as const,
+      purpose: 'PROGRESS' as const,
+      taskContextHash: 'task',
+    };
+    const paused = assemble({ previous: prior, answers: [unknownAnswer] }, out);
+    const correctionText = 'Tested the form update on local dev environment.';
+    const corrected = assemble(
+      {
+        previous: paused,
+        correction: { targetId: paused.claims[0].id, text: correctionText },
+        answers: [
+          unknownAnswer,
+          {
+            id: 'c1',
+            gapId: paused.claims[0].id,
+            target: 'author correction',
+            disposition: 'answered',
+            answer: correctionText,
+            purpose: 'PROGRESS',
+            taskContextHash: 'task',
+          },
+        ],
+        sources: [
+          ...input.sources,
+          {
+            id: 'answer.c1',
+            kind: 'ANSWER',
+            label: 'Author correction',
+            text: correctionText,
+            version: '1',
+            loadStatus: 'LOADED',
+            includedInRequest: true,
+          },
+        ],
+      },
+      {
+        ...out,
+        taskContextStatus: 'CLEAR',
+        claims: [
+          {
+            text: correctionText,
+            sourceRefs: [{ sourceId: 'answer.c1', quote: correctionText }],
+            originKind: 'AUTHOR_REPORT',
+            supportRelation: 'FULL',
+          },
+        ],
+        gaps: [],
+        nextQuestion: null,
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+      },
+    );
+    expect(corrected.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(corrected.state).toBe('ready_to_edit');
+  });
 });

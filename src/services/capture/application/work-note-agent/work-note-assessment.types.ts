@@ -187,7 +187,9 @@ export type AssessmentModelOutput = {
       'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
     sourceRefs: SourceRef[];
   }[];
-  gaps: Omit<AssessmentGap, 'id' | 'status'>[];
+  gaps: (Omit<AssessmentGap, 'id' | 'status'> & {
+    needCode?: string;
+  })[];
   taskContextStatus: AssessmentView['taskContextStatus'];
   noteAdequacy: AssessmentView['noteAdequacy'];
   nextQuestion: {

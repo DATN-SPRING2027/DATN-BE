@@ -134,11 +134,27 @@ export function dropsSourceNegation(source: string, quote: string): boolean {
     );
   });
 }
+function polarityClauses(text: string) {
+  const out: { start: number; end: number; text: string }[] = [];
+  let start = 0;
+  const separator =
+    /[;\r\n]|[.!?](?=\s|$)|,\s+(?=(?:chưa|chua|không|khong|not|never|untested|unverified|pending)\b)|\s+(?:và|va|nhưng|nhung|còn|con|but|while|and)\s+(?=(?:chưa|chua|không|khong|not|never|(?:no|without)\s+(?:evidence|confirmation|results?))\b)/giu;
+  for (const match of text.matchAll(separator)) {
+    const isConjunction = /^[\s,]/u.test(match[0]);
+    const end = isConjunction ? match.index : match.index + match[0].length;
+    if (end > start) out.push({ start, end, text: text.slice(start, end) });
+    start = end;
+  }
+  if (start < text.length)
+    out.push({ start, end: text.length, text: text.slice(start) });
+  return out;
+}
+
 function words(s: string) {
   const normalized = fold(s);
   const tokens = normalized.match(/[a-z0-9_]+/gu) ?? [];
   const stop =
-    /^(?:the|a|an|is|are|was|were|has|have|been|be|must|should|on|in|of|to|for|and|or|not|never|cannot|untested|unverified|unknown|test|tests|tested|testing|verify|verified|verification|da|chua|khong|co|duoc|can|phai|va|hoac|la|thi|khi|voi|cho|cua|cac|nhung|mot|tu|tren|sau|truoc|toi|kiem|thu|trien|khai|dien|tap|do|chay|viet|hoan|thanh)$/u;
+    /^(?:the|a|an|is|are|was|were|has|have|been|be|bi|must|should|on|in|of|to|for|and|or|not|never|cannot|untested|unverified|unknown|test|tests|tested|testing|verify|verified|verification|da|chua|khong|co|duoc|can|phai|va|hoac|la|thi|khi|voi|cho|cua|cac|nhung|mot|tu|tren|sau|truoc|toi|kiem|thu|trien|khai|dien|tap|do|chay|viet|hoan|thanh)$/u;
   const result = new Set(tokens.filter((w) => !stop.test(w)));
   // Keep short named entities such as API A / API B distinct from articles.
   for (const match of s.matchAll(/\b[A-HJ-Z]\b/gu))
@@ -155,7 +171,7 @@ export function coveragePolarityConflict(
   taskTitle: string,
 ): boolean {
   if (dropsSourceNegation(source, quote)) return true;
-  const parts = segments(source),
+  const parts = polarityClauses(source),
     required = words(requirement);
   // Check each possible occurrence separately; a short ambiguous quote cannot
   // silently select a positive occurrence over a negative one elsewhere.

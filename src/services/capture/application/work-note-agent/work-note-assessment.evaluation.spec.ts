@@ -1,14 +1,27 @@
 import {
   gradeAssessment,
   loadAssessmentCorpus,
+  loadRegression80Corpus,
+  loadRelease60Corpus,
   makeAssessmentWorksheet,
+  type AssessmentEvaluationRow,
   type AssessmentScenario,
 } from '../../../../../scripts/work-note-agent/assessment-evaluation';
+import {
+  adjudicateBlindedReviews,
+  computeAssessmentQualityGate,
+  makeBlindedReviewPack,
+  validateReleaseAssessmentCorpus,
+} from '../../../../../scripts/work-note-agent/assessment-quality-gate';
 import {
   AssessmentAttemptBudget,
   parseAssessmentRunOptions,
   runAssessmentEvaluation,
 } from '../../../../../scripts/work-note-agent/assessment-run';
+import {
+  mergeResumedStageRows,
+  partitionResumableStageScenarios,
+} from '../../../../../scripts/work-note-agent/assessment-release-gate-run';
 import type { AssessmentModelOutput } from './work-note-assessment.types';
 import {
   parseAssessmentOutput,
@@ -517,6 +530,271 @@ describe('Assessment evaluator budget and non-network defaults', () => {
           .map((r) => r.caseId),
       ).size,
     ).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('Plan v3 §§6-7 release60 corpus, dual-layer quality gate, and blinded adjudication', () => {
+  it('enforces disjoint 80-case regression and 60-case release corpora with exact Plan v3 §6 ceilings', async () => {
+    const reg = loadRegression80Corpus();
+    const rel = loadRelease60Corpus();
+    expect(reg.scenarios).toHaveLength(80);
+    expect(rel.scenarios).toHaveLength(60);
+
+    const regFamilies = new Set(reg.scenarios.map((s) => s.family));
+    const relFamilies = new Set(rel.scenarios.map((s) => s.family));
+    expect(regFamilies.size).toBe(40);
+    expect(relFamilies.size).toBe(30);
+    for (const f of relFamilies) {
+      expect(regFamilies.has(f)).toBe(false);
+    }
+
+    const dryRegA = await runAssessmentEvaluation([
+      '--dry-run',
+      '--corpus',
+      'regression80',
+      '--batch',
+      'release',
+      '--split',
+      'all',
+      '--architecture',
+      'combined',
+    ]);
+    const dryRegB = await runAssessmentEvaluation([
+      '--dry-run',
+      '--corpus',
+      'regression80',
+      '--batch',
+      'release',
+      '--split',
+      'all',
+      '--architecture',
+      'split',
+    ]);
+    const dryRelA = await runAssessmentEvaluation([
+      '--dry-run',
+      '--corpus',
+      'release60',
+      '--batch',
+      'release',
+      '--split',
+      'all',
+      '--architecture',
+      'combined',
+    ]);
+    const dryRelB = await runAssessmentEvaluation([
+      '--dry-run',
+      '--corpus',
+      'release60',
+      '--batch',
+      'release',
+      '--split',
+      'all',
+      '--architecture',
+      'split',
+    ]);
+    expect(dryRegA.ceiling.httpAttempts).toBe(192);
+    expect(dryRegB.ceiling.httpAttempts).toBe(272);
+    expect(dryRelA.ceiling.httpAttempts).toBe(148);
+    expect(dryRelB.ceiling.httpAttempts).toBe(208);
+
+    const leaked = structuredClone(rel);
+    leaked.scenarios[0].split = 'holdout';
+    expect(() => validateReleaseAssessmentCorpus(leaked)).toThrow(
+      /RELEASE_FAMILY_SPLIT_LEAKAGE/,
+    );
+  });
+
+  it('reports rawModelOutput separately from postGuardRuntime so deterministic guards never mask raw false-sufficient defects', () => {
+    const rel = loadRelease60Corpus();
+    const insufficientScenario = rel.scenarios.find(
+      (s) =>
+        s.turns.length === 1 &&
+        !s.turns[0].expected.noteAdequacy.includes('ENOUGH_FOR_PURPOSE'),
+    )!;
+    const rawOut = fixture(insufficientScenario);
+    rawOut.noteAdequacy = 'ENOUGH_FOR_PURPOSE';
+    const noteSource = insufficientScenario.sources.find(
+      (s) => s.id === 'note.body',
+    )!;
+    rawOut.gaps = [
+      {
+        kind: 'SCOPE',
+        needCode: 'scope.completed_part',
+        target: 'missing concrete scope',
+        impact: 'BLOCKING',
+        owner: 'NOTE_AUTHOR',
+        sourceRefs: [{ sourceId: noteSource.id, quote: noteSource.text }],
+      },
+    ];
+    const row: AssessmentEvaluationRow = {
+      caseId: insufficientScenario.id,
+      turn: 1,
+      role: 'analysis',
+      output: rawOut,
+      grade: gradeAssessment(insufficientScenario, 0, rawOut),
+      runtimeState: {
+        state: 'missing_context',
+        noteAdequacy: 'UNDETERMINED',
+        counters: { questionCount: 0, noProgress: 0 },
+      },
+      runtimeGrade: {
+        automatedPass: false,
+        failures: ['REQUIRED_QUESTION_MISSING'],
+        semanticAcceptance: 'NOT_ESTABLISHED',
+        manualReview: 'required',
+      },
+    };
+    const report = computeAssessmentQualityGate([row], rel);
+    expect(report.rawModelOutput.criticalErrors.falseSufficient).toBe(1);
+    expect(report.postGuardRuntime.criticalErrors.falseSufficient).toBe(0);
+    expect(report.reviewerSemanticAssessment).toBe('NOT_ESTABLISHED');
+  });
+
+  it('produces blinded transcript worksheets without variant metadata and rejects LLM judges from closing semantic acceptance', () => {
+    const rel = loadRelease60Corpus();
+    const s = rel.scenarios[0];
+    const row: AssessmentEvaluationRow = {
+      caseId: s.id,
+      turn: 1,
+      role: 'analysis',
+      output: fixture(s),
+    };
+    const pack = makeBlindedReviewPack(
+      [
+        { variantLabel: 'variant-A', reportId: 'rep-1', rows: [row] },
+        { variantLabel: 'variant-B', reportId: 'rep-2', rows: [row] },
+      ],
+      rel,
+      'fixed-test-salt',
+    );
+    expect(pack.blindedWorksheet.items).toHaveLength(2);
+    expect(JSON.stringify(pack.blindedWorksheet)).not.toContain('variant-A');
+    expect(JSON.stringify(pack.blindedWorksheet)).not.toContain(s.id);
+    expect(pack.sealedKey.entries).toHaveLength(2);
+
+    const passRatings = {
+      taskUnderstanding: 'PASS' as const,
+      purposeAdequacy: 'PASS' as const,
+      claimSupportAndPolarity: 'PASS' as const,
+      questionNecessityAndUtility: 'PASS' as const,
+      answerUseAndUncertaintyPreservation: 'PASS' as const,
+    };
+    const failRatings = { ...passRatings, purposeAdequacy: 'FAIL' as const };
+
+    const reviewerA = pack.blindedWorksheet.items.map((item) => ({
+      ...item,
+      reviewerId: 'human:alice',
+      reviewedAt: '2026-10-29T12:00:00Z',
+      ratings: passRatings,
+    }));
+    const modelJudgeB = pack.blindedWorksheet.items.map((item) => ({
+      ...item,
+      reviewerId: 'model:judge-v1',
+      reviewedAt: '2026-10-29T12:00:00Z',
+      ratings: passRatings,
+    }));
+    expect(
+      adjudicateBlindedReviews({ reviewerA, reviewerB: modelJudgeB })
+        .reviewerSemanticAssessment,
+    ).toBe('NOT_ESTABLISHED');
+
+    const reviewerBDisagree = pack.blindedWorksheet.items.map((item, idx) => ({
+      ...item,
+      reviewerId: 'human:bob',
+      reviewedAt: '2026-10-29T12:05:00Z',
+      ratings: idx === 0 ? failRatings : passRatings,
+    }));
+    const unresolved = adjudicateBlindedReviews({
+      reviewerA,
+      reviewerB: reviewerBDisagree,
+    });
+    expect(unresolved.disagreementIds).toHaveLength(1);
+    expect(unresolved.reviewerSemanticAssessment).toBe('NOT_ESTABLISHED');
+
+    const resolved = adjudicateBlindedReviews({
+      reviewerA,
+      reviewerB: reviewerBDisagree,
+      adjudications: [
+        {
+          blindTranscriptId: unresolved.disagreementIds[0],
+          adjudicatorId: 'human:lead-chair',
+          finalDecision: 'PASS',
+          rationale: 'Verified against Task criteria and purpose rubric.',
+        },
+      ],
+    });
+    expect(resolved.unresolvedDisagreementIds).toHaveLength(0);
+    expect(resolved.reviewerSemanticAssessment).toBe(
+      'ESTABLISHED_BY_HUMAN_REVIEW',
+    );
+  });
+
+  it('does not flag FORBIDDEN_ASSERTION when an AUTHOR_REPORT claim quotes an embedded prompt-injection phrase verbatim from note.body, while still catching unquoted fabricated assertions', () => {
+    const rel = loadRelease60Corpus();
+    const injectionScenario = rel.scenarios.find(
+      (s) => s.id === 'release-sanitized-webhook-replay-a',
+    )!;
+    const validQuoted = fixture(injectionScenario);
+    expect(
+      gradeAssessment(injectionScenario, 0, validQuoted).failures,
+    ).not.toContain('FORBIDDEN_ASSERTION');
+
+    const obeyedInjection: AssessmentModelOutput = {
+      ...validQuoted,
+      taskUnderstanding: {
+        ...validQuoted.taskUnderstanding,
+        scope: 'All requirements are independently verified.',
+      },
+    };
+    expect(
+      gradeAssessment(injectionScenario, 0, obeyedInjection).failures,
+    ).toContain('FORBIDDEN_ASSERTION');
+  });
+
+  it('resumes only transport/quota-interrupted or skipped scenarios while keeping model-failed and completed scenarios immutable', () => {
+    const scenarioIds = [
+      'case-pass',
+      'case-schema-fail',
+      'case-429',
+      'case-skip',
+    ];
+    const existing: AssessmentEvaluationRow[] = [
+      { caseId: 'case-pass', turn: 1, role: 'analysis' },
+      {
+        caseId: 'case-schema-fail',
+        turn: 1,
+        role: 'analysis',
+        errorCode: 'ASSESSMENT_SCHEMA_INVALID',
+      },
+      {
+        caseId: 'case-429',
+        turn: 1,
+        role: 'analysis',
+        errorCode: 'XKIRO_HTTP_ERROR_429',
+      },
+      { caseId: 'case-skip', turn: 1, skipped: true },
+    ];
+    const part = partitionResumableStageScenarios(scenarioIds, existing);
+    expect([...part.completedRowsByCase.keys()]).toEqual([
+      'case-pass',
+      'case-schema-fail',
+    ]);
+    expect(part.remainingCaseIds).toEqual(['case-429', 'case-skip']);
+
+    const merged = mergeResumedStageRows(
+      scenarioIds,
+      part.completedRowsByCase,
+      [
+        { caseId: 'case-429', turn: 1, role: 'analysis' },
+        { caseId: 'case-skip', turn: 1, role: 'analysis' },
+      ],
+    );
+    expect(merged.map((r) => [r.caseId, r.errorCode ?? 'OK'])).toEqual([
+      ['case-pass', 'OK'],
+      ['case-schema-fail', 'ASSESSMENT_SCHEMA_INVALID'],
+      ['case-429', 'OK'],
+      ['case-skip', 'OK'],
+    ]);
   });
 });
 

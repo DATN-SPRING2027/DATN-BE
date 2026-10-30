@@ -1,0 +1,658 @@
+{
+  "classification": "PLAN_V3_SECTION_4_ARCHITECTURE_SCREENING_PILOT",
+  "notReleaseEvidence": true,
+  "createdAt": "2026-10-29T10:22:01.755Z",
+  "model": "mistralai/ministral-14b",
+  "phaseId": "plan-v3-arch-pilot-20261029",
+  "httpCeiling": 29,
+  "retries": 0,
+  "phaseBudget": {
+    "maxHttpAttempts": 29,
+    "actualHttpAttempts": 29,
+    "reportedTokens": 175713,
+    "unknownUsageAttempts": 1,
+    "accountedTokens": 220385,
+    "maxAccountedTokens": 1000000
+  },
+  "variantA": {
+    "architecture": "combined",
+    "promptVersion": "task-note-assessment/2026-10-29.v19",
+    "runs": 2,
+    "fixtureEvaluations": 8,
+    "passCount": 6,
+    "rawPassCount": 6,
+    "runtimePassCount": 6,
+    "adequacyMatches": 6,
+    "questionMatches": 7,
+    "needCodeConsistentCount": 7,
+    "stabilityExactMatches": 3,
+    "stabilityTotalFixtures": 4,
+    "criticalErrors": {
+      "falseSufficient": 0,
+      "fabricatedOrInvalidSource": 0,
+      "polarityInversion": 0,
+      "total": 0
+    },
+    "editorSmokeAttempted": 1,
+    "editorSmokeAccepted": 1,
+    "actualHttpAttempts": 14,
+    "unknownUsageAttempts": 0,
+    "reportedTokens": 108543,
+    "totalElapsedMs": 89208,
+    "meanFixtureElapsedMs": 11151,
+    "disqualified": false,
+    "fixtureDetails": [
+      {
+        "caseId": "assessment-retry-upload-a",
+        "run": 1,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+        "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+        "questionAsked": false,
+        "gapNeedCodes": [],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 10450
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "run": 1,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "UNDETERMINED",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "test_context.actor",
+          "test_result.behavior"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 14026
+      },
+      {
+        "caseId": "assessment-workspace-context-b",
+        "run": 1,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "scope.completed_part"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 8103
+      },
+      {
+        "caseId": "assessment-mail-queue-a",
+        "run": 1,
+        "rawPass": false,
+        "runtimePass": false,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": false,
+        "gapNeedCodes": [
+          "decision.rationale"
+        ],
+        "failures": [
+          "NOTE_ADEQUACY"
+        ],
+        "errorCode": null,
+        "elapsedMs": 10209
+      },
+      {
+        "caseId": "assessment-retry-upload-a",
+        "run": 2,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+        "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+        "questionAsked": false,
+        "gapNeedCodes": [],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 8949
+      },
+      {
+        "caseId": "assessment-workspace-context-b",
+        "run": 2,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "scope.completed_part"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 8142
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "run": 2,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "UNDETERMINED",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "test_context.actor"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 14583
+      },
+      {
+        "caseId": "assessment-mail-queue-a",
+        "run": 2,
+        "rawPass": false,
+        "runtimePass": false,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "decision.rationale"
+        ],
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_RELEVANCE"
+        ],
+        "errorCode": null,
+        "elapsedMs": 14746
+      }
+    ]
+  },
+  "variantB": {
+    "architecture": "split",
+    "promptVersion": "task-note-assessment-split/2026-10-29.v1",
+    "runs": 2,
+    "fixtureEvaluations": 8,
+    "passCount": 4,
+    "rawPassCount": 4,
+    "runtimePassCount": 4,
+    "adequacyMatches": 4,
+    "questionMatches": 5,
+    "needCodeConsistentCount": 5,
+    "stabilityExactMatches": 2,
+    "stabilityTotalFixtures": 4,
+    "criticalErrors": {
+      "falseSufficient": 0,
+      "fabricatedOrInvalidSource": 0,
+      "polarityInversion": 0,
+      "total": 0
+    },
+    "editorSmokeAttempted": 1,
+    "editorSmokeAccepted": 1,
+    "actualHttpAttempts": 15,
+    "unknownUsageAttempts": 0,
+    "reportedTokens": 67170,
+    "totalElapsedMs": 101219,
+    "meanFixtureElapsedMs": 12652,
+    "disqualified": false,
+    "fixtureDetails": [
+      {
+        "caseId": "assessment-mail-queue-a",
+        "run": 1,
+        "rawPass": false,
+        "runtimePass": false,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": false,
+        "gapNeedCodes": [
+          "decision.rationale",
+          "decision.choice"
+        ],
+        "failures": [
+          "NOTE_ADEQUACY"
+        ],
+        "errorCode": null,
+        "elapsedMs": 14413
+      },
+      {
+        "caseId": "assessment-retry-upload-a",
+        "run": 1,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+        "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+        "questionAsked": false,
+        "gapNeedCodes": [
+          "test_context.scenario",
+          "implementation.mechanism"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 17872
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "run": 1,
+        "rawPass": false,
+        "runtimePass": false,
+        "rawAdequacy": null,
+        "runtimeAdequacy": null,
+        "questionAsked": false,
+        "gapNeedCodes": [],
+        "failures": [
+          "UNSUPPORTED_REQUIREMENT"
+        ],
+        "errorCode": "UNSUPPORTED_REQUIREMENT",
+        "elapsedMs": 7162
+      },
+      {
+        "caseId": "assessment-workspace-context-b",
+        "run": 1,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "scope.completed_part"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 11670
+      },
+      {
+        "caseId": "assessment-mail-queue-a",
+        "run": 2,
+        "rawPass": false,
+        "runtimePass": false,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "decision.rationale"
+        ],
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_RELEVANCE"
+        ],
+        "errorCode": null,
+        "elapsedMs": 14874
+      },
+      {
+        "caseId": "assessment-retry-upload-a",
+        "run": 2,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+        "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+        "questionAsked": false,
+        "gapNeedCodes": [
+          "test_context.scenario",
+          "implementation.mechanism"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 16632
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "run": 2,
+        "rawPass": false,
+        "runtimePass": false,
+        "rawAdequacy": null,
+        "runtimeAdequacy": null,
+        "questionAsked": false,
+        "gapNeedCodes": [],
+        "failures": [
+          "UNSUPPORTED_REQUIREMENT"
+        ],
+        "errorCode": "UNSUPPORTED_REQUIREMENT",
+        "elapsedMs": 6603
+      },
+      {
+        "caseId": "assessment-workspace-context-b",
+        "run": 2,
+        "rawPass": true,
+        "runtimePass": true,
+        "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+        "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+        "questionAsked": true,
+        "gapNeedCodes": [
+          "scope.completed_part"
+        ],
+        "failures": [],
+        "errorCode": null,
+        "elapsedMs": 11993
+      }
+    ]
+  },
+  "selection": {
+    "decision": "combined",
+    "rationale": "Variant A matched or exceeded Variant B (745 vs 500) with zero critical errors at half the analysis HTTP calls (14 vs 15 total calls) and lower latency (11151ms vs 12652ms). Per Plan v3 §4, split must prove net benefit over added cost."
+  },
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "updatedAt": "2026-10-29T10:36:30.183Z",
+  "initialScreening24Calls": {
+    "variantA": {
+      "architecture": "combined",
+      "promptVersion": "task-note-assessment/2026-10-29.v18",
+      "runs": 2,
+      "fixtureEvaluations": 8,
+      "passCount": 6,
+      "rawPassCount": 6,
+      "runtimePassCount": 6,
+      "adequacyMatches": 6,
+      "questionMatches": 6,
+      "needCodeConsistentCount": 6,
+      "stabilityExactMatches": 4,
+      "stabilityTotalFixtures": 4,
+      "criticalErrors": {
+        "falseSufficient": 0,
+        "fabricatedOrInvalidSource": 0,
+        "polarityInversion": 0,
+        "total": 0
+      },
+      "editorSmokeAttempted": 1,
+      "editorSmokeAccepted": 1,
+      "actualHttpAttempts": 12,
+      "unknownUsageAttempts": 0,
+      "reportedTokens": 89436,
+      "totalElapsedMs": 84780,
+      "meanFixtureElapsedMs": 10598,
+      "disqualified": false,
+      "fixtureDetails": [
+        {
+          "caseId": "assessment-retry-upload-a",
+          "run": 1,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+          "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+          "questionAsked": false,
+          "gapNeedCodes": [],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 10450
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "run": 1,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "UNDETERMINED",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "test_context.actor",
+            "test_result.behavior"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 14026
+        },
+        {
+          "caseId": "assessment-workspace-context-b",
+          "run": 1,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "scope.completed_part"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 8103
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "run": 1,
+          "rawPass": false,
+          "runtimePass": false,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "decision.rationale"
+          ],
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_RELEVANCE"
+          ],
+          "errorCode": null,
+          "elapsedMs": 9169
+        },
+        {
+          "caseId": "assessment-retry-upload-a",
+          "run": 2,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+          "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+          "questionAsked": false,
+          "gapNeedCodes": [],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 8949
+        },
+        {
+          "caseId": "assessment-workspace-context-b",
+          "run": 2,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "scope.completed_part"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 8142
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "run": 2,
+          "rawPass": false,
+          "runtimePass": false,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "decision.rationale"
+          ],
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_RELEVANCE"
+          ],
+          "errorCode": null,
+          "elapsedMs": 11358
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "run": 2,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "UNDETERMINED",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "test_context.actor"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 14583
+        }
+      ]
+    },
+    "variantB": {
+      "architecture": "split",
+      "promptVersion": "task-note-assessment-split/2026-10-29.v1",
+      "runs": 2,
+      "fixtureEvaluations": 8,
+      "passCount": 4,
+      "rawPassCount": 4,
+      "runtimePassCount": 4,
+      "adequacyMatches": 4,
+      "questionMatches": 5,
+      "needCodeConsistentCount": 5,
+      "stabilityExactMatches": 2,
+      "stabilityTotalFixtures": 4,
+      "criticalErrors": {
+        "falseSufficient": 0,
+        "fabricatedOrInvalidSource": 0,
+        "polarityInversion": 0,
+        "total": 0
+      },
+      "editorSmokeAttempted": 1,
+      "editorSmokeAccepted": 1,
+      "actualHttpAttempts": 15,
+      "unknownUsageAttempts": 0,
+      "reportedTokens": 67170,
+      "totalElapsedMs": 101219,
+      "meanFixtureElapsedMs": 12652,
+      "disqualified": false,
+      "fixtureDetails": [
+        {
+          "caseId": "assessment-mail-queue-a",
+          "run": 1,
+          "rawPass": false,
+          "runtimePass": false,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": false,
+          "gapNeedCodes": [
+            "decision.rationale",
+            "decision.choice"
+          ],
+          "failures": [
+            "NOTE_ADEQUACY"
+          ],
+          "errorCode": null,
+          "elapsedMs": 14413
+        },
+        {
+          "caseId": "assessment-retry-upload-a",
+          "run": 1,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+          "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+          "questionAsked": false,
+          "gapNeedCodes": [
+            "test_context.scenario",
+            "implementation.mechanism"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 17872
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "run": 1,
+          "rawPass": false,
+          "runtimePass": false,
+          "rawAdequacy": null,
+          "runtimeAdequacy": null,
+          "questionAsked": false,
+          "gapNeedCodes": [],
+          "failures": [
+            "UNSUPPORTED_REQUIREMENT"
+          ],
+          "errorCode": "UNSUPPORTED_REQUIREMENT",
+          "elapsedMs": 7162
+        },
+        {
+          "caseId": "assessment-workspace-context-b",
+          "run": 1,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "scope.completed_part"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 11670
+        },
+        {
+          "caseId": "assessment-mail-queue-a",
+          "run": 2,
+          "rawPass": false,
+          "runtimePass": false,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "decision.rationale"
+          ],
+          "failures": [
+            "NOTE_ADEQUACY",
+            "UNNECESSARY_QUESTION",
+            "QUESTION_RELEVANCE"
+          ],
+          "errorCode": null,
+          "elapsedMs": 14874
+        },
+        {
+          "caseId": "assessment-retry-upload-a",
+          "run": 2,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "ENOUGH_FOR_PURPOSE",
+          "runtimeAdequacy": "ENOUGH_FOR_PURPOSE",
+          "questionAsked": false,
+          "gapNeedCodes": [
+            "test_context.scenario",
+            "implementation.mechanism"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 16632
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "run": 2,
+          "rawPass": false,
+          "runtimePass": false,
+          "rawAdequacy": null,
+          "runtimeAdequacy": null,
+          "questionAsked": false,
+          "gapNeedCodes": [],
+          "failures": [
+            "UNSUPPORTED_REQUIREMENT"
+          ],
+          "errorCode": "UNSUPPORTED_REQUIREMENT",
+          "elapsedMs": 6603
+        },
+        {
+          "caseId": "assessment-workspace-context-b",
+          "run": 2,
+          "rawPass": true,
+          "runtimePass": true,
+          "rawAdequacy": "NEEDS_AUTHOR_INPUT",
+          "runtimeAdequacy": "NEEDS_AUTHOR_INPUT",
+          "questionAsked": true,
+          "gapNeedCodes": [
+            "scope.completed_part"
+          ],
+          "failures": [],
+          "errorCode": null,
+          "elapsedMs": 11993
+        }
+      ]
+    }
+  },
+  "bufferVerification3Calls": {
+    "promptVersion": "task-note-assessment/2026-10-29.v19",
+    "analysisTimeoutMs": 45000,
+    "actualHttpAttempts": 2,
+    "unknownUsageAttempts": 0,
+    "reportedTokens": 19107
+  }
+}

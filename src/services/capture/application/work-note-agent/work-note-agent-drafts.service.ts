@@ -774,12 +774,19 @@ export class WorkNoteAgentDraftsService {
     try {
       prepareAgentRequest(agentInput);
     } catch (error) {
-      if (error instanceof AgentValidationError)
+      if (error instanceof AgentValidationError) {
+        const emptyBody =
+          !['title', 'custom'].includes(agentInput.operation) &&
+          !agentInput.draft.body.trim();
         throw new UnprocessableEntityException({
           code: error.code,
-          message:
-            'Invalid or oversized Agent context. Select a smaller passage or revise the request.',
+          message: emptyBody
+            ? 'Vui lòng nhập nội dung ghi chú trước khi sử dụng công cụ chỉnh sửa văn bản này.'
+            : error.message.includes('vượt quá giới hạn')
+              ? error.message
+              : 'Ngữ cảnh gửi đến Trợ lý AI không hợp lệ hoặc quá dài. Vui lòng chọn đoạn văn ngắn hơn hoặc điều chỉnh lại yêu cầu.',
         });
+      }
       throw error;
     }
     if (!(await this.consumeAgentQuota(actor)))
