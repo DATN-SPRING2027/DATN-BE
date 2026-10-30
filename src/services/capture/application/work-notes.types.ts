@@ -200,10 +200,7 @@ export interface DocumentVersionRecord {
 }
 
 export type DocumentKnowledgeControlAction =
-  | 'PAUSE'
-  | 'RESUME'
-  | 'REPROCESS'
-  | 'REVOKE';
+  'PAUSE' | 'RESUME' | 'REPROCESS' | 'REVOKE';
 
 export interface DocumentKnowledgeStatusRecord {
   documentId: string;

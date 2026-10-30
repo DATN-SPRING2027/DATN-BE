@@ -34,8 +34,16 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
 
   const pdfBytes = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n');
   const pdfSha256 = createHash('sha256').update(pdfBytes).digest('hex');
+  const toIdStr = (value: unknown): string =>
+    typeof value === 'string'
+      ? value
+      : value instanceof Types.ObjectId
+        ? value.toHexString()
+        : '';
 
-  function createInMemoryMongoStub(initialVersionFile?: Record<string, unknown>) {
+  function createInMemoryMongoStub(
+    initialVersionFile?: Record<string, unknown>,
+  ) {
     const now = new Date('2026-10-29T12:00:00.000Z');
     const docRow: Record<string, unknown> = {
       _id: new Types.ObjectId(documentId),
@@ -71,86 +79,82 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     const otherVersionRows: Array<Record<string, unknown>> = [];
 
     const documentsCollection = {
-      findOne: jest.fn(async (filter: Record<string, unknown>) => {
-        if (
-          filter._id &&
-          String(filter._id) !== String(docRow._id)
-        ) {
-          return null;
+      findOne: jest.fn((filter: Record<string, unknown>) => {
+        if (filter._id && toIdStr(filter._id) !== toIdStr(docRow._id)) {
+          return Promise.resolve(null);
         }
         if (filter.status && filter.status !== docRow.status) {
-          return null;
+          return Promise.resolve(null);
         }
         if (
           filter.createdByUserId &&
-          String(filter.createdByUserId) !== String(docRow.createdByUserId)
+          toIdStr(filter.createdByUserId) !== toIdStr(docRow.createdByUserId)
         ) {
-          return null;
+          return Promise.resolve(null);
         }
-        return { ...docRow };
+        return Promise.resolve({ ...docRow });
       }),
       updateOne: jest.fn(
-        async (
+        (
           _filter: Record<string, unknown>,
           update: { $set?: Record<string, unknown> },
         ) => {
           if (update.$set) Object.assign(docRow, update.$set);
-          return { modifiedCount: 1 };
+          return Promise.resolve({ modifiedCount: 1 });
         },
       ),
-      deleteOne: jest.fn(async () => ({ deletedCount: 1 })),
+      deleteOne: jest.fn(() => Promise.resolve({ deletedCount: 1 })),
     };
 
     const outboxCollection = {
-      deleteMany: jest.fn(async () => ({ deletedCount: 0 })),
+      deleteMany: jest.fn(() => Promise.resolve({ deletedCount: 0 })),
     };
 
     const versionsCollection = {
-      findOne: jest.fn(async (filter: Record<string, unknown>) => {
+      findOne: jest.fn((filter: Record<string, unknown>) => {
         if (filter['file.sha256']) {
           const all = [versionRow, ...otherVersionRows];
           const found = all.find((row) => {
             const file = row.file as
-              | { sha256?: string; size?: number; key?: string }
-              | undefined;
+              { sha256?: string; size?: number; key?: string } | undefined;
             return (
-              String(row.organizationId) === String(filter.organizationId) &&
+              toIdStr(row.organizationId) === toIdStr(filter.organizationId) &&
               file?.sha256 === filter['file.sha256'] &&
               (filter['file.size'] === undefined ||
                 file?.size === filter['file.size']) &&
               Boolean(file?.key)
             );
           });
-          return found ? { ...found } : null;
+          return Promise.resolve(found ? { ...found } : null);
         }
         if (
           filter.documentId &&
-          String(filter.documentId) !== String(versionRow.documentId)
+          toIdStr(filter.documentId) !== toIdStr(versionRow.documentId)
         ) {
-          return null;
+          return Promise.resolve(null);
         }
         if (filter.status && filter.status !== versionRow.status) {
-          return null;
+          return Promise.resolve(null);
         }
-        return { ...versionRow };
+        return Promise.resolve({ ...versionRow });
       }),
       find: jest.fn(() => ({
-        toArray: async () => [{ ...versionRow }],
+        toArray: () => Promise.resolve([{ ...versionRow }]),
         sort: () => ({
-          toArray: async () => [{ ...versionRow }],
+          toArray: () => Promise.resolve([{ ...versionRow }]),
         }),
       })),
       updateOne: jest.fn(
-        async (
+        (
           _filter: Record<string, unknown>,
           update: { $set?: Record<string, unknown> },
         ) => {
           if (update.$set) Object.assign(versionRow, update.$set);
-          return { modifiedCount: 1 };
+          return Promise.resolve({ modifiedCount: 1 });
         },
       ),
-      deleteMany: jest.fn(async () => ({ deletedCount: 1 })),
-      countDocuments: jest.fn(async () => 0),
+      deleteMany: jest.fn(() => Promise.resolve({ deletedCount: 1 })),
+      countDocuments: jest.fn(() => Promise.resolve(0)),
     };
 
     const db = {
@@ -164,10 +168,11 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
 
     const connection = {
       db,
-      startSession: async () => ({
-        withTransaction: async <T>(fn: () => Promise<T>) => fn(),
-        endSession: async () => undefined,
-      }),
+      startSession: () =>
+        Promise.resolve({
+          withTransaction: async <T>(fn: () => Promise<T>) => fn(),
+          endSession: () => Promise.resolve(undefined),
+        }),
     } as unknown as Connection;
 
     return {
@@ -194,36 +199,43 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       }),
     } as unknown as WorkNotesAuthorizationService;
 
+    const storageGetMock = jest.fn();
     const storage = {
       isDirectCloudEnabled: jest.fn().mockReturnValue(true),
       createDirectUploadUrl: jest
         .fn()
-        .mockResolvedValue('https://r2.example.cloudflarestorage.com/presigned-put'),
+        .mockResolvedValue(
+          'https://r2.example.cloudflarestorage.com/presigned-put',
+        ),
       createDirectDownloadUrl: jest
         .fn()
-        .mockResolvedValue('https://r2.example.cloudflarestorage.com/presigned-get'),
+        .mockResolvedValue(
+          'https://r2.example.cloudflarestorage.com/presigned-get',
+        ),
       inspectStoredPrefix: jest.fn().mockResolvedValue({
         size: pdfBytes.length,
         contentType: 'application/pdf',
         prefix: pdfBytes.subarray(0, 16),
       }),
-      get: jest.fn(),
+      get: storageGetMock,
       delete: jest.fn().mockResolvedValue(undefined),
     } as unknown as ProjectDocumentStorage;
 
+    const uploadProjectDocumentMock = jest.fn();
+    const ingestProjectDocumentObjectMock = jest.fn().mockResolvedValue({
+      documentId: 'sag-doc-1',
+      versionId: 'sag-ver-1',
+      versionNo: 1,
+      runId: 'sag-run-1',
+      fileHash: pdfSha256,
+      status: 'RECEIVED',
+      searchStatus: 'PENDING',
+      knowledgeStatus: 'NOT_STARTED',
+      isDuplicate: false,
+    });
     const sagTransport: SagKnowledgeSyncTransport = {
-      uploadProjectDocument: jest.fn(),
-      ingestProjectDocumentObject: jest.fn().mockResolvedValue({
-        documentId: 'sag-doc-1',
-        versionId: 'sag-ver-1',
-        versionNo: 1,
-        runId: 'sag-run-1',
-        fileHash: pdfSha256,
-        status: 'RECEIVED',
-        searchStatus: 'PENDING',
-        knowledgeStatus: 'NOT_STARTED',
-        isDuplicate: false,
-      }),
+      uploadProjectDocument: uploadProjectDocumentMock,
+      ingestProjectDocumentObject: ingestProjectDocumentObjectMock,
       revokeProjectDocument: jest.fn(),
     };
 
@@ -294,9 +306,9 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       status: 'RECEIVED',
     });
     // Zero-buffer guarantee: DATN-BE never downloaded the full file from R2!
-    expect(storage.get).not.toHaveBeenCalled();
-    expect(sagTransport.uploadProjectDocument).not.toHaveBeenCalled();
-    expect(sagTransport.ingestProjectDocumentObject).toHaveBeenCalledWith(
+    expect(storageGetMock).not.toHaveBeenCalled();
+    expect(uploadProjectDocumentMock).not.toHaveBeenCalled();
+    expect(ingestProjectDocumentObjectMock).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId,
         documentId,
@@ -421,6 +433,11 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
 
   it('enforces CSRF on upload-intent/confirm-upload and redirects native file downloads via 302 to R2', async () => {
     const csrfToken = 'csrf-secret-xyz';
+    const downloadDocumentFileMock = jest.fn().mockResolvedValue({
+      bytes: pdfBytes,
+      name: 'spec.pdf',
+      contentType: 'application/pdf',
+    });
     const service = {
       createDocumentUploadIntent: jest
         .fn()
@@ -433,11 +450,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
         contentType: 'application/pdf',
         expiresInSeconds: 120,
       }),
-      downloadDocumentFile: jest.fn().mockResolvedValue({
-        bytes: pdfBytes,
-        name: 'spec.pdf',
-        contentType: 'application/pdf',
-      }),
+      downloadDocumentFile: downloadDocumentFileMock,
     } as unknown as WorkNotesService;
 
     const controller = new WorkNotesController(service);
@@ -483,7 +496,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       'Location',
       'https://r2.example.cloudflarestorage.com/direct-download',
     );
-    expect(service.downloadDocumentFile).not.toHaveBeenCalled();
+    expect(downloadDocumentFileMock).not.toHaveBeenCalled();
 
     // 2. ?format=url -> JSON direct URL descriptor
     const urlResult = await controller.downloadDocumentFile(
@@ -507,7 +520,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       { proxy: 'true' },
     );
     expect(proxyResult).toBeInstanceOf(StreamableFile);
-    expect(service.downloadDocumentFile).toHaveBeenCalledTimes(1);
+    expect(downloadDocumentFileMock).toHaveBeenCalledTimes(1);
   });
 
   it('consumes BullMQ ingestion jobs via KnowledgeIngestionProcessor and hands off R2 URLs with KNOWLEDGE_OUTBOX_ASYNC_HANDOFF=true', async () => {
@@ -521,10 +534,10 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       collection: (name: string) => {
         if (name === 'outbox_events') {
           return {
-            findOneAndUpdate: jest.fn(async () => {
-              if (leased) return null;
+            findOneAndUpdate: jest.fn(() => {
+              if (leased) return Promise.resolve(null);
               leased = true;
-              return {
+              return Promise.resolve({
                 _id: eventId,
                 eventName: 'KNOWLEDGE_SOURCE_APPROVED',
                 aggregateType: 'PROJECT_DOCUMENT',
@@ -537,7 +550,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
                   version: 1,
                   delivery: { attemptCount: 1 },
                 },
-              };
+              });
             }),
             findOne: jest.fn().mockResolvedValue(null),
             updateOne: outboxUpdateOne,
@@ -580,12 +593,13 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       },
     } as unknown as Connection;
 
+    const storageGetSpy = jest.fn();
     const storage = {
       isDirectCloudEnabled: () => true,
       createDirectDownloadUrl: jest
         .fn()
         .mockResolvedValue('https://r2.example.cloudflarestorage.com/sag-pull'),
-      get: jest.fn(),
+      get: storageGetSpy,
     } as unknown as ProjectDocumentStorage;
 
     const getStatusSpy = jest.fn();
@@ -633,7 +647,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       documentId,
       outcomes: ['PUBLISHED'],
     });
-    expect(storage.get).not.toHaveBeenCalled();
+    expect(storageGetSpy).not.toHaveBeenCalled();
     expect(ingestSpy).toHaveBeenCalledTimes(1);
     // Async handoff enabled -> worker does NOT block in 90s status polling loop!
     expect(getStatusSpy).not.toHaveBeenCalled();
@@ -717,7 +731,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     ];
 
     const auditService = {
-      append: jest.fn(async (event: Record<string, unknown>) => {
+      append: jest.fn((event: Record<string, unknown>) => {
         auditEvents.push({
           id: `aud-${auditEvents.length + 1}`,
           actorUserId: event.actorUserId,
@@ -727,8 +741,9 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
           occurredAt: '2026-10-29T12:05:00.000Z',
           metadata: event.metadata,
         });
+        return Promise.resolve();
       }),
-      listForTarget: jest.fn(async () => [...auditEvents]),
+      listForTarget: jest.fn(() => Promise.resolve([...auditEvents])),
     } as unknown as AuditService;
 
     const authorization = {
@@ -742,16 +757,17 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       }),
     } as unknown as WorkNotesAuthorizationService;
 
+    const controlProjectDocumentMock = jest.fn().mockResolvedValue({
+      documentId: 'sag-doc-1',
+      action: 'REPROCESS',
+      accepted: true,
+      status: 'pending',
+      message: 'Reprocessing scheduled.',
+    });
     const sagTransport: SagKnowledgeSyncTransport = {
       uploadProjectDocument: jest.fn(),
       revokeProjectDocument: jest.fn(),
-      controlProjectDocument: jest.fn().mockResolvedValue({
-        documentId: 'sag-doc-1',
-        action: 'REPROCESS',
-        accepted: true,
-        status: 'pending',
-        message: 'Reprocessing scheduled.',
-      }),
+      controlProjectDocument: controlProjectDocumentMock,
     };
 
     const service = new WorkNotesService(
@@ -781,7 +797,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       progress: 0,
       chunkCount: 0,
     });
-    expect(sagTransport.controlProjectDocument).toHaveBeenCalledWith(
+    expect(controlProjectDocumentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sagDocumentId: 'sag-doc-1',
         action: 'reprocess',

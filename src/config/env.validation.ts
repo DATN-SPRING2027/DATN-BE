@@ -181,7 +181,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .min(60)
     .max(7200)
     .default(1800),
-  DOCUMENT_UPLOAD_TOKEN_SECRET: Joi.string().trim().min(16).allow('').optional(),
+  DOCUMENT_UPLOAD_TOKEN_SECRET: Joi.string()
+    .trim()
+    .min(16)
+    .allow('')
+    .optional(),
   KNOWLEDGE_OUTBOX_CONSUMER_ENABLED: Joi.string()
     .valid('true', 'false', '')
     .optional(),

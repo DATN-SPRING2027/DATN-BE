@@ -126,7 +126,8 @@ export class WorkNotesController {
       throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
     }
     const expectedSha256 = headerValue(request.headers['x-content-sha256']);
-    const autoSyncSag = headerValue(request.headers['x-auto-sync-sag']) === 'true';
+    const autoSyncSag =
+      headerValue(request.headers['x-auto-sync-sag']) === 'true';
     const options =
       expectedSha256 || autoSyncSag
         ? {

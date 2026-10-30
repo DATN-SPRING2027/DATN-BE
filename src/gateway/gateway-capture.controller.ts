@@ -171,10 +171,7 @@ export class GatewayCaptureController {
   }
 
   @Post('documents/:documentId/knowledge-control')
-  controlDocumentKnowledge(
-    @Req() request: Request,
-    @Res() response: Response,
-  ) {
+  controlDocumentKnowledge(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 

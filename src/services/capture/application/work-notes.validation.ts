@@ -181,7 +181,7 @@ export function validateDocumentUploadIntentInput(
   const rawContentType =
     record.contentType === undefined || record.contentType === ''
       ? 'application/octet-stream'
-      : optionalText(record.contentType, 160) ?? invalid();
+      : (optionalText(record.contentType, 160) ?? invalid());
   const size = record.size;
   if (
     typeof size !== 'number' ||

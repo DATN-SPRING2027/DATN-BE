@@ -458,9 +458,7 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
         body.error && typeof body.error === 'object'
           ? (body.error as Record<string, unknown>)
           : null,
-      ...(typeof body.progress === 'number'
-        ? { progress: body.progress }
-        : {}),
+      ...(typeof body.progress === 'number' ? { progress: body.progress } : {}),
       ...(typeof body.document_status === 'string'
         ? { documentStatus: body.document_status }
         : {}),
@@ -542,7 +540,8 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
         sectionPath: asText(entry.section_path),
         blockType: asText(entry.block_type, 'paragraph'),
         pageFrom:
-          typeof entry.page_from === 'number' && Number.isFinite(entry.page_from)
+          typeof entry.page_from === 'number' &&
+          Number.isFinite(entry.page_from)
             ? Math.max(1, Math.trunc(entry.page_from))
             : 1,
         pageTo:
@@ -1055,16 +1054,15 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
 
         const canDirectObjectIngest = Boolean(
           targetVersionDoc.file?.key &&
-            targetVersionDoc.file?.name &&
-            targetVersionDoc.file?.contentType &&
-            targetVersionDoc.file?.sha256 &&
-            typeof targetVersionDoc.file?.size === 'number' &&
-            targetVersionDoc.file.size > 0 &&
-            typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-            this.documentStorage.isDirectCloudEnabled() &&
-            typeof this.documentStorage.createDirectDownloadUrl ===
-              'function' &&
-            typeof this.transport.ingestProjectDocumentObject === 'function',
+          targetVersionDoc.file?.name &&
+          targetVersionDoc.file?.contentType &&
+          targetVersionDoc.file?.sha256 &&
+          typeof targetVersionDoc.file?.size === 'number' &&
+          targetVersionDoc.file.size > 0 &&
+          typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+          this.documentStorage.isDirectCloudEnabled() &&
+          typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+          typeof this.transport.ingestProjectDocumentObject === 'function',
         );
 
         let receipt: SagProjectDocumentUploadReceipt;

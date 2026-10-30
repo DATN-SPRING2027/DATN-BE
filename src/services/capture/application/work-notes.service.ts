@@ -812,8 +812,7 @@ export class WorkNotesService {
         const mapKey = `${String(raw.documentId)}:${parsed.version}`;
         versionByKey.set(mapKey, parsed);
         const rawFile = raw.file as
-          | { key?: unknown; sha256?: unknown }
-          | undefined;
+          { key?: unknown; sha256?: unknown } | undefined;
         if (rawFile && typeof rawFile === 'object') {
           rawFileMetaByKey.set(mapKey, {
             ...(typeof rawFile.key === 'string' && rawFile.key.trim()
@@ -849,7 +848,9 @@ export class WorkNotesService {
       );
       const storageRef = storageRefsByDocId.get(summary.id);
       if (!currentVersion) {
-        return storageRef ? { ...summary, storageReference: storageRef } : summary;
+        return storageRef
+          ? { ...summary, storageReference: storageRef }
+          : summary;
       }
       return {
         ...summary,
@@ -886,8 +887,9 @@ export class WorkNotesService {
           return false;
         }
         if (sync.knowledgeReady && sync.progress >= 100) return false;
-        return Boolean(
-          this.sagTransport?.getProjectDocumentVersionStatus || !sync.status,
+        return (
+          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
+            'function' || !sync.status
         );
       })
       .slice(0, 10);
@@ -1497,8 +1499,7 @@ export class WorkNotesService {
         versionNumber: versionNumber ?? Number(document.currentVersionNumber),
       });
     const file = version?.file as
-      | { key?: string; name?: string; contentType?: string }
-      | undefined;
+      { key?: string; name?: string; contentType?: string } | undefined;
     if (!file?.key || !file.name || !file.contentType) throw documentNotFound();
     if (!this.documentStorage) {
       throw new ServiceUnavailableException(
@@ -2267,19 +2268,17 @@ export class WorkNotesService {
     let hasSagSync = Boolean(
       (document.knowledgeSync as { sagDocumentId?: string } | undefined)
         ?.sagDocumentId ||
-        docStatus === 'APPROVED' ||
-        docStatus === 'ARCHIVED',
+      docStatus === 'APPROVED' ||
+      docStatus === 'ARCHIVED',
     );
     for (const row of versionRows) {
       const file = (row as Record<string, unknown>).file as
-        | { key?: unknown }
-        | undefined;
+        { key?: unknown } | undefined;
       if (typeof file?.key === 'string' && file.key.trim()) {
         candidateKeys.add(file.key.trim());
       }
       const verSync = (row as Record<string, unknown>).knowledgeSync as
-        | { sagDocumentId?: unknown }
-        | undefined;
+        { sagDocumentId?: unknown } | undefined;
       if (typeof verSync?.sagDocumentId === 'string' && verSync.sagDocumentId) {
         hasSagSync = true;
       }
@@ -2473,12 +2472,12 @@ export class WorkNotesService {
       (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
     const needsFreshIdempotencyKey = Boolean(
       existingSync &&
-        ['REVOKED', 'FAILED', 'INDEX_FAILED'].some(
-          (terminalState) =>
-            String(existingSync.status ?? '').toUpperCase() === terminalState ||
-            String(existingSync.searchStatus ?? '').toUpperCase() ===
-              terminalState,
-        ),
+      ['REVOKED', 'FAILED', 'INDEX_FAILED'].some(
+        (terminalState) =>
+          String(existingSync.status ?? '').toUpperCase() === terminalState ||
+          String(existingSync.searchStatus ?? '').toUpperCase() ===
+            terminalState,
+      ),
     );
     const resyncSuffix = needsFreshIdempotencyKey
       ? `:resync:${Date.now()}`
@@ -2487,16 +2486,16 @@ export class WorkNotesService {
     const logicalSourceId = `continuum:project_document:${documentId}`;
     const canDirectObjectIngest = Boolean(
       fileMeta?.key &&
-        fileMeta.name &&
-        fileMeta.contentType &&
-        fileMeta.sha256 &&
-        typeof fileMeta.size === 'number' &&
-        fileMeta.size > 0 &&
-        this.documentStorage &&
-        typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-        this.documentStorage.isDirectCloudEnabled() &&
-        typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
-        typeof this.sagTransport.ingestProjectDocumentObject === 'function',
+      fileMeta.name &&
+      fileMeta.contentType &&
+      fileMeta.sha256 &&
+      typeof fileMeta.size === 'number' &&
+      fileMeta.size > 0 &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+      typeof this.sagTransport.ingestProjectDocumentObject === 'function',
     );
 
     let fileHash: string;
@@ -2620,14 +2619,15 @@ export class WorkNotesService {
       syncedAt,
     };
 
-    await db.collection('project_document_versions').updateOne(
-      { _id: versionDoc._id },
-      { $set: { knowledgeSync: syncRecord } },
-    );
-    await db.collection('project_documents').updateOne(
-      { _id: id },
-      { $set: { knowledgeSync: syncRecord } },
-    );
+    await db
+      .collection('project_document_versions')
+      .updateOne(
+        { _id: versionDoc._id },
+        { $set: { knowledgeSync: syncRecord } },
+      );
+    await db
+      .collection('project_documents')
+      .updateOne({ _id: id }, { $set: { knowledgeSync: syncRecord } });
 
     await this.auditEvent(
       actor,
@@ -2709,7 +2709,7 @@ export class WorkNotesService {
               ? live.progress
               : live.searchReady
                 ? 100
-                : storedSync.progress ?? 10,
+                : (storedSync.progress ?? 10),
           ...(live.documentStatus !== undefined
             ? { documentStatus: live.documentStatus }
             : {}),
@@ -2733,14 +2733,15 @@ export class WorkNotesService {
             : {}),
           error: live.error ?? null,
         };
-        await db.collection('project_document_versions').updateOne(
-          { _id: versionDoc._id },
-          { $set: { knowledgeSync: merged } },
-        );
-        await db.collection('project_documents').updateOne(
-          { _id: id },
-          { $set: { knowledgeSync: merged } },
-        );
+        await db
+          .collection('project_document_versions')
+          .updateOne(
+            { _id: versionDoc._id },
+            { $set: { knowledgeSync: merged } },
+          );
+        await db
+          .collection('project_documents')
+          .updateOne({ _id: id }, { $set: { knowledgeSync: merged } });
         return merged;
       } catch {
         return storedSync;
@@ -2760,8 +2761,7 @@ export class WorkNotesService {
     if (pendingOutbox) {
       const deliveryReceipt = (
         pendingOutbox.payload as
-          | { delivery?: { receipt?: Record<string, unknown> } }
-          | undefined
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
       )?.delivery?.receipt;
       if (
         deliveryReceipt &&
@@ -2850,14 +2850,15 @@ export class WorkNotesService {
             // Fall back to recovered outbox receipt
           }
         }
-        await db.collection('project_document_versions').updateOne(
-          { _id: versionDoc._id },
-          { $set: { knowledgeSync: recovered } },
-        );
-        await db.collection('project_documents').updateOne(
-          { _id: id },
-          { $set: { knowledgeSync: recovered } },
-        );
+        await db
+          .collection('project_document_versions')
+          .updateOne(
+            { _id: versionDoc._id },
+            { $set: { knowledgeSync: recovered } },
+          );
+        await db
+          .collection('project_documents')
+          .updateOne({ _id: id }, { $set: { knowledgeSync: recovered } });
         return recovered;
       }
       if (pendingOutbox.status === 'PENDING') {
@@ -2973,8 +2974,7 @@ export class WorkNotesService {
       });
       const deliveryReceipt = (
         pendingOutbox?.payload as
-          | { delivery?: { receipt?: Record<string, unknown> } }
-          | undefined
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
       )?.delivery?.receipt;
       if (
         deliveryReceipt &&
@@ -3114,14 +3114,15 @@ export class WorkNotesService {
         progress: 0,
         syncedAt: new Date().toISOString(),
       };
-      await db.collection('project_document_versions').updateOne(
-        { _id: versionDoc._id },
-        { $set: { knowledgeSync: revokedRecord } },
-      );
-      await db.collection('project_documents').updateOne(
-        { _id: id },
-        { $set: { knowledgeSync: revokedRecord } },
-      );
+      await db
+        .collection('project_document_versions')
+        .updateOne(
+          { _id: versionDoc._id },
+          { $set: { knowledgeSync: revokedRecord } },
+        );
+      await db
+        .collection('project_documents')
+        .updateOne({ _id: id }, { $set: { knowledgeSync: revokedRecord } });
       await this.auditEvent(
         actor,
         'DOCUMENT_KNOWLEDGE_REVOKED',
@@ -3183,7 +3184,9 @@ export class WorkNotesService {
       reprocessSourceUrl = await this.documentStorage
         .createDirectDownloadUrl(fileMeta.key, sagIngestUrlTtlSeconds, {
           ...(fileMeta.name ? { fileName: fileMeta.name } : {}),
-          ...(fileMeta.contentType ? { contentType: fileMeta.contentType } : {}),
+          ...(fileMeta.contentType
+            ? { contentType: fileMeta.contentType }
+            : {}),
         })
         .catch(() => undefined);
     }
@@ -3244,14 +3247,15 @@ export class WorkNotesService {
         error: null,
         syncedAt: new Date().toISOString(),
       };
-      await db.collection('project_document_versions').updateOne(
-        { _id: versionDoc._id },
-        { $set: { knowledgeSync: resetRecord } },
-      );
-      await db.collection('project_documents').updateOne(
-        { _id: id },
-        { $set: { knowledgeSync: resetRecord } },
-      );
+      await db
+        .collection('project_document_versions')
+        .updateOne(
+          { _id: versionDoc._id },
+          { $set: { knowledgeSync: resetRecord } },
+        );
+      await db
+        .collection('project_documents')
+        .updateOne({ _id: id }, { $set: { knowledgeSync: resetRecord } });
       return resetRecord;
     }
 
@@ -3263,11 +3267,16 @@ export class WorkNotesService {
       throw error;
     }
     const rawMessage =
-      error instanceof Error ? error.message : String(error ?? '');
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : '';
     const match = /^SAG_[A-Z_]+_FAILED_(\d{3}):([\s\S]*)$/.exec(rawMessage);
     if (match) {
       const statusCode = Number(match[1]);
-      const detail = (match[2] || '').trim() || 'Upstream SAG operation failed.';
+      const detail =
+        (match[2] || '').trim() || 'Upstream SAG operation failed.';
       if (statusCode === 400 || statusCode === 422) {
         throw new BadRequestException({ code: fallbackCode, message: detail });
       }
@@ -4954,7 +4963,9 @@ export class WorkNotesService {
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
       ...(value.knowledgeSync && typeof value.knowledgeSync === 'object'
-        ? { knowledgeSync: value.knowledgeSync as DocumentKnowledgeStatusRecord }
+        ? {
+            knowledgeSync: value.knowledgeSync as DocumentKnowledgeStatusRecord,
+          }
         : {}),
       permissions: {
         ...this.permissions(actor, createdBy, status),
@@ -5024,13 +5035,13 @@ export class WorkNotesService {
     for (const rawVer of versions) {
       const verObj = rawVer as unknown as Record<string, unknown>;
       const rawFile = verObj.file as
-        | { key?: unknown; sha256?: unknown }
-        | undefined;
+        { key?: unknown; sha256?: unknown } | undefined;
       if (typeof rawFile?.key === 'string' && rawFile.key.trim()) {
         allDocKeys.push(rawFile.key.trim());
       }
       if (
-        Number(verObj.versionNumber) === Number(document.currentVersionNumber) &&
+        Number(verObj.versionNumber) ===
+          Number(document.currentVersionNumber) &&
         typeof rawFile?.sha256 === 'string' &&
         rawFile.sha256.trim()
       ) {
@@ -5121,7 +5132,7 @@ export class WorkNotesService {
           const rawFile = raw.file as { key?: unknown } | undefined;
           const key =
             typeof rawFile?.key === 'string' ? rawFile.key.trim() : '';
-          const docId = raw.documentId ? String(raw.documentId) : '';
+          const docId = idText(raw.documentId);
           if (key && docId && uniqueKeySet.has(key)) {
             distinctDocsByKey.get(key)?.add(docId);
           }
@@ -5191,7 +5202,9 @@ export class WorkNotesService {
     );
     const events: DocumentActivityEvent[] = [];
 
-    const mapAuditAction = (rawAction: string): DocumentActivityAction | null => {
+    const mapAuditAction = (
+      rawAction: string,
+    ): DocumentActivityAction | null => {
       switch (rawAction) {
         case 'DOCUMENT_DRAFT_CREATED':
           return 'CREATED';
@@ -5316,10 +5329,7 @@ export class WorkNotesService {
         });
       }
 
-      if (
-        ver.submittedAt &&
-        !hasActionForVersion(['SUBMITTED'], ver.version)
-      ) {
+      if (ver.submittedAt && !hasActionForVersion(['SUBMITTED'], ver.version)) {
         events.push({
           id: `synth-submit-${summary.id}-v${ver.version}`,
           action: 'SUBMITTED',
@@ -5388,9 +5398,7 @@ export class WorkNotesService {
         action: isRevoked ? 'KNOWLEDGE_REVOKED' : 'KNOWLEDGE_SYNCED',
         actorId: summary.createdBy,
         version: summary.knowledgeSync.version || summary.version,
-        ...(summary.knowledgeSync.isDuplicate
-          ? { deduplicated: true }
-          : {}),
+        ...(summary.knowledgeSync.isDuplicate ? { deduplicated: true } : {}),
         at: summary.knowledgeSync.syncedAt,
       });
     }
@@ -5625,7 +5633,9 @@ export class WorkNotesService {
     return `v1.${encodedPayload}.${signature}`;
   }
 
-  private verifyDocumentUploadClaims(token: string): SignedDocumentUploadClaims {
+  private verifyDocumentUploadClaims(
+    token: string,
+  ): SignedDocumentUploadClaims {
     const parts = token.trim().split('.');
     if (parts.length !== 3 || parts[0] !== 'v1' || !parts[1] || !parts[2]) {
       throw new BadRequestException({
@@ -5656,9 +5666,7 @@ export class WorkNotesService {
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(
-        Buffer.from(parts[1], 'base64url').toString('utf-8'),
-      );
+      parsed = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
     } catch {
       throw new BadRequestException({
         code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
