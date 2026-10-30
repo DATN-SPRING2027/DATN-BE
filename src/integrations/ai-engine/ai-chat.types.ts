@@ -42,6 +42,8 @@ export type AiChatRetrievalStepDto = Readonly<{
 
 export type AiChatMessageDto = Readonly<{
   id: string;
+  replyToMessageId?: string;
+  regeneratedFromMessageId?: string;
   role: 'user' | 'assistant';
   content: string;
   status: 'ok' | 'failed' | 'cancelled';
@@ -72,6 +74,8 @@ export type AiChatDeltaEventData = Readonly<{
 
 export type AiChatCompletedEventData = Readonly<{
   messageId: string;
+  replyToMessageId?: string;
+  regeneratedFromMessageId?: string;
   content: string;
   answerStatus: 'answered' | 'no_answer';
   citations: readonly AiChatCitationDto[];
@@ -84,6 +88,84 @@ export type AiChatFailedEventData = Readonly<{
   message: string;
   retryable: boolean;
   messageId?: string;
+  replyToMessageId?: string;
+  regeneratedFromMessageId?: string;
+}>;
+
+export type AiChatFeedbackRating = 'LIKE' | 'DISLIKE';
+
+export const AI_CHAT_FEEDBACK_REASON_CATEGORIES = [
+  'INACCURATE',
+  'OUTDATED',
+  'IRRELEVANT_CITATION',
+  'INCOMPLETE',
+  'OTHER',
+] as const;
+
+export type AiChatFeedbackReasonCategory =
+  (typeof AI_CHAT_FEEDBACK_REASON_CATEGORIES)[number];
+
+export type AiChatFeedbackInputDto = Readonly<{
+  rating: AiChatFeedbackRating;
+  reasonCategory?: AiChatFeedbackReasonCategory;
+  reasonText?: string;
+}>;
+
+export type AiChatFeedbackDto = Readonly<{
+  messageId: string;
+  rating: AiChatFeedbackRating;
+  reasonCategory?: AiChatFeedbackReasonCategory;
+  reasonText?: string;
+  updatedAt: string;
+}>;
+
+export type AiChatOwnFeedbackDto = Readonly<{
+  feedback: AiChatFeedbackDto | null;
+}>;
+
+export type AiChatShareDto = Readonly<{
+  id: string;
+  projectId: string;
+  messageId: string;
+  createdAt: string;
+}>;
+
+export type AiChatSharedAnswerDto = Readonly<{
+  share: AiChatShareDto;
+  question: Readonly<{ content: string }>;
+  answer: Readonly<{
+    id: string;
+    content: string;
+    citations: readonly AiChatCitationDto[];
+  }>;
+}>;
+
+export type PlatformAiFeedbackQueryDto = Readonly<{
+  organizationId?: string;
+  projectId?: string;
+  rating?: AiChatFeedbackRating;
+  from?: string;
+  to?: string;
+  cursor?: string;
+  limit: number;
+}>;
+
+export type PlatformAiFeedbackRowDto = Readonly<{
+  id: string;
+  organizationId: string;
+  projectId: string;
+  messageId: string;
+  rating: AiChatFeedbackRating;
+  reasonCategory?: AiChatFeedbackReasonCategory;
+  reasonText?: string;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type PlatformAiFeedbackPageDto = Readonly<{
+  totals: Readonly<{ likes: number; dislikes: number }>;
+  items: readonly PlatformAiFeedbackRowDto[];
+  nextCursor: string | null;
 }>;
 
 export type AiChatSseFrame =
@@ -445,6 +527,14 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
   const createdAt = nonEmptyString(raw.created_at ?? raw.createdAt, 64);
   if (!id || !role || !createdAt) return null;
 
+  const replyToMessageId = nonEmptyString(
+    raw.reply_to_message_id ?? raw.replyToMessageId,
+    128,
+  );
+  const regeneratedFromMessageId = nonEmptyString(
+    raw.regenerated_from_message_id ?? raw.regeneratedFromMessageId,
+    128,
+  );
   const content = typeof raw.content === 'string' ? raw.content : '';
   const status =
     raw.status === 'failed' || raw.status === 'cancelled' ? raw.status : 'ok';
@@ -468,6 +558,8 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
 
   return {
     id,
+    ...(replyToMessageId ? { replyToMessageId } : {}),
+    ...(regeneratedFromMessageId ? { regeneratedFromMessageId } : {}),
     role,
     content,
     status,
@@ -476,5 +568,161 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
     sessionCitations,
     retrievalSteps,
     createdAt,
+  };
+}
+
+function isFeedbackRating(value: unknown): value is AiChatFeedbackRating {
+  return value === 'LIKE' || value === 'DISLIKE';
+}
+
+function isFeedbackReasonCategory(
+  value: unknown,
+): value is AiChatFeedbackReasonCategory {
+  return (
+    typeof value === 'string' &&
+    (AI_CHAT_FEEDBACK_REASON_CATEGORIES as readonly string[]).includes(value)
+  );
+}
+
+export function mapSagFeedback(raw: unknown): AiChatFeedbackDto | null {
+  if (!isRecord(raw)) return null;
+  const messageId = nonEmptyString(raw.message_id ?? raw.messageId, 64);
+  const rating = isFeedbackRating(raw.rating) ? raw.rating : null;
+  const updatedAt = nonEmptyString(raw.updated_at ?? raw.updatedAt, 64);
+  if (!messageId || !rating || !updatedAt) return null;
+
+  const rawCategory = raw.reason_category ?? raw.reasonCategory;
+  const reasonCategory = isFeedbackReasonCategory(rawCategory)
+    ? rawCategory
+    : undefined;
+  const rawReasonText = raw.reason_text ?? raw.reasonText;
+  const reasonText = nonEmptyString(rawReasonText, 1000);
+
+  return {
+    messageId,
+    rating,
+    ...(reasonCategory ? { reasonCategory } : {}),
+    ...(reasonText ? { reasonText } : {}),
+    updatedAt,
+  };
+}
+
+export function mapSagOwnFeedback(raw: unknown): AiChatOwnFeedbackDto | null {
+  if (!isRecord(raw)) return null;
+  if (raw.feedback === null || raw.feedback === undefined) {
+    return { feedback: null };
+  }
+  const mapped = mapSagFeedback(raw.feedback);
+  if (!mapped) return null;
+  return { feedback: mapped };
+}
+
+export function mapSagShare(raw: unknown): AiChatShareDto | null {
+  if (!isRecord(raw)) return null;
+  const id = nonEmptyString(raw.id, 64);
+  const projectId = nonEmptyString(raw.project_id ?? raw.projectId, 64);
+  const messageId = nonEmptyString(raw.message_id ?? raw.messageId, 64);
+  const createdAt = nonEmptyString(raw.created_at ?? raw.createdAt, 64);
+  if (!id || !projectId || !messageId || !createdAt) return null;
+  return { id, projectId, messageId, createdAt };
+}
+
+export function mapSagSharedAnswer(raw: unknown): AiChatSharedAnswerDto | null {
+  if (!isRecord(raw)) return null;
+  const share = mapSagShare(raw.share);
+  const questionRec = isRecord(raw.question) ? raw.question : null;
+  const answerRec = isRecord(raw.answer) ? raw.answer : null;
+  if (!share || !questionRec || !answerRec) return null;
+
+  const answerId = nonEmptyString(answerRec.id, 64);
+  if (
+    !answerId ||
+    typeof questionRec.content !== 'string' ||
+    typeof answerRec.content !== 'string'
+  ) {
+    return null;
+  }
+
+  const citations = Array.isArray(answerRec.citations)
+    ? answerRec.citations
+        .map(mapSagCitation)
+        .filter((item): item is AiChatCitationDto => item !== null)
+    : [];
+
+  return {
+    share,
+    question: { content: questionRec.content },
+    answer: {
+      id: answerId,
+      content: answerRec.content,
+      citations,
+    },
+  };
+}
+
+export function mapSagAdminFeedbackPage(
+  raw: unknown,
+): PlatformAiFeedbackPageDto | null {
+  if (!isRecord(raw) || !isRecord(raw.totals) || !Array.isArray(raw.items)) {
+    return null;
+  }
+  const likes = nonNegativeInt(raw.totals.likes);
+  const dislikes = nonNegativeInt(raw.totals.dislikes);
+
+  const items: PlatformAiFeedbackRowDto[] = [];
+  for (const rawRow of raw.items) {
+    if (!isRecord(rawRow)) return null;
+    const id = nonEmptyString(rawRow.id, 64);
+    const organizationId = nonEmptyString(
+      rawRow.organization_id ?? rawRow.organizationId,
+      64,
+    );
+    const projectId = nonEmptyString(rawRow.project_id ?? rawRow.projectId, 64);
+    const messageId = nonEmptyString(rawRow.message_id ?? rawRow.messageId, 64);
+    const rating = isFeedbackRating(rawRow.rating) ? rawRow.rating : null;
+    const createdAt = nonEmptyString(rawRow.created_at ?? rawRow.createdAt, 64);
+    const updatedAt = nonEmptyString(rawRow.updated_at ?? rawRow.updatedAt, 64);
+    if (
+      !id ||
+      !organizationId ||
+      !projectId ||
+      !messageId ||
+      !rating ||
+      !createdAt ||
+      !updatedAt
+    ) {
+      return null;
+    }
+    const rawCategory = rawRow.reason_category ?? rawRow.reasonCategory;
+    const reasonCategory = isFeedbackReasonCategory(rawCategory)
+      ? rawCategory
+      : undefined;
+    const reasonText = nonEmptyString(
+      rawRow.reason_text ?? rawRow.reasonText,
+      1000,
+    );
+    items.push({
+      id,
+      organizationId,
+      projectId,
+      messageId,
+      rating,
+      ...(reasonCategory ? { reasonCategory } : {}),
+      ...(reasonText ? { reasonText } : {}),
+      createdAt,
+      updatedAt,
+    });
+  }
+
+  const rawCursor = raw.next_cursor ?? raw.nextCursor;
+  const nextCursor =
+    typeof rawCursor === 'string' && rawCursor.trim()
+      ? rawCursor.trim().slice(0, 1024)
+      : null;
+
+  return {
+    totals: { likes, dislikes },
+    items,
+    nextCursor,
   };
 }

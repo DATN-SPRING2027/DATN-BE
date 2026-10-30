@@ -1,18 +1,46 @@
-import { BadGatewayException, Inject, Injectable } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  HttpException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
+import {
+  PLATFORM_ADMINISTRATION_REPOSITORY,
+  type PlatformAdministrationRepository,
+} from '../../services/iam/application/platform/platform-administration.repository';
+import { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
 import { ProjectService } from '../../services/iam/application/projects/project.service';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import type { AiEngineClient } from './ai-engine.port';
 import { transformSagSseStream } from './ai-chat-sse.parser';
 import {
+  type AiChatFeedbackDto,
+  type AiChatFeedbackInputDto,
   type AiChatMessagePageDto,
+  type AiChatOwnFeedbackDto,
   type AiChatRequestHeaders,
+  type AiChatShareDto,
+  type AiChatSharedAnswerDto,
   type AiChatSseFrame,
   type AiChatThreadDto,
+  type PlatformAiFeedbackPageDto,
+  type PlatformAiFeedbackQueryDto,
+  mapSagAdminFeedbackPage,
+  mapSagFeedback,
   mapSagMessage,
+  mapSagOwnFeedback,
+  mapSagShare,
+  mapSagSharedAnswer,
   mapSagThread,
   sanitizeContinuumActorHeaderName,
 } from './ai-chat.types';
+
+const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
 type SagLoginResponse = Readonly<{ access_token?: unknown }>;
 type SagAgentResponse = Readonly<{ id?: unknown }>;
@@ -44,6 +72,10 @@ export class AiChatService {
     private readonly auth: AuthenticationApplicationService,
     private readonly projects: ProjectService,
     @Inject(AI_ENGINE_CLIENT) private readonly aiEngine: AiEngineClient,
+    @Optional() private readonly iamScope?: HandoverIamScopeService,
+    @Optional()
+    @Inject(PLATFORM_ADMINISTRATION_REPOSITORY)
+    private readonly platformAdmin?: PlatformAdministrationRepository,
   ) {}
 
   private setSessionCacheEntry(key: string, entry: CachedSagSession): void {
@@ -67,6 +99,7 @@ export class AiChatService {
   private async resolveSagSession(
     headers: AiChatRequestHeaders,
     projectId: string,
+    options?: { requireActiveProject?: boolean },
   ): Promise<{
     agentId: string;
     bearerHeaders: Record<string, string>;
@@ -77,6 +110,12 @@ export class AiChatService {
       headers.cookie,
     );
     const project = await this.projects.get(actor, projectId);
+    if (options?.requireActiveProject && project.status !== 'ACTIVE') {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
     const sanitizedName = sanitizeContinuumActorHeaderName(actor.name);
     const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${sanitizedName}`;
 
@@ -355,9 +394,25 @@ export class AiChatService {
       throw error;
     }
 
+    return this.enrichSagSseStream(
+      upstream.stream,
+      agentId,
+      threadId,
+      bearerHeaders,
+      signal,
+    );
+  }
+
+  private enrichSagSseStream(
+    stream: ReadableStream<Uint8Array>,
+    agentId: string,
+    threadId: string,
+    bearerHeaders: Record<string, string>,
+    signal?: AbortSignal,
+  ): AsyncGenerator<AiChatSseFrame> {
     const aiEngine = this.aiEngine;
     async function* enrichedStream(): AsyncGenerator<AiChatSseFrame> {
-      for await (const frame of transformSagSseStream(upstream.stream, {
+      for await (const frame of transformSagSseStream(stream, {
         threadId,
         signal,
       })) {
@@ -383,6 +438,15 @@ export class AiChatService {
                 event: 'completed',
                 data: {
                   ...frame.data,
+                  ...(persisted.replyToMessageId
+                    ? { replyToMessageId: persisted.replyToMessageId }
+                    : {}),
+                  ...(persisted.regeneratedFromMessageId
+                    ? {
+                        regeneratedFromMessageId:
+                          persisted.regeneratedFromMessageId,
+                      }
+                    : {}),
                   sessionCitations: persisted.sessionCitations,
                   retrievalSteps:
                     persisted.retrievalSteps.length > 0
@@ -401,5 +465,334 @@ export class AiChatService {
     }
 
     return enrichedStream();
+  }
+
+  async getOwnFeedback(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+  ): Promise<AiChatOwnFeedbackDto> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    let result: { status: number; body: unknown };
+    try {
+      result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/feedback`,
+        method: 'GET',
+        headers: bearerHeaders,
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+
+    const mapped = mapSagOwnFeedback(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid feedback payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async putOwnFeedback(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+    input: AiChatFeedbackInputDto,
+  ): Promise<AiChatFeedbackDto> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    let result: { status: number; body: unknown };
+    try {
+      result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/feedback`,
+        method: 'PUT',
+        headers: bearerHeaders,
+        body: {
+          rating: input.rating,
+          ...(input.reasonCategory
+            ? { reasonCategory: input.reasonCategory }
+            : {}),
+          ...(input.reasonText ? { reasonText: input.reasonText } : {}),
+        },
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+
+    const mapped = mapSagFeedback(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid feedback payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async deleteOwnFeedback(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+  ): Promise<void> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    try {
+      await this.aiEngine.request<void>({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/feedback`,
+        method: 'DELETE',
+        headers: bearerHeaders,
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async createShare(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+  ): Promise<{ status: 200 | 201; share: AiChatShareDto }> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    let result: { status: number; body: unknown };
+    try {
+      result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/shares`,
+        method: 'POST',
+        headers: bearerHeaders,
+        body: {},
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+
+    const mapped = mapSagShare(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid share payload.',
+      );
+    }
+    return {
+      status: result.status === 201 ? 201 : 200,
+      share: mapped,
+    };
+  }
+
+  private async resolveActiveProjectMemberHeaders(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+  ): Promise<{
+    normalizedProjectId: string;
+    bffHeaders: Record<string, string>;
+  }> {
+    const actor = await this.auth.getCurrentIdentity(
+      headers.authorization,
+      headers.cookie,
+    );
+    if (!OBJECT_ID_PATTERN.test(projectId)) {
+      throw new NotFoundException({
+        code: 'AI_CHAT_SHARE_NOT_FOUND',
+        message: 'Shared answer was not found.',
+      });
+    }
+    if (!this.iamScope) {
+      throw new ServiceUnavailableException({
+        code: 'IAM_SCOPE_UNAVAILABLE',
+        message: 'Project membership verification is temporarily unavailable.',
+      });
+    }
+    const scope = await this.iamScope.resolveProjectActorContext({
+      actor,
+      projectId,
+      organizationHeader: headers.organizationId,
+    });
+    if (!scope.isProjectMember) {
+      throw new NotFoundException({
+        code: 'AI_CHAT_SHARE_NOT_FOUND',
+        message: 'Shared answer was not found.',
+      });
+    }
+    return {
+      normalizedProjectId: scope.projectId,
+      bffHeaders: {
+        'X-Continuum-User-Id': scope.userId,
+        'X-Continuum-Organization-Id': scope.organizationId,
+        'X-Continuum-Tenant-Id': scope.organizationId,
+        'X-Continuum-Project-Id': scope.projectId,
+        'X-Continuum-Security-Partition': scope.projectId,
+      },
+    };
+  }
+
+  async readSharedAnswer(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    shareId: string,
+  ): Promise<AiChatSharedAnswerDto> {
+    const { normalizedProjectId, bffHeaders } =
+      await this.resolveActiveProjectMemberHeaders(headers, projectId);
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/projects/${encodeURIComponent(normalizedProjectId)}/shares/${encodeURIComponent(shareId)}`,
+      method: 'GET',
+      headers: bffHeaders,
+    });
+    const mapped = mapSagSharedAnswer(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid shared answer payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async revokeShare(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    shareId: string,
+  ): Promise<void> {
+    const { normalizedProjectId, bffHeaders } =
+      await this.resolveActiveProjectMemberHeaders(headers, projectId);
+    await this.aiEngine.request<void>({
+      path: `/api/v1/projects/${encodeURIComponent(normalizedProjectId)}/shares/${encodeURIComponent(shareId)}`,
+      method: 'DELETE',
+      headers: bffHeaders,
+    });
+  }
+
+  async openRegenerateStream(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+    signal?: AbortSignal,
+  ): Promise<AsyncGenerator<AiChatSseFrame>> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    let upstream: Awaited<ReturnType<AiEngineClient['requestStream']>>;
+    try {
+      upstream = await this.aiEngine.requestStream({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/regenerate`,
+        method: 'POST',
+        headers: bearerHeaders,
+        body: {},
+        signal,
+      });
+    } catch (error) {
+      if (!signal?.aborted) {
+        this.sessionCache.delete(cacheKey);
+      }
+      throw error;
+    }
+
+    return this.enrichSagSseStream(
+      upstream.stream,
+      agentId,
+      threadId,
+      bearerHeaders,
+      signal,
+    );
+  }
+
+  async listPlatformFeedback(
+    query: PlatformAiFeedbackQueryDto,
+  ): Promise<PlatformAiFeedbackPageDto> {
+    if (query.organizationId !== undefined || query.projectId !== undefined) {
+      if (!this.platformAdmin) {
+        throw new ServiceUnavailableException({
+          code: 'PLATFORM_ADMINISTRATION_UNAVAILABLE',
+          message:
+            'Organization and Project verification is temporarily unavailable.',
+        });
+      }
+      try {
+        const [org, proj] = await Promise.all([
+          query.organizationId
+            ? this.platformAdmin.findOrganization(query.organizationId)
+            : Promise.resolve(null),
+          query.projectId
+            ? this.platformAdmin.findProject(query.projectId)
+            : Promise.resolve(null),
+        ]);
+        if (query.organizationId && !org) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message: 'organizationId is invalid or unknown.',
+          });
+        }
+        if (query.projectId && !proj) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message: 'projectId is invalid or unknown.',
+          });
+        }
+        if (
+          query.organizationId &&
+          proj &&
+          proj.organization.id !== query.organizationId
+        ) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message: 'projectId does not belong to organizationId.',
+          });
+        }
+      } catch (error) {
+        if (error instanceof HttpException) {
+          throw error;
+        }
+        throw new ServiceUnavailableException({
+          code: 'PLATFORM_ADMINISTRATION_UNAVAILABLE',
+          message:
+            'Organization and Project verification is temporarily unavailable.',
+        });
+      }
+    }
+
+    const params = new URLSearchParams({
+      limit: String(query.limit),
+    });
+    if (query.organizationId)
+      params.set('organizationId', query.organizationId);
+    if (query.projectId) params.set('projectId', query.projectId);
+    if (query.rating) params.set('rating', query.rating);
+    if (query.from) params.set('from', query.from);
+    if (query.to) params.set('to', query.to);
+    if (query.cursor) params.set('cursor', query.cursor);
+
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/platform/ai/feedback?${params.toString()}`,
+      method: 'GET',
+      headers: {},
+    });
+
+    const mapped = mapSagAdminFeedbackPage(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid platform feedback payload.',
+      );
+    }
+    return mapped;
   }
 }

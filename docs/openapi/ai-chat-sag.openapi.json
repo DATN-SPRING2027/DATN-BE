@@ -252,6 +252,313 @@
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
           "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages/{messageId}/feedback": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" },
+        { "$ref": "#/components/parameters/MessageId" }
+      ],
+      "get": {
+        "operationId": "getOwnAiAnswerFeedback",
+        "description": "Reads the current authenticated voter's feedback on a completed assistant answer in the owned thread. Cache-Control: no-store.",
+        "responses": {
+          "200": {
+            "description": "Own feedback state or null",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OwnFeedback" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "put": {
+        "operationId": "putOwnAiAnswerFeedback",
+        "description": "Creates or updates the single active vote per (messageId, voter). Enforces CSRF on cookie-authenticated mutations. Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FeedbackInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Persisted feedback record",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Feedback" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteOwnAiAnswerFeedback",
+        "description": "Idempotently removes the current voter's feedback on the target assistant answer. Enforces CSRF on cookie-authenticated mutations. Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "responses": {
+          "204": {
+            "description": "Feedback removed"
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages/{messageId}/shares": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" },
+        { "$ref": "#/components/parameters/MessageId" }
+      ],
+      "post": {
+        "operationId": "createAiAnswerShare",
+        "description": "Creates or returns the creator's active Project-scoped share for a single question and completed assistant answer version. Never exposes full thread history, prompt previews, or hidden reasoning. Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Empty" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing active share returned",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Share" }
+              }
+            }
+          },
+          "201": {
+            "description": "Share created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Share" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/shares/{shareId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ShareId" }
+      ],
+      "get": {
+        "operationId": "getAiAnswerShare",
+        "description": "Reads a single shared question + assistant answer. Requires ACTIVE Project membership in that exact Project and revalidates current source access; denied, revoked, or cross-scope shares return safe 404. Cache-Control: no-store.",
+        "responses": {
+          "200": {
+            "description": "Sanitized shared question and answer",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SharedAnswer" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "operationId": "revokeAiAnswerShare",
+        "description": "Creator-only revocation of a Project-scoped answer share. Non-creator, missing, or cross-scope shares return safe 404. Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "responses": {
+          "204": {
+            "description": "Share revoked"
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages/{messageId}/regenerate": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" },
+        { "$ref": "#/components/parameters/MessageId" }
+      ],
+      "post": {
+        "operationId": "regenerateAiChatMessage",
+        "description": "SSE regeneration of an assistant answer against its resolved original user question without duplicating the user turn. Excludes the target answer and later turns from generation context while preserving prior answer versions. Returns 409 when another live generation is active in the same thread.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Empty" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream ending with completed or failed",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/platform/ai/feedback": {
+      "get": {
+        "operationId": "listPlatformAiAnswerFeedback",
+        "x-platform-permission": "platform.ai.operations.read",
+        "description": "System Admin (PLATFORM_OPERATOR) telemetry for AI answer likes, dislikes, and dislike reasons. Organization Manager alone is denied. Returns metadata and reasons only (no voter identity, prompt, or private answer content). Totals and items share identical active filters. Cache-Control: no-store.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          {
+            "name": "projectId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          {
+            "name": "rating",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["LIKE", "DISLIKE"]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Filtered feedback totals and cursor-paginated rows",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AdminPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/Error" },
           "502": { "$ref": "#/components/responses/Error" },
           "503": { "$ref": "#/components/responses/Error" },
@@ -296,11 +603,33 @@
           "pattern": "^[A-Za-z0-9_-]{1,64}$"
         }
       },
+      "MessageId": {
+        "name": "messageId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        }
+      },
+      "ShareId": {
+        "name": "shareId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        }
+      },
       "CsrfTokenHeader": {
         "name": "X-CSRF-Token",
         "in": "header",
         "required": false,
-        "description": "Required when authenticating with browser cookies on POST, PATCH, and DELETE mutations.",
+        "description": "Required when authenticating with browser cookies on POST, PUT, PATCH, and DELETE mutations.",
         "schema": {
           "type": "string",
           "minLength": 1,
@@ -449,6 +778,8 @@
         ],
         "properties": {
           "id": { "type": "string" },
+          "replyToMessageId": { "type": "string" },
+          "regeneratedFromMessageId": { "type": "string" },
           "role": {
             "type": "string",
             "enum": ["user", "assistant"]
@@ -532,6 +863,8 @@
         ],
         "properties": {
           "messageId": { "type": "string" },
+          "replyToMessageId": { "type": "string" },
+          "regeneratedFromMessageId": { "type": "string" },
           "content": { "type": "string" },
           "answerStatus": {
             "type": "string",
@@ -559,7 +892,302 @@
           "code": { "type": "string" },
           "message": { "type": "string" },
           "retryable": { "type": "boolean" },
-          "messageId": { "type": "string" }
+          "messageId": { "type": "string" },
+          "replyToMessageId": { "type": "string" },
+          "regeneratedFromMessageId": { "type": "string" }
+        }
+      },
+      "Empty": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "FeedbackInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rating"],
+        "properties": {
+          "rating": {
+            "type": "string",
+            "enum": ["LIKE", "DISLIKE"]
+          },
+          "reasonCategory": {
+            "type": "string",
+            "enum": [
+              "INACCURATE",
+              "OUTDATED",
+              "IRRELEVANT_CITATION",
+              "INCOMPLETE",
+              "OTHER"
+            ]
+          },
+          "reasonText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "\\S"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "rating": {
+                  "const": "DISLIKE"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reasonCategory"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rating": {
+                  "const": "LIKE"
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "reasonCategory"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "reasonText"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "reasonCategory"
+              ],
+              "properties": {
+                "reasonCategory": {
+                  "const": "OTHER"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reasonText"
+              ]
+            }
+          }
+        ]
+      },
+      "Feedback": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["messageId", "rating", "updatedAt"],
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "rating": {
+            "type": "string",
+            "enum": ["LIKE", "DISLIKE"]
+          },
+          "reasonCategory": {
+            "type": "string",
+            "enum": [
+              "INACCURATE",
+              "OUTDATED",
+              "IRRELEVANT_CITATION",
+              "INCOMPLETE",
+              "OTHER"
+            ]
+          },
+          "reasonText": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "OwnFeedback": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["feedback"],
+        "properties": {
+          "feedback": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/Feedback" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
+      "Share": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "projectId", "messageId", "createdAt"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PublicAnswer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "content", "citations"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "content": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Citation" }
+          }
+        }
+      },
+      "SharedAnswer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["share", "question", "answer"],
+        "properties": {
+          "share": { "$ref": "#/components/schemas/Share" },
+          "question": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["content"],
+            "properties": {
+              "content": { "type": "string" }
+            }
+          },
+          "answer": { "$ref": "#/components/schemas/PublicAnswer" }
+        }
+      },
+      "AdminRow": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "organizationId",
+          "projectId",
+          "messageId",
+          "rating",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "organizationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "rating": {
+            "type": "string",
+            "enum": ["LIKE", "DISLIKE"]
+          },
+          "reasonCategory": {
+            "type": "string",
+            "enum": [
+              "INACCURATE",
+              "OUTDATED",
+              "IRRELEVANT_CITATION",
+              "INCOMPLETE",
+              "OTHER"
+            ]
+          },
+          "reasonText": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AdminPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["totals", "items", "nextCursor"],
+        "properties": {
+          "totals": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["likes", "dislikes"],
+            "properties": {
+              "likes": { "type": "integer", "minimum": 0 },
+              "dislikes": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": { "$ref": "#/components/schemas/AdminRow" }
+          },
+          "nextCursor": {
+            "type": ["string", "null"],
+            "maxLength": 1024
+          }
         }
       },
       "Error": {
