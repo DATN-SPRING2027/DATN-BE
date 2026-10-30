@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
+import { memoizeInRequest } from '../../../common/http/request-context';
 import type { ChatActor, ChatCandidate } from './chat.repository';
 
 export interface ChatCredentials {
@@ -25,36 +26,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 @Injectable()
 export class ChatIamClient {
   private readonly baseUrl: string;
+  private preferApiV1Prefix = false;
 
   constructor(config: ConfigService) {
     this.baseUrl = config
       .getOrThrow<string>('IAM_SERVICE_URL')
-      .replace(/\/+$/, '');
+      .replace(/\/+$/, '')
+      .replace(/^(https?:\/\/)localhost(?=[:/]|$)/i, '$1127.0.0.1');
   }
 
   async getActor(credentials: ChatCredentials): Promise<ChatActor> {
-    const identity = await this.request('/internal/auth/me', credentials);
-    if (
-      !isRecord(identity) ||
-      typeof identity.id !== 'string' ||
-      !/^[a-f\d]{24}$/i.test(identity.id) ||
-      typeof identity.name !== 'string' ||
-      typeof identity.organizationId !== 'string' ||
-      !/^[a-f\d]{24}$/i.test(identity.organizationId)
-    ) {
-      throw new ServiceUnavailableException({
-        code: 'CHAT_IDENTITY_INVALID',
-        message: 'Identity service returned an invalid response.',
-      });
-    }
-    const avatarUrl =
-      typeof identity.avatarUrl === 'string' ? identity.avatarUrl : null;
-    return {
-      id: identity.id,
-      name: identity.name,
-      organizationId: identity.organizationId,
-      avatarUrl,
-    };
+    const memoKey = `${credentials.authorization ?? ''}\0${credentials.cookie ?? ''}`;
+    return memoizeInRequest('chat:actor', memoKey, async () => {
+      const identity = await this.request('/internal/auth/me', credentials);
+      if (
+        !isRecord(identity) ||
+        typeof identity.id !== 'string' ||
+        !/^[a-f\d]{24}$/i.test(identity.id) ||
+        typeof identity.name !== 'string' ||
+        typeof identity.organizationId !== 'string' ||
+        !/^[a-f\d]{24}$/i.test(identity.organizationId)
+      ) {
+        throw new ServiceUnavailableException({
+          code: 'CHAT_IDENTITY_INVALID',
+          message: 'Identity service returned an invalid response.',
+        });
+      }
+      const avatarUrl =
+        typeof identity.avatarUrl === 'string' ? identity.avatarUrl : null;
+      return {
+        id: identity.id,
+        name: identity.name,
+        organizationId: identity.organizationId,
+        avatarUrl,
+      };
+    });
   }
 
   async searchCandidates(
@@ -212,23 +218,31 @@ export class ChatIamClient {
     }
     if (credentials.cookie) headers.set('cookie', credentials.cookie);
     let response: Response;
+    const isInternalPath = path.startsWith('/internal/');
+    const primaryPath =
+      isInternalPath && this.preferApiV1Prefix
+        ? path.replace('/internal/', '/api/v1/')
+        : path;
     try {
-      response = await fetch(`${this.baseUrl}${path}`, {
+      response = await fetch(`${this.baseUrl}${primaryPath}`, {
         ...options,
         headers,
         cache: 'no-store',
         signal: AbortSignal.timeout(2500),
       });
-      if (response.status === 404 && path.startsWith('/internal/')) {
-        response = await fetch(
-          `${this.baseUrl}${path.replace('/internal/', '/api/v1/')}`,
-          {
-            ...options,
-            headers,
-            cache: 'no-store',
-            signal: AbortSignal.timeout(2500),
-          },
-        );
+      if (response.status === 404 && isInternalPath) {
+        const fallbackPath = this.preferApiV1Prefix
+          ? path
+          : path.replace('/internal/', '/api/v1/');
+        response = await fetch(`${this.baseUrl}${fallbackPath}`, {
+          ...options,
+          headers,
+          cache: 'no-store',
+          signal: AbortSignal.timeout(2500),
+        });
+        if (response.status !== 404) {
+          this.preferApiV1Prefix = fallbackPath.startsWith('/api/v1/');
+        }
       }
     } catch {
       throw new ServiceUnavailableException({

@@ -47,6 +47,7 @@ export type AiChatMessageDto = Readonly<{
   role: 'user' | 'assistant';
   content: string;
   status: 'ok' | 'failed' | 'cancelled';
+  errorCode?: string;
   citations: readonly AiChatCitationDto[];
   sessionCitations: readonly AiChatSessionCitationDto[];
   retrievalSteps: readonly AiChatRetrievalStepDto[];
@@ -508,6 +509,16 @@ export function mapSagThread(raw: unknown): AiChatThreadDto | null {
   return { id, title, createdAt, updatedAt };
 }
 
+const WHITELISTED_MESSAGE_ERROR_CODES = new Set<string>([
+  'SEARCH_UNAVAILABLE',
+  'LLM_TIMEOUT',
+  'LLM_RATE_LIMIT',
+  'LLM_UNAVAILABLE',
+  'CONFIGURATION_ERROR',
+  'STREAM_INTERRUPTED',
+  'STREAM_ERROR',
+]);
+
 export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
   if (!isRecord(raw)) return null;
   const id = nonEmptyString(raw.id, 128);
@@ -527,6 +538,16 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
   const content = typeof raw.content === 'string' ? raw.content : '';
   const status =
     raw.status === 'failed' || raw.status === 'cancelled' ? raw.status : 'ok';
+  const rawErrorCode =
+    status === 'failed' &&
+    isRecord(raw.error) &&
+    typeof raw.error.code === 'string'
+      ? raw.error.code.trim().toUpperCase()
+      : undefined;
+  const errorCode =
+    rawErrorCode && WHITELISTED_MESSAGE_ERROR_CODES.has(rawErrorCode)
+      ? rawErrorCode
+      : undefined;
   const citations = Array.isArray(raw.citations)
     ? raw.citations
         .map(mapSagCitation)
@@ -542,6 +563,7 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
     role,
     content,
     status,
+    ...(errorCode ? { errorCode } : {}),
     citations,
     sessionCitations,
     retrievalSteps,

@@ -6,6 +6,8 @@ import {
 } from './ai-chat.types';
 
 const SAFE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  SEARCH_UNAVAILABLE:
+    'Knowledge search index is temporarily unavailable. Please try again.',
   LLM_TIMEOUT: 'AI generation timed out. Please try again.',
   LLM_RATE_LIMIT: 'AI model is temporarily busy. Please retry in a moment.',
   LLM_UNAVAILABLE: 'AI model is currently unavailable.',
@@ -52,11 +54,11 @@ function sanitizeFailureEvent(
   }
 
   const errorObj = isRecord(payload.error) ? payload.error : {};
-  const rawCode =
-    typeof errorObj.code === 'string' &&
-    /^[A-Z0-9_]{2,64}$/.test(errorObj.code.trim())
-      ? errorObj.code.trim()
-      : 'STREAM_ERROR';
+  const normalizedCode =
+    typeof errorObj.code === 'string' ? errorObj.code.trim().toUpperCase() : '';
+  const rawCode = /^[A-Z0-9_]{2,64}$/.test(normalizedCode)
+    ? normalizedCode
+    : 'STREAM_ERROR';
   const retryable =
     typeof errorObj.retryable === 'boolean' ? errorObj.retryable : true;
   const message =

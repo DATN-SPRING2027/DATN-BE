@@ -1,5 +1,5 @@
 import { transformSagSseStream } from './ai-chat-sse.parser';
-import type { AiChatSseFrame } from './ai-chat.types';
+import { type AiChatSseFrame, mapSagMessage } from './ai-chat.types';
 
 function streamFromByteChunks(
   chunks: Uint8Array[],
@@ -185,5 +185,48 @@ describe('transformSagSseStream', () => {
       },
     });
     expect(JSON.stringify(failedFrames)).not.toContain('sk-12345');
+  });
+
+  it('normalizes lowercase search_unavailable failure code from SAG and maps whitelisted errorCode on persisted failed messages', async () => {
+    const encoder = new TextEncoder();
+    const searchOutage = encoder.encode(
+      'event: run.failed\n' +
+        'data: {"payload":{"message_id":"m-search-err","error":{"code":"search_unavailable","message":"Qdrant connection refused at 127.0.0.1:6333","retryable":true}}}\n\n',
+    );
+    const frames: AiChatSseFrame[] = [];
+    for await (const frame of transformSagSseStream(
+      streamFromByteChunks([searchOutage]),
+      { threadId: 't-search' },
+    )) {
+      frames.push(frame);
+    }
+    expect(frames).toEqual([
+      {
+        event: 'failed',
+        data: {
+          code: 'SEARCH_UNAVAILABLE',
+          message:
+            'Knowledge search index is temporarily unavailable. Please try again.',
+          retryable: true,
+          messageId: 'm-search-err',
+        },
+      },
+    ]);
+    expect(JSON.stringify(frames)).not.toContain('6333');
+
+    const persistedFailed = mapSagMessage({
+      id: 'm-search-err',
+      role: 'assistant',
+      content: '',
+      status: 'failed',
+      error: {
+        code: 'search_unavailable',
+        message: 'Qdrant internal error',
+      },
+      citations: [],
+      steps: [],
+      created_at: '2026-10-30T07:00:00Z',
+    });
+    expect(persistedFailed?.errorCode).toBe('SEARCH_UNAVAILABLE');
   });
 });

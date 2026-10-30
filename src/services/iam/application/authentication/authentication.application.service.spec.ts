@@ -1,5 +1,6 @@
 import { Logger, UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { runWithRequestContext } from '../../../../common/http/request-context';
 import { AccessTokenError } from './access-token.service';
 import type { AccessTokenService } from './access-token.service';
 import type {
@@ -1496,6 +1497,55 @@ describe('AuthenticationApplicationService', () => {
         'signing key unavailable',
       );
       expect(repository.rotateRefreshSession.mock.calls).toHaveLength(0);
+    });
+  });
+
+  it('deduplicates repeated getCurrentIdentity calls within the same HTTP request context while re-verifying across separate requests', async () => {
+    await runWithRequestContext(async () => {
+      const guardActor = await service.getCurrentIdentity(
+        'Bearer any.valid-token',
+        undefined,
+      );
+      const controllerActor = await service.getCurrentIdentity(
+        'Bearer any.valid-token',
+        undefined,
+      );
+      expect(guardActor).toEqual(controllerActor);
+    });
+
+    expect(repository.findProfileById.mock.calls).toHaveLength(1);
+    expect(organizationResolver.resolveForUser.mock.calls).toHaveLength(1);
+
+    await runWithRequestContext(async () => {
+      await service.getCurrentIdentity('Bearer any.valid-token', undefined);
+    });
+
+    expect(repository.findProfileById.mock.calls).toHaveLength(2);
+    expect(organizationResolver.resolveForUser.mock.calls).toHaveLength(2);
+  });
+
+  it('checks token revocation and user profile concurrently during subject verification', async () => {
+    let releaseRevocation!: (revoked: boolean) => void;
+    securityStore.isTokenRevoked.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRevocation = resolve;
+        }),
+    );
+
+    const pending = service.getCurrentIdentity(
+      'Bearer any.valid-token',
+      undefined,
+    );
+    await Promise.resolve();
+
+    expect(securityStore.isTokenRevoked).toHaveBeenCalledTimes(1);
+    expect(repository.findProfileById.mock.calls).toHaveLength(1);
+
+    releaseRevocation(false);
+    await expect(pending).resolves.toMatchObject({
+      id: USER_ID,
+      organizationId: ORG_ID,
     });
   });
 });
