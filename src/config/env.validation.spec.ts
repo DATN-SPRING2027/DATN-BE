@@ -16,6 +16,7 @@ describe('validateEnvironment', () => {
       SWAGGER_ENABLED: false,
       INFRA_ENABLED: true,
       SERVICE_DATABASE: 'continuum_iam',
+      SAG_CHAT_STREAM_TIMEOUT_MS: 120000,
     });
   });
 
@@ -30,6 +31,8 @@ describe('validateEnvironment', () => {
     [{ IAM_GATEWAY_SECRET: 'too-short' }, 'IAM_GATEWAY_SECRET'],
     [{ SERVICE_DATABASE: 'continuum_db' }, 'SERVICE_DATABASE'],
     [{ SERVICE_DATABASE: 'continuum_task' }, 'SERVICE_DATABASE'],
+    [{ SAG_CHAT_STREAM_TIMEOUT_MS: '1000' }, 'SAG_CHAT_STREAM_TIMEOUT_MS'],
+    [{ SAG_CHAT_STREAM_TIMEOUT_MS: '600001' }, 'SAG_CHAT_STREAM_TIMEOUT_MS'],
     [
       { GATEWAY_TRUSTED_PROXY_CIDRS: 'anywhere' },
       'GATEWAY_TRUSTED_PROXY_CIDRS',
@@ -91,5 +94,38 @@ describe('validateEnvironment', () => {
         GOOGLE_CALLBACK_URL: 'http://app.example.test/api/auth/google/callback',
       }),
     ).toThrow('must use HTTPS in production');
+  });
+
+  it('rejects SAG_API_BASE_URL containing embedded credentials or query strings', () => {
+    expect(() =>
+      validateEnvironment({
+        SAG_API_BASE_URL: 'http://user:pass@127.0.0.1:8000',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      }),
+    ).toThrow('SAG_API_BASE_URL must not contain credentials');
+    expect(() =>
+      validateEnvironment({
+        SAG_API_BASE_URL: 'http://127.0.0.1:8000?debug=1',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      }),
+    ).toThrow('SAG_API_BASE_URL must not contain credentials');
+  });
+
+  it('normalizes localhost to 127.0.0.1 on internal service URLs to avoid Windows IPv6 fallback delays while preserving browser origins', () => {
+    const validated = validateEnvironment({
+      NODE_ENV: 'development',
+      IAM_SERVICE_URL: 'http://localhost:3001',
+      SAG_SERVICE_URL: 'http://localhost:8000',
+      SAG_API_BASE_URL: 'http://localhost:8000/',
+      SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      CONTINUUM_WEB_BASE_URL: 'http://localhost:3000',
+      SAG_WEB_BASE_URL: 'http://localhost:3002',
+    });
+
+    expect(validated.IAM_SERVICE_URL).toBe('http://127.0.0.1:3001');
+    expect(validated.SAG_SERVICE_URL).toBe('http://127.0.0.1:8000');
+    expect(validated.SAG_API_BASE_URL).toBe('http://127.0.0.1:8000/');
+    expect(validated.CONTINUUM_WEB_BASE_URL).toBe('http://localhost:3000');
+    expect(validated.SAG_WEB_BASE_URL).toBe('http://localhost:3002');
   });
 });

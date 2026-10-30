@@ -45,6 +45,13 @@ export interface EnvironmentVariables {
   R2_BUCKET?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
+  R2_PRESIGNED_UPLOAD_TTL_SECONDS: number;
+  R2_PRESIGNED_DOWNLOAD_TTL_SECONDS: number;
+  R2_SAG_INGEST_URL_TTL_SECONDS: number;
+  DOCUMENT_UPLOAD_TOKEN_SECRET?: string;
+  KNOWLEDGE_OUTBOX_CONSUMER_ENABLED?: string;
+  KNOWLEDGE_OUTBOX_ASYNC_HANDOFF?: string;
+  INGESTION_WORKER_CONCURRENCY: number;
   WORK_NOTE_LOCAL_STORAGE_DIR?: string;
   AWS_REGION?: string;
   CHAT_S3_BUCKET?: string;
@@ -52,6 +59,7 @@ export interface EnvironmentVariables {
   AWS_SECRET_ACCESS_KEY?: string;
   BACKEND_TIMEOUT_MS: number;
   CAPTURE_FILE_TIMEOUT_MS: number;
+  SAG_CHAT_STREAM_TIMEOUT_MS: number;
   SAG_API_BASE_URL?: string;
   SAG_BFF_SERVICE_TOKEN?: string;
   CONTINUUM_WEB_BASE_URL?: string;
@@ -158,6 +166,37 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   R2_BUCKET: Joi.string().allow('').optional(),
   R2_ACCESS_KEY_ID: Joi.string().allow('').optional(),
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
+  R2_PRESIGNED_UPLOAD_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(3600)
+    .default(900),
+  R2_PRESIGNED_DOWNLOAD_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(30)
+    .max(3600)
+    .default(120),
+  R2_SAG_INGEST_URL_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(7200)
+    .default(1800),
+  DOCUMENT_UPLOAD_TOKEN_SECRET: Joi.string()
+    .trim()
+    .min(16)
+    .allow('')
+    .optional(),
+  KNOWLEDGE_OUTBOX_CONSUMER_ENABLED: Joi.string()
+    .valid('true', 'false', '')
+    .optional(),
+  KNOWLEDGE_OUTBOX_ASYNC_HANDOFF: Joi.string()
+    .valid('true', 'false', '')
+    .optional(),
+  INGESTION_WORKER_CONCURRENCY: Joi.number()
+    .integer()
+    .min(1)
+    .max(64)
+    .default(8),
   WORK_NOTE_LOCAL_STORAGE_DIR: Joi.string().allow('').optional(),
   AWS_REGION: Joi.string().allow('').optional(),
   CHAT_S3_BUCKET: Joi.string().allow('').optional(),
@@ -168,6 +207,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .integer()
     .min(1000)
     .max(600000)
+    .default(120000),
+  SAG_CHAT_STREAM_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(300000)
     .default(120000),
   SAG_API_BASE_URL: Joi.string()
     .trim()
@@ -213,6 +257,31 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .optional(),
 }).unknown(true);
 
+const INTERNAL_SERVICE_URL_KEYS = [
+  'IAM_SERVICE_URL',
+  'CAPTURE_SERVICE_URL',
+  'JIRA_SERVICE_URL',
+  'LIFECYCLE_SERVICE_URL',
+  'CHAT_SERVICE_URL',
+  'HANDOVER_SERVICE_URL',
+  'INGESTION_SERVICE_URL',
+  'NOTIFICATION_SERVICE_URL',
+  'SAG_SERVICE_URL',
+  'SAG_API_BASE_URL',
+  'TASK_SERVICE_URL',
+] as const;
+
+function normalizeLoopbackServiceUrl(
+  value: string | undefined,
+): string | undefined {
+  if (!value) return value;
+  const parsed = new URL(value);
+  if (parsed.hostname.toLowerCase() !== 'localhost') {
+    return value;
+  }
+  return value.replace(/^(https?:\/\/)localhost(?=[:/?#]|$)/i, '$1127.0.0.1');
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): EnvironmentVariables {
@@ -226,12 +295,27 @@ export function validateEnvironment(
     throw new Error(`Environment validation failed: ${result.error.message}`);
   }
 
+  for (const key of INTERNAL_SERVICE_URL_KEYS) {
+    const current = result.value[key];
+    if (typeof current === 'string' && current.trim().length > 0) {
+      result.value[key] = normalizeLoopbackServiceUrl(current.trim()) as never;
+    }
+  }
+
   const sagApiBaseUrl = result.value.SAG_API_BASE_URL?.trim();
   const sagServiceToken = result.value.SAG_BFF_SERVICE_TOKEN?.trim();
   if (Boolean(sagApiBaseUrl) !== Boolean(sagServiceToken)) {
     throw new Error(
       'Environment validation failed: SAG_API_BASE_URL and SAG_BFF_SERVICE_TOKEN must be configured together.',
     );
+  }
+  if (sagApiBaseUrl) {
+    const sagUrl = new URL(sagApiBaseUrl);
+    if (sagUrl.search || sagUrl.hash || sagUrl.username || sagUrl.password) {
+      throw new Error(
+        'Environment validation failed: SAG_API_BASE_URL must not contain credentials, query parameters, or fragments.',
+      );
+    }
   }
   for (const [name, value] of [
     ['CONTINUUM_WEB_BASE_URL', result.value.CONTINUUM_WEB_BASE_URL],

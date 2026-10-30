@@ -84,6 +84,53 @@ export interface ProjectDocumentFileRecord {
   size: number;
 }
 
+export interface DocumentStorageReferenceRecord {
+  provider: 'CLOUDFLARE_R2' | 'LOCAL';
+  objectCount: number;
+  deletableObjectCount: number;
+  sharedObjectCount: number;
+  refCount: number;
+  externalDocumentRefs: number;
+  willDeleteFromStorage: boolean;
+  sha256?: string;
+}
+
+export interface DeleteProjectDocumentResult {
+  deletedDocumentId: string;
+  sagRevoked: boolean;
+  r2DeletedKeys: number;
+  r2RetainedSharedKeys: number;
+}
+
+export interface DocumentUploadIntentInput {
+  fileName: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+}
+
+export interface DocumentUploadIntentResponse {
+  mode: 'DIRECT_PUT' | 'DEDUPLICATED' | 'LEGACY_PROXY';
+  uploadToken?: string;
+  uploadUrl?: string;
+  headers?: Record<string, string>;
+  expiresInSeconds?: number;
+  canonicalContentType?: string;
+}
+
+export interface DocumentConfirmUploadInput {
+  uploadToken: string;
+  autoSyncSag?: boolean;
+}
+
+export interface DocumentDownloadUrlResponse {
+  mode: 'DIRECT_GET' | 'LEGACY_PROXY';
+  downloadUrl?: string;
+  fileName: string;
+  contentType: string;
+  expiresInSeconds?: number;
+}
+
 export interface ReviewInput {
   comment?: string;
 }
@@ -153,9 +200,65 @@ export interface DocumentVersionRecord {
   reviewHistory: Array<{
     action: 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
     reviewerId: string;
+    reviewerRole?: 'MANAGER' | 'LEADER';
     comment?: string;
     at: string;
   }>;
+}
+
+export type DocumentKnowledgeControlAction =
+  'PAUSE' | 'RESUME' | 'REPROCESS' | 'REVOKE';
+
+export interface DocumentKnowledgeStatusRecord {
+  documentId: string;
+  version: number;
+  sagDocumentId?: string;
+  sagVersionId?: string;
+  sagVersionNo?: number;
+  runId?: string;
+  fileHash?: string;
+  status: string;
+  searchStatus: string;
+  knowledgeStatus: string;
+  searchReady: boolean;
+  knowledgeReady: boolean;
+  isDuplicate?: boolean;
+  currentStage?: string | null;
+  progress: number;
+  documentStatus?: string | null;
+  parserProvider?: string | null;
+  parserStatus?: string | null;
+  chunkCount?: number;
+  eventCount?: number;
+  tokenUsage?: number;
+  stageProgress?: Record<
+    string,
+    { status: string; duration_ms?: number }
+  > | null;
+  error?: Record<string, unknown> | null;
+  syncedAt?: string;
+}
+
+export interface DocumentKnowledgeChunkRecord {
+  chunkId: string;
+  ordinal: number;
+  sectionPath: string;
+  blockType: string;
+  pageFrom: number;
+  pageTo: number;
+  tokenCount: number;
+  content: string;
+}
+
+export interface DocumentKnowledgeChunksResponse {
+  documentId: string;
+  version: number;
+  sagDocumentId?: string;
+  sagVersionNo?: number;
+  sourceStage: 'SEARCH_UNITS' | 'CANONICAL_BLOCKS' | 'EMPTY';
+  totalChunks: number;
+  totalTokens: number;
+  items: DocumentKnowledgeChunkRecord[];
 }
 
 export interface ProjectDocumentSummaryRecord {
@@ -173,7 +276,38 @@ export interface ProjectDocumentSummaryRecord {
   reviewedBy?: string;
   reviewedAt?: string;
   reviewComment?: string;
+  file?: ProjectDocumentFileRecord;
+  storageReference?: DocumentStorageReferenceRecord;
+  knowledgeSync?: DocumentKnowledgeStatusRecord;
   permissions: WorkNotesPermissions;
+}
+
+export type DocumentActivityAction =
+  | 'CREATED'
+  | 'UPDATED'
+  | 'FILE_UPLOADED'
+  | 'SUBMITTED'
+  | 'COMMENTED'
+  | 'APPROVED'
+  | 'AUTO_APPROVED'
+  | 'CHANGES_REQUESTED'
+  | 'REJECTED'
+  | 'ARCHIVED'
+  | 'KNOWLEDGE_SYNCED'
+  | 'KNOWLEDGE_REPROCESSED'
+  | 'KNOWLEDGE_PAUSED'
+  | 'KNOWLEDGE_RESUMED'
+  | 'KNOWLEDGE_REVOKED';
+
+export interface DocumentActivityEvent {
+  id: string;
+  action: DocumentActivityAction;
+  actorId: string;
+  version?: number;
+  fileName?: string;
+  comment?: string;
+  deduplicated?: boolean;
+  at: string;
 }
 
 export interface ProjectDocumentRecord extends ProjectDocumentSummaryRecord {
@@ -186,6 +320,7 @@ export interface ProjectDocumentRecord extends ProjectDocumentSummaryRecord {
     >
   >;
   reviewHistory: DocumentVersionRecord['reviewHistory'];
+  activityHistory?: DocumentActivityEvent[];
 }
 
 export interface WorkReportRecord extends WorkReportInput {
@@ -215,10 +350,7 @@ export interface WorkReportRecord extends WorkReportInput {
   permissions: WorkNotesPermissions;
 }
 
-export interface WorkReportSettingsRecord {
-  projectId: string;
-  scope?: WorkReportScope;
-  actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';
+export interface WorkReportTierSettingsSummary {
   frequency: WorkReportFrequency;
   effectiveAt: string;
   nextFrequency?: WorkReportFrequency;
@@ -229,16 +361,74 @@ export interface WorkReportSettingsRecord {
     effectiveAt: string;
     updatedBy: string;
   }>;
-  permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
-  leaderSettings?: {
+  permissions: Pick<WorkNotesPermissions, 'canConfigure'> & {
+    canReview?: boolean;
+    canSubmit?: boolean;
+  };
+}
+
+export interface WorkReportSettingsRecord {
+  projectId: string;
+  scope?: WorkReportScope;
+  actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';
+  isManager?: boolean;
+  isLeader?: boolean;
+  hasActiveLeaders?: boolean;
+  frequency: WorkReportFrequency;
+  effectiveAt: string;
+  nextFrequency?: WorkReportFrequency;
+  nextEffectiveAt?: string;
+  updatedBy: string;
+  history: Array<{
     frequency: WorkReportFrequency;
     effectiveAt: string;
     updatedBy: string;
-    history: Array<{
-      frequency: WorkReportFrequency;
-      effectiveAt: string;
-      updatedBy: string;
-    }>;
-    permissions: Pick<WorkNotesPermissions, 'canConfigure'>;
+  }>;
+  permissions: Pick<WorkNotesPermissions, 'canConfigure'> & {
+    canReview?: boolean;
+    canSubmit?: boolean;
   };
+  memberSettings?: WorkReportTierSettingsSummary;
+  leaderSettings?: WorkReportTierSettingsSummary;
+}
+
+export type WorkReportPeriodFilter = 'CURRENT' | 'ALL';
+
+export interface WorkReportsListFilters {
+  memberId?: string;
+  period?: WorkReportPeriodFilter;
+  search?: string;
+}
+
+export interface WorkReportSummaryCounts {
+  total: number;
+  draft: number;
+  pendingReview: number;
+  changesRequested: number;
+  approved: number;
+  rejected: number;
+  overdue: number;
+}
+
+export interface WorkReportRosterEntry {
+  userId: string;
+  fullName: string;
+  joinedAt: string;
+  reportId?: string;
+  status: WorkReportStatus | 'NOT_STARTED';
+  dueAt: string;
+  submittedAt?: string;
+  reviewedAt?: string;
+}
+
+export interface WorkReportsPageRecord extends WorkNotesPage<WorkReportRecord> {
+  scope?: WorkReportScope;
+  summary?: WorkReportSummaryCounts;
+  currentPeriod?: {
+    periodStart: string;
+    periodEnd: string;
+    dueAt: string;
+    frequency: WorkReportFrequency;
+  };
+  roster?: WorkReportRosterEntry[];
 }

@@ -1,25 +1,46 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+export interface R2DownloadUrlOptions {
+  responseContentDisposition?: string;
+  responseContentType?: string;
+}
+
+export interface R2ObjectPrefixInspection {
+  contentLength: number;
+  contentType?: string;
+  etag?: string;
+  prefix: Buffer;
+}
+
 @Injectable()
-export class R2Storage {
+export class R2Storage implements OnModuleDestroy {
   private readonly endpoint?: string;
   private readonly accessKeyId?: string;
   private readonly secretAccessKey?: string;
   private readonly bucket?: string;
+  private s3Client?: S3Client;
 
   constructor(config: ConfigService) {
-    this.endpoint = config.get<string>('R2_ENDPOINT');
-    this.accessKeyId = config.get<string>('R2_ACCESS_KEY_ID');
-    this.secretAccessKey = config.get<string>('R2_SECRET_ACCESS_KEY');
-    this.bucket = config.get<string>('R2_BUCKET');
+    this.endpoint = config.get<string>('R2_ENDPOINT')?.trim() || undefined;
+    this.accessKeyId =
+      config.get<string>('R2_ACCESS_KEY_ID')?.trim() || undefined;
+    this.secretAccessKey =
+      config.get<string>('R2_SECRET_ACCESS_KEY')?.trim() || undefined;
+    this.bucket = config.get<string>('R2_BUCKET')?.trim() || undefined;
+  }
+
+  onModuleDestroy(): void {
+    this.s3Client?.destroy();
+    this.s3Client = undefined;
   }
 
   isConfigured(): boolean {
@@ -52,6 +73,45 @@ export class R2Storage {
     return Buffer.from(await result.Body.transformToByteArray());
   }
 
+  async inspectObjectPrefix(
+    key: string,
+    maxBytes = 64,
+  ): Promise<R2ObjectPrefixInspection> {
+    const bucket = this.bucketName();
+    const head = await this.client().send(
+      new HeadObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    const contentLength = Number(head.ContentLength ?? 0);
+    if (!Number.isFinite(contentLength) || contentLength <= 0) {
+      return {
+        contentLength: 0,
+        ...(head.ContentType ? { contentType: head.ContentType } : {}),
+        ...(head.ETag ? { etag: head.ETag } : {}),
+        prefix: Buffer.alloc(0),
+      };
+    }
+    const clampedEnd = Math.min(contentLength - 1, Math.max(1, maxBytes) - 1);
+    const ranged = await this.client().send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Range: `bytes=0-${clampedEnd}`,
+      }),
+    );
+    const prefix = ranged.Body
+      ? Buffer.from(await ranged.Body.transformToByteArray()).subarray(
+          0,
+          Math.max(1, maxBytes),
+        )
+      : Buffer.alloc(0);
+    return {
+      contentLength,
+      ...(head.ContentType ? { contentType: head.ContentType } : {}),
+      ...(head.ETag ? { etag: head.ETag } : {}),
+      prefix,
+    };
+  }
+
   async deleteObject(key: string): Promise<void> {
     await this.client().send(
       new DeleteObjectCommand({ Bucket: this.bucketName(), Key: key }),
@@ -74,10 +134,23 @@ export class R2Storage {
     );
   }
 
-  createDownloadUrl(key: string, expiresInSeconds = 900): Promise<string> {
+  createDownloadUrl(
+    key: string,
+    expiresInSeconds = 900,
+    options?: R2DownloadUrlOptions,
+  ): Promise<string> {
     return getSignedUrl(
       this.client(),
-      new GetObjectCommand({ Bucket: this.bucketName(), Key: key }),
+      new GetObjectCommand({
+        Bucket: this.bucketName(),
+        Key: key,
+        ...(options?.responseContentDisposition
+          ? { ResponseContentDisposition: options.responseContentDisposition }
+          : {}),
+        ...(options?.responseContentType
+          ? { ResponseContentType: options.responseContentType }
+          : {}),
+      }),
       { expiresIn: expiresInSeconds },
     );
   }
@@ -86,15 +159,17 @@ export class R2Storage {
     if (!this.endpoint || !this.accessKeyId || !this.secretAccessKey) {
       throw new Error('R2 storage is not configured');
     }
-
-    return new S3Client({
-      region: 'auto',
-      endpoint: this.endpoint,
-      credentials: {
-        accessKeyId: this.accessKeyId,
-        secretAccessKey: this.secretAccessKey,
-      },
-    });
+    if (!this.s3Client) {
+      this.s3Client = new S3Client({
+        region: 'auto',
+        endpoint: this.endpoint,
+        credentials: {
+          accessKeyId: this.accessKeyId,
+          secretAccessKey: this.secretAccessKey,
+        },
+      });
+    }
+    return this.s3Client;
   }
 
   private bucketName(): string {

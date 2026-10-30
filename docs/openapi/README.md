@@ -125,3 +125,35 @@ and `WWW-Authenticate` rules, and adds:
 
 None of it is approved by any authority and none of it allows route activation, production use
 or policy `ALLOW`. `src/contracts/task-create-openapi.spec.ts` guards the file.
+
+
+## AI Chat <-> SAG BFF: ai-chat-sag.openapi.json
+
+The [AI Chat <-> SAG BFF contract](ai-chat-sag.openapi.json) defines the
+project-scoped AI Knowledge Search boundary under
+`/api/v1/ai-chat/projects/{projectId}` (`GET/POST /threads`,
+`PATCH/DELETE /threads/{threadId}`, `GET /threads/{threadId}/messages`, and
+`POST /threads/{threadId}/ask` SSE stream).
+
+- Every operation verifies Continuum identity and active Project access before
+  minting a short-lived, single-project SAG JWT via
+  `POST /api/v1/auth/continuum-login`.
+- Cookie-authenticated mutations (`POST`, `PUT`, `PATCH`, `DELETE`) enforce constant-time
+  `X-CSRF-Token` verification (`403 CSRF_INVALID`).
+- Answer feedback writes, share creation and regeneration revalidate ACTIVE
+  Project access before using a cached SAG session. Their internal SAG requests
+  require both the server-configured `X-SAG-BFF-Service-Token` and the scoped
+  SAG Bearer session: the service credential establishes the live BFF gate,
+  while the Bearer session preserves private conversation ownership. The client
+  attaches this credential only to the allowed answer mutation methods/routes;
+  feedback reads and ordinary ask streams remain Bearer-only. Browser clients
+  never receive or supply the service credential.
+- Deploy this BFF change before the SAG answer-mutation guard: the previous SAG
+  accepts the additional header, while the new guard requires it. Both services
+  reuse the existing matching `SAG_BFF_SERVICE_TOKEN`; no new environment setting
+  or database migration is needed. Roll back the SAG guard before this BFF
+  change to avoid rejecting legitimate mutations with `403`.
+- `POST /threads/{threadId}/ask` forces `web_enabled: false` and
+  `knowledge_only: true` server-side and emits whitelisted `started`, `step`,
+  `delta`, and terminal `completed` / `failed` SSE frames with document
+  `citations`, ECCE `sessionCitations`, and sanitized `retrievalSteps`.

@@ -25,20 +25,43 @@ export class MembershipOrganizationContextResolver implements OrganizationContex
       return { outcome: 'NO_ELIGIBLE_ORGANIZATION' };
     }
 
-    const organizations = await this.repository.findOrganizationOptions(
-      [...new Set(activeMembershipIds)].sort(),
-    );
-    if (organizations.length === 0) {
-      return { outcome: 'NO_ELIGIBLE_ORGANIZATION' };
+    const sortedMembershipIds = [...new Set(activeMembershipIds)].sort();
+    if (
+      requestedOrganizationId &&
+      !sortedMembershipIds.includes(requestedOrganizationId)
+    ) {
+      return { outcome: 'INVALID_ORGANIZATION_SELECTION' };
     }
 
     if (requestedOrganizationId) {
+      const [organizations, assignments] = await Promise.all([
+        this.repository.findOrganizationOptions(sortedMembershipIds),
+        this.repository.findOrganizationRoleAssignments(userId),
+      ]);
+      if (organizations.length === 0) {
+        return { outcome: 'NO_ELIGIBLE_ORGANIZATION' };
+      }
       if (
         !organizations.some((entry) => entry.id === requestedOrganizationId)
       ) {
         return { outcome: 'INVALID_ORGANIZATION_SELECTION' };
       }
-      return this.resolveSelected(userId, requestedOrganizationId);
+      return {
+        outcome: 'RESOLVED',
+        context: {
+          orgId: requestedOrganizationId,
+          roles: this.extractOrganizationRoles(
+            assignments,
+            requestedOrganizationId,
+          ),
+        },
+      };
+    }
+
+    const organizations =
+      await this.repository.findOrganizationOptions(sortedMembershipIds);
+    if (organizations.length === 0) {
+      return { outcome: 'NO_ELIGIBLE_ORGANIZATION' };
     }
 
     if (organizations.length > 1) {
@@ -57,7 +80,24 @@ export class MembershipOrganizationContextResolver implements OrganizationContex
   ): Promise<OrganizationContextResolution> {
     const assignments =
       await this.repository.findOrganizationRoleAssignments(userId);
-    const roles = [
+    return {
+      outcome: 'RESOLVED',
+      context: {
+        orgId,
+        roles: this.extractOrganizationRoles(assignments, orgId),
+      },
+    };
+  }
+
+  private extractOrganizationRoles(
+    assignments: Awaited<
+      ReturnType<
+        AuthenticationRepositoryPort['findOrganizationRoleAssignments']
+      >
+    >,
+    orgId: string,
+  ): string[] {
+    return [
       ...new Set(
         assignments
           .filter(
@@ -69,6 +109,5 @@ export class MembershipOrganizationContextResolver implements OrganizationContex
           .map((assignment) => assignment.roleCode),
       ),
     ].sort();
-    return { outcome: 'RESOLVED', context: { orgId, roles } };
   }
 }

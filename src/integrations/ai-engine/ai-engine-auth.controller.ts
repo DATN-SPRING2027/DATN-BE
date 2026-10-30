@@ -15,6 +15,7 @@ import type { Response } from 'express';
 import type { AuthenticatedIdentity } from '../../services/iam/application/authentication/authentication.application.service';
 import { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
 import { ProjectService } from '../../services/iam/application/projects/project.service';
+import { sanitizeContinuumActorHeaderName } from './ai-chat.types';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import type { AiEngineClient } from './ai-engine.port';
 
@@ -93,16 +94,8 @@ export class AiEngineAuthController {
     }
 
     const project = await this.projects.get(actor, projectId);
-    // User profile text becomes an HTTP header, so strip control bytes first.
-    const name =
-      actor.name
-        .replace(
-          // eslint-disable-next-line no-control-regex
-          /[\u0000-\u001f\u007f]/g,
-          ' ',
-        )
-        .trim()
-        .slice(0, 120) || 'Continuum user';
+    // User profile text becomes an HTTP header, so normalize to printable ASCII.
+    const name = sanitizeContinuumActorHeaderName(actor.name);
     const result = await this.aiEngine.request<SagLoginResponse>({
       path: '/api/v1/auth/continuum-login',
       method: 'POST',
