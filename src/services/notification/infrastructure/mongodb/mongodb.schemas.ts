@@ -50,6 +50,12 @@ export const NOTIFICATION_MVP_TYPES = [
   'TASK_DEADLINE_OVERDUE',
   'WORK_NOTE_MENTION',
   'CHAT_MENTION',
+  'WORK_REPORT_SUBMITTED',
+  'WORK_REPORT_APPROVED',
+  'WORK_REPORT_CHANGES_REQUESTED',
+  'WORK_REPORT_REJECTED',
+  'WORK_REPORT_OVERDUE',
+  'WORK_REPORT_FREQUENCY_CHANGED',
 ] as const;
 
 export type NotificationMvpType = (typeof NOTIFICATION_MVP_TYPES)[number];
@@ -59,6 +65,7 @@ export const NOTIFICATION_TARGET_KINDS = [
   'PROJECT',
   'TASK',
   'WORK_NOTE',
+  'WORK_REPORT',
   'CHAT',
 ] as const;
 
@@ -76,6 +83,7 @@ const notificationTargetSchema = new Schema(
     projectId: { type: String, default: null },
     taskId: { type: String, default: null },
     noteId: { type: String, default: null },
+    reportId: { type: String, default: null },
     conversationId: { type: String, default: null },
     messageId: { type: String, default: null },
   },
@@ -92,6 +100,7 @@ const notificationSchemas: Record<string, Schema> = {
       projectId: { type: String, default: null },
       taskId: { type: String, default: null },
       noteId: { type: String, default: null },
+      reportId: { type: String, default: null },
       conversationId: { type: String, default: null },
       type: {
         type: String,
