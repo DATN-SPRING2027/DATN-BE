@@ -430,6 +430,9 @@ describe('AI Chat <-> SAG BFF (e2e)', () => {
     );
     expect(loginCalls).toHaveLength(1);
     expect(loginCalls[0]?.headers['x-continuum-name']).toBe('Nguyen Van Thang');
+    expect(JSON.parse(loginCalls[0]?.body ?? '{}')).toEqual({
+      displayName: 'Nguyễn Văn Thắng',
+    });
     expect(projectsMock.get).toHaveBeenCalledTimes(4);
 
     // Verify ask sent knowledge_only=true & web_enabled=false to SAG without leaking service token

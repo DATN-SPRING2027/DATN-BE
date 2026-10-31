@@ -344,6 +344,20 @@ export function sanitizeContinuumActorHeaderName(rawName: string): string {
   return ascii || 'Continuum user';
 }
 
+export function sanitizeContinuumActorDisplayName(rawName: string): string {
+  const utf8 = rawName
+    .normalize('NFC')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  if (!utf8 || !/[\p{L}\p{N}]/u.test(utf8)) {
+    return 'Continuum user';
+  }
+  return utf8;
+}
+
 export type SessionCitationAuditHint = Readonly<{
   inferredSource?: 'selected_group' | 'recent_continuity';
   inferredGroupId?: string | null;

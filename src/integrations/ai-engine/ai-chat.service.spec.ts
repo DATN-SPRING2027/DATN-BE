@@ -10,6 +10,7 @@ import {
 import { AiChatService } from './ai-chat.service';
 import {
   mapSagCitation,
+  sanitizeContinuumActorDisplayName,
   sanitizeContinuumActorHeaderName,
 } from './ai-chat.types';
 import type { AiEngineClient } from './ai-engine.port';
@@ -191,7 +192,7 @@ describe('AiChatService', () => {
         'X-Continuum-Organization-Id': project.organizationId,
         'X-Continuum-Project-Id': project.id,
       },
-      body: {},
+      body: { displayName: 'Nguyễn Văn Thắng Đức' },
     });
 
     expect(page).toEqual({
@@ -394,6 +395,11 @@ describe('AiChatService', () => {
 
   it('normalizes real SAG session_memory citations (message_ids, primary_message_id, turn_ordinals) and filters mapped=false pool items', async () => {
     expect(sanitizeContinuumActorHeaderName('🚀✨')).toBe('Continuum user');
+    expect(sanitizeContinuumActorDisplayName('🚀✨')).toBe('Continuum user');
+    expect(sanitizeContinuumActorDisplayName('  KeyT  ')).toBe('KeyT');
+    expect(sanitizeContinuumActorDisplayName('Trần Kim Thắng\r\n')).toBe(
+      'Trần Kim Thắng',
+    );
 
     const { service, requestMock } = setup();
     requestMock

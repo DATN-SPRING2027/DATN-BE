@@ -15,7 +15,10 @@ import type { Response } from 'express';
 import type { AuthenticatedIdentity } from '../../services/iam/application/authentication/authentication.application.service';
 import { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
 import { ProjectService } from '../../services/iam/application/projects/project.service';
-import { sanitizeContinuumActorHeaderName } from './ai-chat.types';
+import {
+  sanitizeContinuumActorDisplayName,
+  sanitizeContinuumActorHeaderName,
+} from './ai-chat.types';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import type { AiEngineClient } from './ai-engine.port';
 
@@ -94,8 +97,10 @@ export class AiEngineAuthController {
     }
 
     const project = await this.projects.get(actor, projectId);
-    // User profile text becomes an HTTP header, so normalize to printable ASCII.
+    // User profile text becomes an HTTP header, so normalize to printable ASCII,
+    // while also passing the full UTF-8 display name in the JSON body.
     const name = sanitizeContinuumActorHeaderName(actor.name);
+    const displayName = sanitizeContinuumActorDisplayName(actor.name);
     const result = await this.aiEngine.request<SagLoginResponse>({
       path: '/api/v1/auth/continuum-login',
       method: 'POST',
@@ -105,7 +110,7 @@ export class AiEngineAuthController {
         'X-Continuum-Organization-Id': project.organizationId,
         'X-Continuum-Project-Id': project.id,
       },
-      body: {},
+      body: { displayName },
     });
     const token = result.body?.access_token;
     if (
