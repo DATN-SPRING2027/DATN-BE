@@ -565,6 +565,56 @@
           "504": { "$ref": "#/components/responses/Error" }
         }
       }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/mind-map": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" }
+      ],
+      "post": {
+        "operationId": "generateAiChatMindMap",
+        "description": "Generates an on-demand Mind Map (up to 4 levels, max 60 nodes) over authorized search-ready documents in the active Project. Cookie-authenticated calls require X-CSRF-Token. Returns status='empty' when no search-ready authorized documents exist, and generationMode='outline_fallback' only when authorized sources were loaded cleanly but LLM synthesis failed.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateMindMapRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Generated Mind Map (LLM-synthesized, outline fallback, or empty Project state)",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MindMapResponse"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
     }
   },
   "components": {
@@ -753,6 +803,11 @@
         "additionalProperties": false,
         "required": ["kind", "label", "durationMs"],
         "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["running", "completed", "failed"]
+          },
           "kind": {
             "type": "string",
             "enum": ["session_context", "tool", "thinking", "answer"]
@@ -832,6 +887,11 @@
         "additionalProperties": false,
         "required": ["kind", "label", "durationMs"],
         "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["running", "completed", "failed"]
+          },
           "kind": {
             "type": "string",
             "enum": ["session_context", "tool", "thinking", "answer"]
@@ -1187,6 +1247,132 @@
           "nextCursor": {
             "type": ["string", "null"],
             "maxLength": 1024
+          }
+        }
+      },
+      "GenerateMindMapRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional trimmed focus topic (1..200 non-whitespace chars). Omit for a Project-wide overview Mind Map."
+          }
+        }
+      },
+      "MindMapCoverage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "accessibleReadyDocumentCount",
+          "usedDocumentCount",
+          "omittedDocumentCount",
+          "pendingDocumentCount",
+          "truncatedDocumentCount",
+          "evidenceUnitCount"
+        ],
+        "properties": {
+          "accessibleReadyDocumentCount": { "type": "integer", "minimum": 0 },
+          "usedDocumentCount": { "type": "integer", "minimum": 0 },
+          "omittedDocumentCount": { "type": "integer", "minimum": 0 },
+          "pendingDocumentCount": { "type": "integer", "minimum": 0 },
+          "truncatedDocumentCount": { "type": "integer", "minimum": 0 },
+          "evidenceUnitCount": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "MindMapNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "summary", "citationNumbers", "children"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "summary": {
+            "type": ["string", "null"],
+            "maxLength": 320
+          },
+          "citationNumbers": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 1 },
+            "uniqueItems": true,
+            "description": "Supporting citation numbers from the authorized input set; proves source membership only, not semantic faithfulness."
+          },
+          "children": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "$ref": "#/components/schemas/MindMapNode" }
+          }
+        }
+      },
+      "MindMapResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "projectId",
+          "topic",
+          "status",
+          "generationMode",
+          "fallbackReason",
+          "scopeFingerprint",
+          "coverage",
+          "tree",
+          "citations",
+          "generatedAt"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "topic": {
+            "type": ["string", "null"],
+            "maxLength": 200
+          },
+          "status": {
+            "type": "string",
+            "enum": ["ready", "empty"]
+          },
+          "generationMode": {
+            "type": "string",
+            "enum": ["llm", "outline_fallback", "none"]
+          },
+          "fallbackReason": {
+            "type": ["string", "null"],
+            "enum": ["LLM_UNAVAILABLE", "LLM_INVALID_OUTPUT", null]
+          },
+          "scopeFingerprint": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 128
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/MindMapCoverage"
+          },
+          "tree": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/MindMapNode" },
+              { "type": "null" }
+            ]
+          },
+          "citations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Citation" }
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

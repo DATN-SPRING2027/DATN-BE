@@ -401,4 +401,88 @@ describe('HttpAiEngineClient', () => {
       );
     }
   });
+
+  it('allowlists POST /api/v1/projects/:projectId/mind-map with BFF service token and maps upstream 400 -> 400 and 503 -> 503', async () => {
+    const client = makeClient();
+
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        projectId: '507f1f77bcf86cd799439033',
+        topic: null,
+        status: 'empty',
+        generationMode: 'none',
+        fallbackReason: null,
+        scopeFingerprint: '0'.repeat(64),
+        coverage: {
+          accessibleReadyDocumentCount: 0,
+          usedDocumentCount: 0,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 0,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-30T16:00:00Z',
+      }),
+    );
+
+    const timeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+    const ok = await client.request({
+      path: '/api/v1/projects/507f1f77bcf86cd799439033/mind-map',
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': '507f1f77bcf86cd799439011',
+        'X-SAG-BFF-Service-Token': 'forged-token',
+      },
+      body: { topic: 'Handover' },
+    });
+    expect(ok.status).toBe(200);
+    expect(timeoutSpy).toHaveBeenCalledWith(120000);
+    timeoutSpy.mockRestore();
+    const reqHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(reqHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+
+    // Upstream 400 -> BadRequestException
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Invalid topic' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(
+      client.request({
+        path: '/api/v1/projects/507f1f77bcf86cd799439033/mind-map',
+        method: 'POST',
+        headers: {},
+        body: {},
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Upstream 503 on mind-map (DB/store query failure) -> ServiceUnavailableException (503)
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Database unavailable' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(
+      client.request({
+        path: '/api/v1/projects/507f1f77bcf86cd799439033/mind-map',
+        method: 'POST',
+        headers: {},
+        body: {},
+      }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    // Path traversal or unlisted method on mind-map must fail closed with BadGatewayException
+    await expect(
+      client.request({
+        path: '/api/v1/projects/507f1f77bcf86cd799439033/../other/mind-map',
+        method: 'POST',
+        headers: {},
+        body: {},
+      }),
+    ).rejects.toBeInstanceOf(BadGatewayException);
+  });
 });
