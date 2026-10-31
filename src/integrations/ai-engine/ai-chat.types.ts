@@ -590,6 +590,16 @@ export function extractSanitizedStepsAndSessionCitations(rawSteps: unknown): {
   return { retrievalSteps, sessionCitations };
 }
 
+const SAFE_LINEAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function safeLineageId(value: unknown): string | null {
+  const candidate = nonEmptyString(value, 64);
+  if (!candidate || !SAFE_LINEAGE_ID_PATTERN.test(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
 export function mapSagThread(raw: unknown): AiChatThreadDto | null {
   if (!isRecord(raw)) return null;
   const id = nonEmptyString(raw.id, 128);
@@ -612,19 +622,17 @@ export function mapSagThread(raw: unknown): AiChatThreadDto | null {
 
   const hasParentIdField = rawParentThreadId !== undefined;
   const parentThreadId =
-    rawParentThreadId === null
-      ? null
-      : (nonEmptyString(rawParentThreadId, 128) ?? null);
+    rawParentThreadId === null ? null : safeLineageId(rawParentThreadId);
   const hasParentTitleField = rawParentThreadTitle !== undefined;
   const parentThreadTitle =
-    rawParentThreadTitle === null
+    rawParentThreadTitle === null || parentThreadId === null
       ? null
       : (nonEmptyString(rawParentThreadTitle, 200) ?? null);
   const hasBranchPointField = rawBranchPointMessageId !== undefined;
   const branchPointMessageId =
     rawBranchPointMessageId === null
       ? null
-      : (nonEmptyString(rawBranchPointMessageId, 128) ?? null);
+      : safeLineageId(rawBranchPointMessageId);
   const isBranched =
     typeof rawIsBranched === 'boolean'
       ? rawIsBranched

@@ -1491,6 +1491,32 @@ describe('AiChatService', () => {
       updatedAt: '2026-10-31T10:00:00Z',
     });
 
+    // Malformed lineage identifiers in upstream payload are sanitized to null
+    requestMock.mockResolvedValueOnce({
+      status: 201,
+      body: {
+        id: 'thread_branch_sanitized',
+        title: 'Sanitized Branch',
+        is_branched: true,
+        parent_thread_id: '../evil/parent',
+        parent_thread_title: 'Should Be Cleared',
+        branch_point_message_id: 'bad/msg',
+        created_at: '2026-10-31T10:00:00Z',
+        updated_at: '2026-10-31T10:00:00Z',
+      },
+    });
+    const sanitizedBranch = await service.branchThread(
+      { authorization: 'Bearer ok' },
+      project.id,
+      'thread_parent_1',
+      'msg_assist_2',
+      {},
+    );
+    expect(sanitizedBranch.isBranched).toBe(true);
+    expect(sanitizedBranch.parentThreadId).toBeNull();
+    expect(sanitizedBranch.parentThreadTitle).toBeNull();
+    expect(sanitizedBranch.branchPointMessageId).toBeNull();
+
     // Invalid upstream payload throws BadGatewayException
     requestMock.mockResolvedValueOnce({ status: 201, body: { invalid: true } });
     await expect(
