@@ -321,6 +321,24 @@ describe('HttpAiEngineClient', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
 
     fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ detail: 'Target message is not branchable' }),
+        {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    await expect(
+      client.request({
+        path: '/api/v1/agents/agent_1/threads/thread_1/messages/m1/branch',
+        method: 'POST',
+        headers: { Authorization: 'Bearer user.jwt.token' },
+        body: {},
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ detail: 'Generation already active' }), {
         status: 409,
         headers: { 'content-type': 'application/json' },
@@ -340,6 +358,7 @@ describe('HttpAiEngineClient', () => {
     ['PUT', 'feedback'],
     ['DELETE', 'feedback'],
     ['POST', 'shares'],
+    ['POST', 'branch'],
   ] as const)(
     'authenticates answer mutation %s /%s with the configured service token and the original owner bearer',
     async (method, action) => {

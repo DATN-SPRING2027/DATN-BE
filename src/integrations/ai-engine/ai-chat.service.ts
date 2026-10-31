@@ -264,6 +264,40 @@ export class AiChatService {
     return mapped;
   }
 
+  async branchThread(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+    input: Readonly<{ title?: string }>,
+  ): Promise<AiChatThreadDto> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    let result: { status: number; body: unknown };
+    try {
+      result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/branch`,
+        method: 'POST',
+        headers: bearerHeaders,
+        body: input.title ? { title: input.title } : {},
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+
+    const mapped = mapSagThread(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid branched thread payload.',
+      );
+    }
+    return mapped;
+  }
+
   async updateThread(
     headers: AiChatRequestHeaders,
     projectId: string,

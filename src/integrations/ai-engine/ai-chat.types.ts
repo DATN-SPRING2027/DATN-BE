@@ -1,6 +1,10 @@
 export type AiChatThreadDto = Readonly<{
   id: string;
   title: string;
+  isBranched?: boolean;
+  parentThreadId?: string | null;
+  parentThreadTitle?: string | null;
+  branchPointMessageId?: string | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -51,6 +55,7 @@ export type AiChatMessageDto = Readonly<{
   id: string;
   replyToMessageId?: string;
   regeneratedFromMessageId?: string;
+  isInherited?: boolean;
   role: 'user' | 'assistant';
   content: string;
   status: 'ok' | 'failed' | 'cancelled';
@@ -585,6 +590,16 @@ export function extractSanitizedStepsAndSessionCitations(rawSteps: unknown): {
   return { retrievalSteps, sessionCitations };
 }
 
+const SAFE_LINEAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function safeLineageId(value: unknown): string | null {
+  const candidate = nonEmptyString(value, 64);
+  if (!candidate || !SAFE_LINEAGE_ID_PATTERN.test(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
 export function mapSagThread(raw: unknown): AiChatThreadDto | null {
   if (!isRecord(raw)) return null;
   const id = nonEmptyString(raw.id, 128);
@@ -592,7 +607,49 @@ export function mapSagThread(raw: unknown): AiChatThreadDto | null {
   const updatedAt = nonEmptyString(raw.updated_at ?? raw.updatedAt, 64);
   if (!id || !createdAt || !updatedAt) return null;
   const title = nonEmptyString(raw.title, 200) ?? 'New chat';
-  return { id, title, createdAt, updatedAt };
+
+  const rawIsBranched = 'is_branched' in raw ? raw.is_branched : raw.isBranched;
+  const rawParentThreadId =
+    'parent_thread_id' in raw ? raw.parent_thread_id : raw.parentThreadId;
+  const rawParentThreadTitle =
+    'parent_thread_title' in raw
+      ? raw.parent_thread_title
+      : raw.parentThreadTitle;
+  const rawBranchPointMessageId =
+    'branch_point_message_id' in raw
+      ? raw.branch_point_message_id
+      : raw.branchPointMessageId;
+
+  const hasParentIdField = rawParentThreadId !== undefined;
+  const parentThreadId =
+    rawParentThreadId === null ? null : safeLineageId(rawParentThreadId);
+  const hasParentTitleField = rawParentThreadTitle !== undefined;
+  const parentThreadTitle =
+    rawParentThreadTitle === null || parentThreadId === null
+      ? null
+      : (nonEmptyString(rawParentThreadTitle, 200) ?? null);
+  const hasBranchPointField = rawBranchPointMessageId !== undefined;
+  const branchPointMessageId =
+    rawBranchPointMessageId === null
+      ? null
+      : safeLineageId(rawBranchPointMessageId);
+  const isBranched =
+    typeof rawIsBranched === 'boolean'
+      ? rawIsBranched
+      : typeof branchPointMessageId === 'string'
+        ? true
+        : undefined;
+
+  return {
+    id,
+    title,
+    ...(isBranched !== undefined ? { isBranched } : {}),
+    ...(hasParentIdField ? { parentThreadId } : {}),
+    ...(hasParentTitleField ? { parentThreadTitle } : {}),
+    ...(hasBranchPointField ? { branchPointMessageId } : {}),
+    createdAt,
+    updatedAt,
+  };
 }
 
 const WHITELISTED_MESSAGE_ERROR_CODES = new Set<string>([
@@ -621,6 +678,9 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
     raw.regenerated_from_message_id ?? raw.regeneratedFromMessageId,
     128,
   );
+  const rawIsInherited = raw.is_inherited ?? raw.isInherited;
+  const isInherited =
+    typeof rawIsInherited === 'boolean' ? rawIsInherited : undefined;
   const content = typeof raw.content === 'string' ? raw.content : '';
   const status =
     raw.status === 'failed' || raw.status === 'cancelled' ? raw.status : 'ok';
@@ -646,6 +706,7 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
     id,
     ...(replyToMessageId ? { replyToMessageId } : {}),
     ...(regeneratedFromMessageId ? { regeneratedFromMessageId } : {}),
+    ...(isInherited !== undefined ? { isInherited } : {}),
     role,
     content,
     status,
