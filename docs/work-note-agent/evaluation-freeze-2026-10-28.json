@@ -1,0 +1,18 @@
+{
+  "recordedAt": "2026-10-28T06:33:12.270Z",
+  "scope": "Synthetic Task Note follow-up, no shared DB access",
+  "promptVersion": "worknote-rewrite/2026-10-27.v0.3.2",
+  "promptTemplateHash": "a7ad4d173f5468c08e824538c43c8889c59b0aff0707481c8c8ff175e39bac21",
+  "corpusVersion": "worknote-eval/2026-10-28.v3",
+  "corpusHash": "995947c8e3766788eb555f6d88d4bae4b66aac33079b16b365bd6a96d0f80c82",
+  "plannedLogicalCalls": 120,
+  "maxTransportAttempts": 240,
+  "model": "qwen/qwen3.7-flash:free",
+  "maxTokens": 4096,
+  "timeoutMs": 30000,
+  "concurrency": 2,
+  "formattingRecovery": "explicit-empty-containers-only",
+  "semanticAcceptance": "NOT_ESTABLISHED",
+  "humanReview": "PENDING",
+  "instruction": "Do not tune prompt or pipeline on validation/holdout outputs. Developer-authored fixtures; not an independent benchmark."
+}

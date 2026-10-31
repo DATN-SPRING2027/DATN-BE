@@ -230,6 +230,31 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .allow('')
     .optional(),
   SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  WORKNOTE_SHARED_EDITOR_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  WORKNOTE_EDITOR_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  WORKNOTE_ASSESSMENT_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  WORKNOTE_AGENT_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  WORKNOTE_AGENT_FORMATTING_RECOVERY: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  XKIRO_API_KEY: Joi.string().trim().allow('').optional(),
+  XKIRO_MODEL: Joi.string()
+    .pattern(/^[\w.-]+\/[\w.:-]+$/)
+    .allow('')
+    .optional(),
 }).unknown(true);
 
 const INTERNAL_SERVICE_URL_KEYS = [

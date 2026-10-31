@@ -90,4 +90,81 @@ describe('Handover Task Note immutable pinning (R2-BE03)', () => {
     expect(JSON.stringify(result)).toContain('OLD_BLOCKER');
     expect(JSON.stringify(result)).not.toContain('NEW_BLOCKER');
   });
+
+  it('extracts excerpts from v2 contentMarkdown for TASK_NOTE and WORK_REPORT and detects v2 live divergence', async () => {
+    const viewer = {
+      organizationId: new Types.ObjectId().toHexString(),
+      projectId: new Types.ObjectId().toHexString(),
+      userId: new Types.ObjectId().toHexString(),
+      isProjectMember: true,
+      isProjectLeader: true,
+    };
+    const note = {
+      _id: new Types.ObjectId(),
+      status: 'CONFIRMED',
+      title: 'Redis Fence v2',
+      contentSchemaVersion: 2,
+      contentMarkdown: '## Root cause\n\nImplemented monotonic userFence.',
+      currentVersionNumber: 1,
+    };
+    const noteSnapshots = [
+      {
+        workNoteId: note._id,
+        versionNumber: 1,
+        title: 'Redis Fence v2',
+        contentSchemaVersion: 2,
+        contentMarkdown: '## Root cause\n\nImplemented monotonic userFence.',
+      },
+    ];
+    const report = {
+      _id: new Types.ObjectId(),
+      memberUserId: new Types.ObjectId(viewer.userId),
+      reportScope: 'MEMBER',
+      status: 'APPROVED',
+      periodStart: new Date('2026-10-20T00:00:00Z'),
+      title: 'Sprint 4 Handover Report',
+      contentSchemaVersion: 2,
+      contentMarkdown:
+        '## Handover Summary\n\nToken rotation migrated cleanly.',
+      reviewHistory: [{ action: 'APPROVED' }],
+    };
+    const db = {
+      collection: (name: string) => ({
+        findOne: () => Promise.resolve(name === 'work_reports' ? report : note),
+        find: () => ({ toArray: () => Promise.resolve(noteSnapshots) }),
+      }),
+    };
+    const svc = new HandoverCaptureSourceService({ db } as never);
+
+    const evaluatedNote = await svc.evaluateSource(viewer, {
+      kind: 'TASK_NOTE',
+      id: note._id.toHexString(),
+      version: 1,
+    });
+    expect(evaluatedNote.readable).toBe(true);
+    expect(evaluatedNote.isCurrent).toBe(true);
+    expect(evaluatedNote.excerpts.map((e) => e.content).join(' ')).toContain(
+      'Implemented monotonic userFence.',
+    );
+
+    note.contentMarkdown = 'Unversioned live edit';
+    const afterLiveEdit = await svc.evaluateSource(viewer, {
+      kind: 'TASK_NOTE',
+      id: note._id.toHexString(),
+      version: 1,
+    });
+    expect(afterLiveEdit.readable).toBe(true);
+    expect(afterLiveEdit.isCurrent).toBe(false);
+
+    const evaluatedReport = await svc.evaluateSource(viewer, {
+      kind: 'WORK_REPORT',
+      id: report._id.toHexString(),
+      version: 1,
+    });
+    expect(evaluatedReport.readable).toBe(true);
+    expect(evaluatedReport.title).toBe('Sprint 4 Handover Report');
+    expect(evaluatedReport.excerpts.map((e) => e.content).join(' ')).toContain(
+      'Token rotation migrated cleanly.',
+    );
+  });
 });

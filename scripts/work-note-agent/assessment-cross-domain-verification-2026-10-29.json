@@ -1,0 +1,42 @@
+{
+  "classification": "cross-domain-code-verification",
+  "productBaseline": "d56bfaaff417c9a04a2936be9fb14efdd5e3b9c9",
+  "checks": {
+    "backend": {
+      "unitPassed": 1743,
+      "unitSkipped": 137,
+      "e2ePassed": 169,
+      "e2eSkipped": 4,
+      "lint": true,
+      "typecheck": true,
+      "build": true,
+      "focusedAssessmentPassed": 160
+    },
+    "frontend": {
+      "source": "c0799687d86b7e59529a98e8698e895c0f31503a",
+      "testsPassed": 974,
+      "lint": true,
+      "typecheck": true,
+      "isolatedWebpackBuild": true
+    },
+    "database": {
+      "source": "a159b5e70d985ecbd4bbe1a9ad36c530bd12e7d9",
+      "migrationPolicyPassed": 13,
+      "schemaPassed": 8,
+      "temporaryMongoDB": true,
+      "atlasTouched": false
+    }
+  },
+  "baselineSummarySha256": "24d179a984ac95ed16fb05ba233bbccde4f6c6c1300dc4720a0a1feaae166519",
+  "recoverySummarySha256": "af43b4dbba19580bf224ed0734b905de6c754e997cecf2351c9a0e65ed1bfe45",
+  "postCampaignHarnessFixes": [
+    "Reject live campaign ceilings that disagree with the fixed176-call phase ledger",
+    "Treat HTTP4xx including401/429 as infrastructure errors"
+  ],
+  "releaseGate": "NOT_PASSED",
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "publicApiOrSchemaChanged": false,
+  "promptOrRuntimeParserChanged": false,
+  "featureFlagsActivated": false,
+  "merged": false
+}
