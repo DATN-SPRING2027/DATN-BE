@@ -170,6 +170,42 @@ function validateEmptyBody(body: unknown): void {
   }
 }
 
+function validateMindMapTopicString(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'topic must be a string between 1 and 200 characters.',
+    });
+  }
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  if (
+    normalized.length < 1 ||
+    normalized.length > 200 ||
+    normalized.toUpperCase().length > 200
+  ) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'topic must be between 1 and 200 characters.',
+    });
+  }
+  return normalized;
+}
+
+function validateGetMindMapQuery(
+  query: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!query) return undefined;
+  const unknownKeys = Object.keys(query).filter((key) => key !== 'topic');
+  if (unknownKeys.length > 0) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Unexpected query parameters.',
+    });
+  }
+  if (query.topic === undefined) return undefined;
+  return validateMindMapTopicString(query.topic);
+}
+
 function validateGenerateMindMapBody(body: unknown): AiChatMindMapInputDto {
   if (body === undefined || body === null) return {};
   if (!isPlainRecord(body)) {
@@ -178,28 +214,29 @@ function validateGenerateMindMapBody(body: unknown): AiChatMindMapInputDto {
       message: 'Request body must be a JSON object.',
     });
   }
-  const unknownKeys = Object.keys(body).filter((key) => key !== 'topic');
+  const unknownKeys = Object.keys(body).filter(
+    (key) => key !== 'topic' && key !== 'refresh',
+  );
   if (unknownKeys.length > 0) {
     throw new BadRequestException({
       code: 'VALIDATION_FAILED',
       message: 'Unexpected properties in request body.',
     });
   }
-  if (body.topic === undefined || body.topic === null) return {};
-  if (typeof body.topic !== 'string') {
+  const topic =
+    body.topic === undefined || body.topic === null
+      ? undefined
+      : validateMindMapTopicString(body.topic);
+  if (body.refresh !== undefined && typeof body.refresh !== 'boolean') {
     throw new BadRequestException({
       code: 'VALIDATION_FAILED',
-      message: 'topic must be a string between 1 and 200 characters.',
+      message: 'refresh must be a boolean.',
     });
   }
-  const normalized = body.topic.trim().replace(/\s+/g, ' ');
-  if (normalized.length < 1 || normalized.length > 200) {
-    throw new BadRequestException({
-      code: 'VALIDATION_FAILED',
-      message: 'topic must be between 1 and 200 characters.',
-    });
-  }
-  return { topic: normalized };
+  return {
+    ...(topic ? { topic } : {}),
+    ...(body.refresh !== undefined ? { refresh: body.refresh } : {}),
+  };
 }
 
 function validateFeedbackBody(body: unknown): AiChatFeedbackInputDto {
@@ -540,6 +577,23 @@ export class AiChatController {
       this.mutationHeaders(request),
       validProjectId,
       validShareId,
+    );
+  }
+
+  @Get('mind-map')
+  async getMindMap(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Query() query?: Record<string, unknown>,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const topic = validateGetMindMapQuery(query);
+    return this.aiChat.getMindMap(
+      this.readHeaders(request),
+      validProjectId,
+      topic,
     );
   }
 

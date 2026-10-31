@@ -207,12 +207,13 @@ export class HttpAiEngineClient implements AiEngineClient {
 
     const backendTimeoutMs =
       this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS');
-    const requestTimeoutMs = PROJECT_MIND_MAP_PATTERN.test(routePathname)
-      ? Math.max(
-          backendTimeoutMs,
-          this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60000,
-        )
-      : backendTimeoutMs;
+    const requestTimeoutMs =
+      request.method === 'POST' && PROJECT_MIND_MAP_PATTERN.test(routePathname)
+        ? Math.max(
+            backendTimeoutMs,
+            this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60000,
+          )
+        : backendTimeoutMs;
 
     let response: Response;
     try {

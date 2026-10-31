@@ -10,7 +10,10 @@ export type AiChatCitationDto = Readonly<{
   sourceId: string;
   sourceName?: string;
   documentId: string;
+  sagDocumentId?: string;
   documentName?: string;
+  chunkId?: string;
+  sectionPath?: string;
   versionNo?: number;
   heading?: string;
   snippet?: string;
@@ -172,7 +175,7 @@ export type PlatformAiFeedbackPageDto = Readonly<{
   nextCursor: string | null;
 }>;
 
-export type AiChatMindMapStatus = 'ready' | 'empty';
+export type AiChatMindMapStatus = 'ready' | 'empty' | 'uninitialized';
 
 export type AiChatMindMapGenerationMode = 'llm' | 'outline_fallback' | 'none';
 
@@ -181,6 +184,7 @@ export type AiChatMindMapFallbackReason =
 
 export type AiChatMindMapInputDto = Readonly<{
   topic?: string;
+  refresh?: boolean;
 }>;
 
 export type AiChatMindMapCoverageDto = Readonly<{
@@ -207,6 +211,8 @@ export type AiChatMindMapResponseDto = Readonly<{
   generationMode: AiChatMindMapGenerationMode;
   fallbackReason: AiChatMindMapFallbackReason;
   scopeFingerprint: string;
+  cached: boolean;
+  hasSourceUpdates: boolean;
   coverage: AiChatMindMapCoverageDto;
   tree: AiChatMindMapNodeDto | null;
   citations: readonly AiChatCitationDto[];
@@ -262,17 +268,31 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
   if (!isRecord(raw)) return null;
   const number = positiveInt(raw.n ?? raw.number);
   const sourceId = nonEmptyString(raw.source_id ?? raw.sourceId, 128);
-  const documentId = nonEmptyString(raw.document_id ?? raw.documentId, 128);
+  const rawDocumentId = nonEmptyString(raw.document_id ?? raw.documentId, 128);
+  const publicDocumentId = nonEmptyString(
+    raw.public_document_id ?? raw.publicDocumentId,
+    128,
+  );
+  const documentId = publicDocumentId ?? rawDocumentId;
   if (!number || !sourceId || !documentId) return null;
+  const sagDocumentId =
+    rawDocumentId && rawDocumentId !== documentId
+      ? rawDocumentId
+      : nonEmptyString(raw.sag_document_id ?? raw.sagDocumentId, 128);
 
   const sourceName = nonEmptyString(raw.source_name ?? raw.sourceName, 240);
   const documentName = nonEmptyString(
     raw.document_name ?? raw.documentName ?? raw.doc_name,
     240,
   );
+  const chunkId = nonEmptyString(
+    raw.chunk_id ?? raw.chunkId ?? raw.search_unit_id ?? raw.searchUnitId,
+    128,
+  );
+  const sectionPath = nonEmptyString(raw.section_path ?? raw.sectionPath, 240);
   const versionNo = positiveInt(raw.version_no ?? raw.versionNo);
   const heading = nonEmptyString(raw.heading ?? raw.section, 240);
-  const snippet = nonEmptyString(raw.snippet ?? raw.excerpt, 1200);
+  const snippet = nonEmptyString(raw.snippet ?? raw.excerpt, 2400);
   const pageFrom = positiveInt(raw.page_from ?? raw.pageFrom);
   const pageTo = positiveInt(raw.page_to ?? raw.pageTo);
   const mapped = typeof raw.mapped === 'boolean' ? raw.mapped : undefined;
@@ -294,7 +314,10 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
     sourceId,
     ...(sourceName ? { sourceName } : {}),
     documentId,
+    ...(sagDocumentId ? { sagDocumentId } : {}),
     ...(documentName ? { documentName } : {}),
+    ...(chunkId ? { chunkId } : {}),
+    ...(sectionPath ? { sectionPath } : {}),
     ...(versionNo ? { versionNo } : {}),
     ...(heading ? { heading } : {}),
     ...(snippet ? { snippet } : {}),
@@ -885,7 +908,11 @@ export function mapSagMindMapResponse(
   }
 
   const status =
-    raw.status === 'ready' || raw.status === 'empty' ? raw.status : null;
+    raw.status === 'ready' ||
+    raw.status === 'empty' ||
+    raw.status === 'uninitialized'
+      ? raw.status
+      : null;
   const rawMode = raw.generationMode ?? raw.generation_mode;
   const generationMode =
     rawMode === 'llm' || rawMode === 'outline_fallback' || rawMode === 'none'
@@ -902,6 +929,21 @@ export function mapSagMindMapResponse(
     return null;
   }
   const fallbackReason: AiChatMindMapFallbackReason = rawFallbackReason;
+
+  if (raw.cached !== undefined && typeof raw.cached !== 'boolean') {
+    return null;
+  }
+  const cached = raw.cached === true;
+
+  const rawHasSourceUpdates =
+    raw.hasSourceUpdates ?? raw.has_source_updates ?? undefined;
+  if (
+    rawHasSourceUpdates !== undefined &&
+    typeof rawHasSourceUpdates !== 'boolean'
+  ) {
+    return null;
+  }
+  const hasSourceUpdates = rawHasSourceUpdates === true;
 
   const rawFingerprint = raw.scopeFingerprint ?? raw.scope_fingerprint;
   if (
@@ -961,12 +1003,14 @@ export function mapSagMindMapResponse(
   if (!generatedAt) return null;
 
   let tree: AiChatMindMapNodeDto | null = null;
-  if (status === 'empty') {
+  if (status === 'empty' || status === 'uninitialized') {
     if (
       generationMode !== 'none' ||
       fallbackReason !== null ||
       raw.tree !== null ||
-      citations.length > 0
+      citations.length > 0 ||
+      cached ||
+      hasSourceUpdates
     ) {
       return null;
     }
@@ -995,6 +1039,8 @@ export function mapSagMindMapResponse(
     generationMode,
     fallbackReason,
     scopeFingerprint,
+    cached,
+    hasSourceUpdates,
     coverage: {
       accessibleReadyDocumentCount,
       usedDocumentCount,

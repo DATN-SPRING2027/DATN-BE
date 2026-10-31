@@ -16,6 +16,7 @@ describe('AiChatController', () => {
     const readSharedAnswerMock = jest.fn();
     const revokeShareMock = jest.fn();
     const openRegenerateStreamMock = jest.fn();
+    const getMindMapMock = jest.fn();
     const generateMindMapMock = jest.fn();
     const service = {
       listThreads: jest.fn(),
@@ -31,6 +32,7 @@ describe('AiChatController', () => {
       readSharedAnswer: readSharedAnswerMock,
       revokeShare: revokeShareMock,
       openRegenerateStream: openRegenerateStreamMock,
+      getMindMap: getMindMapMock,
       generateMindMap: generateMindMapMock,
     } as unknown as AiChatService;
     const controller = new AiChatController(service);
@@ -45,6 +47,7 @@ describe('AiChatController', () => {
       readSharedAnswerMock,
       revokeShareMock,
       openRegenerateStreamMock,
+      getMindMapMock,
       generateMindMapMock,
     };
   }
@@ -434,5 +437,90 @@ describe('AiChatController', () => {
       { topic: 'Kiến trúc bàn giao' },
     );
     expect(out).toEqual(mockMap);
+
+    // Rejects non-boolean refresh
+    await expect(
+      controller.generateMindMap(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        { refresh: 'true' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    // Forwards boolean refresh
+    generateMindMapMock.mockResolvedValueOnce(mockMap);
+    await controller.generateMindMap(
+      makeReq({ authorization: 'Bearer token' }),
+      res,
+      'proj-1',
+      { topic: '  API  ', refresh: true },
+    );
+    expect(generateMindMapMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ authorization: 'Bearer token' }),
+      'proj-1',
+      { topic: 'API', refresh: true },
+    );
+  });
+
+  it('validates getMindMap query parameters, sets Cache-Control: no-store, and allows cookie GET without CSRF', async () => {
+    const { controller, getMindMapMock } = setup();
+    const { res, headers } = makeRes();
+
+    // Rejects invalid query keys, array topic, blank topic, or >200 chars
+    for (const invalidQuery of [
+      { unexpected: '1' },
+      { topic: ['a', 'b'] },
+      { topic: '   ' },
+      { topic: 'x'.repeat(201) },
+      { topic: 'ß'.repeat(101) },
+    ]) {
+      await expect(
+        controller.getMindMap(
+          makeReq({ cookie: 'continuum_access=jwt' }),
+          res,
+          'proj-1',
+          invalidQuery as Record<string, string | string[] | undefined>,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    }
+    expect(getMindMapMock).not.toHaveBeenCalled();
+
+    const mockUninitialized = {
+      projectId: 'proj-1',
+      topic: 'Kiến trúc',
+      status: 'uninitialized' as const,
+      generationMode: 'none' as const,
+      fallbackReason: null,
+      scopeFingerprint: 'a'.repeat(64),
+      cached: false,
+      hasSourceUpdates: false,
+      coverage: {
+        accessibleReadyDocumentCount: 2,
+        usedDocumentCount: 0,
+        omittedDocumentCount: 0,
+        pendingDocumentCount: 0,
+        truncatedDocumentCount: 0,
+        evidenceUnitCount: 0,
+      },
+      tree: null,
+      citations: [],
+      generatedAt: '2026-10-31T05:30:00Z',
+    };
+    getMindMapMock.mockResolvedValueOnce(mockUninitialized);
+
+    const out = await controller.getMindMap(
+      makeReq({ cookie: 'continuum_access=jwt' }),
+      res,
+      'proj-1',
+      { topic: '  Kiến   trúc ' },
+    );
+    expect(headers['cache-control']).toBe('no-store');
+    expect(getMindMapMock).toHaveBeenCalledWith(
+      expect.objectContaining({ cookie: 'continuum_access=jwt' }),
+      'proj-1',
+      'Kiến trúc',
+    );
+    expect(out).toEqual(mockUninitialized);
   });
 });
