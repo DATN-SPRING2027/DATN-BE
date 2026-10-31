@@ -630,16 +630,17 @@ describe('AuthenticationController', () => {
     );
   });
 
-  it('POST /api/v1/auth/logout passes refresh cookie and clears access and refresh cookie paths', async () => {
+  it('POST /api/v1/auth/logout requires the matching CSRF pair for cookie sessions', async () => {
     const response = await request(app.getHttpServer() as App)
       .post('/api/v1/auth/logout')
-      .set('Cookie', '__Secure-refresh=opaque-refresh')
+      .set('Cookie', '__Secure-refresh=opaque-refresh; __Host-csrf=csrf-value')
+      .set('X-CSRF-Token', 'csrf-value')
       .expect(200)
       .expect({ status: 'logged_out' });
 
     expect(service.logout).toHaveBeenCalledWith(
       undefined,
-      '__Secure-refresh=opaque-refresh',
+      '__Secure-refresh=opaque-refresh; __Host-csrf=csrf-value',
     );
     expect(response.headers['set-cookie']).toHaveLength(2);
     expect(response.headers['set-cookie'][0]).toContain('continuum_access=');
@@ -650,6 +651,44 @@ describe('AuthenticationController', () => {
     expect(response.headers['set-cookie'][1]).toContain('Max-Age=0');
     expect(response.headers['set-cookie'][1]).toContain('HttpOnly');
     expect(response.headers['set-cookie'][1]).toContain('Secure');
+  });
+
+  it.each([
+    [
+      'missing',
+      '__Secure-refresh=opaque-refresh; __Host-csrf=csrf-value',
+      undefined,
+    ],
+    [
+      'mismatched',
+      '__Secure-refresh=opaque-refresh; __Host-csrf=csrf-value',
+      'other-token',
+    ],
+  ])(
+    'POST /api/v1/auth/logout rejects a %s CSRF pair before revoking cookies',
+    async (_case, cookie, csrfHeader) => {
+      const response = await request(app.getHttpServer() as App)
+        .post('/api/v1/auth/logout')
+        .set('Cookie', cookie)
+        .set('X-CSRF-Token', csrfHeader ?? '')
+        .expect(403);
+
+      expect(response.body).toMatchObject({ code: 'AUTH_CSRF_INVALID' });
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(service.logout).not.toHaveBeenCalled();
+    },
+  );
+
+  it('POST /api/v1/auth/logout preserves bearer-only logout clients', async () => {
+    await request(app.getHttpServer() as App)
+      .post('/api/v1/auth/logout')
+      .set('Authorization', 'Bearer access-token')
+      .expect(200);
+
+    expect(service.logout).toHaveBeenCalledWith(
+      'Bearer access-token',
+      undefined,
+    );
   });
 
   it('POST /api/v1/auth/refresh returns 200 with two separate replacement cookies and no JSON tokens', async () => {

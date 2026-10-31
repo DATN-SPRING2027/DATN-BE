@@ -54,7 +54,24 @@ spec:
       containers:
         - name: redis
           image: {{ .Values.redis.image }}
-          command: ["redis-server", "/etc/redis/redis.conf"]
+          command: ["sh", "-ec"]
+          args:
+            - >-
+              test -n "$REDIS_PASSWORD" &&
+              exec redis-server /etc/redis/redis.conf
+              --requirepass "$REDIS_PASSWORD"
+              --masterauth "$REDIS_PASSWORD"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.auth.existingSecretName }}
+                  key: password
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.auth.existingSecretName }}
+                  key: password
           ports:
             - name: redis
               containerPort: {{ .Values.redis.port }}
@@ -104,6 +121,12 @@ spec:
         - name: redis-init
           image: {{ .Values.redis.image }}
           command: ["sh", "-c"]
+          env:
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.auth.existingSecretName }}
+                  key: password
           args:
             - >-
               until redis-cli -h {{ include "continuum-ai.fullname" . }}-redis-0.{{ include "continuum-ai.fullname" . }}-redis-headless ping;

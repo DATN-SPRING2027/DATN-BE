@@ -429,7 +429,8 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     const result = await request(app.getHttpServer() as App)
       .post('/api/v1/auth/logout')
       .set('Authorization', `Bearer ${token}`)
-      .set('Cookie', `__Secure-refresh=${refresh}`)
+      .set('Cookie', `__Secure-refresh=${refresh}; __Host-csrf=csrf-value`)
+      .set('X-CSRF-Token', 'csrf-value')
       .expect(200)
       .expect('Cache-Control', 'no-store');
     expect(result.body).toEqual({ status: 'logged_out' });

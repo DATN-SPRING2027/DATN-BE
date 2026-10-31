@@ -6,16 +6,13 @@ import {
   HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
-import {
-  createHash,
-  randomBytes,
-  randomUUID,
-  timingSafeEqual,
-} from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   clearRequestMemo,
   memoizeInRequest,
 } from '../../../../common/http/request-context';
+import { readCookieValue } from '../../../../common/http/cookies';
+import { validCsrfPair as compareCsrfPair } from '../../../../common/security/csrf';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
 import type { AccessTokenClaims } from './access-token.types';
 import {
@@ -123,19 +120,7 @@ export function validCsrfPair(
   cookieValue: string | undefined,
   headerValue: string | undefined,
 ): boolean {
-  if (
-    !cookieValue ||
-    !headerValue ||
-    cookieValue.length > 4096 ||
-    headerValue.length > 4096
-  )
-    return false;
-  const cookieBytes = Buffer.from(cookieValue);
-  const headerBytes = Buffer.from(headerValue);
-  return (
-    cookieBytes.length === headerBytes.length &&
-    timingSafeEqual(cookieBytes, headerBytes)
-  );
+  return compareCsrfPair(cookieValue, headerValue);
 }
 
 function validRefreshCredential(value: string | undefined): value is string {
@@ -155,20 +140,7 @@ export function readCookie(
   cookieHeader: string | undefined,
   name: string,
 ): string | undefined {
-  if (!cookieHeader) return undefined;
-
-  const values = cookieHeader
-    .split(';')
-    .map((part) => part.trim())
-    .filter((part) => part.startsWith(`${name}=`))
-    .map((part) => part.slice(name.length + 1));
-  if (values.length !== 1) return undefined;
-
-  try {
-    return decodeURIComponent(values[0]);
-  } catch {
-    return undefined;
-  }
+  return readCookieValue(cookieHeader, name);
 }
 
 export function extractAccessToken(

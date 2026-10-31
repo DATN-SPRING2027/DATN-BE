@@ -21,3 +21,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ include "continuum-ai.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{- define "continuum-ai.mongodbApplicationRoles" -}}
+{{- $roles := list -}}
+{{- range $name, $service := .Values.services -}}
+{{- $roles = append $roles (dict "role" "readWrite" "db" $service.database) -}}
+{{- end -}}
+{{- toJson $roles -}}
+{{- end }}

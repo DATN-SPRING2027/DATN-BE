@@ -18,6 +18,7 @@ spec:
     metadata:
       labels:
         {{- include "continuum-ai.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: domain-service
         continuum.ai/service: {{ $name }}
     spec:
       containers:
@@ -35,7 +36,15 @@ spec:
             - name: SERVICE_PORT
               value: {{ $service.port | quote }}
             - name: MONGODB_URI
-              value: {{ $.Values.mongodb.uri | default (printf "mongodb://%s-mongo-0.%s-mongo-headless:27017,%s-mongo-1.%s-mongo-headless:27017,%s-mongo-2.%s-mongo-headless:27017/?replicaSet=rs0" (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $) (include "continuum-ai.fullname" $)) | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.mongodb.auth.existingSecretName }}
+                  key: application-uri
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.redis.auth.existingSecretName }}
+                  key: password
             - name: SERVICE_DATABASE
               value: {{ $service.database | quote }}
             {{- if eq $name "chat" }}
