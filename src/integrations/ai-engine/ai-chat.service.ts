@@ -22,6 +22,8 @@ import {
   type AiChatFeedbackDto,
   type AiChatFeedbackInputDto,
   type AiChatMessagePageDto,
+  type AiChatMindMapInputDto,
+  type AiChatMindMapResponseDto,
   type AiChatOwnFeedbackDto,
   type AiChatRequestHeaders,
   type AiChatShareDto,
@@ -33,6 +35,7 @@ import {
   mapSagAdminFeedbackPage,
   mapSagFeedback,
   mapSagMessage,
+  mapSagMindMapResponse,
   mapSagOwnFeedback,
   mapSagShare,
   mapSagSharedAnswer,
@@ -791,6 +794,45 @@ export class AiChatService {
     if (!mapped) {
       throw new BadGatewayException(
         'AI Engine returned an invalid platform feedback payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async generateMindMap(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    input: AiChatMindMapInputDto,
+  ): Promise<AiChatMindMapResponseDto> {
+    const actor = await this.auth.getCurrentIdentity(
+      headers.authorization,
+      headers.cookie,
+    );
+    const project = await this.projects.get(actor, projectId);
+    if (project.status !== 'ACTIVE') {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
+
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/projects/${encodeURIComponent(project.id)}/mind-map`,
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': project.organizationId,
+        'X-Continuum-Tenant-Id': project.organizationId,
+        'X-Continuum-Project-Id': project.id,
+        'X-Continuum-Security-Partition': project.id,
+      },
+      body: input.topic ? { topic: input.topic } : {},
+    });
+
+    const mapped = mapSagMindMapResponse(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid mind map payload.',
       );
     }
     return mapped;

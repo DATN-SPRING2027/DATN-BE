@@ -46,6 +46,9 @@ const AGENT_MESSAGE_REGENERATE_PATTERN = new RegExp(
 const PROJECT_SHARE_ITEM_PATTERN = new RegExp(
   `^/api/v1/projects/${PROJECT_ID_SEGMENT}/shares/${SHARE_ID_SEGMENT}$`,
 );
+const PROJECT_MIND_MAP_PATTERN = new RegExp(
+  `^/api/v1/projects/${PROJECT_ID_SEGMENT}/mind-map$`,
+);
 const PLATFORM_AI_FEEDBACK_PATH = '/api/v1/platform/ai/feedback';
 
 function isAnswerActionClientValidatedRoute(pathname: string): boolean {
@@ -54,6 +57,7 @@ function isAnswerActionClientValidatedRoute(pathname: string): boolean {
     AGENT_MESSAGE_SHARES_PATTERN.test(pathname) ||
     AGENT_MESSAGE_REGENERATE_PATTERN.test(pathname) ||
     PROJECT_SHARE_ITEM_PATTERN.test(pathname) ||
+    PROJECT_MIND_MAP_PATTERN.test(pathname) ||
     pathname === PLATFORM_AI_FEEDBACK_PATH
   );
 }
@@ -114,6 +118,9 @@ function isAllowedJsonRoute(
     return true;
   }
   if (method === 'DELETE' && PROJECT_SHARE_ITEM_PATTERN.test(pathname)) {
+    return true;
+  }
+  if (method === 'POST' && PROJECT_MIND_MAP_PATTERN.test(pathname)) {
     return true;
   }
   if (method === 'GET' && pathname === PLATFORM_AI_FEEDBACK_PATH) {
@@ -198,6 +205,15 @@ export class HttpAiEngineClient implements AiEngineClient {
       headers.set('Content-Type', 'application/json');
     }
 
+    const backendTimeoutMs =
+      this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS');
+    const requestTimeoutMs = PROJECT_MIND_MAP_PATTERN.test(routePathname)
+      ? Math.max(
+          backendTimeoutMs,
+          this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60000,
+        )
+      : backendTimeoutMs;
+
     let response: Response;
     try {
       response = await fetch(target, {
@@ -207,9 +223,7 @@ export class HttpAiEngineClient implements AiEngineClient {
           ? {}
           : { body: JSON.stringify(request.body) }),
         cache: 'no-store',
-        signal: AbortSignal.timeout(
-          this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
-        ),
+        signal: AbortSignal.timeout(requestTimeoutMs),
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
@@ -364,6 +378,12 @@ export class HttpAiEngineClient implements AiEngineClient {
       throw new BadGatewayException({
         code: 'AI_ENGINE_REQUEST_FAILED',
         message: 'AI Engine rejected the upstream request.',
+      });
+    }
+    if (status === 503 && PROJECT_MIND_MAP_PATTERN.test(routePathname)) {
+      throw new ServiceUnavailableException({
+        code: 'AI_ENGINE_UNAVAILABLE',
+        message: 'AI Engine is temporarily unavailable.',
       });
     }
     throw new BadGatewayException({
