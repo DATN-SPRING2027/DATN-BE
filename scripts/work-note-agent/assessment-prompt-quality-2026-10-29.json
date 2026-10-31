@@ -1,0 +1,141 @@
+{
+  "phase": "prompt-quality-20261029",
+  "authority": "User explicitly requested further prompt testing and improvement after the closed implementation pilot. Additional phase ceiling29 was disclosed before provider work.",
+  "model": "mistralai/ministral-14b",
+  "phaseMaxHttpAttempts": 29,
+  "actualHttpAttempts": 29,
+  "reportedTokens": 111387,
+  "remainingHttpAttempts": 0,
+  "unknownUsageAttempts": 0,
+  "priorImplementationPhase": {
+    "httpAttempts": 29,
+    "reportedTokens": 73953,
+    "ledger": "assessment-pilot-ledger-2026-10-29.json",
+    "unchanged": true
+  },
+  "trials": [
+    {
+      "artifact": "assessment-v4-2026-10-29T01-22-33-507Z-52aa53a2.json",
+      "sha256": "ede1f2e173dd7d469994b4ad3552021660472cfd958fe36d630ea4d7a545e101",
+      "promptVersion": "task-note-assessment/2026-10-29.v6",
+      "editorVersion": "task-note-editor/2026-10-29.v1",
+      "templateHash": "1ab7e15592da3e2322a4da27de797f819d558cd4dee9825df2157b859112d455",
+      "actualHttpAttempts": 4,
+      "reportedTokens": 12534,
+      "analysisAttempts": 3,
+      "parsedAnalyses": 1,
+      "rawAutomatedPasses": 1,
+      "runtimeAutomatedPasses": 1,
+      "acceptedProposals": 0,
+      "errors": {
+        "SCHEMA_KEYS_GAPINDEX": 2,
+        "EDITOR_PROPOSAL_REQUIRED": 1
+      }
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T01-28-02-812Z-64209589.json",
+      "sha256": "b43d0542eb311c5f2f6ed6666306cd18f1bd56cbc1f5f2a1e9c47fe382b4a69f",
+      "promptVersion": "task-note-assessment/2026-10-29.v7",
+      "editorVersion": "task-note-editor/2026-10-29.v2",
+      "templateHash": "9c3ab066a533899dc21983c2e348b604370f6f9101b51202a0769bc903a713ce",
+      "actualHttpAttempts": 3,
+      "reportedTokens": 8834,
+      "analysisAttempts": 3,
+      "parsedAnalyses": 3,
+      "rawAutomatedPasses": 0,
+      "runtimeAutomatedPasses": 0,
+      "acceptedProposals": 0,
+      "errors": {}
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T01-33-43-119Z-60fa05e0.json",
+      "sha256": "a9ce0bf58a2a94609177c0dfe5bf7af591f8786ad6c14c8d3e1b0cc9a3c36fbd",
+      "promptVersion": "task-note-assessment/2026-10-29.v8",
+      "editorVersion": "task-note-editor/2026-10-29.v2",
+      "templateHash": "d5b591fac991a0dcd8c9d9124379ca75382ef583c2c5c13faddf9433005a53cb",
+      "actualHttpAttempts": 4,
+      "reportedTokens": 13701,
+      "analysisAttempts": 3,
+      "parsedAnalyses": 3,
+      "rawAutomatedPasses": 2,
+      "runtimeAutomatedPasses": 1,
+      "acceptedProposals": 1,
+      "errors": {}
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T01-40-30-916Z-9d629b58.json",
+      "sha256": "eb3e64c2b8b6702da19310e1cb6740e29585ac88325e510f237635650e91585d",
+      "promptVersion": "task-note-assessment/2026-10-29.v9",
+      "editorVersion": "task-note-editor/2026-10-29.v2",
+      "templateHash": "6a7a5f172ffa51c5ee6efc58f3bb732af9533fb02b12e31ed65336a93fd6af8a",
+      "actualHttpAttempts": 4,
+      "reportedTokens": 11535,
+      "analysisAttempts": 2,
+      "parsedAnalyses": 2,
+      "rawAutomatedPasses": 2,
+      "runtimeAutomatedPasses": 2,
+      "acceptedProposals": 2,
+      "errors": {}
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T01-44-04-906Z-51469adf.json",
+      "sha256": "dbe0b4409e93e7a3a4553c788b5522ed5a736e61305b1a2cb6c7fc3b382be902",
+      "promptVersion": "task-note-assessment/2026-10-29.v9",
+      "editorVersion": "task-note-editor/2026-10-29.v2",
+      "templateHash": "6a7a5f172ffa51c5ee6efc58f3bb732af9533fb02b12e31ed65336a93fd6af8a",
+      "actualHttpAttempts": 11,
+      "reportedTokens": 48681,
+      "analysisAttempts": 9,
+      "parsedAnalyses": 8,
+      "rawAutomatedPasses": 4,
+      "runtimeAutomatedPasses": 3,
+      "acceptedProposals": 2,
+      "errors": {
+        "UNSUPPORTED_REQUIREMENT": 1
+      }
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T01-52-45-299Z-7185899f.json",
+      "sha256": "ce3a6bdfb3c6af5ea4740a192b5931d55149c4f9fb4ea989d6a57ae215c69799",
+      "promptVersion": "task-note-assessment/2026-10-29.v9",
+      "editorVersion": "task-note-editor/2026-10-29.v2",
+      "templateHash": "6a7a5f172ffa51c5ee6efc58f3bb732af9533fb02b12e31ed65336a93fd6af8a",
+      "actualHttpAttempts": 3,
+      "reportedTokens": 16102,
+      "analysisAttempts": 3,
+      "parsedAnalyses": 3,
+      "rawAutomatedPasses": 1,
+      "runtimeAutomatedPasses": 2,
+      "acceptedProposals": 0,
+      "errors": {
+        "HTTP_ATTEMPT_BUDGET": 1
+      }
+    }
+  ],
+  "latestCandidateMetrics": {
+    "analysisPrompt": "task-note-assessment/2026-10-29.v9",
+    "editorPrompt": "task-note-editor/2026-10-29.v2",
+    "analysisAttempts": 14,
+    "parsedAnalysisOutputs": 13,
+    "adequacyExpectedSetAgreement": 13,
+    "rawFullRubricPasses": 7,
+    "runtimeFullRubricPasses": 7,
+    "editorV2ActualResponses": 5,
+    "editorV2RuntimeProposalAccepted": 5,
+    "failureCounts": {
+      "QUESTION_GAP_KIND": 5,
+      "UNNECESSARY_QUESTION": 2,
+      "RESOLVED_OR_DECLINED_GAP_REPEATED": 2,
+      "QUESTION_RELEVANCE": 1
+    }
+  },
+  "qualityGate": "NOT_PASSED",
+  "semanticAcceptance": "NOT_ESTABLISHED",
+  "limitations": [
+    "Development tuning with repeated and selected cases, not independent holdout accuracy or macro-F1. Expected-set adequacy agreement excludes unparsed responses and is not overall semantic success.",
+    "Gap-kind, question relevance/repetition and one extractive requirement failure remain. Runtime suppresses repeated gaps and enforces limits; raw model compliance is still imperfect.",
+    "The citation-excerpt regression fix was unit-tested before the last three calls. Earlier recorded runtime grades are preserved, not retroactively repaired.",
+    "No corpus labels changed, no holdout/provider model fallback, no real-user note transmission or automatic Apply/Save.",
+    "Money cost remains unknown; token and HTTP counts are not an invoice."
+  ]
+}

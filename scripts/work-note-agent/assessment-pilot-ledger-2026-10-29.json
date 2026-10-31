@@ -1,0 +1,111 @@
+{
+  "classification": "synthetic-development-pilot-operator-ledger",
+  "recordedAtClientDate": "2026-10-29",
+  "model": "mistralai/ministral-14b",
+  "authorizedPilotHttpAttemptCeiling": 29,
+  "scope": "All development pilot, diagnostic and reserved UI provider attempts in this implementation phase; retries count as attempts.",
+  "events": [
+    {
+      "phase": "initial-development-pilot",
+      "actualHttpAttempts": 3,
+      "reportedTokens": 5423,
+      "result": "Stopped after three consecutive provider-or-protocol failures; no accepted assessment output.",
+      "artifact": ".worknote-agent-evals/assessment-v4-2026-10-28T18-30-05-737Z-d3cc4570.json",
+      "semanticAcceptance": "NOT_ESTABLISHED"
+    },
+    {
+      "phase": "bounded-synthetic-diagnostic",
+      "actualHttpAttempts": 1,
+      "reportedTokens": 1807,
+      "result": "Diagnostic output exhibited an array nextQuestion, unsupported coverage enum and extra gapIndex; prompt tuning only, strict parser retained.",
+      "artifact": ".worknote-agent-evals/assessment-diagnostic-synthetic.json",
+      "semanticAcceptance": "NOT_ESTABLISHED"
+    },
+    {
+      "phase": "second-development-tuning-pilot",
+      "status": "STOPPED_ON_CRITICAL_FAILURE",
+      "maxHttpAttempts": 21,
+      "actualHttpAttempts": 3,
+      "reportedTokens": 7601,
+      "maxOutputTokensPerCall": 8192,
+      "promptVersion": "task-note-assessment/2026-10-29.v2",
+      "artifact": ".worknote-agent-evals/assessment-v4-2026-10-28T18-33-48-539Z-5ba1518c.json",
+      "result": "First output schema invalid; second parsed but failed INVENTED_REQUIREMENT because a vague title became criteria; third missing source reference. No automated-passing outputs.",
+      "protocolAcceptedOutputs": 1,
+      "automatedPassingOutputs": 0,
+      "semanticAcceptance": "NOT_ESTABLISHED"
+    },
+    {
+      "phase": "third-development-tuning-pilot",
+      "status": "STOPPED_ON_CRITICAL_FAILURE",
+      "maxHttpAttempts": 18,
+      "actualHttpAttempts": 4,
+      "reportedTokens": 9227,
+      "maxOutputTokensPerCall": 8192,
+      "promptVersion": "task-note-assessment/2026-10-29.v3",
+      "artifact": ".worknote-agent-evals/assessment-v4-2026-10-28T18-38-12-924Z-8ba2f2e0.json",
+      "result": "QA analysis and Editor passed automated format checks; second scenario analysis passed automatic checks; retry scenario failed strict SCHEMA_KEYS_REQUIREMENTINDEX. Semantic review remains pending.",
+      "semanticAcceptance": "NOT_ESTABLISHED"
+    },
+    {
+      "phase": "fourth-development-tuning-pilot",
+      "status": "STOPPED_ON_CRITICAL_FAILURE",
+      "promptVersion": "task-note-assessment/2026-10-29.v4",
+      "result": "QA analysis and Editor passed automatic checks; Workspace-b analysis passed automatic checks; retry-progress output failed strict protocol. Development quality gate failed; human semantic acceptance is not established.",
+      "semanticAcceptance": "NOT_ESTABLISHED",
+      "actualHttpAttempts": 4,
+      "reportedTokens": 10496,
+      "artifact": ".worknote-agent-evals/assessment-v4-2026-10-28T18-44-04-795Z-b5435d6b.json"
+    },
+    {
+      "phase": "fifth-case-normalization-development-pilot",
+      "status": "STOPPED_ON_CRITICAL_FAILURE",
+      "actualHttpAttempts": 4,
+      "reportedTokens": 10501,
+      "promptVersion": "task-note-assessment/2026-10-29.v4",
+      "artifact": ".worknote-agent-evals/assessment-v4-2026-10-28T18-47-53-029Z-4998f043.json",
+      "result": "QA analysis and Editor passed automatic checks; Workspace-b contained an empty citation quote (INVALID_STRING); retry-progress asked an unnecessary question and failed adequacy/relevance checks. Development quality gate failed.",
+      "semanticAcceptance": "NOT_ESTABLISHED"
+    },
+    {
+      "phase": "final-development-tuning-pilot",
+      "status": "CLOSED_HTTP_BUDGET_EXHAUSTED",
+      "promptVersion": "task-note-assessment/2026-10-29.v5",
+      "result": "Final partial development batch: seven assessment turns passed automatic checks including two timezone clarification turns; two Editor outputs accepted by strict protocol; retry-progress Editor failed REWRITE_INVALID_OUTPUT; subsequent Editor denied locally before HTTP at the global cap. No semantic acceptance or full pilot completion.",
+      "semanticAcceptance": "NOT_ESTABLISHED",
+      "strictProtocolAcceptedEditorOutputs": 2,
+      "artifact": ".worknote-agent-evals/assessment-v4-2026-10-28T18-52-59-534Z-94e7d859.json",
+      "actualHttpAttempts": 10,
+      "editorBlockedBeforeHttp": 1,
+      "editorProtocolFailures": 1,
+      "automatedPassingAnalysisTurns": 7,
+      "reportedTokens": 28898,
+      "systemPromptHash": "ddf585f7fb49d16c796dea75a65da4225c8ba8a0b427b51b59f91fd67425b247",
+      "corpusHash": "1f86e0207b2554948b04148f45cb01462910b52ddeac79d92197c63530f9e1d9",
+      "artifactSha256": "6231e45940204645f51ce8a57ea0cb56d104c8728346412179bc3c16e0217ea2"
+    }
+  ],
+  "confirmedSpentHttpAttempts": 29,
+  "confirmedReportedTokens": 73953,
+  "reservedHttpAttempts": 0,
+  "unreservedRemainingHttpAttempts": 0,
+  "monetaryCost": null,
+  "costStatus": "NOT_ESTABLISHED",
+  "noHiddenReruns": true,
+  "notes": [
+    "Counts and artifact names reported by the root implementation operator; this ledger is not a provider invoice or automatic cross-process quota store.",
+    "Budget closed:29 actual HTTP attempts consumed,0 reserved,0 remaining. Stop all provider work for this phase; do not rerun commands shown as generic interface examples.",
+    "Update this ledger from the actual ignored run report. Failed calls are not free or semantic passes.",
+    "No evaluation subagent has made a real provider call. All live execution belongs to the authorized root operator.",
+    "Prompt changes are development tuning. Validation/holdout remain unopened for inference and must use a later frozen prompt/config."
+  ],
+  "developmentQualityGate": "FAILED",
+  "providerWorkStatus": "STOPPED_NO_REMAINING_AUTHORIZED_ATTEMPTS",
+  "comparisonWarnings": [
+    "No human semantic review; no validation, holdout or full-suite inference. Partial development tuning is not a measured release pass rate.",
+    "Harness Editor uses restructure/short instruction/empty history; runtime uses custom/adequacy instruction/unresolved-gap history. Unknown-answer and Task-step representations also differ.",
+    "Harness formatting recovery disabled and retry0, final output cap8192; runtime rewrite can recover empty containers when configured, uses retry1 and output cap4096. Local recovery flag true is reported by root operator, not independently read from .env by the eval child.",
+    "Frozen reports are unchanged. Runtime parity and comparative acceptance/latency/cost are NOT_ESTABLISHED. No further provider work in this phase.",
+    "Harness Editor protocol acceptance does not require SUGGESTION_READY or replacement text and checks body fidelity only when replacement text exists; service also requires a proposal and checks each answered clarification. Protocol acceptance is not runtime proposal acceptance."
+  ]
+}

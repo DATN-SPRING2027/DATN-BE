@@ -1,0 +1,53 @@
+{
+  "classification": "infrastructure-only-recovery",
+  "phaseId": "cross-domain-20261029",
+  "baselineImmutable": true,
+  "baselineSummarySha256": "24d179a984ac95ed16fb05ba233bbccde4f6c6c1300dc4720a0a1feaae166519",
+  "localHttpCeiling": 12,
+  "actualHttpAttempts": 1,
+  "observations": [
+    {
+      "caseId": "domain-ai-model-evaluation-incomplete",
+      "split": "validation",
+      "family": "ai-model-evaluation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_HTTP_ERROR_429"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 40,
+      "critical": false,
+      "providerFailure": true
+    }
+  ],
+  "unattemptedCaseIds": [
+    "domain-product-acceptance-spec-complete",
+    "domain-product-acceptance-spec-incomplete",
+    "domain-runbook-documentation-complete",
+    "domain-runbook-documentation-incomplete"
+  ],
+  "stopReason": "RECOVERY_INFRASTRUCTURE_STILL_UNAVAILABLE",
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "releaseGate": "NOT_PASSED",
+  "artifacts": [
+    {
+      "file": "assessment-v4-2026-10-29T03-42-09-444Z-8619ed84.json",
+      "sha256": "2ef34196488ec0f07a0d23435a1e8cfa6f339057fb23e6cae3142f2ba695afa7",
+      "caseId": "domain-ai-model-evaluation-incomplete"
+    }
+  ],
+  "cumulativePhaseBudget": {
+    "maxHttpAttempts": 176,
+    "actualHttpAttempts": 136,
+    "reportedTokens": 1108536,
+    "unknownUsageAttempts": 7,
+    "accountedTokens": 1464563,
+    "maxAccountedTokens": 2000000,
+    "remaining": 40
+  },
+  "note": "Baseline results remain unchanged. One recovery probe after cooldown still returned429; stopped immediately. No second probe, model fallback, key rotation or ledger reset."
+}

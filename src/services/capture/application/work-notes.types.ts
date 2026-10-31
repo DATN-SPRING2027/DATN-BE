@@ -50,6 +50,9 @@ export interface WorkNotesActor {
   joinedAt?: string;
   taskKey?: string;
   taskTitle?: string;
+  taskContextInvalid?: boolean;
+  taskContextVersion?: string;
+  taskContext?: import('./work-note-agent/work-note-agent.types').AgentInput['task'];
 }
 
 export type TaskNoteSortOrder = 'recent' | 'oldest';
@@ -163,6 +166,9 @@ export interface WorkNotesPermissions {
 }
 
 export interface TaskNoteRecord extends TaskNoteInput {
+  contentMarkdown?: string;
+  contentSchemaVersion?: 2;
+  currentVersionNumber?: number;
   id: string;
   projectId: string;
   taskId: string;
@@ -318,6 +324,10 @@ export interface ProjectDocumentRecord extends ProjectDocumentSummaryRecord {
 }
 
 export interface WorkReportRecord extends WorkReportInput {
+  title?: string;
+  contentMarkdown?: string;
+  contentSchemaVersion?: 2;
+  currentVersionNumber?: number;
   id: string;
   projectId: string;
   memberId: string;

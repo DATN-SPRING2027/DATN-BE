@@ -251,10 +251,60 @@ export class WorkNotesAuthorizationService {
       typeof task.title === 'string' && task.title.trim().length > 0
         ? task.title.trim()
         : undefined;
+    const validTaskVersion =
+      typeof task.version === 'number' &&
+      Number.isSafeInteger(task.version) &&
+      task.version >= 1;
     return {
       ...actor,
+      taskContextInvalid:
+        !taskTitle ||
+        (task.description !== undefined &&
+          task.description !== null &&
+          typeof task.description !== 'string') ||
+        typeof task.status !== 'string' ||
+        task.status.trim().length === 0 ||
+        (task.version !== undefined && !validTaskVersion) ||
+        (task.steps !== undefined &&
+          (!Array.isArray(task.steps) ||
+            task.steps.some(
+              (step: unknown) =>
+                !step ||
+                typeof step !== 'object' ||
+                typeof (step as Record<string, unknown>).text !== 'string' ||
+                typeof (step as Record<string, unknown>).done !== 'boolean',
+            ))),
+      ...(validTaskVersion ? { taskContextVersion: String(task.version) } : {}),
       ...(taskKey ? { taskKey } : {}),
       ...(taskTitle ? { taskTitle } : {}),
+      ...(taskTitle
+        ? {
+            taskContext: {
+              title: taskTitle,
+              description:
+                typeof task.description === 'string' ? task.description : null,
+              status: typeof task.status === 'string' ? task.status : '',
+              steps: Array.isArray(task.steps)
+                ? task.steps
+                    .filter(
+                      (
+                        step: unknown,
+                      ): step is { text: string; done: boolean } =>
+                        !!step &&
+                        typeof step === 'object' &&
+                        typeof (step as Record<string, unknown>).text ===
+                          'string' &&
+                        typeof (step as Record<string, unknown>).done ===
+                          'boolean',
+                    )
+                    .map((step: { text: string; done: boolean }) => ({
+                      text: step.text,
+                      done: step.done,
+                    }))
+                : [],
+            },
+          }
+        : {}),
     };
   }
 

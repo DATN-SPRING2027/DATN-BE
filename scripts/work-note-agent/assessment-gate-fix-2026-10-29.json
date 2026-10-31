@@ -1,0 +1,707 @@
+{
+  "classification": "synthetic-development-regression-evidence",
+  "phaseId": "gate-fix-20261029",
+  "model": "mistralai/ministral-14b",
+  "releaseGate": "NOT_PASSED",
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "statement": "Known regression cases were retested. This is prompt development, not independent validation or all-task accuracy. Original reports are preserved.",
+  "budget": {
+    "maxHttpAttempts": 29,
+    "actualHttpAttempts": 29,
+    "reportedTokens": 235158,
+    "unknownUsageAttempts": 0,
+    "remaining": 0,
+    "monetaryCost": "NOT_ESTABLISHED"
+  },
+  "corpusBaseSha256": "319c606e396204fbcbbfe4ed4750553f3313bf577b9a9641afea42b9f2f6b4f5",
+  "errataSha256": "fcfe9b355faf141b18dc63fbc8e81c5867aaa408c1362ed3e664707251a30602",
+  "trials": [
+    {
+      "artifact": "assessment-v4-2026-10-29T02-50-47-002Z-4d52eaea.json",
+      "sha256": "688f82ed885a1f7a63422783b87da86db42fc8c409310111c26c89eeb393a371",
+      "promptVersion": "task-note-assessment/2026-10-29.v10",
+      "promptTemplateHash": "b3fc3842a8e8bf26df3b6a7f8f747472bafbdfbcc8b295d2df41fe18f119f95a",
+      "editorVersion": "task-note-editor/2026-10-29.v2",
+      "actualCalls": 10,
+      "reportedTokens": 68837,
+      "rows": [
+        {
+          "caseId": "assessment-timezone-date-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-timezone-date-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "ready_to_edit",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-timezone-date-b",
+          "turn": 2,
+          "role": "editor",
+          "editorValidation": {
+            "runtimeProposalAccepted": true,
+            "formattingRecovery": []
+          }
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "NEEDS_AUTHOR_INPUT",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": "INVALID_ENUM"
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "missing_context",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 1
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "ready_to_edit",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "editor",
+          "errorCode": "REWRITE_INVALID_OUTPUT"
+        },
+        {
+          "caseId": "assessment-release-claim-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": false,
+            "failures": [
+              "QUESTION_GAP_KIND"
+            ],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": false,
+            "failures": [
+              "QUESTION_GAP_KIND"
+            ],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T02-54-30-898Z-f8c0d458.json",
+      "sha256": "bfcd5fa8ef5d790bc2b417951cc092dd3f08e6b75195c9097f069ff674894e75",
+      "promptVersion": "task-note-assessment/2026-10-29.v11",
+      "promptTemplateHash": "94c20ba21e877f0bfecbe9d37c49133b9a4af1871625b301d382b696c63d2974",
+      "editorVersion": "task-note-editor/2026-10-29.v3",
+      "actualCalls": 11,
+      "reportedTokens": 90255,
+      "rows": [
+        {
+          "caseId": "assessment-timezone-date-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-timezone-date-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "ready_to_edit",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-timezone-date-b",
+          "turn": 2,
+          "role": "editor",
+          "editorValidation": {
+            "runtimeProposalAccepted": true,
+            "formattingRecovery": []
+          }
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "NEEDS_AUTHOR_INPUT",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "contradiction",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "missing_context",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 1
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "ready_to_edit",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "editor",
+          "editorValidation": {
+            "runtimeProposalAccepted": true,
+            "formattingRecovery": []
+          }
+        },
+        {
+          "caseId": "assessment-release-claim-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-release-claim-b",
+          "turn": 2,
+          "role": "analysis",
+          "errorCode": "INVALID_ENUM"
+        }
+      ]
+    },
+    {
+      "artifact": "assessment-v4-2026-10-29T02-58-34-264Z-fbd3cb7a.json",
+      "sha256": "3957275418e0d95605545048112c1f15a3b63d3d10587247922e2844422277ce",
+      "promptVersion": "task-note-assessment/2026-10-29.v12",
+      "promptTemplateHash": "8440446280ad583b2ad70c80e71a76bde4f75c24f308e7e2b64744b895da7580",
+      "editorVersion": "task-note-editor/2026-10-29.v3",
+      "actualCalls": 8,
+      "reportedTokens": 76066,
+      "rows": [
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "NEEDS_AUTHOR_INPUT",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "ready_to_edit",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-csv-unicode-b",
+          "turn": 2,
+          "role": "editor",
+          "editorValidation": {
+            "runtimeProposalAccepted": true,
+            "formattingRecovery": []
+          }
+        },
+        {
+          "caseId": "assessment-release-claim-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-release-claim-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "contradiction",
+            "noteAdequacy": "CONTRADICTORY",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 1,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "waiting_for_answer",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 2,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "missing_context",
+            "noteAdequacy": "UNDETERMINED",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 1
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "analysis",
+          "rawGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeGrade": {
+            "automatedPass": true,
+            "failures": [],
+            "semanticAcceptance": "NOT_ESTABLISHED",
+            "manualReview": "required"
+          },
+          "runtimeState": {
+            "state": "ready_to_edit",
+            "noteAdequacy": "ENOUGH_FOR_PURPOSE",
+            "counters": {
+              "questionCount": 1,
+              "noProgress": 0
+            }
+          }
+        },
+        {
+          "caseId": "assessment-permission-matrix-b",
+          "turn": 3,
+          "role": "editor",
+          "errorCode": "XKIRO_NETWORK_ERROR"
+        }
+      ]
+    }
+  ],
+  "evidenceCorrections": [
+    "v11 CSV turn 2 was graded as adequate but state=contradiction blocked rewrite. Runtime grading now checks rewrite availability; state no longer treats unmet Task expectation alone as conflicting author reports. Historical row unchanged.",
+    "v12 permission-matrix Editor was denied locally after 29 cumulative attempts, with zero extra HTTP. The old client mapped the reserve exception to XKIRO_NETWORK_ERROR. A failing-then-passing offline regression now preserves PHASE_HTTP_ATTEMPT_BUDGET in the evaluator. Historical row unchanged.",
+    "v12 is 7/7 analysis raw and runtime automatic rubric passes on three repeated development scenarios, with 1/1 actual Editor response accepted. Timezone passed on v10 and v11; no v12 timezone call occurred."
+  ],
+  "preservedPriorPhases": [
+    {
+      "id": "initial-implementation",
+      "actualHttpAttempts": 29,
+      "reportedTokens": 73953
+    },
+    {
+      "id": "prompt-quality-20261029",
+      "actualHttpAttempts": 29,
+      "reportedTokens": 111387
+    }
+  ],
+  "cumulativeObserved": {
+    "actualHttpAttempts": 87,
+    "reportedTokens": 420498
+  },
+  "limitations": [
+    "No unseen validation/holdout or full72 live run",
+    "No independent semantic reviewer labels",
+    "No real-user note transmission",
+    "No public API, schema, migration or FE change",
+    "Flags remain disabled; no merge or shared activation",
+    "Gap matching and uncertainty/date guards are conservative checks, not general NLI"
+  ],
+  "verification": {
+    "command": "npm run check",
+    "passed": true,
+    "unitPassed": 1712,
+    "unitSkipped": 137,
+    "e2ePassed": 169,
+    "e2eSkipped": 4,
+    "focusedAssessmentPassed": 129,
+    "additionalFinalLintAndTypecheckPassed": true,
+    "review": "read-only self-review; no independent semantic approval"
+  }
+}

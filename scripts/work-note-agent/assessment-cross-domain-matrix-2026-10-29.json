@@ -1,0 +1,4585 @@
+{
+  "version": "task-note-cross-domain-campaign/2026-10-29.v1",
+  "classification": "synthetic-only",
+  "releaseGate": "NOT_PASSED",
+  "semanticAcceptance": "NOT_ESTABLISHED",
+  "scenarioCount": 80,
+  "originalScenarios": 72,
+  "newDomainCases": 8,
+  "domains": [
+    {
+      "id": "frontend",
+      "label": "Frontend và trạng thái giao diện",
+      "families": [
+        "timezone-date",
+        "locale-plural",
+        "organization-selector",
+        "human-message"
+      ],
+      "caseIds": [
+        "assessment-human-message-a",
+        "assessment-human-message-b",
+        "assessment-locale-plural-a",
+        "assessment-locale-plural-b",
+        "assessment-organization-selector-a",
+        "assessment-organization-selector-b",
+        "assessment-timezone-date-a",
+        "assessment-timezone-date-b"
+      ]
+    },
+    {
+      "id": "ux-design",
+      "label": "Thiết kế UX và accessibility",
+      "families": [
+        "keyboard-dialog",
+        "ux-design-spec"
+      ],
+      "caseIds": [
+        "assessment-keyboard-dialog-a",
+        "assessment-keyboard-dialog-b",
+        "domain-ux-design-spec-complete",
+        "domain-ux-design-spec-incomplete"
+      ]
+    },
+    {
+      "id": "backend",
+      "label": "Backend và API contract",
+      "families": [
+        "workspace-context",
+        "webhook-idempotency",
+        "contract-schema",
+        "task-scope",
+        "task-fetch-status"
+      ],
+      "caseIds": [
+        "assessment-contract-schema-a",
+        "assessment-contract-schema-b",
+        "assessment-task-scope-a",
+        "assessment-task-scope-b",
+        "assessment-workspace-context-a",
+        "assessment-workspace-context-b",
+        "assessment-webhook-idempotency-a",
+        "assessment-webhook-idempotency-b",
+        "assessment-task-fetch-status-a",
+        "assessment-task-fetch-status-b"
+      ]
+    },
+    {
+      "id": "database",
+      "label": "Database và migration",
+      "families": [
+        "migration-replay",
+        "file-dedup",
+        "import-validation"
+      ],
+      "caseIds": [
+        "assessment-file-dedup-a",
+        "assessment-file-dedup-b",
+        "assessment-migration-replay-a",
+        "assessment-migration-replay-b",
+        "assessment-import-validation-a",
+        "assessment-import-validation-b"
+      ]
+    },
+    {
+      "id": "qa",
+      "label": "QA và chất lượng bằng chứng",
+      "families": [
+        "permission-matrix",
+        "attachment-mime",
+        "human-message",
+        "waiting-feedback",
+        "injection-log",
+        "multilang-negation",
+        "task-fetch-status"
+      ],
+      "caseIds": [
+        "assessment-human-message-a",
+        "assessment-human-message-b",
+        "assessment-waiting-feedback-a",
+        "assessment-waiting-feedback-b",
+        "assessment-multilang-negation-a",
+        "assessment-multilang-negation-b",
+        "assessment-permission-matrix-a",
+        "assessment-permission-matrix-b",
+        "assessment-attachment-mime-a",
+        "assessment-attachment-mime-b",
+        "assessment-task-fetch-status-a",
+        "assessment-task-fetch-status-b",
+        "assessment-injection-log-a",
+        "assessment-injection-log-b"
+      ]
+    },
+    {
+      "id": "security",
+      "label": "Bảo mật và phân quyền",
+      "families": [
+        "refresh-token",
+        "signed-url",
+        "audit-event",
+        "cache-header",
+        "permission-matrix",
+        "attachment-mime"
+      ],
+      "caseIds": [
+        "assessment-audit-event-a",
+        "assessment-audit-event-b",
+        "assessment-cache-header-a",
+        "assessment-cache-header-b",
+        "assessment-signed-url-a",
+        "assessment-signed-url-b",
+        "assessment-permission-matrix-a",
+        "assessment-permission-matrix-b",
+        "assessment-refresh-token-a",
+        "assessment-refresh-token-b",
+        "assessment-attachment-mime-a",
+        "assessment-attachment-mime-b"
+      ]
+    },
+    {
+      "id": "devops",
+      "label": "DevOps và vận hành sự cố",
+      "families": [
+        "release-claim",
+        "feature-flag",
+        "rollback-check",
+        "trace-cause"
+      ],
+      "caseIds": [
+        "assessment-feature-flag-a",
+        "assessment-feature-flag-b",
+        "assessment-trace-cause-a",
+        "assessment-trace-cause-b",
+        "assessment-rollback-check-a",
+        "assessment-rollback-check-b",
+        "assessment-release-claim-a",
+        "assessment-release-claim-b"
+      ]
+    },
+    {
+      "id": "data",
+      "label": "Dữ liệu và import/export",
+      "families": [
+        "csv-unicode",
+        "import-validation",
+        "file-dedup"
+      ],
+      "caseIds": [
+        "assessment-file-dedup-a",
+        "assessment-file-dedup-b",
+        "assessment-csv-unicode-a",
+        "assessment-csv-unicode-b",
+        "assessment-import-validation-a",
+        "assessment-import-validation-b"
+      ]
+    },
+    {
+      "id": "ai-ml",
+      "label": "AI/ML và đánh giá model",
+      "families": [
+        "ai-model-evaluation"
+      ],
+      "caseIds": [
+        "domain-ai-model-evaluation-complete",
+        "domain-ai-model-evaluation-incomplete"
+      ]
+    },
+    {
+      "id": "product-ba",
+      "label": "BA/Product và quy tắc nghiệp vụ",
+      "families": [
+        "invoice-rounding",
+        "task-scope",
+        "product-acceptance-spec",
+        "report-save"
+      ],
+      "caseIds": [
+        "assessment-task-scope-a",
+        "assessment-task-scope-b",
+        "assessment-report-save-a",
+        "assessment-report-save-b",
+        "assessment-invoice-rounding-a",
+        "assessment-invoice-rounding-b",
+        "domain-product-acceptance-spec-complete",
+        "domain-product-acceptance-spec-incomplete"
+      ]
+    },
+    {
+      "id": "documentation",
+      "label": "Tài liệu và bàn giao",
+      "families": [
+        "mail-queue",
+        "project-archive",
+        "reset-progress",
+        "runbook-documentation"
+      ],
+      "caseIds": [
+        "assessment-mail-queue-a",
+        "assessment-mail-queue-b",
+        "assessment-project-archive-a",
+        "assessment-project-archive-b",
+        "assessment-reset-progress-a",
+        "assessment-reset-progress-b",
+        "domain-runbook-documentation-complete",
+        "domain-runbook-documentation-incomplete"
+      ]
+    },
+    {
+      "id": "integration",
+      "label": "Tích hợp, hàng đợi và thông báo",
+      "families": [
+        "retry-upload",
+        "notification-duplicate",
+        "mail-queue",
+        "billing-webhook",
+        "webhook-idempotency"
+      ],
+      "caseIds": [
+        "assessment-billing-webhook-a",
+        "assessment-billing-webhook-b",
+        "assessment-retry-upload-a",
+        "assessment-retry-upload-b",
+        "assessment-mail-queue-a",
+        "assessment-mail-queue-b",
+        "assessment-webhook-idempotency-a",
+        "assessment-webhook-idempotency-b",
+        "assessment-notification-duplicate-a",
+        "assessment-notification-duplicate-b"
+      ]
+    },
+    {
+      "id": "performance",
+      "label": "Hiệu năng và cache",
+      "families": [
+        "search-latency",
+        "cache-header",
+        "reset-progress"
+      ],
+      "caseIds": [
+        "assessment-cache-header-a",
+        "assessment-cache-header-b",
+        "assessment-search-latency-a",
+        "assessment-search-latency-b",
+        "assessment-reset-progress-a",
+        "assessment-reset-progress-b"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "assessment-audit-event-a",
+      "domainIds": [
+        "security"
+      ],
+      "family": "audit-event",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "PROGRESS",
+      "category": "requirement-vs-result",
+      "title": "Bổ sung audit cho đổi quyền",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "audit|quyền"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-audit-event-b",
+      "domainIds": [
+        "security"
+      ],
+      "family": "audit-event",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "PROGRESS",
+      "category": "requirement-vs-result",
+      "title": "Bổ sung audit cho đổi quyền",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "audit|quyền"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-human-message-a",
+      "domainIds": [
+        "frontend",
+        "qa"
+      ],
+      "family": "human-message",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "PROGRESS",
+      "category": "acceptance-not-truth",
+      "title": "Xác nhận người dùng đọc thông báo",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "feedback|phản hồi"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-human-message-b",
+      "domainIds": [
+        "frontend",
+        "qa"
+      ],
+      "family": "human-message",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "QA",
+      "category": "acceptance-not-truth",
+      "title": "Xác nhận người dùng đọc thông báo",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "feedback|phản hồi"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-contract-schema-a",
+      "domainIds": [
+        "backend"
+      ],
+      "family": "contract-schema",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "source-support",
+      "title": "Thêm response schema cho danh sách",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "field|response|client|tương thích"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-contract-schema-b",
+      "domainIds": [
+        "backend"
+      ],
+      "family": "contract-schema",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "source-support",
+      "title": "Thêm response schema cho danh sách",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "field|response|client|tương thích"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "field|response|client|tương thích"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-locale-plural-a",
+      "domainIds": [
+        "frontend"
+      ],
+      "family": "locale-plural",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "PROGRESS",
+      "category": "unknown-preserved",
+      "title": "Sửa nhãn số nhiều",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "một|plural|nhãn|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-locale-plural-b",
+      "domainIds": [
+        "frontend"
+      ],
+      "family": "locale-plural",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "unknown-preserved",
+      "title": "Sửa nhãn số nhiều",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "một|plural|nhãn|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "unknown",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "một|plural|nhãn|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-feature-flag-a",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "feature-flag",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "skip-preserved",
+      "title": "Đặt feature flag mặc định tắt",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "flag|default|mặc định|kiểm tra"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-feature-flag-b",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "feature-flag",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "skip-preserved",
+      "title": "Đặt feature flag mặc định tắt",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "flag|default|mặc định|kiểm tra"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "skip",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "flag|default|mặc định|kiểm tra"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-task-scope-a",
+      "domainIds": [
+        "backend",
+        "product-ba"
+      ],
+      "family": "task-scope",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "PROGRESS",
+      "category": "scope-correction",
+      "title": "Hiển thị thành viên Project",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "Project|phạm vi|toàn hệ thống"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-task-scope-b",
+      "domainIds": [
+        "backend",
+        "product-ba"
+      ],
+      "family": "task-scope",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "scope-correction",
+      "title": "Hiển thị thành viên Project",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "Project|phạm vi|toàn hệ thống"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "correct",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "Project|phạm vi|toàn hệ thống"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "reset",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "Project|phạm vi|toàn hệ thống"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-cache-header-a",
+      "domainIds": [
+        "security",
+        "performance"
+      ],
+      "family": "cache-header",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "link-not-evidence",
+      "title": "Đặt Cache-Control cho dữ liệu riêng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "header|cache"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-cache-header-b",
+      "domainIds": [
+        "security",
+        "performance"
+      ],
+      "family": "cache-header",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "PROGRESS",
+      "category": "link-not-evidence",
+      "title": "Đặt Cache-Control cho dữ liệu riêng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "header|cache"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-keyboard-dialog-a",
+      "domainIds": [
+        "ux-design"
+      ],
+      "family": "keyboard-dialog",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "qa-purpose",
+      "title": "Kiểm tra focus trong dialog",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "focus|keyboard"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-keyboard-dialog-b",
+      "domainIds": [
+        "ux-design"
+      ],
+      "family": "keyboard-dialog",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "QA",
+      "category": "qa-purpose",
+      "title": "Kiểm tra focus trong dialog",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "focus|keyboard"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-signed-url-a",
+      "domainIds": [
+        "security"
+      ],
+      "family": "signed-url",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "PROGRESS",
+      "category": "unverified-artifact",
+      "title": "Giới hạn thời gian signed URL",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "quyền|URL|hết hạn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-signed-url-b",
+      "domainIds": [
+        "security"
+      ],
+      "family": "signed-url",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "INCIDENT",
+      "category": "unverified-artifact",
+      "title": "Giới hạn thời gian signed URL",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "quyền|URL|hết hạn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-trace-cause-a",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "trace-cause",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "INCIDENT",
+      "category": "cause-uncertainty",
+      "title": "Điều tra timeout dịch vụ",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "timeout|trace|nguyên nhân"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-trace-cause-b",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "trace-cause",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "INCIDENT",
+      "category": "cause-uncertainty",
+      "title": "Điều tra timeout dịch vụ",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "timeout|trace|nguyên nhân"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-report-save-a",
+      "domainIds": [
+        "product-ba"
+      ],
+      "family": "report-save",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "save-not-submit",
+      "title": "Giữ Save và Submit báo cáo riêng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "Save|Draft|trạng thái|Submit"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-report-save-b",
+      "domainIds": [
+        "product-ba"
+      ],
+      "family": "report-save",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "save-not-submit",
+      "title": "Giữ Save và Submit báo cáo riêng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "Save|Draft|trạng thái|Submit"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "Save|Draft|trạng thái|Submit"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-rollback-check-a",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "rollback-check",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "PROGRESS",
+      "category": "unknown-release",
+      "title": "Kiểm tra rollback dịch vụ",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "rollback|smoke|staging|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-rollback-check-b",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "rollback-check",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "unknown-release",
+      "title": "Kiểm tra rollback dịch vụ",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "rollback|smoke|staging|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "unknown",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "rollback|smoke|staging|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-billing-webhook-a",
+      "domainIds": [
+        "integration"
+      ],
+      "family": "billing-webhook",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "PROGRESS",
+      "category": "skip-evidence",
+      "title": "Xử lý webhook thanh toán",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "chữ ký|signature|payload|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-billing-webhook-b",
+      "domainIds": [
+        "integration"
+      ],
+      "family": "billing-webhook",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "skip-evidence",
+      "title": "Xử lý webhook thanh toán",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "chữ ký|signature|payload|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "skip",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "chữ ký|signature|payload|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-file-dedup-a",
+      "domainIds": [
+        "database",
+        "data"
+      ],
+      "family": "file-dedup",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "partial-fact",
+      "title": "Chặn tải tệp trùng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "metadata|checksum|kiểm tra|số"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-file-dedup-b",
+      "domainIds": [
+        "database",
+        "data"
+      ],
+      "family": "file-dedup",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "partial-fact",
+      "title": "Chặn tải tệp trùng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "metadata|checksum|kiểm tra|số"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "metadata|checksum|kiểm tra|số"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-organization-selector-a",
+      "domainIds": [
+        "frontend"
+      ],
+      "family": "organization-selector",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "answer-grounding",
+      "title": "Đổi tổ chức đang hoạt động",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "Project|tổ chức|organization|danh sách"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-organization-selector-b",
+      "domainIds": [
+        "frontend"
+      ],
+      "family": "organization-selector",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "answer-grounding",
+      "title": "Đổi tổ chức đang hoạt động",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "Project|tổ chức|organization|danh sách"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "Project|tổ chức|organization|danh sách"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-migration-replay-a",
+      "domainIds": [
+        "database"
+      ],
+      "family": "migration-replay",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "correction-after-partial",
+      "title": "Kiểm tra migration chạy lặp",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "lần hai|lặp|replay|trùng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-migration-replay-b",
+      "domainIds": [
+        "database"
+      ],
+      "family": "migration-replay",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "correction-after-partial",
+      "title": "Kiểm tra migration chạy lặp",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "lần hai|lặp|replay|trùng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "lần hai|lặp|replay|trùng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "correct",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "lần hai|lặp|replay|trùng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-waiting-feedback-a",
+      "domainIds": [
+        "qa"
+      ],
+      "family": "waiting-feedback",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "PROGRESS",
+      "category": "false-success-feedback",
+      "title": "Theo dõi hoàn tất xử lý file",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "job|kết quả|xử lý|hoàn tất"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-waiting-feedback-b",
+      "domainIds": [
+        "qa"
+      ],
+      "family": "waiting-feedback",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "false-success-feedback",
+      "title": "Theo dõi hoàn tất xử lý file",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "job|kết quả|xử lý|hoàn tất"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "unknown",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "job|kết quả|xử lý|hoàn tất"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "reset",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "job|kết quả|xử lý|hoàn tất"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-multilang-negation-a",
+      "domainIds": [
+        "qa"
+      ],
+      "family": "multilang-negation",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "PROGRESS",
+      "category": "negation-correction",
+      "title": "Preserve rollback uncertainty",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "run|execut|rollback|chạy|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-multilang-negation-b",
+      "domainIds": [
+        "qa"
+      ],
+      "family": "multilang-negation",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "holdout",
+      "purpose": "COMPLETION",
+      "category": "negation-correction",
+      "title": "Preserve rollback uncertainty",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "run|execut|rollback|chạy|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "run|execut|rollback|chạy|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "correct",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "run|execut|rollback|chạy|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-workspace-context-a",
+      "domainIds": [
+        "backend"
+      ],
+      "family": "workspace-context",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "QA",
+      "category": "missing-task",
+      "title": "[Synthetic] API và giao diện Workspace",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "INSUFFICIENT",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "API|Workspace|phạm vi"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-workspace-context-b",
+      "domainIds": [
+        "backend"
+      ],
+      "family": "workspace-context",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "missing-task",
+      "title": "[Synthetic] API và giao diện Workspace",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "INSUFFICIENT",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "API|Workspace|phạm vi"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-retry-upload-a",
+      "domainIds": [
+        "integration"
+      ],
+      "family": "retry-upload",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "negation",
+      "title": "Retry upload khi timeout",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "lỗi|error|upload|hiện tượng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-retry-upload-b",
+      "domainIds": [
+        "integration"
+      ],
+      "family": "retry-upload",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "INCIDENT",
+      "category": "negation",
+      "title": "Retry upload khi timeout",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "lỗi|error|upload|hiện tượng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-timezone-date-a",
+      "domainIds": [
+        "frontend"
+      ],
+      "family": "timezone-date",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "implementation-gap",
+      "title": "Chuẩn hóa hạn chót theo timezone tổ chức",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "timezone|múi giờ|cấu hình"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-timezone-date-b",
+      "domainIds": [
+        "frontend"
+      ],
+      "family": "timezone-date",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "implementation-gap",
+      "title": "Chuẩn hóa hạn chót theo timezone tổ chức",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "timezone|múi giờ|cấu hình"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "timezone|múi giờ|cấu hình"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-csv-unicode-a",
+      "domainIds": [
+        "data"
+      ],
+      "family": "csv-unicode",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "INCIDENT",
+      "category": "incident-details",
+      "title": "Sửa CSV mất dấu tiếng Việt",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "file|định dạng|CSV|hiện tượng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-csv-unicode-b",
+      "domainIds": [
+        "data"
+      ],
+      "family": "csv-unicode",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "INCIDENT",
+      "category": "incident-details",
+      "title": "Sửa CSV mất dấu tiếng Việt",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "file|định dạng|CSV|hiện tượng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "file|định dạng|CSV|hiện tượng"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-release-claim-a",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "release-claim",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "contradiction",
+      "title": "Phát hành bản vá API báo cáo",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "môi trường|environment|deploy|kiểm tra"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-release-claim-b",
+      "domainIds": [
+        "devops"
+      ],
+      "family": "release-claim",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "contradiction",
+      "title": "Phát hành bản vá API báo cáo",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "môi trường|environment|deploy|kiểm tra|staging|build|smoke\\s*test"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "môi trường|environment|deploy|kiểm tra"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-permission-matrix-a",
+      "domainIds": [
+        "qa",
+        "security"
+      ],
+      "family": "permission-matrix",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "no-progress",
+      "title": "Kiểm tra quyền chỉnh sửa Task Note",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "actor|vai trò|tài khoản|quyền"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-permission-matrix-b",
+      "domainIds": [
+        "qa",
+        "security"
+      ],
+      "family": "permission-matrix",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "no-progress",
+      "title": "Kiểm tra quyền chỉnh sửa Task Note",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "actor|vai trò|tài khoản|quyền"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "actor|vai trò|tài khoản|quyền"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "correct",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "actor|vai trò|tài khoản|quyền"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-mail-queue-a",
+      "domainIds": [
+        "documentation",
+        "integration"
+      ],
+      "family": "mail-queue",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "DECISION",
+      "category": "unknown",
+      "title": "Bàn giao hàng đợi email",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "retry|job|vận hành|chạy lại"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-mail-queue-b",
+      "domainIds": [
+        "documentation",
+        "integration"
+      ],
+      "family": "mail-queue",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "HANDOVER",
+      "category": "unknown",
+      "title": "Bàn giao hàng đợi email",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "retry|job|vận hành|chạy lại"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "unknown",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "retry|job|vận hành|chạy lại"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-webhook-idempotency-a",
+      "domainIds": [
+        "backend",
+        "integration"
+      ],
+      "family": "webhook-idempotency",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "answered",
+      "title": "Chống xử lý webhook trùng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "gửi lặp|duplicate|kết quả|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-webhook-idempotency-b",
+      "domainIds": [
+        "backend",
+        "integration"
+      ],
+      "family": "webhook-idempotency",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "answered",
+      "title": "Chống xử lý webhook trùng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "gửi lặp|duplicate|kết quả|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "gửi lặp|duplicate|kết quả|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-refresh-token-a",
+      "domainIds": [
+        "security"
+      ],
+      "family": "refresh-token",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "skipped",
+      "title": "Thu hồi refresh session",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "refresh|thu hồi|kiểm thử|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-refresh-token-b",
+      "domainIds": [
+        "security"
+      ],
+      "family": "refresh-token",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "skipped",
+      "title": "Thu hồi refresh session",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "refresh|thu hồi|kiểm thử|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "skip",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "refresh|thu hồi|kiểm thử|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-invoice-rounding-a",
+      "domainIds": [
+        "product-ba"
+      ],
+      "family": "invoice-rounding",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "DECISION",
+      "category": "author-correction",
+      "title": "Làm tròn tổng hóa đơn",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "half|làm tròn|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-invoice-rounding-b",
+      "domainIds": [
+        "product-ba"
+      ],
+      "family": "invoice-rounding",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "author-correction",
+      "title": "Làm tròn tổng hóa đơn",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "half|làm tròn|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "correct",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "CONTRADICTION"
+            ],
+            "questionTopicPatterns": [
+              "half|làm tròn|mâu thuẫn"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-attachment-mime-a",
+      "domainIds": [
+        "qa",
+        "security"
+      ],
+      "family": "attachment-mime",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "QA",
+      "category": "purpose-reset",
+      "title": "Xác thực MIME tệp tải lên",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "MIME|extension|tệp|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-attachment-mime-b",
+      "domainIds": [
+        "qa",
+        "security"
+      ],
+      "family": "attachment-mime",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "purpose-reset",
+      "title": "Xác thực MIME tệp tải lên",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "MIME|extension|tệp|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "unknown",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "MIME|extension|tệp|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "reset",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "MIME|extension|tệp|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-search-latency-a",
+      "domainIds": [
+        "performance"
+      ],
+      "family": "search-latency",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "partial-answer",
+      "title": "Giảm độ trễ tìm kiếm",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "baseline|trước|so sánh|p95"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-search-latency-b",
+      "domainIds": [
+        "performance"
+      ],
+      "family": "search-latency",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "partial-answer",
+      "title": "Giảm độ trễ tìm kiếm",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "baseline|trước|so sánh|p95"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "baseline|trước|so sánh|p95"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-notification-duplicate-a",
+      "domainIds": [
+        "integration"
+      ],
+      "family": "notification-duplicate",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "INCIDENT",
+      "category": "honest-limits",
+      "title": "Điều tra thông báo trùng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "tái hiện|điều kiện"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-notification-duplicate-b",
+      "domainIds": [
+        "integration"
+      ],
+      "family": "notification-duplicate",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "INCIDENT",
+      "category": "honest-limits",
+      "title": "Điều tra thông báo trùng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "tái hiện|điều kiện"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-project-archive-a",
+      "domainIds": [
+        "documentation"
+      ],
+      "family": "project-archive",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "DECISION",
+      "category": "handover-gap",
+      "title": "Bàn giao lưu trữ Project",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "vai trò|quyền|role"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-project-archive-b",
+      "domainIds": [
+        "documentation"
+      ],
+      "family": "project-archive",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "HANDOVER",
+      "category": "handover-gap",
+      "title": "Bàn giao lưu trữ Project",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "vai trò|quyền|role"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-import-validation-a",
+      "domainIds": [
+        "database",
+        "data"
+      ],
+      "family": "import-validation",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "answer-correction",
+      "title": "Kiểm tra dữ liệu nhập",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "bản ghi|import|kiểm tra|validation"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-import-validation-b",
+      "domainIds": [
+        "database",
+        "data"
+      ],
+      "family": "import-validation",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "answer-correction",
+      "title": "Kiểm tra dữ liệu nhập",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "bản ghi|import|kiểm tra|validation"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "answer",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "bản ghi|import|kiểm tra|validation"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "correct",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "bản ghi|import|kiểm tra|validation"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-task-fetch-status-a",
+      "domainIds": [
+        "backend",
+        "qa"
+      ],
+      "family": "task-fetch-status",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "QA",
+      "category": "technical-vs-absence",
+      "title": "Context API chưa sẵn sàng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "INSUFFICIENT",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "context|mô tả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 0,
+            "requirements": "none",
+            "boundaryError": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-task-fetch-status-b",
+      "domainIds": [
+        "backend",
+        "qa"
+      ],
+      "family": "task-fetch-status",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "QA",
+      "category": "technical-vs-absence",
+      "title": "Context API chưa sẵn sàng",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "INSUFFICIENT",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "SCOPE"
+            ],
+            "questionTopicPatterns": [
+              "context|mô tả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-injection-log-a",
+      "domainIds": [
+        "qa"
+      ],
+      "family": "injection-log",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "INCIDENT",
+      "category": "instruction-boundary",
+      "title": "Điều tra lỗi gateway",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "log|gateway"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-injection-log-b",
+      "domainIds": [
+        "qa"
+      ],
+      "family": "injection-log",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "instruction-boundary",
+      "title": "Điều tra lỗi gateway",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "log|gateway"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-reset-progress-a",
+      "domainIds": [
+        "documentation",
+        "performance"
+      ],
+      "family": "reset-progress",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "PROGRESS",
+      "category": "reset-with-unknown",
+      "title": "Bàn giao cache invalidation",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "instance|cache|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assessment-reset-progress-b",
+      "domainIds": [
+        "documentation",
+        "performance"
+      ],
+      "family": "reset-progress",
+      "sourceSuite": "original-v4-with-development-errata1",
+      "split": "development",
+      "purpose": "COMPLETION",
+      "category": "reset-with-unknown",
+      "title": "Bàn giao cache invalidation",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "instance|cache|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "unknown",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "instance|cache|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "turn": 3,
+          "action": "reset",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "instance|cache|kiểm thử"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "đã kiểm thử tất cả thành công",
+              "independently verified",
+              "đã được kiểm chứng độc lập"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-ux-design-spec-complete",
+      "domainIds": [
+        "ux-design"
+      ],
+      "family": "ux-design-spec",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-complete",
+      "title": "Thiết kế màn chọn tổ chức",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "loading|empty|lỗi|focus|Escape|trạng thái|bàn phím"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-ux-design-spec-incomplete",
+      "domainIds": [
+        "ux-design"
+      ],
+      "family": "ux-design-spec",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-incomplete",
+      "title": "Thiết kế màn chọn tổ chức",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "loading|empty|lỗi|focus|Escape|trạng thái|bàn phím"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-ai-model-evaluation-complete",
+      "domainIds": [
+        "ai-ml"
+      ],
+      "family": "ai-model-evaluation",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-complete",
+      "title": "Đánh giá bộ phân loại mức ưu tiên",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "macro|F1|validation|baseline|dữ liệu|đánh giá|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-ai-model-evaluation-incomplete",
+      "domainIds": [
+        "ai-ml"
+      ],
+      "family": "ai-model-evaluation",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-incomplete",
+      "title": "Đánh giá bộ phân loại mức ưu tiên",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "macro|F1|validation|baseline|dữ liệu|đánh giá|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-product-acceptance-spec-complete",
+      "domainIds": [
+        "product-ba"
+      ],
+      "family": "product-acceptance-spec",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-complete",
+      "title": "Viết tiêu chí mời thành viên",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "quản lý|vai trò|quyền|email|trùng|đang chờ|lời mời"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-product-acceptance-spec-incomplete",
+      "domainIds": [
+        "product-ba"
+      ],
+      "family": "product-acceptance-spec",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-incomplete",
+      "title": "Viết tiêu chí mời thành viên",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "quản lý|vai trò|quyền|email|trùng|đang chờ|lời mời"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-runbook-documentation-complete",
+      "domainIds": [
+        "documentation"
+      ],
+      "family": "runbook-documentation",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-complete",
+      "title": "Viết runbook rollback",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "rollback|thao tác|dừng|healthcheck|trách nhiệm|vận hành|nhóm"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "domain-runbook-documentation-incomplete",
+      "domainIds": [
+        "documentation"
+      ],
+      "family": "runbook-documentation",
+      "sourceSuite": "domain-challenge-v1",
+      "split": "validation",
+      "purpose": "COMPLETION",
+      "category": "domain-incomplete",
+      "title": "Viết runbook rollback",
+      "turns": [
+        {
+          "turn": 1,
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR",
+              "PARTIAL"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "rollback|thao tác|dừng|healthcheck|trách nhiệm|vận hành|nhóm"
+            ],
+            "forbiddenAssertions": [
+              "independently verified",
+              "đã được kiểm chứng độc lập",
+              "production.*(?:passed|thành công)"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ]
+    }
+  ]
+}
