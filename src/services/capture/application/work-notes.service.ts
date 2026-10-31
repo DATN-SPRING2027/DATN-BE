@@ -1,19 +1,41 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  Inject,
   Injectable,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types, type ClientSession, type Connection } from 'mongoose';
-import { randomUUID } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import type { Document, Db } from 'mongodb';
 import { CAPTURE_PERSISTENCE } from '../infrastructure/persistence';
-import { AuditService } from '../infrastructure/audit/audit.service';
+import {
+  AuditService,
+  type AuditEventRecord,
+} from '../infrastructure/audit/audit.service';
+import {
+  SAG_KNOWLEDGE_SYNC_TRANSPORT,
+  type SagKnowledgeSyncTransport,
+  type SagProjectDocumentUploadReceipt,
+} from '../infrastructure/outbox/knowledge-outbox.consumer';
 import { OutboxService } from '../infrastructure/outbox/outbox.service';
+import {
+  CAPTURE_QUEUE_RUNTIME,
+  QUEUE_NAMES,
+  type CaptureQueuePublisher,
+} from '../infrastructure/queues/queue.names';
 import { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
 import { NotificationService } from '../../notification/notification.service';
 import {
@@ -23,10 +45,24 @@ import {
   type WorkReportFrequency,
 } from './work-notes.domain';
 import { WorkNotesAuthorizationService } from './work-notes-authorization.service';
-import type { ReportingProjectMembers } from '../../iam/application/projects/project-report-roster.service';
+import {
+  ProjectReportRosterService,
+  type ReportingProjectMembers,
+} from '../../iam/application/projects/project-report-roster.service';
 import type {
   CaptureRequestHeaders,
+  DeleteProjectDocumentResult,
+  DocumentActivityAction,
+  DocumentActivityEvent,
+  DocumentConfirmUploadInput,
+  DocumentDownloadUrlResponse,
+  DocumentKnowledgeChunksResponse,
+  DocumentKnowledgeControlAction,
+  DocumentKnowledgeStatusRecord,
   DocumentStatus,
+  DocumentStorageReferenceRecord,
+  DocumentUploadIntentInput,
+  DocumentUploadIntentResponse,
   DocumentVersionRecord,
   ProjectDocumentInput,
   ProjectDocumentRecord,
@@ -40,9 +76,14 @@ import type {
   WorkNotesPermissions,
   WorkReportInput,
   WorkReportRecord,
+  WorkReportRosterEntry,
   WorkReportScope,
   WorkReportSettingsRecord,
+  WorkReportsListFilters,
+  WorkReportsPageRecord,
   WorkReportStatus,
+  WorkReportSummaryCounts,
+  WorkReportTierSettingsSummary,
 } from './work-notes.types';
 
 type MongoRecord = Record<string, unknown> & { _id: Types.ObjectId };
@@ -83,7 +124,9 @@ const iso = (value: unknown): string | undefined =>
     : typeof value === 'string'
       ? value
       : undefined;
-const pickReviewHistory = (value: unknown) =>
+const pickReviewHistory = (
+  value: unknown,
+): DocumentVersionRecord['reviewHistory'] =>
   Array.isArray(value)
     ? value.map((entry) => {
         const item = entry as Record<string, unknown>;
@@ -91,6 +134,9 @@ const pickReviewHistory = (value: unknown) =>
           action: item.action as
             'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
           reviewerId: text(item.reviewerId),
+          ...(item.reviewerRole === 'MANAGER' || item.reviewerRole === 'LEADER'
+            ? { reviewerRole: item.reviewerRole }
+            : {}),
           ...(typeof item.comment === 'string'
             ? { comment: item.comment }
             : {}),
@@ -98,6 +144,15 @@ const pickReviewHistory = (value: unknown) =>
         };
       })
     : [];
+
+const isActorManager = (actor: WorkNotesActor): boolean =>
+  Boolean(actor.isManager);
+const isActorLeader = (actor: WorkNotesActor): boolean =>
+  Boolean(actor.isLeader) || (actor.canReview && !actor.isManager);
+const isActorPureMember = (actor: WorkNotesActor): boolean =>
+  !isActorManager(actor) && !isActorLeader(actor);
+const escapeRegex = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const OLE2_SIGNATURE = Buffer.from([
   0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1,
@@ -307,11 +362,10 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
   },
 ];
 
-function resolveValidatedDocumentContentType(
+function resolveDocumentFormatRule(
   cleanName: string,
   rawContentType: string,
-  bytes: Buffer,
-): string | null {
+): DocumentFileFormatRule | null {
   const lowerName = cleanName.toLowerCase();
   const rule = DOCUMENT_FILE_FORMAT_RULES.find((candidate) =>
     candidate.extensions.some((ext) => lowerName.endsWith(ext)),
@@ -323,8 +377,32 @@ function resolveValidatedDocumentContentType(
     baseContentType === '' ||
     baseContentType === 'application/octet-stream' ||
     rule.acceptedContentTypes.includes(baseContentType);
-  if (!contentTypeAllowed || !rule.validateBytes(bytes)) return null;
+  if (!contentTypeAllowed) return null;
+  return rule;
+}
+
+function resolveValidatedDocumentContentType(
+  cleanName: string,
+  rawContentType: string,
+  bytes: Buffer,
+): string | null {
+  const rule = resolveDocumentFormatRule(cleanName, rawContentType);
+  if (!rule || !rule.validateBytes(bytes)) return null;
   return rule.canonicalContentType;
+}
+
+interface SignedDocumentUploadClaims {
+  orgId: string;
+  projId: string;
+  docId: string;
+  userId: string;
+  key: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+  deduplicated: boolean;
+  exp: number;
 }
 
 @Injectable()
@@ -338,6 +416,14 @@ export class WorkNotesService {
     @Optional() private readonly audit?: AuditService,
     @Optional() private readonly documentStorage?: ProjectDocumentStorage,
     @Optional() private readonly notifications?: NotificationService,
+    @Optional()
+    @Inject(SAG_KNOWLEDGE_SYNC_TRANSPORT)
+    private readonly sagTransport?: SagKnowledgeSyncTransport,
+    @Optional()
+    @Inject(CAPTURE_QUEUE_RUNTIME)
+    private readonly queueRuntime?: CaptureQueuePublisher,
+    @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly reportRoster?: ProjectReportRosterService,
   ) {}
 
   async listTaskNotes(
@@ -721,8 +807,149 @@ export class WorkNotesService {
         .toArray(),
       collection.countDocuments(filter),
     ]);
+
+    const versionByKey = new Map<string, DocumentVersionRecord>();
+    const rawFileMetaByKey = new Map<
+      string,
+      { key?: string; sha256?: string }
+    >();
+    if (rows.length > 0) {
+      const versionQueries = rows.map((row) => {
+        const value = row as unknown as Record<string, unknown>;
+        return {
+          documentId: value._id as Types.ObjectId,
+          versionNumber: Number(value.currentVersionNumber),
+        };
+      });
+      const versionDocs = await this.database()
+        .collection('project_document_versions')
+        .find({
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          $or: versionQueries,
+        })
+        .toArray();
+      for (const versionDoc of versionDocs) {
+        const raw = versionDoc as unknown as Record<string, unknown>;
+        const parsed = this.documentVersion(versionDoc);
+        const mapKey = `${String(raw.documentId)}:${parsed.version}`;
+        versionByKey.set(mapKey, parsed);
+        const rawFile = raw.file as
+          { key?: unknown; sha256?: unknown } | undefined;
+        if (rawFile && typeof rawFile === 'object') {
+          rawFileMetaByKey.set(mapKey, {
+            ...(typeof rawFile.key === 'string' && rawFile.key.trim()
+              ? { key: rawFile.key.trim() }
+              : {}),
+            ...(typeof rawFile.sha256 === 'string' && rawFile.sha256.trim()
+              ? { sha256: rawFile.sha256.trim() }
+              : {}),
+          });
+        }
+      }
+    }
+
+    const storageRefsByDocId = await this.resolveStorageReferencesByDocument(
+      actor.organizationId,
+      rows.map((row) => {
+        const raw = row as unknown as Record<string, unknown>;
+        const docId = String(raw._id);
+        const ver = Number(raw.currentVersionNumber);
+        const meta = rawFileMetaByKey.get(`${docId}:${ver}`);
+        return {
+          documentId: docId,
+          keys: meta?.key ? [meta.key] : [],
+          ...(meta?.sha256 ? { currentSha256: meta.sha256 } : {}),
+        };
+      }),
+    );
+
+    const summaries = rows.map((row) => {
+      const summary = this.documentSummary(row, actor);
+      const currentVersion = versionByKey.get(
+        `${summary.id}:${summary.version}`,
+      );
+      const storageRef = storageRefsByDocId.get(summary.id);
+      if (!currentVersion) {
+        return storageRef
+          ? { ...summary, storageReference: storageRef }
+          : summary;
+      }
+      return {
+        ...summary,
+        ...(currentVersion.file ? { file: currentVersion.file } : {}),
+        ...(storageRef ? { storageReference: storageRef } : {}),
+        ...(currentVersion.submittedAt
+          ? { submittedAt: currentVersion.submittedAt }
+          : {}),
+        ...(currentVersion.reviewedBy
+          ? { reviewedBy: currentVersion.reviewedBy }
+          : {}),
+        ...(currentVersion.reviewedAt
+          ? { reviewedAt: currentVersion.reviewedAt }
+          : {}),
+        ...(typeof currentVersion.reviewComment === 'string'
+          ? { reviewComment: currentVersion.reviewComment }
+          : {}),
+      };
+    });
+
+    const candidatesForLiveSync = summaries
+      .filter((item) => {
+        if (item.status !== 'APPROVED') return false;
+        const sync = item.knowledgeSync;
+        if (!sync) return true;
+        const normalized = (sync.status || '').toUpperCase();
+        const normalizedStage = (sync.currentStage || '').toUpperCase();
+        const normalizedDocStatus = (sync.documentStatus || '').toUpperCase();
+        if (['FAILED', 'REVOKED'].includes(normalized)) return false;
+        if (
+          normalized === 'PAUSED' ||
+          (normalizedStage === 'PAUSED' && normalizedDocStatus === 'PAUSED')
+        ) {
+          return false;
+        }
+        const isTerminalReady =
+          (sync.knowledgeReady ||
+            (sync.searchReady &&
+              (normalized === 'READY' ||
+                normalized === 'SEARCH_READY' ||
+                normalizedStage === 'COMPLETE' ||
+                normalizedDocStatus === 'READY' ||
+                normalizedDocStatus === 'INDEXED'))) &&
+          sync.progress >= 100;
+        if (isTerminalReady) return false;
+        return (
+          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
+            'function' || !sync.status
+        );
+      })
+      .slice(0, 10);
+
+    if (candidatesForLiveSync.length > 0) {
+      const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
+      await Promise.allSettled(
+        candidatesForLiveSync.map(async (item) => {
+          const live = await this.resolveDocumentKnowledgeStatusForActor(
+            actor,
+            projectId,
+            item.id,
+          );
+          if (live.status !== 'NOT_SYNCED' || item.knowledgeSync) {
+            refreshedById.set(item.id, live);
+          }
+        }),
+      );
+      for (let i = 0; i < summaries.length; i += 1) {
+        const live = refreshedById.get(summaries[i].id);
+        if (live) {
+          summaries[i] = { ...summaries[i], knowledgeSync: live };
+        }
+      }
+    }
+
     return {
-      data: rows.map((row) => this.documentSummary(row, actor)),
+      data: summaries,
       pagination: this.pagination(page, pageSize, totalItems),
     };
   }
@@ -782,7 +1009,7 @@ export class WorkNotesService {
         'DOCUMENT_DRAFT_CREATED',
         'PROJECT_DOCUMENT',
         String(id),
-        undefined,
+        { version: 1 },
         session,
       );
     });
@@ -810,6 +1037,7 @@ export class WorkNotesService {
     name: string,
     contentType: string,
     bytes: Buffer,
+    options?: { expectedSha256?: string; autoSyncSag?: boolean },
   ): Promise<ProjectDocumentRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(documentId)) throw documentNotFound();
@@ -829,6 +1057,14 @@ export class WorkNotesService {
         message:
           'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
       });
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const expectedSha256 = options?.expectedSha256?.trim().toLowerCase();
+    if (expectedSha256 && expectedSha256 !== sha256) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_CHECKSUM_MISMATCH',
+        message: 'Uploaded file content does not match declared SHA-256 hash.',
+      });
+    }
     const id = objectId(documentId);
     const documents = this.database().collection('project_documents');
     const document = await documents.findOne({
@@ -850,12 +1086,26 @@ export class WorkNotesService {
       editedByUserId: objectId(actor.userId),
     });
     if (!previousVersion) throw documentNotFound();
-    const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
     if (!this.documentStorage)
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
       );
-    await this.documentStorage.put(key, bytes, resolvedContentType);
+    const existingWithSameHash = await versions.findOne({
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      'file.sha256': sha256,
+      'file.key': { $type: 'string', $ne: '' },
+    });
+    const existingKey = (
+      existingWithSameHash?.file as { key?: string } | undefined
+    )?.key;
+    const reusedExistingKey = Boolean(existingKey);
+    const key =
+      existingKey ||
+      `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
+    if (!reusedExistingKey) {
+      await this.documentStorage.put(key, bytes, resolvedContentType);
+    }
     try {
       await this.transaction(async (db, session) => {
         const result = await db
@@ -877,6 +1127,7 @@ export class WorkNotesService {
                   name: cleanName,
                   contentType: resolvedContentType,
                   size: bytes.length,
+                  sha256,
                 },
                 updatedAt: new Date(),
               },
@@ -890,12 +1141,20 @@ export class WorkNotesService {
           'DOCUMENT_FILE_UPLOADED',
           'PROJECT_DOCUMENT',
           documentId,
-          { version: versionNumber },
+          {
+            version: versionNumber,
+            fileName: cleanName,
+            size: bytes.length,
+            sha256,
+            deduplicated: reusedExistingKey,
+          },
           session,
         );
       });
     } catch (error) {
-      await this.documentStorage.delete(key).catch(() => undefined);
+      if (!reusedExistingKey) {
+        await this.documentStorage.delete(key).catch(() => undefined);
+      }
       throw error;
     }
     const oldKey = (previousVersion.file as { key?: string } | undefined)?.key;
@@ -908,9 +1167,414 @@ export class WorkNotesService {
       })) === 0
     )
       await this.documentStorage.delete(oldKey).catch(() => undefined);
+    if (options?.autoSyncSag && actor.canReview) {
+      await this.syncOrEnqueueApprovedDocument(
+        headers,
+        actor,
+        projectId,
+        documentId,
+        versionNumber,
+      );
+    }
     const updated = await this.readDocument(actor, id);
     if (!updated) throw documentNotFound();
     return updated;
+  }
+
+  async createDocumentUploadIntent(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    input: DocumentUploadIntentInput,
+  ): Promise<DocumentUploadIntentResponse> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const cleanName = input.fileName.trim();
+    const sha256 = input.sha256.trim().toLowerCase();
+    const rule =
+      input.size > 0 &&
+      input.size <= 20 * 1024 * 1024 &&
+      cleanName.length > 0 &&
+      cleanName.length <= 180 &&
+      !/[\\/]/.test(cleanName) &&
+      ![...cleanName].some((character) => character.charCodeAt(0) < 32) &&
+      /^[a-f0-9]{64}$/.test(sha256)
+        ? resolveDocumentFormatRule(cleanName, input.contentType)
+        : null;
+    if (!rule) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_INVALID',
+        message:
+          'A supported document file (PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, ODT, ODS, ODP, RTF, TXT, MD, CSV, TSV, JSON, YAML, XML, SQL, DRAWIO, PNG, JPG, WEBP) up to 20 MB is required.',
+      });
+    }
+
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = await db.collection('project_documents').findOne({
+      _id: id,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      createdByUserId: objectId(actor.userId),
+    });
+    if (!document) throw documentNotFound();
+
+    const versionNumber = Number(document.currentVersionNumber);
+    const versions = db.collection('project_document_versions');
+    const draftVersion = await versions.findOne({
+      documentId: id,
+      versionNumber,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      editedByUserId: objectId(actor.userId),
+    });
+    if (!draftVersion) throw documentNotFound();
+
+    if (
+      !this.documentStorage ||
+      typeof this.documentStorage.isDirectCloudEnabled !== 'function' ||
+      !this.documentStorage.isDirectCloudEnabled()
+    ) {
+      return {
+        mode: 'LEGACY_PROXY',
+        canonicalContentType: rule.canonicalContentType,
+      };
+    }
+
+    const expiresInSeconds = Math.max(
+      60,
+      Math.min(
+        3600,
+        Number(
+          this.config?.get<number>('R2_PRESIGNED_UPLOAD_TTL_SECONDS') ?? 900,
+        ) || 900,
+      ),
+    );
+    const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+
+    const existingWithSameHash = await versions.findOne({
+      organizationId: objectId(actor.organizationId),
+      'file.sha256': sha256,
+      'file.size': input.size,
+      'file.key': { $type: 'string', $ne: '' },
+    });
+    const existingKey = (
+      existingWithSameHash?.file as { key?: string } | undefined
+    )?.key;
+    if (
+      existingKey &&
+      typeof this.documentStorage.inspectStoredPrefix === 'function'
+    ) {
+      const existingStored = await this.documentStorage
+        .inspectStoredPrefix(existingKey, 64)
+        .catch(() => null);
+      if (
+        existingStored &&
+        existingStored.size === input.size &&
+        resolveValidatedDocumentContentType(
+          cleanName,
+          rule.canonicalContentType,
+          existingStored.prefix,
+        ) === rule.canonicalContentType
+      ) {
+        const uploadToken = this.signDocumentUploadClaims({
+          orgId: actor.organizationId,
+          projId: projectId,
+          docId: documentId,
+          userId: actor.userId,
+          key: existingKey,
+          fileName: cleanName,
+          contentType: rule.canonicalContentType,
+          size: input.size,
+          sha256,
+          deduplicated: true,
+          exp,
+        });
+        return {
+          mode: 'DEDUPLICATED',
+          uploadToken,
+          expiresInSeconds,
+          canonicalContentType: rule.canonicalContentType,
+        };
+      }
+    }
+
+    const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
+    const uploadUrl = await this.documentStorage.createDirectUploadUrl(
+      key,
+      rule.canonicalContentType,
+      expiresInSeconds,
+    );
+    const uploadToken = this.signDocumentUploadClaims({
+      orgId: actor.organizationId,
+      projId: projectId,
+      docId: documentId,
+      userId: actor.userId,
+      key,
+      fileName: cleanName,
+      contentType: rule.canonicalContentType,
+      size: input.size,
+      sha256,
+      deduplicated: false,
+      exp,
+    });
+
+    return {
+      mode: 'DIRECT_PUT',
+      uploadToken,
+      uploadUrl,
+      headers: {
+        'Content-Type': rule.canonicalContentType,
+      },
+      expiresInSeconds,
+      canonicalContentType: rule.canonicalContentType,
+    };
+  }
+
+  async confirmDocumentUpload(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    input: DocumentConfirmUploadInput,
+  ): Promise<ProjectDocumentRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const claims = this.verifyDocumentUploadClaims(input.uploadToken);
+    if (
+      claims.orgId !== actor.organizationId ||
+      claims.projId !== projectId ||
+      claims.docId !== documentId ||
+      claims.userId !== actor.userId
+    ) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token does not match the target document or user.',
+      });
+    }
+    if (
+      !this.documentStorage ||
+      typeof this.documentStorage.inspectStoredPrefix !== 'function'
+    ) {
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    }
+
+    const stored = await this.documentStorage
+      .inspectStoredPrefix(claims.key, 64)
+      .catch(() => null);
+    if (!stored) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_NOT_FOUND',
+        message: 'Uploaded file was not found in cloud storage.',
+      });
+    }
+
+    const validatedContentType =
+      stored.size === claims.size &&
+      stored.size > 0 &&
+      stored.size <= 20 * 1024 * 1024
+        ? resolveValidatedDocumentContentType(
+            claims.fileName,
+            claims.contentType,
+            stored.prefix,
+          )
+        : null;
+    if (validatedContentType !== claims.contentType) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw new BadRequestException({
+        code: 'DOCUMENT_FILE_INVALID',
+        message:
+          'Uploaded file size or magic-byte signature does not match the declared document format.',
+      });
+    }
+
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = await db.collection('project_documents').findOne({
+      _id: id,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      createdByUserId: objectId(actor.userId),
+    });
+    if (!document) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw documentNotFound();
+    }
+    const versionNumber = Number(document.currentVersionNumber);
+    const versions = db.collection('project_document_versions');
+    const previousVersion = await versions.findOne({
+      documentId: id,
+      versionNumber,
+      organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
+      status: 'DRAFT',
+      editedByUserId: objectId(actor.userId),
+    });
+    if (!previousVersion) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw documentNotFound();
+    }
+
+    try {
+      await this.transaction(async (txDb, session) => {
+        const result = await txDb
+          .collection('project_document_versions')
+          .updateOne(
+            {
+              documentId: id,
+              versionNumber,
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+              status: 'DRAFT',
+              editedByUserId: objectId(actor.userId),
+              updatedAt: previousVersion.updatedAt,
+            },
+            {
+              $set: {
+                file: {
+                  key: claims.key,
+                  name: claims.fileName,
+                  contentType: claims.contentType,
+                  size: claims.size,
+                  sha256: claims.sha256,
+                },
+                updatedAt: new Date(),
+              },
+            },
+            { session },
+          );
+        if (result.modifiedCount !== 1) {
+          throw conflict('The Document changed during upload confirmation.');
+        }
+        await this.auditEvent(
+          actor,
+          'DOCUMENT_FILE_UPLOADED',
+          'PROJECT_DOCUMENT',
+          documentId,
+          {
+            version: versionNumber,
+            fileName: claims.fileName,
+            size: claims.size,
+            sha256: claims.sha256,
+            deduplicated: claims.deduplicated,
+            directCloud: true,
+          },
+          session,
+        );
+      });
+    } catch (error) {
+      if (!claims.deduplicated) {
+        await this.documentStorage.delete(claims.key).catch(() => undefined);
+      }
+      throw error;
+    }
+
+    const oldKey = (previousVersion.file as { key?: string } | undefined)?.key;
+    if (
+      oldKey &&
+      oldKey !== claims.key &&
+      (await versions.countDocuments({
+        'file.key': oldKey,
+        _id: { $ne: previousVersion._id },
+      })) === 0
+    ) {
+      await this.documentStorage.delete(oldKey).catch(() => undefined);
+    }
+
+    if (input.autoSyncSag && actor.canReview) {
+      await this.syncOrEnqueueApprovedDocument(
+        headers,
+        actor,
+        projectId,
+        documentId,
+        versionNumber,
+      );
+    }
+
+    const updated = await this.readDocument(actor, id);
+    if (!updated) throw documentNotFound();
+    return updated;
+  }
+
+  async resolveDocumentFileDownloadUrl(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    versionNumber?: number,
+  ): Promise<DocumentDownloadUrlResponse> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const document = await this.database()
+      .collection('project_documents')
+      .findOne({
+        _id: objectId(documentId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      });
+    if (!document) throw documentNotFound();
+    const version = await this.database()
+      .collection('project_document_versions')
+      .findOne({
+        documentId: objectId(documentId),
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        versionNumber: versionNumber ?? Number(document.currentVersionNumber),
+      });
+    const file = version?.file as
+      { key?: string; name?: string; contentType?: string } | undefined;
+    if (!file?.key || !file.name || !file.contentType) throw documentNotFound();
+    if (!this.documentStorage) {
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    }
+    if (
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+    ) {
+      const expiresInSeconds = Math.max(
+        30,
+        Math.min(
+          3600,
+          Number(
+            this.config?.get<number>('R2_PRESIGNED_DOWNLOAD_TTL_SECONDS') ??
+              120,
+          ) || 120,
+        ),
+      );
+      const downloadUrl = await this.documentStorage.createDirectDownloadUrl(
+        file.key,
+        expiresInSeconds,
+        {
+          fileName: file.name,
+          contentType: file.contentType,
+          disposition: 'attachment',
+        },
+      );
+      return {
+        mode: 'DIRECT_GET',
+        downloadUrl,
+        fileName: file.name,
+        contentType: file.contentType,
+        expiresInSeconds,
+      };
+    }
+    return {
+      mode: 'LEGACY_PROXY',
+      fileName: file.name,
+      contentType: file.contentType,
+    };
   }
 
   async downloadDocumentFile(
@@ -1078,7 +1742,10 @@ export class WorkNotesService {
         'DOCUMENT_DRAFT_UPDATED',
         'PROJECT_DOCUMENT',
         documentId,
-        undefined,
+        {
+          version: nextVersionNumber,
+          createdNewVersion: nextVersionNumber > currentVersionNumber,
+        },
         session,
       );
     });
@@ -1185,7 +1852,7 @@ export class WorkNotesService {
         'DOCUMENT_SUBMITTED',
         'PROJECT_DOCUMENT',
         documentId,
-        undefined,
+        { version: versionNumber },
         session,
       );
     });
@@ -1279,7 +1946,7 @@ export class WorkNotesService {
         'DOCUMENT_REVIEW_COMMENTED',
         'PROJECT_DOCUMENT',
         documentId,
-        { version: sourceVersion },
+        { version: sourceVersion, comment },
         session,
       );
     });
@@ -1460,10 +2127,20 @@ export class WorkNotesService {
         {
           authorId,
           version: sourceVersion,
+          ...(input.comment ? { comment: input.comment } : {}),
         },
         session,
       );
     });
+    if (action === 'APPROVED' && sourceVersion >= 1) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        documentId,
+        'KNOWLEDGE_SOURCE_APPROVED',
+        sourceVersion,
+        headers.requestId,
+      );
+    }
     const reviewed = await this.readDocument(actor, id);
     if (!reviewed) throw documentNotFound();
     return reviewed;
@@ -1564,9 +2241,1114 @@ export class WorkNotesService {
         session,
       );
     });
+    await this.dispatchKnowledgeIngestionJob(
+      projectId,
+      documentId,
+      'KNOWLEDGE_SOURCE_REVOKED',
+      0,
+      headers.requestId,
+    );
     const archived = await this.readDocument(actor, id);
     if (!archived) throw documentNotFound();
     return archived;
+  }
+
+  async deleteDocument(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+  ): Promise<DeleteProjectDocumentResult> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+
+    const authorId = String(document.createdByUserId);
+    const docStatus = text(document.status);
+    const canDelete =
+      actor.canReview ||
+      actor.canConfigure ||
+      (authorId === actor.userId &&
+        docStatus !== 'APPROVED' &&
+        docStatus !== 'ARCHIVED');
+    if (!canDelete) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_DELETE_FORBIDDEN',
+        message:
+          'Only a Project Leader or the author of an unapproved Document can permanently delete it.',
+      });
+    }
+
+    const versionRows = await db
+      .collection('project_document_versions')
+      .find({
+        documentId: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      })
+      .toArray();
+
+    const candidateKeys = new Set<string>();
+    let hasSagSync = Boolean(
+      (document.knowledgeSync as { sagDocumentId?: string } | undefined)
+        ?.sagDocumentId ||
+      docStatus === 'APPROVED' ||
+      docStatus === 'ARCHIVED',
+    );
+    for (const row of versionRows) {
+      const file = (row as Record<string, unknown>).file as
+        { key?: unknown } | undefined;
+      if (typeof file?.key === 'string' && file.key.trim()) {
+        candidateKeys.add(file.key.trim());
+      }
+      const verSync = (row as Record<string, unknown>).knowledgeSync as
+        { sagDocumentId?: unknown } | undefined;
+      if (typeof verSync?.sagDocumentId === 'string' && verSync.sagDocumentId) {
+        hasSagSync = true;
+      }
+    }
+
+    let sagRevoked = false;
+    if (
+      hasSagSync &&
+      typeof this.sagTransport?.revokeProjectDocument === 'function'
+    ) {
+      const revoked = await this.sagTransport
+        .revokeProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: Number(document.currentVersionNumber) || 1,
+          logicalSourceId: `continuum:project_document:${documentId}`,
+          actorUserId: actor.userId,
+          reason: 'DOCUMENT_DELETED',
+        })
+        .then(() => true)
+        .catch(() => false);
+      sagRevoked = revoked;
+    }
+
+    await this.transaction(async (txDb, session) => {
+      await txDb.collection('project_document_versions').deleteMany(
+        {
+          documentId: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { session },
+      );
+      const deletedDoc = await txDb.collection('project_documents').deleteOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { session },
+      );
+      if (deletedDoc.deletedCount !== 1) {
+        throw documentNotFound();
+      }
+      await txDb.collection('outbox_events').deleteMany(
+        {
+          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateId: documentId,
+          status: { $in: ['PENDING', 'FAILED'] },
+        },
+        { session },
+      );
+    });
+
+    let r2DeletedKeys = 0;
+    let r2RetainedSharedKeys = 0;
+    if (candidateKeys.size > 0) {
+      const versionsCollection = db.collection('project_document_versions');
+      for (const key of candidateKeys) {
+        const remainingRefs = await versionsCollection.countDocuments({
+          'file.key': key,
+        });
+        if (remainingRefs === 0) {
+          if (this.documentStorage) {
+            const deletedFromCloud = await this.documentStorage
+              .delete(key)
+              .then(() => true)
+              .catch(() => false);
+            if (deletedFromCloud) {
+              r2DeletedKeys += 1;
+            }
+          }
+        } else {
+          r2RetainedSharedKeys += 1;
+        }
+      }
+    }
+
+    await this.auditEvent(
+      actor,
+      'DOCUMENT_DELETED',
+      'PROJECT_DOCUMENT',
+      documentId,
+      {
+        title: text(document.title),
+        version: Number(document.currentVersionNumber) || 1,
+        sagRevoked,
+        storageKeysChecked: candidateKeys.size,
+        r2DeletedKeys,
+        r2RetainedSharedKeys,
+      },
+    );
+
+    return {
+      deletedDocumentId: documentId,
+      sagRevoked,
+      r2DeletedKeys,
+      r2RetainedSharedKeys,
+    };
+  }
+
+  async syncDocumentToSag(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    if (!this.sagTransport) {
+      throw new ServiceUnavailableException({
+        code: 'SAG_SYNC_UNAVAILABLE',
+        message: 'SAG Knowledge synchronization service is unavailable.',
+      });
+    }
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    if (text(document.status) === 'ARCHIVED') {
+      throw conflict('Archived documents cannot be synchronized to SAG.');
+    }
+    if (!actor.canReview && text(document.status) !== 'APPROVED') {
+      throw new ForbiddenException({
+        code: 'LEADER_APPROVAL_REQUIRED',
+        message:
+          'Only a Project Leader can add documents directly to SAG. Members must submit a review request to the Project Leader first.',
+      });
+    }
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+    if (actor.canReview && text(document.status) !== 'APPROVED') {
+      const now = new Date();
+      await db.collection('project_document_versions').updateOne(
+        { _id: versionDoc._id },
+        {
+          $set: {
+            status: 'APPROVED',
+            reviewedByUserId: objectId(actor.userId),
+            reviewedAt: now,
+            updatedAt: now,
+          },
+        },
+      );
+      await db.collection('project_documents').updateOne(
+        { _id: id },
+        {
+          $set: {
+            status: 'APPROVED',
+            latestApprovedVersionNumber: versionNumber,
+            updatedByUserId: objectId(actor.userId),
+            updatedAt: now,
+          },
+        },
+      );
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_AUTO_APPROVED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        { version: versionNumber },
+      );
+    }
+
+    const fileMeta = versionDoc.file as
+      | {
+          key?: string;
+          name?: string;
+          contentType?: string;
+          size?: number;
+          sha256?: string;
+        }
+      | undefined;
+
+    const existingSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+    const needsFreshIdempotencyKey = Boolean(
+      existingSync &&
+      ['REVOKED', 'FAILED', 'INDEX_FAILED'].some(
+        (terminalState) =>
+          String(existingSync.status ?? '').toUpperCase() === terminalState ||
+          String(existingSync.searchStatus ?? '').toUpperCase() ===
+            terminalState,
+      ),
+    );
+    const resyncSuffix = needsFreshIdempotencyKey
+      ? `:resync:${Date.now()}`
+      : '';
+
+    const logicalSourceId = `continuum:project_document:${documentId}`;
+    const canDirectObjectIngest = Boolean(
+      fileMeta?.key &&
+      fileMeta.name &&
+      fileMeta.contentType &&
+      fileMeta.sha256 &&
+      typeof fileMeta.size === 'number' &&
+      fileMeta.size > 0 &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+      typeof this.sagTransport.ingestProjectDocumentObject === 'function',
+    );
+
+    let fileHash: string;
+    let receipt: SagProjectDocumentUploadReceipt;
+
+    if (canDirectObjectIngest && fileMeta && this.documentStorage) {
+      fileHash = fileMeta.sha256!;
+      const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ) || 1800,
+      );
+      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
+        fileMeta.key!,
+        sagIngestUrlTtlSeconds,
+        {
+          fileName: fileMeta.name,
+          contentType: fileMeta.contentType,
+        },
+      );
+      try {
+        receipt = await this.sagTransport.ingestProjectDocumentObject!({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: versionNumber,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId: actor.userId,
+          sourceUrl,
+          fileName: fileMeta.name!,
+          contentType: fileMeta.contentType!,
+          expectedSha256: fileHash,
+          expectedSizeBytes: fileMeta.size!,
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+      }
+    } else {
+      let bytes: Buffer;
+      let fileName: string;
+      let contentType: string;
+      if (fileMeta?.key && fileMeta.name && fileMeta.contentType) {
+        if (!this.documentStorage) {
+          throw new ServiceUnavailableException(
+            'Project Document storage is unavailable.',
+          );
+        }
+        bytes = await this.documentStorage.get(fileMeta.key);
+        fileName = fileMeta.name;
+        contentType = fileMeta.contentType;
+      } else {
+        const markdown = text(versionDoc.content).trim();
+        if (!markdown) {
+          throw conflict(
+            'A Document needs text or an uploaded file before syncing to SAG.',
+          );
+        }
+        const baseTitle = (
+          text(versionDoc.title) ||
+          text(document.title) ||
+          documentId
+        )
+          .replace(/[^a-zA-Z0-9._-]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 120);
+        bytes = Buffer.from(markdown, 'utf-8');
+        fileName = `${baseTitle || documentId}.md`;
+        contentType = 'text/markdown';
+      }
+
+      fileHash =
+        fileMeta?.sha256 || createHash('sha256').update(bytes).digest('hex');
+      const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
+
+      try {
+        receipt = await this.sagTransport.uploadProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: versionNumber,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId: actor.userId,
+          fileName,
+          contentType,
+          bytes,
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+      }
+    }
+
+    const syncedAt = new Date().toISOString();
+    const searchStatus = receipt.searchStatus ?? 'PENDING';
+    const knowledgeStatus = receipt.knowledgeStatus ?? 'NOT_STARTED';
+    const searchReady = Boolean(
+      receipt.searchReady || searchStatus === 'SEARCH_READY',
+    );
+    const knowledgeReady =
+      knowledgeStatus === 'KNOWLEDGE_READY' || knowledgeStatus === 'READY';
+
+    const syncRecord: DocumentKnowledgeStatusRecord = {
+      documentId,
+      version: versionNumber,
+      sagDocumentId: receipt.documentId,
+      sagVersionId: receipt.versionId,
+      sagVersionNo: receipt.versionNo,
+      ...(receipt.runId ? { runId: receipt.runId } : {}),
+      fileHash: receipt.fileHash ?? fileHash,
+      status: receipt.status,
+      searchStatus,
+      knowledgeStatus,
+      searchReady,
+      knowledgeReady,
+      isDuplicate: Boolean(receipt.isDuplicate),
+      currentStage: receipt.isDuplicate ? 'DUPLICATE' : 'RECEIVE',
+      progress: searchReady ? 100 : 0,
+      syncedAt,
+    };
+
+    await db
+      .collection('project_document_versions')
+      .updateOne(
+        { _id: versionDoc._id },
+        { $set: { knowledgeSync: syncRecord } },
+      );
+    await db
+      .collection('project_documents')
+      .updateOne({ _id: id }, { $set: { knowledgeSync: syncRecord } });
+
+    await this.auditEvent(
+      actor,
+      'DOCUMENT_KNOWLEDGE_SYNCED',
+      'PROJECT_DOCUMENT',
+      documentId,
+      {
+        version: versionNumber,
+        sagDocumentId: receipt.documentId,
+        sagVersionNo: receipt.versionNo,
+        isDuplicate: Boolean(receipt.isDuplicate),
+      },
+    );
+
+    return syncRecord;
+  }
+
+  async getDocumentKnowledgeStatus(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    return this.resolveDocumentKnowledgeStatusForActor(
+      actor,
+      projectId,
+      documentId,
+    );
+  }
+
+  private async resolveDocumentKnowledgeStatusForActor(
+    actor: WorkNotesActor,
+    projectId: string,
+    documentId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+
+    const storedSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+    const fileSha256 = (versionDoc.file as { sha256?: string } | undefined)
+      ?.sha256;
+
+    if (
+      storedSync?.sagDocumentId &&
+      storedSync.sagVersionNo &&
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function'
+    ) {
+      try {
+        const live = await this.sagTransport.getProjectDocumentVersionStatus({
+          organizationId: actor.organizationId,
+          projectId,
+          sagDocumentId: storedSync.sagDocumentId,
+          versionNo: storedSync.sagVersionNo,
+          actorUserId: actor.userId,
+        });
+        const merged: DocumentKnowledgeStatusRecord = {
+          ...storedSync,
+          documentId,
+          version: versionNumber,
+          sagDocumentId: live.documentId,
+          sagVersionNo: live.versionNo,
+          status: live.status,
+          searchStatus: live.searchStatus,
+          knowledgeStatus: live.knowledgeStatus,
+          searchReady: live.searchReady,
+          knowledgeReady: live.knowledgeReady,
+          currentStage: live.currentStage ?? storedSync.currentStage ?? null,
+          progress:
+            typeof live.progress === 'number'
+              ? live.progress
+              : live.searchReady
+                ? 100
+                : (storedSync.progress ?? 10),
+          ...(live.documentStatus !== undefined
+            ? { documentStatus: live.documentStatus }
+            : {}),
+          ...(live.parserProvider !== undefined
+            ? { parserProvider: live.parserProvider }
+            : {}),
+          ...(live.parserStatus !== undefined
+            ? { parserStatus: live.parserStatus }
+            : {}),
+          ...(typeof live.chunkCount === 'number'
+            ? { chunkCount: live.chunkCount }
+            : {}),
+          ...(typeof live.eventCount === 'number'
+            ? { eventCount: live.eventCount }
+            : {}),
+          ...(typeof live.tokenUsage === 'number'
+            ? { tokenUsage: live.tokenUsage }
+            : {}),
+          ...(live.stageProgress !== undefined
+            ? { stageProgress: live.stageProgress }
+            : {}),
+          error: live.error ?? null,
+        };
+        if (JSON.stringify(merged) !== JSON.stringify(storedSync)) {
+          await db
+            .collection('project_document_versions')
+            .updateOne(
+              { _id: versionDoc._id },
+              { $set: { knowledgeSync: merged } },
+            );
+          await db
+            .collection('project_documents')
+            .updateOne({ _id: id }, { $set: { knowledgeSync: merged } });
+        }
+        return merged;
+      } catch {
+        return storedSync;
+      }
+    }
+
+    if (storedSync) {
+      return storedSync;
+    }
+
+    const pendingOutbox = await db.collection('outbox_events').findOne({
+      aggregateType: 'PROJECT_DOCUMENT',
+      aggregateId: documentId,
+      eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+      status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
+    });
+
+    if (pendingOutbox) {
+      const deliveryReceipt = (
+        pendingOutbox.payload as
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
+      )?.delivery?.receipt;
+      if (
+        deliveryReceipt &&
+        typeof deliveryReceipt.documentId === 'string' &&
+        typeof deliveryReceipt.versionNo === 'number'
+      ) {
+        let recovered: DocumentKnowledgeStatusRecord = {
+          documentId,
+          version: versionNumber,
+          sagDocumentId: deliveryReceipt.documentId,
+          sagVersionId:
+            typeof deliveryReceipt.versionId === 'string'
+              ? deliveryReceipt.versionId
+              : undefined,
+          sagVersionNo: deliveryReceipt.versionNo,
+          status:
+            typeof deliveryReceipt.status === 'string'
+              ? deliveryReceipt.status
+              : 'SEARCH_READY',
+          searchStatus:
+            typeof deliveryReceipt.searchStatus === 'string'
+              ? deliveryReceipt.searchStatus
+              : 'SEARCH_READY',
+          knowledgeStatus:
+            typeof deliveryReceipt.knowledgeStatus === 'string'
+              ? deliveryReceipt.knowledgeStatus
+              : 'NOT_STARTED',
+          searchReady: Boolean(deliveryReceipt.searchReady ?? true),
+          knowledgeReady:
+            deliveryReceipt.knowledgeStatus === 'KNOWLEDGE_READY' ||
+            deliveryReceipt.knowledgeStatus === 'READY',
+          progress: 100,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+        };
+        if (
+          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
+          'function'
+        ) {
+          try {
+            const live =
+              await this.sagTransport.getProjectDocumentVersionStatus({
+                organizationId: actor.organizationId,
+                projectId,
+                sagDocumentId: deliveryReceipt.documentId,
+                versionNo: deliveryReceipt.versionNo,
+                actorUserId: actor.userId,
+              });
+            recovered = {
+              ...recovered,
+              status: live.status,
+              searchStatus: live.searchStatus,
+              knowledgeStatus: live.knowledgeStatus,
+              searchReady: live.searchReady,
+              knowledgeReady: live.knowledgeReady,
+              currentStage: live.currentStage ?? null,
+              progress:
+                typeof live.progress === 'number'
+                  ? live.progress
+                  : live.searchReady
+                    ? 100
+                    : 15,
+              ...(live.documentStatus !== undefined
+                ? { documentStatus: live.documentStatus }
+                : {}),
+              ...(live.parserProvider !== undefined
+                ? { parserProvider: live.parserProvider }
+                : {}),
+              ...(live.parserStatus !== undefined
+                ? { parserStatus: live.parserStatus }
+                : {}),
+              ...(typeof live.chunkCount === 'number'
+                ? { chunkCount: live.chunkCount }
+                : {}),
+              ...(typeof live.eventCount === 'number'
+                ? { eventCount: live.eventCount }
+                : {}),
+              ...(typeof live.tokenUsage === 'number'
+                ? { tokenUsage: live.tokenUsage }
+                : {}),
+              ...(live.stageProgress !== undefined
+                ? { stageProgress: live.stageProgress }
+                : {}),
+              error: live.error ?? null,
+            };
+          } catch {
+            // Fall back to recovered outbox receipt
+          }
+        }
+        await db
+          .collection('project_document_versions')
+          .updateOne(
+            { _id: versionDoc._id },
+            { $set: { knowledgeSync: recovered } },
+          );
+        await db
+          .collection('project_documents')
+          .updateOne({ _id: id }, { $set: { knowledgeSync: recovered } });
+        return recovered;
+      }
+      if (pendingOutbox.status === 'PENDING') {
+        return {
+          documentId,
+          version: versionNumber,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+          status: 'QUEUED_OUTBOX',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_QUEUE',
+          progress: 5,
+        };
+      }
+      if (pendingOutbox.status === 'FAILED') {
+        return {
+          documentId,
+          version: versionNumber,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+          status: 'FAILED',
+          searchStatus: 'FAILED',
+          knowledgeStatus: 'FAILED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_DELIVERY',
+          progress: 0,
+          error: {
+            message: String(
+              pendingOutbox.lastError ??
+                'Failed to deliver document to processing engine.',
+            ),
+          },
+        };
+      }
+    }
+
+    return {
+      documentId,
+      version: versionNumber,
+      ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+      status: 'NOT_SYNCED',
+      searchStatus: 'NOT_STARTED',
+      knowledgeStatus: 'NOT_STARTED',
+      searchReady: false,
+      knowledgeReady: false,
+      currentStage: null,
+      progress: 0,
+    };
+  }
+
+  async getDocumentKnowledgeChunks(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    options?: { limit?: number; offset?: number },
+  ): Promise<DocumentKnowledgeChunksResponse> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+
+    let sagDocumentId: string | undefined;
+    let sagVersionNo: number | undefined;
+    const storedSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+
+    if (storedSync?.status === 'REVOKED') {
+      return {
+        documentId,
+        version: versionNumber,
+        ...(storedSync.sagDocumentId
+          ? { sagDocumentId: storedSync.sagDocumentId }
+          : {}),
+        ...(storedSync.sagVersionNo
+          ? { sagVersionNo: storedSync.sagVersionNo }
+          : {}),
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+
+    if (storedSync?.sagDocumentId && storedSync.sagVersionNo) {
+      sagDocumentId = storedSync.sagDocumentId;
+      sagVersionNo = storedSync.sagVersionNo;
+    } else {
+      const pendingOutbox = await db.collection('outbox_events').findOne({
+        aggregateType: 'PROJECT_DOCUMENT',
+        aggregateId: documentId,
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
+      });
+      const deliveryReceipt = (
+        pendingOutbox?.payload as
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
+      )?.delivery?.receipt;
+      if (
+        deliveryReceipt &&
+        typeof deliveryReceipt.documentId === 'string' &&
+        typeof deliveryReceipt.versionNo === 'number'
+      ) {
+        sagDocumentId = deliveryReceipt.documentId;
+        sagVersionNo = deliveryReceipt.versionNo;
+      }
+    }
+
+    if (
+      !sagDocumentId ||
+      !sagVersionNo ||
+      typeof this.sagTransport?.getProjectDocumentVersionChunks !== 'function'
+    ) {
+      return {
+        documentId,
+        version: versionNumber,
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+
+    try {
+      const chunksReceipt =
+        await this.sagTransport.getProjectDocumentVersionChunks({
+          organizationId: actor.organizationId,
+          projectId,
+          sagDocumentId,
+          versionNo: sagVersionNo,
+          actorUserId: actor.userId,
+          limit: options?.limit ?? 50,
+          offset: options?.offset ?? 0,
+        });
+      return {
+        documentId,
+        version: versionNumber,
+        sagDocumentId: chunksReceipt.documentId,
+        sagVersionNo: chunksReceipt.versionNo,
+        sourceStage: chunksReceipt.sourceStage,
+        totalChunks: chunksReceipt.totalChunks,
+        totalTokens: chunksReceipt.totalTokens,
+        items: chunksReceipt.items,
+      };
+    } catch {
+      return {
+        documentId,
+        version: versionNumber,
+        sagDocumentId,
+        sagVersionNo,
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+  }
+
+  async controlDocumentKnowledge(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    documentId: string,
+    action: DocumentKnowledgeControlAction,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(documentId)) throw documentNotFound();
+    if (!this.sagTransport) {
+      throw new ServiceUnavailableException({
+        code: 'SAG_SYNC_UNAVAILABLE',
+        message: 'SAG Knowledge synchronization service is unavailable.',
+      });
+    }
+    const id = objectId(documentId);
+    const db = this.database();
+    const document = record(
+      await db.collection('project_documents').findOne({
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!document) throw documentNotFound();
+    if (String(document.createdByUserId) !== actor.userId && !actor.canReview) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only the Document owner or a Project reviewer can control SAG processing.',
+      });
+    }
+    const versionNumber = Number(document.currentVersionNumber);
+    const versionDoc = record(
+      await db.collection('project_document_versions').findOne({
+        documentId: id,
+        versionNumber,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+      }),
+    );
+    if (!versionDoc) throw documentNotFound();
+
+    const storedSync =
+      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
+      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+    const logicalSourceId = `continuum:project_document:${documentId}`;
+
+    if (action === 'REVOKE') {
+      let revokeReceipt;
+      try {
+        revokeReceipt = await this.sagTransport.revokeProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId,
+          version: versionNumber,
+          logicalSourceId,
+          actorUserId: actor.userId,
+          reason: 'MANUAL_REVOKE',
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_REVOKE_FAILED');
+      }
+      const revokedRecord: DocumentKnowledgeStatusRecord = {
+        ...(storedSync ?? {}),
+        documentId,
+        version: versionNumber,
+        ...(revokeReceipt.documentId
+          ? { sagDocumentId: revokeReceipt.documentId }
+          : {}),
+        status: 'REVOKED',
+        searchStatus: 'REVOKED',
+        knowledgeStatus: 'REVOKED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'REVOKED',
+        progress: 0,
+        syncedAt: new Date().toISOString(),
+      };
+      await db
+        .collection('project_document_versions')
+        .updateOne(
+          { _id: versionDoc._id },
+          { $set: { knowledgeSync: revokedRecord } },
+        );
+      await db
+        .collection('project_documents')
+        .updateOne({ _id: id }, { $set: { knowledgeSync: revokedRecord } });
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_KNOWLEDGE_REVOKED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        {
+          version: versionNumber,
+          ...(revokeReceipt.documentId
+            ? { sagDocumentId: revokeReceipt.documentId }
+            : {}),
+        },
+      );
+      return revokedRecord;
+    }
+
+    if (
+      action === 'REPROCESS' &&
+      actor.canReview &&
+      (!storedSync ||
+        storedSync.status === 'NOT_SYNCED' ||
+        storedSync.status === 'REVOKED' ||
+        storedSync.searchStatus === 'REVOKED')
+    ) {
+      return this.syncDocumentToSag(headers, projectId, documentId);
+    }
+
+    if (typeof this.sagTransport.controlProjectDocument !== 'function') {
+      throw new ServiceUnavailableException({
+        code: 'SAG_CONTROL_UNSUPPORTED',
+        message: 'SAG Knowledge control transport is not available.',
+      });
+    }
+
+    const fileMeta = versionDoc.file as
+      | {
+          key?: string;
+          name?: string;
+          contentType?: string;
+          size?: number;
+          sha256?: string;
+        }
+      | undefined;
+
+    let reprocessSourceUrl: string | undefined;
+    if (
+      action === 'REPROCESS' &&
+      fileMeta?.key &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+    ) {
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ) || 1800,
+      );
+      reprocessSourceUrl = await this.documentStorage
+        .createDirectDownloadUrl(fileMeta.key, sagIngestUrlTtlSeconds, {
+          ...(fileMeta.name ? { fileName: fileMeta.name } : {}),
+          ...(fileMeta.contentType
+            ? { contentType: fileMeta.contentType }
+            : {}),
+        })
+        .catch(() => undefined);
+    }
+
+    const sagDocumentId = storedSync?.sagDocumentId || logicalSourceId;
+    try {
+      await this.sagTransport.controlProjectDocument({
+        organizationId: actor.organizationId,
+        projectId,
+        sagDocumentId,
+        actorUserId: actor.userId,
+        action: action.toLowerCase() as 'pause' | 'resume' | 'reprocess',
+        ...(reprocessSourceUrl ? { sourceUrl: reprocessSourceUrl } : {}),
+        ...(fileMeta?.name ? { fileName: fileMeta.name } : {}),
+        ...(fileMeta?.contentType ? { contentType: fileMeta.contentType } : {}),
+        ...(fileMeta?.sha256 ? { expectedSha256: fileMeta.sha256 } : {}),
+        ...(typeof fileMeta?.size === 'number' && fileMeta.size > 0
+          ? { expectedSizeBytes: fileMeta.size }
+          : {}),
+      });
+    } catch (error) {
+      this.mapSagTransportError(error, 'SAG_CONTROL_FAILED');
+    }
+
+    const controlAuditAction =
+      action === 'REPROCESS'
+        ? 'DOCUMENT_KNOWLEDGE_REPROCESSED'
+        : action === 'PAUSE'
+          ? 'DOCUMENT_KNOWLEDGE_PAUSED'
+          : 'DOCUMENT_KNOWLEDGE_RESUMED';
+    await this.auditEvent(
+      actor,
+      controlAuditAction,
+      'PROJECT_DOCUMENT',
+      documentId,
+      {
+        version: versionNumber,
+        sagDocumentId,
+      },
+    );
+
+    if (action === 'REPROCESS') {
+      const resetRecord: DocumentKnowledgeStatusRecord = {
+        ...(storedSync ?? {}),
+        documentId,
+        version: versionNumber,
+        sagDocumentId,
+        status: 'RECEIVED',
+        searchStatus: 'PENDING',
+        knowledgeStatus: storedSync?.knowledgeStatus ?? 'NOT_STARTED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'RECEIVE',
+        documentStatus: 'pending',
+        progress: 0,
+        chunkCount: 0,
+        stageProgress: {},
+        error: null,
+        syncedAt: new Date().toISOString(),
+      };
+      await db
+        .collection('project_document_versions')
+        .updateOne(
+          { _id: versionDoc._id },
+          { $set: { knowledgeSync: resetRecord } },
+        );
+      await db
+        .collection('project_documents')
+        .updateOne({ _id: id }, { $set: { knowledgeSync: resetRecord } });
+      return resetRecord;
+    }
+
+    return this.getDocumentKnowledgeStatus(headers, projectId, documentId);
+  }
+
+  private mapSagTransportError(error: unknown, fallbackCode: string): never {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+    const rawMessage =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : '';
+    const match = /^SAG_[A-Z_]+_FAILED_(\d{3}):([\s\S]*)$/.exec(rawMessage);
+    if (match) {
+      const statusCode = Number(match[1]);
+      const detail =
+        (match[2] || '').trim() || 'Upstream SAG operation failed.';
+      if (statusCode === 400 || statusCode === 422) {
+        throw new BadRequestException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 403) {
+        throw new ForbiddenException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 404) {
+        throw new NotFoundException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 409) {
+        throw new ConflictException({ code: fallbackCode, message: detail });
+      }
+      if (statusCode === 502 || statusCode === 503 || statusCode === 504) {
+        throw new ServiceUnavailableException({
+          code: fallbackCode,
+          message: detail,
+        });
+      }
+      throw new BadGatewayException({ code: fallbackCode, message: detail });
+    }
+    throw new BadGatewayException({
+      code: fallbackCode,
+      message: rawMessage || 'SAG processing service request failed.',
+    });
   }
 
   async getWorkReportSettings(
@@ -1575,8 +3357,20 @@ export class WorkNotesService {
     scope: WorkReportScope = 'MEMBER',
   ): Promise<WorkReportSettingsRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
-    const settings = await this.settingsTimeline(actor);
-    return this.settingsRecord(settings, actor, new Date(), scope);
+    if (scope === 'LEADER' && isActorPureMember(actor)) {
+      throw this.reviewPermissionDenied();
+    }
+    const [timelines, hasActiveLeaders] = await Promise.all([
+      this.scopedSettingsTimelines(actor),
+      this.resolveHasActiveLeaders(actor, headers),
+    ]);
+    return this.settingsRecord(
+      timelines,
+      actor,
+      new Date(),
+      scope,
+      hasActiveLeaders,
+    );
   }
 
   async updateWorkReportSettings(
@@ -1586,186 +3380,253 @@ export class WorkNotesService {
     scope: WorkReportScope = 'MEMBER',
   ): Promise<WorkReportSettingsRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
+    const hasActiveLeaders = await this.resolveHasActiveLeaders(actor, headers);
     if (scope === 'LEADER') {
-      if (!actor.isManager) throw this.reviewPermissionDenied();
-    } else if (!actor.canConfigure) {
+      if (!this.canManageLeaderTier(actor)) {
+        throw this.reviewPermissionDenied();
+      }
+    } else if (!this.canManageMemberTier(actor, hasActiveLeaders)) {
       throw this.reviewPermissionDenied();
     }
-    const settings = await this.settingsTimeline(actor);
-    const now = new Date();
 
-    if (scope === 'LEADER') {
-      const root = settings[0];
-      if (!root) {
-        throw new ServiceUnavailableException({
-          code: 'WORK_REPORT_SETTINGS_UNAVAILABLE',
-          message: 'Work Report settings are unavailable.',
-        });
-      }
-      const previousFrequency = (text(root.leaderFrequency) ||
-        'WEEKLY') as WorkReportFrequency;
-      const leaderEffectiveAt =
-        root.leaderEffectiveAt instanceof Date
-          ? root.leaderEffectiveAt
-          : new Date(String(root.leaderEffectiveAt ?? root.effectiveAt));
-      const existingHistory = Array.isArray(root.leaderHistory)
-        ? (root.leaderHistory as Array<Record<string, unknown>>)
-        : [
-            {
-              frequency: previousFrequency,
-              effectiveAt:
-                iso(leaderEffectiveAt) ?? startOfUtcWeek(now).toISOString(),
-              updatedBy: String(
-                root.leaderUpdatedByUserId ?? root.createdByUserId,
-              ),
-            },
-          ];
-      const nextHistory = [
-        ...existingHistory,
+    const timelines = await this.scopedSettingsTimelines(actor);
+    const now = new Date();
+    const scopeRows =
+      scope === 'LEADER' ? timelines.leaderRows : timelines.memberRows;
+    const active = this.activeSetting(scopeRows, now);
+    const previousFrequency = (text(active.frequency) ||
+      'WEEKLY') as WorkReportFrequency;
+    const activeEffectiveAt =
+      active.effectiveAt instanceof Date
+        ? active.effectiveAt
+        : new Date(String(active.effectiveAt));
+    const existingHistory = this.extractSettingRowHistory(
+      active,
+      activeEffectiveAt,
+      actor.userId,
+    );
+
+    const scopeReportFilter =
+      scope === 'LEADER'
+        ? { reportScope: 'LEADER' }
+        : {
+            $or: [
+              { reportScope: 'MEMBER' },
+              { reportScope: { $exists: false } },
+            ],
+          };
+    const untouchedEmptyDraftCondition = {
+      status: 'DRAFT',
+      $and: [
         {
-          frequency,
-          effectiveAt: now.toISOString(),
-          updatedBy: actor.userId,
+          $or: [
+            { accomplishments: '' },
+            { accomplishments: { $exists: false } },
+          ],
         },
-      ];
-      await this.transaction(async (db, session) => {
-        await db.collection('work_report_settings').updateOne(
-          { _id: root._id },
-          {
-            $set: {
-              leaderFrequency: frequency,
-              leaderEffectiveAt: now,
-              leaderUpdatedByUserId: objectId(actor.userId),
-              leaderHistory: nextHistory,
-              updatedAt: now,
-            },
-          },
-          { session },
-        );
-        await db.collection('work_reports').updateMany(
+        { $or: [{ approach: '' }, { approach: { $exists: false } }] },
+        { $or: [{ reason: '' }, { reason: { $exists: false } }] },
+        { $or: [{ blockers: '' }, { blockers: { $exists: false } }] },
+        { $or: [{ nextSteps: '' }, { nextSteps: { $exists: false } }] },
+        { $or: [{ file: null }, { file: { $exists: false } }] },
+        {
+          $or: [
+            { documentIds: { $size: 0 } },
+            { documentIds: { $exists: false } },
+          ],
+        },
+      ],
+    };
+    const authoredOrSubmittedCondition = {
+      $or: [
+        { status: { $ne: 'DRAFT' } },
+        { accomplishments: { $nin: ['', null] } },
+        { approach: { $nin: ['', null] } },
+        { reason: { $nin: ['', null] } },
+        { blockers: { $nin: ['', null] } },
+        { nextSteps: { $nin: ['', null] } },
+        { 'file.key': { $exists: true } },
+        { 'documentIds.0': { $exists: true } },
+      ],
+    };
+
+    const existingAuthoredReport = await this.database()
+      .collection('work_reports')
+      .findOne({
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        ...scopeReportFilter,
+        periodStart: { $gte: activeEffectiveAt },
+        ...authoredOrSubmittedCondition,
+      });
+    const shouldSplitSegment =
+      Boolean(existingAuthoredReport) &&
+      activeEffectiveAt.getTime() < now.getTime();
+    const changeEffectiveAt = shouldSplitSegment ? now : activeEffectiveAt;
+
+    await this.transaction(async (db, session) => {
+      const settingsCollection = db.collection('work_report_settings');
+      const reportsCollection = db.collection('work_reports');
+
+      await settingsCollection.deleteMany(
+        {
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          ...(scope === 'LEADER'
+            ? { reportScope: 'LEADER' }
+            : {
+                $or: [
+                  { reportScope: 'MEMBER' },
+                  { reportScope: { $exists: false } },
+                ],
+              }),
+          _id: { $ne: active._id },
+          effectiveAt: { $gt: now },
+        },
+        { session },
+      );
+
+      // Remove untouched auto-generated empty draft shells in the open window
+      // so the next obligation pass cleanly materializes the updated cadence period.
+      await reportsCollection.deleteMany(
+        {
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          ...scopeReportFilter,
+          periodEnd: { $gt: now },
+          ...untouchedEmptyDraftCondition,
+        },
+        { session },
+      );
+
+      if (shouldSplitSegment) {
+        // Close open authored draft period windows at the cadence boundary WITHOUT
+        // truncating dueAt to now (preventing false instant OVERDUE transitions).
+        await reportsCollection.updateMany(
           {
             organizationId: objectId(actor.organizationId),
             projectId: objectId(projectId),
-            reportScope: 'LEADER',
+            ...scopeReportFilter,
             status: 'DRAFT',
             periodEnd: { $gt: now },
           },
           {
             $set: {
               periodEnd: now,
-              dueAt: now,
               updatedAt: now,
             },
           },
           { session },
         );
-        await this.appendOutbox(
-          {
-            eventName: 'WORK_REPORT_FREQUENCY_CHANGED',
-            aggregateType: 'WORK_REPORT_SETTINGS',
-            aggregateId: projectId,
-            payload: {
-              organizationId: actor.organizationId,
-              projectId,
-              scope: 'LEADER',
-              previousFrequency,
-              frequency,
-              effectiveAt: now.toISOString(),
+
+        if (scope === 'LEADER' && !timelines.hasExplicitLeaderRows) {
+          await settingsCollection.insertOne(
+            {
+              _id: new Types.ObjectId(),
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+              reportScope: 'LEADER',
+              frequency: previousFrequency,
+              effectiveAt: activeEffectiveAt,
+              createdByUserId:
+                active.createdByUserId instanceof Types.ObjectId
+                  ? active.createdByUserId
+                  : objectId(idText(active.createdByUserId) || actor.userId),
+              updatedByUserId:
+                active.updatedByUserId instanceof Types.ObjectId
+                  ? active.updatedByUserId
+                  : objectId(
+                      idText(
+                        active.updatedByUserId ?? active.createdByUserId,
+                      ) || actor.userId,
+                    ),
+              history: existingHistory.map((entry) => ({
+                frequency: entry.frequency,
+                effectiveAt: new Date(entry.effectiveAt),
+                updatedByUserId: validId(entry.updatedBy)
+                  ? objectId(entry.updatedBy)
+                  : objectId(actor.userId),
+              })),
+              createdAt: now,
+              updatedAt: now,
             },
-          },
-          session,
-        );
-        await this.auditEvent(
-          actor,
-          'REPORT_FREQUENCY_CHANGED',
-          'PROJECT',
-          projectId,
-          {
-            scope: 'LEADER',
-            previousFrequency,
-            frequency,
-            effectiveAt: now.toISOString(),
-          },
-          session,
-        );
-      });
-      if (
-        this.notifications &&
-        typeof this.authorization.listActiveLeaders === 'function'
-      ) {
-        try {
-          const leaders = await this.authorization.listActiveLeaders(
-            actor,
-            headers,
+            { session },
           );
-          const days = getFrequencyDays(frequency);
-          await this.notifications.emitSafe({
-            type: 'TASK_DEADLINE_APPROACHING',
-            actorId: actor.userId,
-            recipients: leaders.map((l) => l.userId),
-            title: 'Leader reporting cadence updated',
-            message: `Manager updated Leader work report schedule to every ${days} ${days === 1 ? 'day' : 'days'}.`,
-            organizationId: actor.organizationId,
-            projectId,
-            target: {
-              kind: 'PROJECT',
-              url: `/projects/${projectId}/work-reports`,
-              organizationId: actor.organizationId,
-              projectId,
+        }
+
+        await settingsCollection.insertOne(
+          {
+            _id: new Types.ObjectId(),
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            reportScope: scope,
+            frequency,
+            effectiveAt: now,
+            createdByUserId: objectId(actor.userId),
+            updatedByUserId: objectId(actor.userId),
+            history: [
+              {
+                frequency,
+                effectiveAt: now,
+                updatedByUserId: objectId(actor.userId),
+              },
+            ],
+            createdAt: now,
+            updatedAt: now,
+          },
+          { session },
+        );
+      } else {
+        const appendedHistory = [
+          ...existingHistory.map((entry) => ({
+            frequency: entry.frequency,
+            effectiveAt: new Date(entry.effectiveAt),
+            updatedByUserId: validId(entry.updatedBy)
+              ? objectId(entry.updatedBy)
+              : objectId(actor.userId),
+          })),
+          {
+            frequency,
+            effectiveAt: now,
+            updatedByUserId: objectId(actor.userId),
+          },
+        ];
+
+        if (scope === 'LEADER' && !timelines.hasExplicitLeaderRows) {
+          await settingsCollection.insertOne(
+            {
+              _id: new Types.ObjectId(),
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+              reportScope: 'LEADER',
+              frequency,
+              effectiveAt: activeEffectiveAt,
+              createdByUserId: objectId(actor.userId),
+              updatedByUserId: objectId(actor.userId),
+              history: appendedHistory,
+              createdAt: now,
+              updatedAt: now,
             },
-            eventKey: `leader-report-cadence:${projectId}:${frequency}:${now.getTime()}`,
-          });
-        } catch {
-          // Do not fail setting mutation if notification emit fails
+            { session },
+          );
+        } else {
+          await settingsCollection.updateOne(
+            { _id: active._id },
+            {
+              $set: {
+                reportScope: scope,
+                frequency,
+                createdByUserId: objectId(actor.userId),
+                updatedByUserId: objectId(actor.userId),
+                history: appendedHistory,
+                updatedAt: now,
+              },
+            },
+            { session },
+          );
         }
       }
-      const updated = await this.settingsTimeline(actor);
-      return this.settingsRecord(updated, actor, now, 'LEADER');
-    }
 
-    const active = this.activeSetting(settings, now);
-    const previousFrequency = text(active.frequency) as WorkReportFrequency;
-    const activeEffectiveAt = new Date(String(active.effectiveAt));
-    const newPeriod = calculateReportPeriod(activeEffectiveAt, frequency, now);
-    await this.transaction(async (db, session) => {
-      await db.collection('work_report_settings').deleteMany(
-        {
-          organizationId: objectId(actor.organizationId),
-          projectId: objectId(projectId),
-          _id: { $ne: active._id },
-          effectiveAt: { $gt: now },
-        },
-        { session },
-      );
-      await db.collection('work_report_settings').updateOne(
-        { _id: active._id },
-        {
-          $set: {
-            frequency,
-            createdByUserId: objectId(actor.userId),
-            updatedAt: now,
-          },
-        },
-        { session },
-      );
-      await db.collection('work_reports').updateMany(
-        {
-          organizationId: objectId(actor.organizationId),
-          projectId: objectId(projectId),
-          $or: [{ reportScope: 'MEMBER' }, { reportScope: { $exists: false } }],
-          status: 'DRAFT',
-          periodEnd: { $gt: now },
-        },
-        {
-          $set: {
-            frequency,
-            periodEnd: newPeriod.periodEnd,
-            dueAt: newPeriod.periodEnd,
-            updatedAt: now,
-          },
-        },
-        { session },
-      );
       await this.appendOutbox(
         {
           eventName: 'WORK_REPORT_FREQUENCY_CHANGED',
@@ -1774,9 +3635,10 @@ export class WorkNotesService {
           payload: {
             organizationId: actor.organizationId,
             projectId,
+            scope,
             previousFrequency,
             frequency,
-            effectiveAt: activeEffectiveAt.toISOString(),
+            effectiveAt: changeEffectiveAt.toISOString(),
           },
         },
         session,
@@ -1787,42 +3649,62 @@ export class WorkNotesService {
         'PROJECT',
         projectId,
         {
+          scope,
           previousFrequency,
           frequency,
-          effectiveAt: activeEffectiveAt.toISOString(),
+          effectiveAt: changeEffectiveAt.toISOString(),
         },
         session,
       );
     });
+
     if (this.notifications) {
       try {
-        const members = await this.authorization.listActiveMembers(
-          actor,
-          headers,
-        );
+        const recipients =
+          scope === 'LEADER'
+            ? typeof this.authorization.listActiveLeaders === 'function'
+              ? (
+                  await this.authorization.listActiveLeaders(actor, headers)
+                ).map((leader) => leader.userId)
+              : await this.resolveProjectLeaderRecipientIds(
+                  actor.organizationId,
+                  projectId,
+                )
+            : (await this.authorization.listActiveMembers(actor, headers)).map(
+                (member) => member.userId,
+              );
         const days = getFrequencyDays(frequency);
-        await this.notifications.emitSafe({
-          type: 'TASK_DEADLINE_APPROACHING',
-          actorId: actor.userId,
-          recipients: members.map((m) => m.userId),
-          title: 'Work report schedule updated',
-          message: `Project reporting cadence is now every ${days} ${days === 1 ? 'day' : 'days'}.`,
-          organizationId: actor.organizationId,
-          projectId,
-          target: {
-            kind: 'PROJECT',
-            url: `/projects/${projectId}/work-reports`,
+        if (recipients.length > 0) {
+          await this.notifications.emitSafe({
+            type: 'WORK_REPORT_FREQUENCY_CHANGED',
+            actorId: actor.userId,
+            recipients,
+            title:
+              scope === 'LEADER'
+                ? 'Leader reporting cadence updated'
+                : 'Work report schedule updated',
+            message:
+              scope === 'LEADER'
+                ? `Manager updated Leader work report schedule to every ${days} ${days === 1 ? 'day' : 'days'}.`
+                : `Project reporting cadence is now every ${days} ${days === 1 ? 'day' : 'days'}.`,
             organizationId: actor.organizationId,
             projectId,
-          },
-          eventKey: `member-report-cadence:${projectId}:${frequency}:${now.getTime()}`,
-        });
+            target: {
+              kind: 'PROJECT',
+              url: `/projects/${projectId}/work-reports`,
+              organizationId: actor.organizationId,
+              projectId,
+            },
+            eventKey: `${scope.toLowerCase()}-report-cadence:${projectId}:${frequency}:${now.getTime()}`,
+          });
+        }
       } catch {
         // Do not fail setting mutation if notification emit fails
       }
     }
-    const updated = await this.settingsTimeline(actor);
-    return this.settingsRecord(updated, actor, now, 'MEMBER');
+
+    const updated = await this.scopedSettingsTimelines(actor);
+    return this.settingsRecord(updated, actor, now, scope, hasActiveLeaders);
   }
 
   async listWorkReports(
@@ -1832,18 +3714,20 @@ export class WorkNotesService {
     pageSize: number,
     status?: WorkReportStatus,
     scope: WorkReportScope = 'MEMBER',
-  ): Promise<WorkNotesPage<WorkReportRecord>> {
+    filters?: WorkReportsListFilters,
+  ): Promise<WorkReportsPageRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
-    const timeline = await this.settingsTimeline(actor);
+    const timelines = await this.scopedSettingsTimelines(actor);
     const now = new Date();
+    const collection = this.database().collection('work_reports');
 
     if (scope === 'LEADER') {
-      if (!actor.canReview) throw this.reviewPermissionDenied();
+      if (isActorPureMember(actor)) throw this.reviewPermissionDenied();
       const leaders =
         typeof this.authorization.listActiveLeaders === 'function'
           ? await this.authorization.listActiveLeaders(actor, headers)
           : [];
-      if (!actor.isManager) {
+      if (isActorLeader(actor)) {
         const normalizedActorId = actor.userId.toLowerCase();
         if (
           !leaders.some((l) => l.userId.toLowerCase() === normalizedActorId)
@@ -1858,82 +3742,91 @@ export class WorkNotesService {
           });
         }
       }
+      const hasActiveLeaders = leaders.length > 0 || isActorLeader(actor);
       const activeLeaderIds = new Set(
         leaders.map((leader) => leader.userId.toLowerCase()),
       );
-      const leaderTimeline = this.leaderSettingsTimeline(timeline);
       await this.ensureReportObligations(
         actor,
         leaders,
-        leaderTimeline,
+        timelines.leaderRows,
         now,
         'LEADER',
       );
       await this.markOverdue(actor, projectId, now, activeLeaderIds, 'LEADER');
-      const leaderFilter = {
+
+      const canViewAllLeaders = isActorManager(actor);
+      const visibleRosterPeople = canViewAllLeaders
+        ? leaders
+        : leaders.filter(
+            (leader) =>
+              leader.userId.toLowerCase() === actor.userId.toLowerCase(),
+          );
+      const baseVisibilityFilter: Record<string, unknown> = {
         organizationId: objectId(actor.organizationId),
         projectId: objectId(projectId),
         reportScope: 'LEADER',
-        ...(!actor.isManager ? { memberUserId: objectId(actor.userId) } : {}),
-        ...(status ? { status } : {}),
+        ...(!canViewAllLeaders ? { memberUserId: objectId(actor.userId) } : {}),
       };
-      const collection = this.database().collection('work_reports');
-      const [rows, totalItems] = await Promise.all([
-        collection
-          .find(leaderFilter)
-          .sort({ periodStart: -1, memberUserId: 1 })
-          .skip((page - 1) * pageSize)
-          .limit(pageSize)
-          .toArray(),
-        collection.countDocuments(leaderFilter),
-      ]);
-      return {
-        data: rows.map((row) => {
-          const leaderId = String(row.memberUserId);
-          const leaderName = leaders.find(
-            (leader) => leader.userId === leaderId.toLowerCase(),
-          )?.fullName;
-          return this.workReportRecord(row, actor, leaderName);
-        }),
-        pagination: this.pagination(page, pageSize, totalItems),
-      };
+      return this.queryWorkReportsPage({
+        collection,
+        actor,
+        scope: 'LEADER',
+        scopeRows: timelines.leaderRows,
+        rosterPeople: visibleRosterPeople,
+        allDirectoryPeople: leaders,
+        canViewAllInScope: canViewAllLeaders,
+        hasActiveLeaders,
+        baseVisibilityFilter,
+        page,
+        pageSize,
+        status,
+        filters,
+        now,
+      });
     }
 
-    const members = actor.canReview
-      ? await this.authorization.listActiveMembers(actor, headers)
-      : [this.resolveActorMemberObligation(actor)];
+    const canViewAllMembers = isActorLeader(actor) || isActorManager(actor);
+    const [members, hasActiveLeaders] = await Promise.all([
+      canViewAllMembers
+        ? this.authorization.listActiveMembers(actor, headers)
+        : Promise.resolve([this.resolveActorMemberObligation(actor)]),
+      this.resolveHasActiveLeaders(actor, headers),
+    ]);
     const activeMemberIds = new Set(
       members.map((member) => member.userId.toLowerCase()),
     );
-    await this.ensureReportObligations(actor, members, timeline, now, 'MEMBER');
+    await this.ensureReportObligations(
+      actor,
+      members,
+      timelines.memberRows,
+      now,
+      'MEMBER',
+    );
     await this.markOverdue(actor, projectId, now, activeMemberIds, 'MEMBER');
-    const filter = {
+
+    const baseVisibilityFilter: Record<string, unknown> = {
       organizationId: objectId(actor.organizationId),
       projectId: objectId(projectId),
       $or: [{ reportScope: 'MEMBER' }, { reportScope: { $exists: false } }],
-      ...(!actor.canReview ? { memberUserId: objectId(actor.userId) } : {}),
-      ...(status ? { status } : {}),
+      ...(!canViewAllMembers ? { memberUserId: objectId(actor.userId) } : {}),
     };
-    const collection = this.database().collection('work_reports');
-    const [rows, totalItems] = await Promise.all([
-      collection
-        .find(filter)
-        .sort({ periodStart: -1, memberUserId: 1 })
-        .skip((page - 1) * pageSize)
-        .limit(pageSize)
-        .toArray(),
-      collection.countDocuments(filter),
-    ]);
-    return {
-      data: rows.map((row) => {
-        const memberId = String(row.memberUserId);
-        const memberName = members.find(
-          (member) => member.userId === memberId,
-        )?.fullName;
-        return this.workReportRecord(row, actor, memberName);
-      }),
-      pagination: this.pagination(page, pageSize, totalItems),
-    };
+    return this.queryWorkReportsPage({
+      collection,
+      actor,
+      scope: 'MEMBER',
+      scopeRows: timelines.memberRows,
+      rosterPeople: members,
+      allDirectoryPeople: members,
+      canViewAllInScope: canViewAllMembers,
+      hasActiveLeaders,
+      baseVisibilityFilter,
+      page,
+      pageSize,
+      status,
+      filters,
+      now,
+    });
   }
 
   async saveCurrentWorkReportDraft(
@@ -1944,27 +3837,47 @@ export class WorkNotesService {
   ): Promise<WorkReportRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (scope === 'LEADER') {
-      if (!actor.canReview || (actor.isManager && !actor.isLeader)) {
+      if (!isActorLeader(actor)) {
         throw new ForbiddenException({
           code: 'WORK_REPORT_LEADER_ONLY',
           message: 'Only Project Leaders can save a Leader Work Report draft.',
         });
       }
       const now = new Date();
+      let resolvedJoinedAt =
+        actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
+          ? actor.joinedAt
+          : undefined;
+      if (typeof this.authorization.listActiveLeaders === 'function') {
+        try {
+          const activeLeaders = await this.authorization.listActiveLeaders(
+            actor,
+            headers,
+          );
+          const matched = activeLeaders.find(
+            (leader) =>
+              leader.userId.toLowerCase() === actor.userId.toLowerCase(),
+          );
+          if (
+            matched?.joinedAt &&
+            Number.isFinite(Date.parse(matched.joinedAt))
+          ) {
+            resolvedJoinedAt = matched.joinedAt;
+          }
+        } catch {
+          // Fallback safely to actor.joinedAt if directory lookup is unavailable
+        }
+      }
       const leaderObligation = {
         userId: actor.userId,
         fullName: actor.userName,
-        joinedAt:
-          actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
-            ? actor.joinedAt
-            : startOfUtcWeek(now).toISOString(),
+        joinedAt: resolvedJoinedAt ?? startOfUtcWeek(now).toISOString(),
       };
-      const timeline = await this.settingsTimeline(actor);
-      const leaderTimeline = this.leaderSettingsTimeline(timeline);
+      const timelines = await this.scopedSettingsTimelines(actor);
       await this.ensureReportObligations(
         actor,
         [leaderObligation],
-        leaderTimeline,
+        timelines.leaderRows,
         now,
         'LEADER',
       );
@@ -1975,7 +3888,7 @@ export class WorkNotesService {
         new Set([actor.userId.toLowerCase()]),
         'LEADER',
       );
-      const currentSetting = this.activeSetting(leaderTimeline, now);
+      const currentSetting = this.activeSetting(timelines.leaderRows, now);
       const period = calculateReportPeriod(
         currentSetting.effectiveAt instanceof Date
           ? currentSetting.effectiveAt
@@ -1998,20 +3911,20 @@ export class WorkNotesService {
       return this.saveReportDraft(actor, row._id, input, 'LEADER');
     }
 
-    if (actor.canReview) {
+    if (!isActorPureMember(actor)) {
       throw new ForbiddenException({
         code: 'WORK_REPORT_MEMBER_ONLY',
         message:
-          'Project Leaders are excluded from member Work Report obligations.',
+          'Project Leaders and Managers are excluded from member Work Report obligations.',
       });
     }
     const member = this.resolveActorMemberObligation(actor);
-    const timeline = await this.settingsTimeline(actor);
+    const timelines = await this.scopedSettingsTimelines(actor);
     const now = new Date();
     await this.ensureReportObligations(
       actor,
       [member],
-      timeline,
+      timelines.memberRows,
       now,
       'MEMBER',
     );
@@ -2022,9 +3935,11 @@ export class WorkNotesService {
       new Set([member.userId.toLowerCase()]),
       'MEMBER',
     );
-    const currentSetting = this.activeSetting(timeline, now);
+    const currentSetting = this.activeSetting(timelines.memberRows, now);
     const period = calculateReportPeriod(
-      new Date(String(currentSetting.effectiveAt)),
+      currentSetting.effectiveAt instanceof Date
+        ? currentSetting.effectiveAt
+        : new Date(String(currentSetting.effectiveAt)),
       text(currentSetting.frequency) as WorkReportFrequency,
       now,
     );
@@ -2035,6 +3950,7 @@ export class WorkNotesService {
           organizationId: objectId(actor.organizationId),
           projectId: objectId(projectId),
           memberUserId: objectId(actor.userId),
+          $or: [{ reportScope: 'MEMBER' }, { reportScope: { $exists: false } }],
           periodStart: period.periodStart,
         }),
     );
@@ -2078,6 +3994,11 @@ export class WorkNotesService {
       status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
     });
     if (!existing) throw reportNotFound();
+    const existingScope: WorkReportScope =
+      text((existing as Record<string, unknown>).reportScope) === 'LEADER'
+        ? 'LEADER'
+        : 'MEMBER';
+    this.assertCanAuthorScope(actor, existingScope);
     if (!this.documentStorage)
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
@@ -2136,15 +4057,18 @@ export class WorkNotesService {
   ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(reportId)) throw reportNotFound();
-    const report = await this.database()
-      .collection('work_reports')
-      .findOne({
-        _id: objectId(reportId),
-        organizationId: objectId(actor.organizationId),
-        projectId: objectId(projectId),
-        ...(!actor.canReview ? { memberUserId: objectId(actor.userId) } : {}),
-      });
-    if (!report) throw reportNotFound();
+    const report = record(
+      await this.database()
+        .collection('work_reports')
+        .findOne({
+          _id: objectId(reportId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        }),
+    );
+    if (!report || !this.canViewWorkReportRow(actor, report)) {
+      throw reportNotFound();
+    }
     const file = report.file as
       { key?: string; name?: string; contentType?: string } | undefined;
     if (!file?.key || !file.name || !file.contentType) throw reportNotFound();
@@ -2173,26 +4097,40 @@ export class WorkNotesService {
           _id: objectId(reportId),
           organizationId: objectId(actor.organizationId),
           projectId: objectId(projectId),
-          ...(!actor.canReview ? { memberUserId: objectId(actor.userId) } : {}),
         }),
     );
-    if (!row) throw reportNotFound();
+    if (!row || !this.canViewWorkReportRow(actor, row)) {
+      throw reportNotFound();
+    }
     const memberId = String(row.memberUserId);
     const isLeaderReport = text(row.reportScope) === 'LEADER';
-    const memberName =
-      memberId === actor.userId
-        ? actor.userName
-        : actor.canReview
+    const [memberName, hasActiveLeaders] = await Promise.all([
+      memberId.toLowerCase() === actor.userId.toLowerCase()
+        ? Promise.resolve(actor.userName)
+        : isActorLeader(actor) || isActorManager(actor)
           ? isLeaderReport &&
             typeof this.authorization.listActiveLeaders === 'function'
-            ? (await this.authorization.listActiveLeaders(actor, headers)).find(
-                (leader) => leader.userId === memberId.toLowerCase(),
-              )?.fullName
-            : (await this.authorization.listActiveMembers(actor, headers)).find(
-                (member) => member.userId === memberId,
-              )?.fullName
-          : undefined;
-    return this.workReportRecord(row, actor, memberName);
+            ? this.authorization
+                .listActiveLeaders(actor, headers)
+                .then(
+                  (leaders) =>
+                    leaders.find(
+                      (leader) => leader.userId === memberId.toLowerCase(),
+                    )?.fullName,
+                )
+            : this.authorization
+                .listActiveMembers(actor, headers)
+                .then(
+                  (members) =>
+                    members.find(
+                      (member) =>
+                        member.userId.toLowerCase() === memberId.toLowerCase(),
+                    )?.fullName,
+                )
+          : Promise.resolve(undefined),
+      this.resolveHasActiveLeaders(actor, headers),
+    ]);
+    return this.workReportRecord(row, actor, memberName, hasActiveLeaders);
   }
 
   async updateWorkReportDraft(
@@ -2215,8 +4153,7 @@ export class WorkNotesService {
     if (!validId(reportId)) throw reportNotFound();
     const id = objectId(reportId);
     const now = new Date();
-    let memberId = '';
-    await this.transaction(async (db, session) => {
+    const { submittedScope } = await this.transaction(async (db, session) => {
       const reports = db.collection('work_reports');
       const current = record(
         await reports.findOne(
@@ -2231,6 +4168,9 @@ export class WorkNotesService {
         ),
       );
       if (!current) throw reportNotFound();
+      const currentScope: WorkReportScope =
+        text(current.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
+      this.assertCanAuthorScope(actor, currentScope);
       if (
         !text(current.accomplishments).trim() ||
         !text(current.approach).trim() ||
@@ -2239,7 +4179,7 @@ export class WorkNotesService {
         throw conflict(
           'Complete the three required report fields before submitting.',
         );
-      memberId = String(current.memberUserId);
+      const currentMemberId = String(current.memberUserId);
       const updated = await reports.updateOne(
         {
           _id: id,
@@ -2263,7 +4203,8 @@ export class WorkNotesService {
           payload: {
             organizationId: actor.organizationId,
             projectId,
-            memberId,
+            memberId: currentMemberId,
+            scope: currentScope,
           },
         },
         session,
@@ -2274,11 +4215,55 @@ export class WorkNotesService {
         'WORK_REPORT',
         reportId,
         {
-          memberId,
+          memberId: currentMemberId,
+          scope: currentScope,
         },
         session,
       );
+      return { memberId: currentMemberId, submittedScope: currentScope };
     });
+
+    if (this.notifications) {
+      try {
+        const recipients =
+          submittedScope === 'LEADER'
+            ? await this.resolveOrganizationManagerRecipientIds(
+                actor.organizationId,
+              )
+            : await this.resolveProjectLeaderRecipientIds(
+                actor.organizationId,
+                projectId,
+              );
+        if (recipients.length > 0) {
+          const authorLabel = actor.userName || 'A team member';
+          await this.notifications.emitSafe({
+            type: 'WORK_REPORT_SUBMITTED',
+            actorId: actor.userId,
+            recipients,
+            title:
+              submittedScope === 'LEADER'
+                ? 'Leader work report submitted for review'
+                : 'Member work report submitted for review',
+            message:
+              submittedScope === 'LEADER'
+                ? `${authorLabel} submitted a Leader work report awaiting Manager review.`
+                : `${authorLabel} submitted a periodic work report awaiting Leader review.`,
+            organizationId: actor.organizationId,
+            projectId,
+            target: {
+              kind: 'PROJECT',
+              url: `/projects/${projectId}/work-reports`,
+              organizationId: actor.organizationId,
+              projectId,
+            },
+            eventKey: `work-report-submitted:${reportId}:${now.getTime()}`,
+          });
+        }
+      } catch {
+        // Do not fail report submission if notification emit fails
+      }
+    }
+
     return this.getWorkReport(headers, projectId, reportId);
   }
 
@@ -2290,126 +4275,155 @@ export class WorkNotesService {
     input: ReviewInput,
   ): Promise<WorkReportRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
-    if (!actor.canReview) throw this.reviewPermissionDenied();
+    if (!isActorLeader(actor) && !isActorManager(actor)) {
+      throw this.reviewPermissionDenied();
+    }
     if (!validId(reportId)) throw reportNotFound();
+    const hasActiveLeaders = await this.resolveHasActiveLeaders(actor, headers);
     const id = objectId(reportId);
     const now = new Date();
-    let memberId = '';
-    await this.transaction(async (db, session) => {
-      const reports = db.collection('work_reports');
-      const current = record(
-        await reports.findOne(
+    const { memberId, reviewedScope } = await this.transaction(
+      async (db, session) => {
+        const reports = db.collection('work_reports');
+        const current = record(
+          await reports.findOne(
+            {
+              _id: id,
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+              status: 'PENDING_REVIEW',
+            },
+            { session },
+          ),
+        );
+        if (!current) throw reportNotFound();
+        const isLeaderReport = text(current.reportScope) === 'LEADER';
+        const currentScope: WorkReportScope = isLeaderReport
+          ? 'LEADER'
+          : 'MEMBER';
+        const canReviewScope = isLeaderReport
+          ? this.canManageLeaderTier(actor)
+          : this.canManageMemberTier(actor, hasActiveLeaders);
+        if (!canReviewScope) {
+          throw this.reviewPermissionDenied();
+        }
+        const currentMemberId = String(current.memberUserId);
+        assertReviewerCanReview(currentMemberId, actor.userId, canReviewScope);
+        const reviewerRole: 'MANAGER' | 'LEADER' = isLeaderReport
+          ? 'MANAGER'
+          : isActorLeader(actor)
+            ? 'LEADER'
+            : 'MANAGER';
+        const history = pickReviewHistory(current.reviewHistory);
+        const updated = await reports.updateOne(
+          { _id: id, status: 'PENDING_REVIEW' },
           {
-            _id: id,
-            organizationId: objectId(actor.organizationId),
-            projectId: objectId(projectId),
-            status: 'PENDING_REVIEW',
+            $set: {
+              status: action,
+              reviewedByUserId: objectId(actor.userId),
+              reviewedAt: now,
+              ...(input.comment ? { reviewComment: input.comment } : {}),
+              reviewHistory: [
+                ...history,
+                {
+                  action,
+                  reviewerId: actor.userId,
+                  reviewerRole,
+                  ...(input.comment ? { comment: input.comment } : {}),
+                  at: now,
+                },
+              ],
+              updatedAt: now,
+            },
           },
           { session },
-        ),
-      );
-      if (!current) throw reportNotFound();
-      const isLeaderReport = text(current.reportScope) === 'LEADER';
-      if (isLeaderReport && !actor.isManager) {
-        throw this.reviewPermissionDenied();
-      }
-      memberId = String(current.memberUserId);
-      assertReviewerCanReview(
-        memberId,
-        actor.userId,
-        isLeaderReport ? Boolean(actor.isManager) : actor.canReview,
-      );
-      const history = pickReviewHistory(current.reviewHistory);
-      const updated = await reports.updateOne(
-        { _id: id, status: 'PENDING_REVIEW' },
-        {
-          $set: {
-            status: action,
-            reviewedByUserId: objectId(actor.userId),
-            reviewedAt: now,
-            ...(input.comment ? { reviewComment: input.comment } : {}),
-            reviewHistory: [
-              ...history,
-              {
-                action,
-                reviewerId: actor.userId,
-                ...(input.comment ? { comment: input.comment } : {}),
-                at: now,
-              },
-            ],
-            updatedAt: now,
+        );
+        if (updated.modifiedCount !== 1)
+          throw conflict('The Work Report was reviewed by another user.');
+        const eventName =
+          action === 'APPROVED'
+            ? 'WORK_REPORT_APPROVED'
+            : action === 'CHANGES_REQUESTED'
+              ? 'WORK_REPORT_CHANGES_REQUESTED'
+              : 'WORK_REPORT_REJECTED';
+        await this.appendOutbox(
+          {
+            eventName,
+            aggregateType: 'WORK_REPORT',
+            aggregateId: reportId,
+            payload: {
+              organizationId: actor.organizationId,
+              projectId,
+              memberId: currentMemberId,
+              scope: currentScope,
+              reviewerRole,
+              ...(input.comment ? { comment: input.comment } : {}),
+            },
           },
-        },
-        { session },
-      );
-      if (updated.modifiedCount !== 1)
-        throw conflict('The Work Report was reviewed by another user.');
-      const eventName =
+          session,
+        );
+        if (action === 'APPROVED') {
+          await this.appendOutbox(
+            {
+              eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+              aggregateType: 'WORK_REPORT',
+              aggregateId: reportId,
+              payload: {
+                sourceType: 'PERIODIC_REPORT',
+                sourceId: reportId,
+                organizationId: actor.organizationId,
+                projectId,
+                version: 1,
+                approvedAt: now.toISOString(),
+              },
+            },
+            session,
+          );
+        }
+        const auditAction =
+          action === 'APPROVED'
+            ? 'REPORT_APPROVED'
+            : action === 'CHANGES_REQUESTED'
+              ? 'REPORT_CHANGES_REQUESTED'
+              : 'REPORT_REJECTED';
+        await this.auditEvent(
+          actor,
+          auditAction,
+          'WORK_REPORT',
+          reportId,
+          {
+            memberId: currentMemberId,
+            scope: currentScope,
+            reviewerRole,
+          },
+          session,
+        );
+        return { memberId: currentMemberId, reviewedScope: currentScope };
+      },
+    );
+    if (this.notifications && memberId) {
+      const notificationType =
         action === 'APPROVED'
           ? 'WORK_REPORT_APPROVED'
           : action === 'CHANGES_REQUESTED'
             ? 'WORK_REPORT_CHANGES_REQUESTED'
             : 'WORK_REPORT_REJECTED';
-      await this.appendOutbox(
-        {
-          eventName,
-          aggregateType: 'WORK_REPORT',
-          aggregateId: reportId,
-          payload: {
-            organizationId: actor.organizationId,
-            projectId,
-            memberId,
-            ...(input.comment ? { comment: input.comment } : {}),
-          },
-        },
-        session,
-      );
-      if (action === 'APPROVED') {
-        await this.appendOutbox(
-          {
-            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
-            aggregateType: 'WORK_REPORT',
-            aggregateId: reportId,
-            payload: {
-              sourceType: 'PERIODIC_REPORT',
-              sourceId: reportId,
-              organizationId: actor.organizationId,
-              projectId,
-              version: 1,
-              approvedAt: now.toISOString(),
-            },
-          },
-          session,
-        );
-      }
-      const auditAction =
-        action === 'APPROVED'
-          ? 'REPORT_APPROVED'
-          : action === 'CHANGES_REQUESTED'
-            ? 'REPORT_CHANGES_REQUESTED'
-            : 'REPORT_REJECTED';
-      await this.auditEvent(
-        actor,
-        auditAction,
-        'WORK_REPORT',
-        reportId,
-        {
-          memberId,
-        },
-        session,
-      );
-    });
-    if (this.notifications && memberId) {
       await this.notifications.emitSafe({
-        type: 'TASK_DEADLINE_APPROACHING',
+        type: notificationType,
         actorId: actor.userId,
         recipients: [memberId],
         title:
           action === 'APPROVED'
-            ? 'Work report approved'
+            ? reviewedScope === 'LEADER'
+              ? 'Leader work report approved'
+              : 'Work report approved'
             : action === 'CHANGES_REQUESTED'
-              ? 'Changes requested on work report'
-              : 'Work report rejected',
+              ? reviewedScope === 'LEADER'
+                ? 'Changes requested on Leader work report'
+                : 'Changes requested on work report'
+              : reviewedScope === 'LEADER'
+                ? 'Leader work report rejected'
+                : 'Work report rejected',
         message: input.comment
           ? `Reviewer feedback: ${input.comment}`
           : `Your work report status was updated to ${action.replace('_', ' ').toLowerCase()}.`,
@@ -2432,13 +4446,20 @@ export class WorkNotesService {
   ): Promise<number> {
     const db = this.database();
     const now = new Date();
-    const activeMembersByProject = activeRosters
+    const rostersByProject = activeRosters
       ? new Map(
           activeRosters.map((roster) => [
             roster.projectId.toLowerCase(),
-            new Set(
-              roster.members.map((member) => member.userId.toLowerCase()),
-            ),
+            {
+              members: new Set(
+                roster.members.map((member) => member.userId.toLowerCase()),
+              ),
+              leaders: roster.leaders
+                ? new Set(
+                    roster.leaders.map((leader) => leader.userId.toLowerCase()),
+                  )
+                : undefined,
+            },
           ]),
         )
       : undefined;
@@ -2453,9 +4474,21 @@ export class WorkNotesService {
       const item = candidate as unknown as Record<string, unknown>;
       const candidateProjectId = String(item.projectId).toLowerCase();
       const candidateMemberId = String(item.memberUserId).toLowerCase();
-      if (activeMembersByProject) {
-        const activeMembers = activeMembersByProject.get(candidateProjectId);
-        if (!activeMembers || !activeMembers.has(candidateMemberId)) {
+      const candidateScope: WorkReportScope =
+        text(item.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
+      if (rostersByProject) {
+        const projectRoster = rostersByProject.get(candidateProjectId);
+        if (!projectRoster) {
+          continue;
+        }
+        if (candidateScope === 'LEADER') {
+          if (
+            projectRoster.leaders &&
+            !projectRoster.leaders.has(candidateMemberId)
+          ) {
+            continue;
+          }
+        } else if (!projectRoster.members.has(candidateMemberId)) {
           continue;
         }
       }
@@ -2476,6 +4509,7 @@ export class WorkNotesService {
             organizationId: String(item.organizationId),
             projectId,
             memberId,
+            scope: candidateScope,
             periodStart: iso(item.periodStart),
             periodEnd: iso(item.periodEnd),
             dueAt: iso(item.dueAt),
@@ -2505,10 +4539,13 @@ export class WorkNotesService {
         transitioned += 1;
         if (this.notifications) {
           await this.notifications.emitSafe({
-            type: 'TASK_DEADLINE_OVERDUE',
+            type: 'WORK_REPORT_OVERDUE',
             actorId: null,
             recipients: [String(item.memberUserId)],
-            title: 'Work report overdue',
+            title:
+              candidateScope === 'LEADER'
+                ? 'Leader work report overdue'
+                : 'Work report overdue',
             message:
               'Your periodic work report has passed its due date. Please complete and submit your report.',
             organizationId: String(item.organizationId),
@@ -2538,14 +4575,26 @@ export class WorkNotesService {
       canReview: true,
       canConfigure: true,
     };
-    const timeline = await this.settingsTimeline(actor);
-    await this.ensureReportObligations(
-      actor,
-      project.members,
-      timeline,
-      new Date(),
-      'MEMBER',
-    );
+    const timelines = await this.scopedSettingsTimelines(actor);
+    const now = new Date();
+    if (project.members.length > 0) {
+      await this.ensureReportObligations(
+        actor,
+        project.members,
+        timelines.memberRows,
+        now,
+        'MEMBER',
+      );
+    }
+    if ((project.leaders?.length ?? 0) > 0) {
+      await this.ensureReportObligations(
+        actor,
+        project.leaders!,
+        timelines.leaderRows,
+        now,
+        'LEADER',
+      );
+    }
   }
 
   private async saveReportDraft(
@@ -2565,22 +4614,7 @@ export class WorkNotesService {
     const resolvedScope: WorkReportScope =
       expectedScope ??
       (text(existingReport?.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER');
-    if (resolvedScope === 'MEMBER' && actor.canReview) {
-      throw new ForbiddenException({
-        code: 'WORK_REPORT_MEMBER_ONLY',
-        message:
-          'Project Leaders are excluded from member Work Report obligations.',
-      });
-    }
-    if (
-      resolvedScope === 'LEADER' &&
-      (!actor.canReview || (actor.isManager && !actor.isLeader))
-    ) {
-      throw new ForbiddenException({
-        code: 'WORK_REPORT_LEADER_ONLY',
-        message: 'Only Project Leaders can save a Leader Work Report draft.',
-      });
-    }
+    this.assertCanAuthorScope(actor, resolvedScope);
     if (!existingReport) throw reportNotFound();
     const now = new Date();
     await this.transaction(async (db, session) => {
@@ -2634,60 +4668,427 @@ export class WorkNotesService {
     return this.workReportRecord(row, actor);
   }
 
-  private async settingsTimeline(
+  private assertCanAuthorScope(
     actor: WorkNotesActor,
-  ): Promise<MongoRecord[]> {
+    scope: WorkReportScope,
+  ): void {
+    if (scope === 'LEADER') {
+      if (!isActorLeader(actor)) {
+        throw new ForbiddenException({
+          code: 'WORK_REPORT_LEADER_ONLY',
+          message: 'Only Project Leaders can author a Leader Work Report.',
+        });
+      }
+      return;
+    }
+    if (!isActorPureMember(actor)) {
+      throw new ForbiddenException({
+        code: 'WORK_REPORT_MEMBER_ONLY',
+        message:
+          'Project Leaders and Managers are excluded from member Work Report obligations.',
+      });
+    }
+  }
+
+  private canManageLeaderTier(actor: WorkNotesActor): boolean {
+    return isActorManager(actor);
+  }
+
+  private canManageMemberTier(
+    actor: WorkNotesActor,
+    hasActiveLeaders = true,
+  ): boolean {
+    return isActorLeader(actor) || (isActorManager(actor) && !hasActiveLeaders);
+  }
+
+  private canViewWorkReportRow(
+    actor: WorkNotesActor,
+    row: Record<string, unknown>,
+  ): boolean {
+    const reportScope: WorkReportScope =
+      text(row.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
+    const isOwner =
+      String(row.memberUserId).toLowerCase() === actor.userId.toLowerCase();
+    if (reportScope === 'LEADER') {
+      return isActorManager(actor) || (isActorLeader(actor) && isOwner);
+    }
+    return isActorLeader(actor) || isActorManager(actor) || isOwner;
+  }
+
+  private async resolveHasActiveLeaders(
+    actor: WorkNotesActor,
+    headers: CaptureRequestHeaders,
+  ): Promise<boolean> {
+    if (isActorLeader(actor)) return true;
+    if (!isActorManager(actor)) return true;
+    if (typeof this.authorization.listActiveLeaders === 'function') {
+      const leaders = await this.authorization.listActiveLeaders(
+        actor,
+        headers,
+      );
+      return leaders.length > 0;
+    }
+    if (this.reportRoster) {
+      const leaderIds = await this.reportRoster.listActiveProjectLeaderIds(
+        actor.organizationId,
+        actor.projectId,
+      );
+      return leaderIds.length > 0;
+    }
+    return true;
+  }
+
+  private async resolveProjectLeaderRecipientIds(
+    organizationId: string,
+    projectId: string,
+  ): Promise<string[]> {
+    if (!this.reportRoster) return [];
+    try {
+      return await this.reportRoster.listActiveProjectLeaderIds(
+        organizationId,
+        projectId,
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  private async resolveOrganizationManagerRecipientIds(
+    organizationId: string,
+  ): Promise<string[]> {
+    if (!this.reportRoster) return [];
+    try {
+      return await this.reportRoster.listActiveOrganizationManagerIds(
+        organizationId,
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  private async queryWorkReportsPage(params: {
+    collection: ReturnType<Db['collection']>;
+    actor: WorkNotesActor;
+    scope: WorkReportScope;
+    scopeRows: MongoRecord[];
+    rosterPeople: Array<{ userId: string; fullName: string; joinedAt: string }>;
+    allDirectoryPeople: Array<{
+      userId: string;
+      fullName: string;
+      joinedAt: string;
+    }>;
+    canViewAllInScope: boolean;
+    hasActiveLeaders: boolean;
+    baseVisibilityFilter: Record<string, unknown>;
+    page: number;
+    pageSize: number;
+    status?: WorkReportStatus;
+    filters?: WorkReportsListFilters;
+    now: Date;
+  }): Promise<WorkReportsPageRecord> {
+    const {
+      collection,
+      actor,
+      scope,
+      scopeRows,
+      rosterPeople,
+      allDirectoryPeople,
+      canViewAllInScope,
+      hasActiveLeaders,
+      baseVisibilityFilter,
+      page,
+      pageSize,
+      status,
+      filters,
+      now,
+    } = params;
+
+    const currentActiveSetting = this.activeSetting(scopeRows, now);
+    const currentFrequency = (text(currentActiveSetting.frequency) ||
+      'WEEKLY') as WorkReportFrequency;
+    const currentEffectiveAt =
+      currentActiveSetting.effectiveAt instanceof Date
+        ? currentActiveSetting.effectiveAt
+        : new Date(String(currentActiveSetting.effectiveAt));
+    const currentPeriodDates = calculateReportPeriod(
+      currentEffectiveAt,
+      currentFrequency,
+      now,
+    );
+    const currentPeriod = {
+      periodStart: currentPeriodDates.periodStart.toISOString(),
+      periodEnd: currentPeriodDates.periodEnd.toISOString(),
+      dueAt: currentPeriodDates.periodEnd.toISOString(),
+      frequency: currentFrequency,
+    };
+
+    const periodFilter =
+      filters?.period === 'CURRENT'
+        ? { periodStart: currentPeriodDates.periodStart }
+        : {};
+
+    const summaryMatchFilter: Record<string, unknown> = {
+      ...baseVisibilityFilter,
+      ...periodFilter,
+    };
+
+    const queryConditions: Record<string, unknown>[] = [
+      baseVisibilityFilter,
+      ...(filters?.period === 'CURRENT'
+        ? [{ periodStart: currentPeriodDates.periodStart }]
+        : []),
+      ...(status ? [{ status }] : []),
+    ];
+
+    if (filters?.memberId) {
+      if (
+        !canViewAllInScope &&
+        filters.memberId.toLowerCase() !== actor.userId.toLowerCase()
+      ) {
+        queryConditions.push({
+          memberUserId: new Types.ObjectId('000000000000000000000000'),
+        });
+      } else {
+        queryConditions.push({ memberUserId: objectId(filters.memberId) });
+      }
+    }
+
+    if (filters?.search) {
+      const escaped = escapeRegex(filters.search);
+      const regex = new RegExp(escaped, 'i');
+      const matchingPeopleIds = allDirectoryPeople
+        .filter((person) => regex.test(person.fullName))
+        .map((person) => person.userId)
+        .filter(validId)
+        .map(objectId);
+      queryConditions.push({
+        $or: [
+          { accomplishments: regex },
+          { approach: regex },
+          { reason: regex },
+          { blockers: regex },
+          { nextSteps: regex },
+          { reviewComment: regex },
+          ...(matchingPeopleIds.length > 0
+            ? [{ memberUserId: { $in: matchingPeopleIds } }]
+            : []),
+        ],
+      });
+    }
+
+    const finalFilter: Record<string, unknown> =
+      queryConditions.length === 1
+        ? queryConditions[0]
+        : { $and: queryConditions };
+
+    const [rows, totalItems, statusBuckets, currentPeriodRows] =
+      await Promise.all([
+        collection
+          .find(finalFilter)
+          .sort({ periodStart: -1, memberUserId: 1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray(),
+        collection.countDocuments(finalFilter),
+        collection
+          .aggregate<{ _id: string; count: number }>([
+            { $match: summaryMatchFilter },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+          ])
+          .toArray(),
+        collection
+          .find({
+            ...baseVisibilityFilter,
+            periodStart: currentPeriodDates.periodStart,
+          })
+          .toArray(),
+      ]);
+
+    const summary: WorkReportSummaryCounts = {
+      total: 0,
+      draft: 0,
+      pendingReview: 0,
+      changesRequested: 0,
+      approved: 0,
+      rejected: 0,
+      overdue: 0,
+    };
+    for (const bucket of statusBuckets) {
+      const count = Number(bucket.count) || 0;
+      summary.total += count;
+      switch (bucket._id) {
+        case 'DRAFT':
+          summary.draft = count;
+          break;
+        case 'PENDING_REVIEW':
+          summary.pendingReview = count;
+          break;
+        case 'CHANGES_REQUESTED':
+          summary.changesRequested = count;
+          break;
+        case 'APPROVED':
+          summary.approved = count;
+          break;
+        case 'REJECTED':
+          summary.rejected = count;
+          break;
+        case 'OVERDUE':
+          summary.overdue = count;
+          break;
+        default:
+          break;
+      }
+    }
+
+    const currentReportByUserId = new Map<string, Record<string, unknown>>();
+    for (const currentRow of currentPeriodRows) {
+      const item = currentRow as unknown as Record<string, unknown>;
+      currentReportByUserId.set(String(item.memberUserId).toLowerCase(), item);
+    }
+
+    const roster: WorkReportRosterEntry[] = rosterPeople.map((person) => {
+      const currentReport = currentReportByUserId.get(
+        person.userId.toLowerCase(),
+      );
+      return {
+        userId: person.userId,
+        fullName: person.fullName,
+        joinedAt: person.joinedAt,
+        ...(currentReport ? { reportId: String(currentReport._id) } : {}),
+        status: currentReport
+          ? (text(currentReport.status) as WorkReportStatus)
+          : 'NOT_STARTED',
+        dueAt: iso(currentReport?.dueAt) ?? currentPeriod.dueAt,
+        ...(iso(currentReport?.submittedAt)
+          ? { submittedAt: iso(currentReport?.submittedAt) }
+          : {}),
+        ...(iso(currentReport?.reviewedAt)
+          ? { reviewedAt: iso(currentReport?.reviewedAt) }
+          : {}),
+      };
+    });
+
+    return {
+      data: rows.map((row) => {
+        const authorId = String(row.memberUserId).toLowerCase();
+        const authorName = allDirectoryPeople.find(
+          (person) => person.userId.toLowerCase() === authorId,
+        )?.fullName;
+        return this.workReportRecord(row, actor, authorName, hasActiveLeaders);
+      }),
+      pagination: this.pagination(page, pageSize, totalItems),
+      scope,
+      summary,
+      currentPeriod,
+      roster,
+    };
+  }
+
+  private async scopedSettingsTimelines(actor: WorkNotesActor): Promise<{
+    memberRows: MongoRecord[];
+    leaderRows: MongoRecord[];
+    hasExplicitLeaderRows: boolean;
+  }> {
     const collection = this.database().collection('work_report_settings');
     const filter = {
       organizationId: objectId(actor.organizationId),
       projectId: objectId(actor.projectId),
     };
-    let rows = await collection
+    let rows: MongoRecord[] = await collection
       .find(filter)
       .sort({ effectiveAt: 1, _id: 1 })
       .toArray();
+
     if (rows.length === 0) {
       const now = new Date();
       const effectiveAt = startOfUtcWeek(now);
-      const setting = {
+      const actorObjectId = validId(actor.userId)
+        ? objectId(actor.userId)
+        : new Types.ObjectId();
+      const defaultMemberSetting = {
         _id: new Types.ObjectId(),
         ...filter,
-        frequency: 'WEEKLY',
+        reportScope: 'MEMBER' as const,
+        frequency: 'WEEKLY' as const,
         effectiveAt,
-        createdByUserId: objectId(actor.userId),
-        leaderFrequency: 'WEEKLY',
-        leaderEffectiveAt: effectiveAt,
-        leaderUpdatedByUserId: objectId(actor.userId),
-        leaderHistory: [
+        createdByUserId: actorObjectId,
+        updatedByUserId: actorObjectId,
+        history: [
           {
-            frequency: 'WEEKLY',
-            effectiveAt: effectiveAt.toISOString(),
-            updatedBy: actor.userId,
+            frequency: 'WEEKLY' as const,
+            effectiveAt,
+            updatedByUserId: actorObjectId,
           },
         ],
         createdAt: now,
         updatedAt: now,
       };
-      try {
-        await collection.insertOne(setting);
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          !('code' in error) ||
-          error.code !== 11000
-        )
-          throw error;
+      const defaultLeaderSetting = {
+        _id: new Types.ObjectId(),
+        ...filter,
+        reportScope: 'LEADER' as const,
+        frequency: 'WEEKLY' as const,
+        effectiveAt,
+        createdByUserId: actorObjectId,
+        updatedByUserId: actorObjectId,
+        history: [
+          {
+            frequency: 'WEEKLY' as const,
+            effectiveAt,
+            updatedByUserId: actorObjectId,
+          },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      };
+      for (const candidate of [defaultMemberSetting, defaultLeaderSetting]) {
+        try {
+          await collection.insertOne(candidate);
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !('code' in error) ||
+            error.code !== 11000
+          ) {
+            throw error;
+          }
+        }
       }
       rows = await collection
         .find(filter)
         .sort({ effectiveAt: 1, _id: 1 })
         .toArray();
     }
-    return rows;
+
+    const memberRows = rows.filter((row) => text(row.reportScope) !== 'LEADER');
+    const explicitLeaderRows = rows.filter(
+      (row) => text(row.reportScope) === 'LEADER',
+    );
+    if (explicitLeaderRows.length > 0) {
+      return {
+        memberRows:
+          memberRows.length > 0 ? memberRows : [explicitLeaderRows[0]],
+        leaderRows: explicitLeaderRows,
+        hasExplicitLeaderRows: true,
+      };
+    }
+
+    const legacyLeaderRows = this.legacyLeaderSettingsTimeline(
+      memberRows,
+      actor.userId,
+    );
+    return {
+      memberRows,
+      leaderRows: legacyLeaderRows,
+      hasExplicitLeaderRows: false,
+    };
   }
 
-  private leaderSettingsTimeline(settings: MongoRecord[]): MongoRecord[] {
-    const root = settings[0];
+  private legacyLeaderSettingsTimeline(
+    memberSettings: MongoRecord[],
+    fallbackUserId: string,
+  ): MongoRecord[] {
+    const root = memberSettings[0];
     if (!root) return [];
     const frequency = (text(root.leaderFrequency) ||
       'WEEKLY') as WorkReportFrequency;
@@ -2695,21 +5096,102 @@ export class WorkNotesService {
       root.leaderEffectiveAt instanceof Date
         ? root.leaderEffectiveAt
         : new Date(String(root.leaderEffectiveAt ?? root.effectiveAt));
-    const createdByUserId = root.leaderUpdatedByUserId ?? root.createdByUserId;
+    const updatedBy =
+      idText(root.leaderUpdatedByUserId ?? root.createdByUserId) ||
+      fallbackUserId;
     const history = Array.isArray(root.leaderHistory)
       ? (root.leaderHistory as Array<Record<string, unknown>>)
-      : [{ frequency, effectiveAt, updatedBy: String(createdByUserId) }];
+      : [{ frequency, effectiveAt, updatedBy }];
     return history.map((entry) => ({
       _id: root._id,
       organizationId: root.organizationId,
       projectId: root.projectId,
+      reportScope: 'LEADER',
       frequency: text(entry.frequency) || frequency,
       effectiveAt:
         entry.effectiveAt instanceof Date
           ? entry.effectiveAt
           : new Date(String(entry.effectiveAt)),
-      createdByUserId: entry.updatedBy ?? createdByUserId,
+      createdByUserId: entry.updatedByUserId ?? entry.updatedBy ?? updatedBy,
+      updatedByUserId: entry.updatedByUserId ?? entry.updatedBy ?? updatedBy,
     }));
+  }
+
+  private extractSettingRowHistory(
+    row: MongoRecord,
+    defaultEffectiveAt: Date,
+    fallbackUserId: string,
+  ): Array<{
+    frequency: WorkReportFrequency;
+    effectiveAt: string;
+    updatedBy: string;
+  }> {
+    const rowFrequency = (text(row.frequency) ||
+      'WEEKLY') as WorkReportFrequency;
+    const rowUpdatedBy =
+      idText(row.updatedByUserId ?? row.createdByUserId) || fallbackUserId;
+    if (Array.isArray(row.history) && row.history.length > 0) {
+      return (row.history as Array<Record<string, unknown>>).map((entry) => ({
+        frequency: (text(entry.frequency) ||
+          rowFrequency) as WorkReportFrequency,
+        effectiveAt: iso(entry.effectiveAt) ?? defaultEffectiveAt.toISOString(),
+        updatedBy:
+          idText(entry.updatedByUserId ?? entry.updatedBy) || rowUpdatedBy,
+      }));
+    }
+    return [
+      {
+        frequency: rowFrequency,
+        effectiveAt: iso(row.effectiveAt) ?? defaultEffectiveAt.toISOString(),
+        updatedBy: rowUpdatedBy,
+      },
+    ];
+  }
+
+  private buildTierSettingsSummary(
+    rows: MongoRecord[],
+    actor: WorkNotesActor,
+    now: Date,
+    permissions: {
+      canConfigure: boolean;
+      canReview: boolean;
+      canSubmit: boolean;
+    },
+  ): WorkReportTierSettingsSummary {
+    const active = this.activeSetting(rows, now);
+    const next = rows.find(
+      (item) => new Date(String(item.effectiveAt)).getTime() > now.getTime(),
+    );
+    const activeEffectiveAt =
+      active.effectiveAt instanceof Date
+        ? active.effectiveAt
+        : new Date(String(active.effectiveAt));
+    const history = rows.flatMap((item) => {
+      const itemEffectiveAt =
+        item.effectiveAt instanceof Date
+          ? item.effectiveAt
+          : new Date(String(item.effectiveAt));
+      return this.extractSettingRowHistory(item, itemEffectiveAt, actor.userId);
+    });
+    const latestHistoryEntry = history.at(-1);
+    const updatedBy =
+      latestHistoryEntry?.updatedBy ||
+      idText(active.updatedByUserId ?? active.createdByUserId) ||
+      actor.userId;
+
+    return {
+      frequency: (text(active.frequency) || 'WEEKLY') as WorkReportFrequency,
+      effectiveAt: iso(active.effectiveAt) ?? activeEffectiveAt.toISOString(),
+      ...(next
+        ? {
+            nextFrequency: text(next.frequency) as WorkReportFrequency,
+            nextEffectiveAt: iso(next.effectiveAt),
+          }
+        : {}),
+      updatedBy,
+      history,
+      permissions,
+    };
   }
 
   private activeSetting(settings: MongoRecord[], now: Date): MongoRecord {
@@ -2727,83 +5209,69 @@ export class WorkNotesService {
   }
 
   private settingsRecord(
-    settings: MongoRecord[],
+    timelines: {
+      memberRows: MongoRecord[];
+      leaderRows: MongoRecord[];
+    },
     actor: WorkNotesActor,
     now: Date,
     scope: WorkReportScope = 'MEMBER',
+    hasActiveLeaders = true,
   ): WorkReportSettingsRecord {
-    const root = settings[0];
-    const leaderFrequency = (text(root?.leaderFrequency) ||
-      'WEEKLY') as WorkReportFrequency;
-    const leaderEffectiveAt =
-      iso(root?.leaderEffectiveAt ?? root?.effectiveAt) ?? '';
-    const leaderUpdatedBy =
-      idText(root?.leaderUpdatedByUserId ?? root?.createdByUserId) ||
-      actor.userId;
-    const leaderHistory = Array.isArray(root?.leaderHistory)
-      ? (root.leaderHistory as Array<Record<string, unknown>>).map((entry) => ({
-          frequency: (text(entry.frequency) || 'WEEKLY') as WorkReportFrequency,
-          effectiveAt: iso(entry.effectiveAt) ?? leaderEffectiveAt,
-          updatedBy: text(entry.updatedBy) || leaderUpdatedBy,
-        }))
-      : [
-          {
-            frequency: leaderFrequency,
-            effectiveAt: leaderEffectiveAt,
-            updatedBy: leaderUpdatedBy,
-          },
-        ];
-    const actorRole: 'MANAGER' | 'LEADER' | 'MEMBER' = actor.isManager
+    const isManager = isActorManager(actor);
+    const isLeader = isActorLeader(actor);
+    const isPureMember = isActorPureMember(actor);
+    const actorRole: 'MANAGER' | 'LEADER' | 'MEMBER' = isManager
       ? 'MANAGER'
-      : actor.canReview
+      : isLeader
         ? 'LEADER'
         : 'MEMBER';
-    const leaderSettingsSummary = {
-      frequency: leaderFrequency,
-      effectiveAt: leaderEffectiveAt,
-      updatedBy: leaderUpdatedBy,
-      history: leaderHistory,
-      permissions: { canConfigure: Boolean(actor.isManager) },
-    };
 
-    if (scope === 'LEADER') {
-      return {
-        projectId: actor.projectId,
-        scope: 'LEADER',
-        actorRole,
-        frequency: leaderFrequency,
-        effectiveAt: leaderEffectiveAt,
-        updatedBy: leaderUpdatedBy,
-        history: leaderHistory,
-        permissions: { canConfigure: Boolean(actor.isManager) },
-        leaderSettings: leaderSettingsSummary,
-      };
-    }
+    const memberCanManage = this.canManageMemberTier(actor, hasActiveLeaders);
+    const leaderCanManage = this.canManageLeaderTier(actor);
 
-    const active = this.activeSetting(settings, now);
-    const next = settings.find(
-      (item) => new Date(String(item.effectiveAt)).getTime() > now.getTime(),
+    const memberSummary = this.buildTierSettingsSummary(
+      timelines.memberRows,
+      actor,
+      now,
+      {
+        canConfigure: memberCanManage,
+        canReview: memberCanManage,
+        canSubmit: isPureMember,
+      },
     );
+    const leaderSummary = this.buildTierSettingsSummary(
+      timelines.leaderRows,
+      actor,
+      now,
+      {
+        canConfigure: leaderCanManage,
+        canReview: leaderCanManage,
+        canSubmit: isLeader,
+      },
+    );
+
+    const activeTier = scope === 'LEADER' ? leaderSummary : memberSummary;
     return {
       projectId: actor.projectId,
-      scope: 'MEMBER',
+      scope,
       actorRole,
-      frequency: text(active.frequency) as WorkReportFrequency,
-      effectiveAt: iso(active.effectiveAt) ?? '',
-      ...(next
+      isManager,
+      isLeader,
+      hasActiveLeaders,
+      frequency: activeTier.frequency,
+      effectiveAt: activeTier.effectiveAt,
+      ...(activeTier.nextFrequency
         ? {
-            nextFrequency: text(next.frequency) as WorkReportFrequency,
-            nextEffectiveAt: iso(next.effectiveAt),
+            nextFrequency: activeTier.nextFrequency,
+            nextEffectiveAt: activeTier.nextEffectiveAt,
           }
         : {}),
-      updatedBy: String(active.createdByUserId),
-      history: settings.map((item) => ({
-        frequency: text(item.frequency) as WorkReportFrequency,
-        effectiveAt: iso(item.effectiveAt) ?? '',
-        updatedBy: String(item.createdByUserId),
-      })),
-      permissions: { canConfigure: actor.canConfigure },
-      leaderSettings: leaderSettingsSummary,
+      updatedBy: activeTier.updatedBy,
+      history: activeTier.history,
+      permissions: activeTier.permissions,
+      memberSettings: memberSummary,
+      ...(!isPureMember ? { leaderSettings: leaderSummary } : {}),
     };
   }
 
@@ -2965,7 +5433,7 @@ export class WorkNotesService {
               : 'Periodic work report due',
           message:
             scope === 'LEADER'
-              ? `Your Leader report (${days}-${days === 1 ? 'day' : 'day'} cadence) is due by ${dueDateLabel}.`
+              ? `Your Leader report (every ${days} ${days === 1 ? 'day' : 'days'}) is due by ${dueDateLabel}.`
               : `Your periodic work report (every ${days} ${days === 1 ? 'day' : 'days'}) is due by ${dueDateLabel}.`,
           organizationId: actor.organizationId,
           projectId: actor.projectId,
@@ -2985,24 +5453,25 @@ export class WorkNotesService {
     row: Document,
     actor: WorkNotesActor,
     resolvedMemberName?: string,
+    hasActiveLeaders = true,
   ): WorkReportRecord {
     const value = row as unknown as Record<string, unknown>;
     const memberId = String(value.memberUserId);
     const status = text(value.status) as WorkReportStatus;
     const reportScope: WorkReportScope =
       text(value.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
-    const isOwner = memberId === actor.userId;
-    const isLeaderAuthor =
-      reportScope === 'LEADER' &&
-      Boolean(actor.isLeader || (actor.canReview && !actor.isManager));
+    const isOwner = memberId.toLowerCase() === actor.userId.toLowerCase();
     const canAuthorReport =
-      reportScope === 'LEADER' ? isLeaderAuthor : !actor.canReview;
-    const canReviewReport =
       reportScope === 'LEADER'
-        ? Boolean(actor.isManager) && !isOwner && status === 'PENDING_REVIEW'
-        : actor.canReview && !isOwner && status === 'PENDING_REVIEW';
-    const canConfigureReport =
-      reportScope === 'LEADER' ? Boolean(actor.isManager) : actor.canConfigure;
+        ? isActorLeader(actor)
+        : isActorPureMember(actor);
+    const canManageScope =
+      reportScope === 'LEADER'
+        ? this.canManageLeaderTier(actor)
+        : this.canManageMemberTier(actor, hasActiveLeaders);
+    const canReviewReport =
+      canManageScope && !isOwner && status === 'PENDING_REVIEW';
+    const canConfigureReport = canManageScope;
 
     return {
       id: String(value._id),
@@ -3135,6 +5604,7 @@ export class WorkNotesService {
           organizationId: actor.organizationId,
           projectId,
           memberId: String(item.memberUserId),
+          scope,
           periodStart: iso(item.periodStart),
           periodEnd: iso(item.periodEnd),
           dueAt: iso(item.dueAt),
@@ -3160,7 +5630,7 @@ export class WorkNotesService {
       });
       if (didTransition && this.notifications) {
         await this.notifications.emitSafe({
-          type: 'TASK_DEADLINE_OVERDUE',
+          type: 'WORK_REPORT_OVERDUE',
           actorId: null,
           recipients: [String(item.memberUserId)],
           title:
@@ -3228,6 +5698,11 @@ export class WorkNotesService {
       createdBy,
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
+      ...(value.knowledgeSync && typeof value.knowledgeSync === 'object'
+        ? {
+            knowledgeSync: value.knowledgeSync as DocumentKnowledgeStatusRecord,
+          }
+        : {}),
       permissions: {
         ...this.permissions(actor, createdBy, status),
         canEdit:
@@ -3235,6 +5710,12 @@ export class WorkNotesService {
           ['DRAFT', 'CHANGES_REQUESTED', 'APPROVED', 'REJECTED'].includes(
             status,
           ),
+        canDelete:
+          actor.canReview ||
+          actor.canConfigure ||
+          (createdBy === actor.userId &&
+            status !== 'APPROVED' &&
+            status !== 'ARCHIVED'),
         canSubmit: createdBy === actor.userId && status === 'DRAFT',
       },
     };
@@ -3253,15 +5734,30 @@ export class WorkNotesService {
       }),
     );
     if (!document) return null;
-    const versions = await db
-      .collection('project_document_versions')
-      .find({
-        documentId: id,
-        organizationId: objectId(actor.organizationId),
-        projectId: objectId(actor.projectId),
-      })
-      .sort({ versionNumber: 1 })
-      .toArray();
+    const [versions, auditRows] = await Promise.all([
+      db
+        .collection('project_document_versions')
+        .find({
+          documentId: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(actor.projectId),
+        })
+        .sort({ versionNumber: 1 })
+        .toArray(),
+      typeof this.audit?.listForTarget === 'function'
+        ? this.audit
+            .listForTarget(
+              {
+                organizationId: actor.organizationId,
+                projectId: actor.projectId,
+                targetResource: 'PROJECT_DOCUMENT',
+                targetResourceId: String(id),
+              },
+              150,
+            )
+            .catch(() => [] as AuditEventRecord[])
+        : Promise.resolve([] as AuditEventRecord[]),
+    ]);
     const versionRecords = versions.map((item) =>
       this.documentVersion(item as Document),
     );
@@ -3270,6 +5766,40 @@ export class WorkNotesService {
     );
     if (!current) throw documentNotFound();
     const summary = this.documentSummary(document, actor);
+    const allDocKeys: string[] = [];
+    let currentSha256: string | undefined;
+    for (const rawVer of versions) {
+      const verObj = rawVer as unknown as Record<string, unknown>;
+      const rawFile = verObj.file as
+        { key?: unknown; sha256?: unknown } | undefined;
+      if (typeof rawFile?.key === 'string' && rawFile.key.trim()) {
+        allDocKeys.push(rawFile.key.trim());
+      }
+      if (
+        Number(verObj.versionNumber) ===
+          Number(document.currentVersionNumber) &&
+        typeof rawFile?.sha256 === 'string' &&
+        rawFile.sha256.trim()
+      ) {
+        currentSha256 = rawFile.sha256.trim();
+      }
+    }
+    const storageRefsByDoc = await this.resolveStorageReferencesByDocument(
+      actor.organizationId,
+      [
+        {
+          documentId: summary.id,
+          keys: allDocKeys,
+          ...(currentSha256 ? { currentSha256 } : {}),
+        },
+      ],
+    );
+    const storageReference = storageRefsByDoc.get(summary.id);
+    const activityHistory = this.buildDocumentActivityHistory(
+      summary,
+      versionRecords,
+      auditRows,
+    );
     return {
       ...summary,
       submittedAt: current.submittedAt,
@@ -3278,6 +5808,7 @@ export class WorkNotesService {
       reviewComment: current.reviewComment,
       content: current.content,
       ...(current.file ? { file: current.file } : {}),
+      ...(storageReference ? { storageReference } : {}),
       versions: versionRecords.map(
         ({ version, status, createdAt, editedBy, file }) => ({
           version,
@@ -3290,7 +5821,363 @@ export class WorkNotesService {
       reviewHistory: versionRecords
         .flatMap((item) => item.reviewHistory)
         .sort((left, right) => left.at.localeCompare(right.at)),
+      activityHistory,
     };
+  }
+
+  private async resolveStorageReferencesByDocument(
+    organizationId: string,
+    entries: Array<{
+      documentId: string;
+      keys: string[];
+      currentSha256?: string;
+    }>,
+  ): Promise<Map<string, DocumentStorageReferenceRecord>> {
+    const result = new Map<string, DocumentStorageReferenceRecord>();
+    const uniqueKeys = Array.from(
+      new Set(
+        entries
+          .flatMap((entry) => entry.keys)
+          .map((key) => key.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (uniqueKeys.length === 0) return result;
+
+    const uniqueKeySet = new Set(uniqueKeys);
+    const distinctDocsByKey = new Map<string, Set<string>>();
+    for (const key of uniqueKeys) {
+      distinctDocsByKey.set(key, new Set<string>());
+    }
+
+    try {
+      const versionsCol = this.database().collection(
+        'project_document_versions',
+      );
+      if (typeof versionsCol.find === 'function') {
+        const cursor = versionsCol.find({
+          organizationId: objectId(organizationId),
+          'file.key': { $in: uniqueKeys },
+        });
+        const rows =
+          cursor && typeof cursor.toArray === 'function'
+            ? await cursor.toArray()
+            : [];
+        for (const row of rows) {
+          const raw = row as unknown as Record<string, unknown>;
+          const rawFile = raw.file as { key?: unknown } | undefined;
+          const key =
+            typeof rawFile?.key === 'string' ? rawFile.key.trim() : '';
+          const docId = idText(raw.documentId);
+          if (key && docId && uniqueKeySet.has(key)) {
+            distinctDocsByKey.get(key)?.add(docId);
+          }
+        }
+      }
+    } catch {
+      // Fall back to local document ownership if projection query fails on stubbed collections.
+    }
+
+    const provider: 'CLOUDFLARE_R2' | 'LOCAL' =
+      typeof this.documentStorage?.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled()
+        ? 'CLOUDFLARE_R2'
+        : 'LOCAL';
+
+    for (const entry of entries) {
+      const docUniqueKeys = Array.from(
+        new Set(entry.keys.map((k) => k.trim()).filter(Boolean)),
+      );
+      if (docUniqueKeys.length === 0) continue;
+
+      let deletableObjectCount = 0;
+      let sharedObjectCount = 0;
+      const allReferencingDocs = new Set<string>([entry.documentId]);
+      const externalDocs = new Set<string>();
+
+      for (const key of docUniqueKeys) {
+        const refSet = distinctDocsByKey.get(key) ?? new Set<string>();
+        refSet.add(entry.documentId);
+        let hasExternal = false;
+        for (const refDocId of refSet) {
+          allReferencingDocs.add(refDocId);
+          if (refDocId !== entry.documentId) {
+            externalDocs.add(refDocId);
+            hasExternal = true;
+          }
+        }
+        if (hasExternal) {
+          sharedObjectCount += 1;
+        } else {
+          deletableObjectCount += 1;
+        }
+      }
+
+      result.set(entry.documentId, {
+        provider,
+        objectCount: docUniqueKeys.length,
+        deletableObjectCount,
+        sharedObjectCount,
+        refCount: allReferencingDocs.size,
+        externalDocumentRefs: externalDocs.size,
+        willDeleteFromStorage: deletableObjectCount > 0,
+        ...(entry.currentSha256 ? { sha256: entry.currentSha256 } : {}),
+      });
+    }
+
+    return result;
+  }
+
+  private buildDocumentActivityHistory(
+    summary: ProjectDocumentSummaryRecord,
+    versionRecords: DocumentVersionRecord[],
+    auditRows: AuditEventRecord[],
+  ): DocumentActivityEvent[] {
+    const versionByNo = new Map(
+      versionRecords.map((ver) => [ver.version, ver]),
+    );
+    const events: DocumentActivityEvent[] = [];
+
+    const mapAuditAction = (
+      rawAction: string,
+    ): DocumentActivityAction | null => {
+      switch (rawAction) {
+        case 'DOCUMENT_DRAFT_CREATED':
+          return 'CREATED';
+        case 'DOCUMENT_DRAFT_UPDATED':
+          return 'UPDATED';
+        case 'DOCUMENT_FILE_UPLOADED':
+          return 'FILE_UPLOADED';
+        case 'DOCUMENT_SUBMITTED':
+          return 'SUBMITTED';
+        case 'DOCUMENT_REVIEW_COMMENTED':
+          return 'COMMENTED';
+        case 'DOCUMENT_APPROVED':
+          return 'APPROVED';
+        case 'DOCUMENT_AUTO_APPROVED':
+          return 'AUTO_APPROVED';
+        case 'DOCUMENT_CHANGES_REQUESTED':
+          return 'CHANGES_REQUESTED';
+        case 'DOCUMENT_REJECTED':
+          return 'REJECTED';
+        case 'DOCUMENT_ARCHIVED':
+          return 'ARCHIVED';
+        case 'DOCUMENT_KNOWLEDGE_SYNCED':
+          return 'KNOWLEDGE_SYNCED';
+        case 'DOCUMENT_KNOWLEDGE_REPROCESSED':
+          return 'KNOWLEDGE_REPROCESSED';
+        case 'DOCUMENT_KNOWLEDGE_PAUSED':
+          return 'KNOWLEDGE_PAUSED';
+        case 'DOCUMENT_KNOWLEDGE_RESUMED':
+          return 'KNOWLEDGE_RESUMED';
+        case 'DOCUMENT_KNOWLEDGE_REVOKED':
+          return 'KNOWLEDGE_REVOKED';
+        default:
+          return null;
+      }
+    };
+
+    for (const row of auditRows) {
+      const mapped = mapAuditAction(row.action);
+      if (!mapped) continue;
+      const meta = row.metadata ?? {};
+      const verNum =
+        typeof meta.version === 'number' && meta.version > 0
+          ? meta.version
+          : mapped === 'CREATED'
+            ? 1
+            : undefined;
+      const matchingVersion = verNum ? versionByNo.get(verNum) : undefined;
+      const fileName =
+        typeof meta.fileName === 'string' && meta.fileName.trim()
+          ? meta.fileName.trim()
+          : mapped === 'FILE_UPLOADED' && matchingVersion?.file?.name
+            ? matchingVersion.file.name
+            : undefined;
+      const comment =
+        typeof meta.comment === 'string' && meta.comment.trim()
+          ? meta.comment.trim()
+          : undefined;
+      const deduplicated =
+        typeof meta.deduplicated === 'boolean'
+          ? meta.deduplicated
+          : typeof meta.isDuplicate === 'boolean'
+            ? meta.isDuplicate
+            : undefined;
+
+      const occurredAtIso =
+        row.occurredAt instanceof Date
+          ? row.occurredAt.toISOString()
+          : new Date(String(row.occurredAt)).toISOString();
+
+      events.push({
+        id: `audit-${row.id}`,
+        action: mapped,
+        actorId: row.actorUserId || summary.createdBy,
+        ...(verNum ? { version: verNum } : {}),
+        ...(fileName ? { fileName } : {}),
+        ...(comment ? { comment } : {}),
+        ...(deduplicated !== undefined ? { deduplicated } : {}),
+        at: occurredAtIso,
+      });
+    }
+
+    const hasActionForVersion = (
+      actions: readonly DocumentActivityAction[],
+      ver?: number,
+    ) =>
+      events.some(
+        (ev) =>
+          actions.includes(ev.action) &&
+          (ver === undefined || ev.version === undefined || ev.version === ver),
+      );
+
+    if (!events.some((ev) => ev.action === 'CREATED')) {
+      const firstVersion = versionRecords[0];
+      events.push({
+        id: `synth-created-${summary.id}`,
+        action: 'CREATED',
+        actorId: summary.createdBy,
+        version: firstVersion?.version ?? 1,
+        at: firstVersion?.createdAt || summary.createdAt,
+      });
+    }
+
+    for (const ver of versionRecords) {
+      if (ver.version > 1 && !hasActionForVersion(['UPDATED'], ver.version)) {
+        events.push({
+          id: `synth-version-${summary.id}-v${ver.version}`,
+          action: 'UPDATED',
+          actorId: ver.editedBy || summary.createdBy,
+          version: ver.version,
+          at: ver.createdAt,
+        });
+      }
+
+      if (ver.file && !hasActionForVersion(['FILE_UPLOADED'], ver.version)) {
+        events.push({
+          id: `synth-upload-${summary.id}-v${ver.version}`,
+          action: 'FILE_UPLOADED',
+          actorId: ver.editedBy || summary.createdBy,
+          version: ver.version,
+          fileName: ver.file.name,
+          at: ver.createdAt,
+        });
+      }
+
+      if (ver.submittedAt && !hasActionForVersion(['SUBMITTED'], ver.version)) {
+        events.push({
+          id: `synth-submit-${summary.id}-v${ver.version}`,
+          action: 'SUBMITTED',
+          actorId: ver.editedBy || summary.createdBy,
+          version: ver.version,
+          at: ver.submittedAt,
+        });
+      }
+
+      for (let idx = 0; idx < ver.reviewHistory.length; idx += 1) {
+        const rh = ver.reviewHistory[idx];
+        const rhAction: DocumentActivityAction =
+          rh.action === 'PENDING_REVIEW' ? 'COMMENTED' : rh.action;
+        const rhMs = new Date(rh.at).getTime();
+        const existingMatch = events.find(
+          (ev) =>
+            ev.action === rhAction &&
+            (ev.version === undefined || ev.version === ver.version) &&
+            Math.abs(new Date(ev.at).getTime() - rhMs) <= 15_000,
+        );
+        if (existingMatch) {
+          if (!existingMatch.comment && rh.comment) {
+            existingMatch.comment = rh.comment;
+          }
+          if (!existingMatch.version) {
+            existingMatch.version = ver.version;
+          }
+        } else {
+          events.push({
+            id: `synth-review-${summary.id}-v${ver.version}-${idx}`,
+            action: rhAction,
+            actorId: rh.reviewerId,
+            version: ver.version,
+            ...(rh.comment ? { comment: rh.comment } : {}),
+            at: rh.at,
+          });
+        }
+      }
+
+      if (
+        ver.status === 'APPROVED' &&
+        ver.reviewedAt &&
+        !hasActionForVersion(['APPROVED', 'AUTO_APPROVED'], ver.version)
+      ) {
+        events.push({
+          id: `synth-auto-approve-${summary.id}-v${ver.version}`,
+          action: 'AUTO_APPROVED',
+          actorId: ver.reviewedBy || summary.createdBy,
+          version: ver.version,
+          ...(ver.reviewComment ? { comment: ver.reviewComment } : {}),
+          at: ver.reviewedAt,
+        });
+      }
+    }
+
+    if (
+      summary.knowledgeSync?.syncedAt &&
+      summary.knowledgeSync.status !== 'NOT_SYNCED' &&
+      !events.some((ev) => ev.action.startsWith('KNOWLEDGE_'))
+    ) {
+      const isRevoked =
+        summary.knowledgeSync.status === 'REVOKED' ||
+        summary.knowledgeSync.searchStatus === 'REVOKED';
+      events.push({
+        id: `synth-knowledge-${summary.id}`,
+        action: isRevoked ? 'KNOWLEDGE_REVOKED' : 'KNOWLEDGE_SYNCED',
+        actorId: summary.createdBy,
+        version: summary.knowledgeSync.version || summary.version,
+        ...(summary.knowledgeSync.isDuplicate ? { deduplicated: true } : {}),
+        at: summary.knowledgeSync.syncedAt,
+      });
+    }
+
+    if (
+      summary.status === 'ARCHIVED' &&
+      !events.some((ev) => ev.action === 'ARCHIVED')
+    ) {
+      events.push({
+        id: `synth-archived-${summary.id}`,
+        action: 'ARCHIVED',
+        actorId: summary.createdBy,
+        version: summary.version,
+        at: summary.updatedAt,
+      });
+    }
+
+    const actionOrder: Record<DocumentActivityAction, number> = {
+      CREATED: 1,
+      UPDATED: 2,
+      FILE_UPLOADED: 3,
+      SUBMITTED: 4,
+      COMMENTED: 5,
+      AUTO_APPROVED: 6,
+      APPROVED: 7,
+      CHANGES_REQUESTED: 8,
+      REJECTED: 9,
+      KNOWLEDGE_SYNCED: 10,
+      KNOWLEDGE_REPROCESSED: 11,
+      KNOWLEDGE_PAUSED: 12,
+      KNOWLEDGE_RESUMED: 13,
+      KNOWLEDGE_REVOKED: 14,
+      ARCHIVED: 15,
+    };
+
+    return events.sort((a, b) => {
+      const diff = new Date(a.at).getTime() - new Date(b.at).getTime();
+      if (Math.abs(diff) > 100) return diff;
+      if ((a.version ?? 0) !== (b.version ?? 0)) {
+        return (a.version ?? 0) - (b.version ?? 0);
+      }
+      return (actionOrder[a.action] ?? 99) - (actionOrder[b.action] ?? 99);
+    });
   }
 
   private documentVersion(row: Document): DocumentVersionRecord {
@@ -3448,6 +6335,222 @@ export class WorkNotesService {
         ...(metadata ? { metadata } : {}),
       },
       session,
+    );
+  }
+
+  private uploadIntentSigningKey(): Buffer {
+    const rawSecret =
+      this.config?.get<string>('DOCUMENT_UPLOAD_TOKEN_SECRET')?.trim() ||
+      this.config?.get<string>('JWT_SECRET')?.trim() ||
+      process.env.DOCUMENT_UPLOAD_TOKEN_SECRET?.trim() ||
+      process.env.JWT_SECRET?.trim() ||
+      (process.env.NODE_ENV === 'production'
+        ? ''
+        : 'continuum-dev-document-upload-intent-secret');
+    if (!rawSecret) {
+      throw new ServiceUnavailableException({
+        code: 'DOCUMENT_UPLOAD_SIGNING_KEY_MISSING',
+        message: 'Document upload signing secret is not configured.',
+      });
+    }
+    return createHmac('sha256', rawSecret)
+      .update('continuum:document-upload-intent:v1')
+      .digest();
+  }
+
+  private signDocumentUploadClaims(claims: SignedDocumentUploadClaims): string {
+    const encodedPayload = Buffer.from(
+      JSON.stringify(claims),
+      'utf-8',
+    ).toString('base64url');
+    const signature = createHmac('sha256', this.uploadIntentSigningKey())
+      .update(`v1.${encodedPayload}`)
+      .digest('base64url');
+    return `v1.${encodedPayload}.${signature}`;
+  }
+
+  private verifyDocumentUploadClaims(
+    token: string,
+  ): SignedDocumentUploadClaims {
+    const parts = token.trim().split('.');
+    if (parts.length !== 3 || parts[0] !== 'v1' || !parts[1] || !parts[2]) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token is malformed.',
+      });
+    }
+    const expectedSig = createHmac('sha256', this.uploadIntentSigningKey())
+      .update(`v1.${parts[1]}`)
+      .digest();
+    let providedSig: Buffer;
+    try {
+      providedSig = Buffer.from(parts[2], 'base64url');
+    } catch {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token signature is invalid.',
+      });
+    }
+    if (
+      providedSig.length !== expectedSig.length ||
+      !timingSafeEqual(providedSig, expectedSig)
+    ) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token signature is invalid.',
+      });
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+    } catch {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token payload is invalid.',
+      });
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token payload is invalid.',
+      });
+    }
+    const claims = parsed as SignedDocumentUploadClaims;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (typeof claims.exp !== 'number' || claims.exp < nowSec) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_EXPIRED',
+        message: 'Upload token has expired. Please start the upload again.',
+      });
+    }
+    return claims;
+  }
+
+  private async dispatchKnowledgeIngestionJob(
+    projectId: string,
+    documentId: string,
+    event: string,
+    version: number,
+    requestId?: string,
+  ): Promise<void> {
+    if (!this.queueRuntime) return;
+    await this.queueRuntime
+      .add(
+        QUEUE_NAMES.ingestion,
+        'knowledge-outbox-sync',
+        {
+          event,
+          payload: {
+            projectId,
+            documentId,
+            version,
+          },
+          ...(requestId ? { requestId } : {}),
+        },
+        {
+          jobId: `knowledge:${documentId}:${event}:v${version}:${Date.now()}`,
+        },
+      )
+      .catch(() => undefined);
+  }
+
+  private async syncOrEnqueueApprovedDocument(
+    headers: CaptureRequestHeaders,
+    actor: WorkNotesActor,
+    projectId: string,
+    documentId: string,
+    versionNumber: number,
+  ): Promise<void> {
+    if (this.sagTransport) {
+      const synced = await this.syncDocumentToSag(
+        headers,
+        projectId,
+        documentId,
+      ).catch(() => null);
+      if (synced) return;
+    }
+
+    if (!this.outbox) return;
+    const id = objectId(documentId);
+    const now = new Date();
+    await this.transaction(async (db, session) => {
+      await db.collection('project_document_versions').updateOne(
+        {
+          documentId: id,
+          versionNumber,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        {
+          $set: {
+            status: 'APPROVED',
+            reviewedByUserId: objectId(actor.userId),
+            reviewedAt: now,
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      await db.collection('project_documents').updateOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        {
+          $set: {
+            status: 'APPROVED',
+            latestApprovedVersionNumber: versionNumber,
+            updatedByUserId: objectId(actor.userId),
+            updatedAt: now,
+            knowledgeSync: {
+              documentId,
+              version: versionNumber,
+              status: 'QUEUED',
+              searchStatus: 'PENDING',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: false,
+              knowledgeReady: false,
+              currentStage: 'QUEUED',
+              progress: 0,
+              syncedAt: now.toISOString(),
+            },
+          },
+        },
+        { session },
+      );
+      await this.appendOutbox(
+        {
+          eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateId: documentId,
+          payload: {
+            sourceType: 'PROJECT_DOCUMENT',
+            sourceId: documentId,
+            organizationId: actor.organizationId,
+            projectId,
+            version: versionNumber,
+            approvedAt: now.toISOString(),
+          },
+        },
+        session,
+      );
+      await this.auditEvent(
+        actor,
+        'DOCUMENT_AUTO_APPROVED',
+        'PROJECT_DOCUMENT',
+        documentId,
+        { version: versionNumber },
+        session,
+      );
+    }).catch(() => undefined);
+
+    await this.dispatchKnowledgeIngestionJob(
+      projectId,
+      documentId,
+      'KNOWLEDGE_SOURCE_APPROVED',
+      versionNumber,
+      headers.requestId,
     );
   }
 }

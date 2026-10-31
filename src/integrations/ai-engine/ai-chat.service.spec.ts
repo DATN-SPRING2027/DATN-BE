@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   BadGatewayException,
+  BadRequestException,
   ForbiddenException,
   NotFoundException,
   UnauthorizedException,
@@ -8,7 +11,9 @@ import { AiChatService } from './ai-chat.service';
 import { sanitizeContinuumActorHeaderName } from './ai-chat.types';
 import type { AiEngineClient } from './ai-engine.port';
 import type { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
+import type { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
 import type { ProjectService } from '../../services/iam/application/projects/project.service';
+import type { PlatformAdministrationRepository } from '../../services/iam/application/platform/platform-administration.repository';
 
 describe('AiChatService', () => {
   const actor = {
@@ -23,6 +28,7 @@ describe('AiChatService', () => {
     organizationId: '507f1f77bcf86cd799439022',
     name: 'Continuum Core',
     code: 'CORE',
+    status: 'ACTIVE' as const,
   };
 
   function setup() {
@@ -528,5 +534,632 @@ describe('AiChatService', () => {
       }),
     ).rejects.toThrow(ForbiddenException);
     expect(requestMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('manages single-vote feedback, creates shares with 201/200 preservation, and streams regenerations with lineage metadata', async () => {
+    const { service, requestMock, requestStreamMock } = setup();
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'act.jwt.token' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_1' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          message_id: 'm2',
+          rating: 'DISLIKE',
+          reason_category: 'INACCURATE',
+          reason_text: 'Sai công thức tính KPI.',
+          updated_at: '2026-10-30T10:00:00Z',
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          feedback: {
+            message_id: 'm2',
+            rating: 'LIKE',
+            reason_category: null,
+            reason_text: null,
+            updated_at: '2026-10-30T10:02:00Z',
+          },
+        },
+      })
+      .mockResolvedValueOnce({ status: 204, body: undefined })
+      .mockResolvedValueOnce({
+        status: 201,
+        body: {
+          id: 'sh_1',
+          project_id: project.id,
+          message_id: 'm2',
+          created_at: '2026-10-30T10:03:00Z',
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          items: [
+            {
+              id: 'm3',
+              thread_id: 't1',
+              reply_to_message_id: 'm1',
+              regenerated_from_message_id: 'm2',
+              role: 'assistant',
+              content: 'Bản trả lời mới [1].',
+              status: 'ok',
+              created_at: '2026-10-30T10:05:00Z',
+              citations: [],
+              steps: [],
+            },
+          ],
+          next_cursor: null,
+          has_more: false,
+        },
+      });
+
+    const savedDislike = await service.putOwnFeedback(
+      { authorization: 'Bearer ok' },
+      project.id,
+      't1',
+      'm2',
+      {
+        rating: 'DISLIKE',
+        reasonCategory: 'INACCURATE',
+        reasonText: 'Sai công thức tính KPI.',
+      },
+    );
+    expect(savedDislike).toEqual({
+      messageId: 'm2',
+      rating: 'DISLIKE',
+      reasonCategory: 'INACCURATE',
+      reasonText: 'Sai công thức tính KPI.',
+      updatedAt: '2026-10-30T10:00:00Z',
+    });
+
+    const ownLike = await service.getOwnFeedback(
+      { authorization: 'Bearer ok' },
+      project.id,
+      't1',
+      'm2',
+    );
+    expect(ownLike).toEqual({
+      feedback: {
+        messageId: 'm2',
+        rating: 'LIKE',
+        updatedAt: '2026-10-30T10:02:00Z',
+      },
+    });
+
+    await service.deleteOwnFeedback(
+      { authorization: 'Bearer ok' },
+      project.id,
+      't1',
+      'm2',
+    );
+
+    const shareCreated = await service.createShare(
+      { authorization: 'Bearer ok' },
+      project.id,
+      't1',
+      'm2',
+    );
+    expect(shareCreated).toEqual({
+      status: 201,
+      share: {
+        id: 'sh_1',
+        projectId: project.id,
+        messageId: 'm2',
+        createdAt: '2026-10-30T10:03:00Z',
+      },
+    });
+
+    const encoder = new TextEncoder();
+    const rawSse = [
+      'event: run.started\ndata: {"run_id":"r2","type":"run.started","payload":{"user_message_id":"m1"}}\n\n',
+      'event: run.completed\ndata: {"run_id":"r2","type":"run.completed","payload":{"message_id":"m3","reply_to_message_id":"m1","regenerated_from_message_id":"m2","output":"Bản trả lời mới [1].","answer_status":"answered","citations":[]}}\n\n',
+    ].join('');
+    requestStreamMock.mockResolvedValueOnce({
+      status: 200,
+      contentType: 'text/event-stream',
+      stream: new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          ctrl.enqueue(encoder.encode(rawSse));
+          ctrl.close();
+        },
+      }),
+    });
+
+    const frames = [];
+    for await (const frame of await service.openRegenerateStream(
+      { authorization: 'Bearer ok' },
+      project.id,
+      't1',
+      'm2',
+    )) {
+      frames.push(frame);
+    }
+    expect(frames).toEqual([
+      {
+        event: 'started',
+        data: { runId: 'r2', threadId: 't1', userMessageId: 'm1' },
+      },
+      {
+        event: 'completed',
+        data: {
+          messageId: 'm3',
+          replyToMessageId: 'm1',
+          regeneratedFromMessageId: 'm2',
+          content: 'Bản trả lời mới [1].',
+          answerStatus: 'answered',
+          citations: [],
+          sessionCitations: [],
+          retrievalSteps: [],
+        },
+      },
+    ]);
+  });
+
+  it('enforces ACTIVE Project membership for shared answers (denying non-member Org Managers and non-member PUBLIC viewers with safe 404)', async () => {
+    const getCurrentIdentity = jest.fn().mockResolvedValue({
+      ...actor,
+      roles: ['ADMIN'],
+    });
+    const resolveProjectActorContext = jest.fn();
+    const requestMock = jest.fn();
+    const service = new AiChatService(
+      { getCurrentIdentity } as unknown as AuthenticationApplicationService,
+      { get: jest.fn() } as unknown as ProjectService,
+      { request: requestMock, requestStream: jest.fn() },
+      {
+        resolveProjectActorContext,
+      } as unknown as HandoverIamScopeService,
+    );
+
+    // Org ADMIN (Manager) in a PUBLIC project WITHOUT active project membership -> MUST get safe 404 without touching SAG!
+    resolveProjectActorContext.mockResolvedValueOnce({
+      userId: actor.id,
+      userName: actor.name,
+      organizationId: project.organizationId,
+      projectId: project.id,
+      projectVisibility: 'PUBLIC',
+      isProjectMember: false,
+      isProjectLeader: false,
+      canAdministerCoordinator: true,
+    });
+    await expect(
+      service.readSharedAnswer(
+        { authorization: 'Bearer manager' },
+        project.id,
+        'sh_1',
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Non-ObjectId projectId -> safe 404 without leaking validation details
+    await expect(
+      service.readSharedAnswer(
+        { authorization: 'Bearer manager' },
+        'legacy-non-objectid',
+        'sh_1',
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Active member of exact Project -> calls SAG with scoped BFF headers and sanitizes payload
+    resolveProjectActorContext.mockResolvedValueOnce({
+      userId: actor.id,
+      userName: actor.name,
+      organizationId: project.organizationId,
+      projectId: project.id,
+      projectVisibility: 'PRIVATE',
+      isProjectMember: true,
+      isProjectLeader: false,
+      canAdministerCoordinator: false,
+    });
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        share: {
+          id: 'sh_1',
+          project_id: project.id,
+          message_id: 'm2',
+          created_at: '2026-10-30T10:03:00Z',
+        },
+        question: { content: 'Quy trình bàn giao?' },
+        answer: {
+          id: 'm2',
+          content: 'Theo tài liệu [1].',
+          prompt_preview: 'MUST_NEVER_LEAK',
+          steps: [{ kind: 'thinking', raw: 'secret' }],
+          citations: [
+            {
+              n: 1,
+              source_id: 'src-1',
+              document_id: 'doc-1',
+              document_name: 'Handover Guide',
+              snippet: 'Bước 1...',
+            },
+          ],
+        },
+      },
+    });
+
+    const shared = await service.readSharedAnswer(
+      { authorization: 'Bearer member' },
+      project.id,
+      'sh_1',
+    );
+    expect(requestMock).toHaveBeenCalledWith({
+      path: `/api/v1/projects/${project.id}/shares/sh_1`,
+      method: 'GET',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': project.organizationId,
+        'X-Continuum-Tenant-Id': project.organizationId,
+        'X-Continuum-Project-Id': project.id,
+        'X-Continuum-Security-Partition': project.id,
+      },
+    });
+    expect(shared).toEqual({
+      share: {
+        id: 'sh_1',
+        projectId: project.id,
+        messageId: 'm2',
+        createdAt: '2026-10-30T10:03:00Z',
+      },
+      question: { content: 'Quy trình bàn giao?' },
+      answer: {
+        id: 'm2',
+        content: 'Theo tài liệu [1].',
+        citations: [
+          {
+            number: 1,
+            sourceId: 'src-1',
+            documentId: 'doc-1',
+            documentName: 'Handover Guide',
+            label: 'Handover Guide',
+            snippet: 'Bước 1...',
+          },
+        ],
+      },
+    });
+  });
+
+  it('validates Organization/Project relationship on Platform AI feedback queries and maps totals + rows', async () => {
+    const findOrganization = jest.fn();
+    const findProject = jest.fn();
+    const requestMock = jest.fn();
+    const service = new AiChatService(
+      {
+        getCurrentIdentity: jest.fn(),
+      } as unknown as AuthenticationApplicationService,
+      { get: jest.fn() } as unknown as ProjectService,
+      { request: requestMock, requestStream: jest.fn() },
+      undefined,
+      {
+        findOrganization,
+        findProject,
+      } as unknown as PlatformAdministrationRepository,
+    );
+
+    // Mismatched projectId vs organizationId -> 400 BadRequestException without calling SAG
+    findOrganization.mockResolvedValueOnce({ id: project.organizationId });
+    findProject.mockResolvedValueOnce({
+      id: project.id,
+      organization: {
+        id: '507f1f77bcf86cd799439099',
+        name: 'Other',
+        slug: 'other',
+      },
+    });
+    await expect(
+      service.listPlatformFeedback({
+        organizationId: project.organizationId,
+        projectId: project.id,
+        limit: 20,
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Matching organizationId + projectId -> calls SAG and maps camelCase page without voter identity
+    findOrganization.mockResolvedValueOnce({ id: project.organizationId });
+    findProject.mockResolvedValueOnce({
+      id: project.id,
+      organization: { id: project.organizationId, name: 'Core', slug: 'core' },
+    });
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        totals: { likes: 5, dislikes: 2 },
+        items: [
+          {
+            id: 'fb_1',
+            organization_id: project.organizationId,
+            project_id: project.id,
+            message_id: 'm2',
+            voter_subject: 'MUST_NEVER_LEAK',
+            rating: 'DISLIKE',
+            reason_category: 'OTHER',
+            reason_text: 'Thiếu trích dẫn chương 3.',
+            created_at: '2026-10-30T10:00:00Z',
+            updated_at: '2026-10-30T10:00:00Z',
+          },
+        ],
+        next_cursor: 'cur.sig',
+      },
+    });
+
+    const page = await service.listPlatformFeedback({
+      organizationId: project.organizationId,
+      projectId: project.id,
+      rating: 'DISLIKE',
+      limit: 20,
+    });
+    expect(page).toEqual({
+      totals: { likes: 5, dislikes: 2 },
+      items: [
+        {
+          id: 'fb_1',
+          organizationId: project.organizationId,
+          projectId: project.id,
+          messageId: 'm2',
+          rating: 'DISLIKE',
+          reasonCategory: 'OTHER',
+          reasonText: 'Thiếu trích dẫn chương 3.',
+          createdAt: '2026-10-30T10:00:00Z',
+          updatedAt: '2026-10-30T10:00:00Z',
+        },
+      ],
+      nextCursor: 'cur.sig',
+    });
+  });
+
+  it('rejects answer actions when Project is ARCHIVED even if a SAG session was previously cached (Finding #5)', async () => {
+    const { service, getProject, requestMock, requestStreamMock } = setup();
+
+    // Warm session cache while ACTIVE
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'header.payload.signature' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_default_1' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { feedback: null },
+      });
+    await service.getOwnFeedback(
+      { authorization: 'Bearer continuum-jwt' },
+      project.id,
+      't1',
+      'm2',
+    );
+    requestMock.mockClear();
+
+    // Archive project -> every answer-action session endpoint fails closed with 404 NotFoundException
+    const archivedProject = { ...project, status: 'ARCHIVED' as const };
+    getProject.mockResolvedValue(archivedProject);
+
+    await expect(
+      service.createShare(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.putOwnFeedback(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+        { rating: 'LIKE' },
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.deleteOwnFeedback(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.getOwnFeedback(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    await expect(
+      service.openRegenerateStream(
+        { authorization: 'Bearer continuum-jwt' },
+        project.id,
+        't1',
+        'm2',
+      ),
+    ).rejects.toThrow(NotFoundException);
+
+    expect(requestMock).not.toHaveBeenCalled();
+    expect(requestStreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps BFF OpenAPI FeedbackInput conditional allOf rules in sync with approved spec (Finding #9)', () => {
+    const raw = readFileSync(
+      resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as {
+      components?: {
+        schemas?: {
+          FeedbackInput?: { allOf?: unknown[] };
+        };
+      };
+    };
+    const allOf = parsed.components?.schemas?.FeedbackInput?.allOf;
+    expect(Array.isArray(allOf)).toBe(true);
+    expect(allOf).toHaveLength(3);
+  });
+
+  it('authorizes active Project read access on generateMindMap, forwards BFF scope headers, and validates tree/citation invariants', async () => {
+    const { service, getCurrentIdentity, getProject, requestMock } = setup();
+
+    // Unauthenticated -> 401 without calling SAG
+    getCurrentIdentity.mockRejectedValueOnce(new UnauthorizedException());
+    await expect(
+      service.generateMindMap({ cookie: 'bad' }, project.id, {}),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Missing/forbidden project -> 403/404 without calling SAG
+    getProject.mockRejectedValueOnce(new ForbiddenException());
+    await expect(
+      service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {}),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Archived project -> safe 404 without calling SAG
+    getProject.mockResolvedValueOnce({
+      ...project,
+      status: 'ARCHIVED' as const,
+    });
+    await expect(
+      service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {}),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Active project -> calls POST /api/v1/projects/:id/mind-map with verified Continuum BFF headers and sanitizes payload
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: 'Bàn giao hệ thống',
+        status: 'ready',
+        generationMode: 'outline_fallback',
+        fallbackReason: 'LLM_UNAVAILABLE',
+        scopeFingerprint: 'f'.repeat(64),
+        coverage: {
+          accessibleReadyDocumentCount: 3,
+          usedDocumentCount: 2,
+          omittedDocumentCount: 1,
+          pendingDocumentCount: 1,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 8,
+        },
+        tree: {
+          id: 'root',
+          label: 'Continuum Core',
+          summary: 'Sơ đồ theo mục lục tài liệu',
+          citationNumbers: [],
+          children: [
+            {
+              id: 'branch_1',
+              label: 'Quy trình bàn giao',
+              summary: 'Chi tiết checklist bàn giao',
+              citationNumbers: [1],
+              children: [],
+            },
+          ],
+        },
+        citations: [
+          {
+            number: 1,
+            sourceId: 'src-1',
+            documentId: '507f1f77bcf86cd799439088',
+            documentName: 'Handover Guide.pdf',
+            versionNo: 2,
+            heading: '1. Quy trình bàn giao',
+            snippet: 'Checklist bàn giao gồm 5 bước xác minh.',
+            pageFrom: 3,
+            pageTo: 4,
+          },
+        ],
+        generatedAt: '2026-10-30T16:10:00Z',
+      },
+    });
+
+    const mindMap = await service.generateMindMap(
+      { authorization: 'Bearer ok' },
+      project.id,
+      { topic: 'Bàn giao hệ thống' },
+    );
+
+    expect(requestMock).toHaveBeenCalledWith({
+      path: `/api/v1/projects/${project.id}/mind-map`,
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': project.organizationId,
+        'X-Continuum-Tenant-Id': project.organizationId,
+        'X-Continuum-Project-Id': project.id,
+        'X-Continuum-Security-Partition': project.id,
+      },
+      body: { topic: 'Bàn giao hệ thống' },
+    });
+    expect(mindMap.generationMode).toBe('outline_fallback');
+    expect(mindMap.fallbackReason).toBe('LLM_UNAVAILABLE');
+    expect(mindMap.tree?.children[0]?.citationNumbers).toEqual([1]);
+    expect(mindMap.citations[0]?.documentId).toBe('507f1f77bcf86cd799439088');
+
+    // Malformed upstream tree (e.g. ready status with null tree, or depth > 3) fails closed with 502 BadGatewayException
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: null,
+        status: 'ready',
+        generationMode: 'llm',
+        fallbackReason: null,
+        scopeFingerprint: 'f'.repeat(64),
+        coverage: {
+          accessibleReadyDocumentCount: 1,
+          usedDocumentCount: 1,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 2,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-30T16:10:00Z',
+      },
+    });
+    await expect(
+      service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {}),
+    ).rejects.toThrow(BadGatewayException);
+  });
+
+  it('keeps BFF OpenAPI MindMap route and schemas synchronized with approved contract', () => {
+    const raw = readFileSync(
+      resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as {
+      paths?: Record<string, { post?: { operationId?: string } }>;
+      components?: {
+        schemas?: Record<string, unknown>;
+      };
+    };
+    expect(
+      parsed.paths?.['/api/v1/ai-chat/projects/{projectId}/mind-map']?.post
+        ?.operationId,
+    ).toBe('generateAiChatMindMap');
+    expect(parsed.components?.schemas?.GenerateMindMapRequest).toBeDefined();
+    expect(parsed.components?.schemas?.MindMapCoverage).toBeDefined();
+    expect(parsed.components?.schemas?.MindMapNode).toBeDefined();
+    expect(parsed.components?.schemas?.MindMapResponse).toBeDefined();
   });
 });

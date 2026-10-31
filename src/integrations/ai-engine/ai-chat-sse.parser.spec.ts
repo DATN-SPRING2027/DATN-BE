@@ -1,5 +1,5 @@
 import { transformSagSseStream } from './ai-chat-sse.parser';
-import type { AiChatSseFrame } from './ai-chat.types';
+import { type AiChatSseFrame, mapSagMessage } from './ai-chat.types';
 
 function streamFromByteChunks(
   chunks: Uint8Array[],
@@ -185,5 +185,346 @@ describe('transformSagSseStream', () => {
       },
     });
     expect(JSON.stringify(failedFrames)).not.toContain('sk-12345');
+  });
+
+  it('normalizes lowercase search_unavailable failure code from SAG and maps whitelisted errorCode on persisted failed messages', async () => {
+    const encoder = new TextEncoder();
+    const searchOutage = encoder.encode(
+      'event: run.failed\n' +
+        'data: {"payload":{"message_id":"m-search-err","error":{"code":"search_unavailable","message":"Qdrant connection refused at 127.0.0.1:6333","retryable":true}}}\n\n',
+    );
+    const frames: AiChatSseFrame[] = [];
+    for await (const frame of transformSagSseStream(
+      streamFromByteChunks([searchOutage]),
+      { threadId: 't-search' },
+    )) {
+      frames.push(frame);
+    }
+    expect(frames).toEqual([
+      {
+        event: 'failed',
+        data: {
+          code: 'SEARCH_UNAVAILABLE',
+          message:
+            'Knowledge search index is temporarily unavailable. Please try again.',
+          retryable: true,
+          messageId: 'm-search-err',
+        },
+      },
+    ]);
+    expect(JSON.stringify(frames)).not.toContain('6333');
+
+    const persistedFailed = mapSagMessage({
+      id: 'm-search-err',
+      role: 'assistant',
+      content: '',
+      status: 'failed',
+      error: {
+        code: 'search_unavailable',
+        message: 'Qdrant internal error',
+      },
+      citations: [],
+      steps: [],
+      created_at: '2026-10-30T07:00:00Z',
+    });
+    expect(persistedFailed?.errorCode).toBe('SEARCH_UNAVAILABLE');
+  });
+
+  it('streams real-time execution trace steps (session_context, thinking, tool running->completed, answer synthesis) and extracts sessionCitations on completion', async () => {
+    const encoder = new TextEncoder();
+    const rawSse =
+      'event: run.started\n' +
+      'data: {"run_id":"run-live-1","payload":{"user_message_id":"msg-u2","session_context":{"mode":"on","ms":42}}}\n\n' +
+      'event: turn.started\n' +
+      'data: {"turn":1,"payload":{"message_count":2,"tool_count":1}}\n\n' +
+      'event: message.completed\n' +
+      'data: {"turn":1,"payload":{"message":{"role":"assistant","content":"PRIVATE_COT"},"duration_ms":210,"has_tool_calls":true}}\n\n' +
+      'event: tool.started\n' +
+      'data: {"turn":1,"payload":{"tool_call_id":"call-99","name":"search_context","label":"Tìm trong kho tri thức","arguments":{"query":"secret internal query"}}}\n\n' +
+      'event: tool.completed\n' +
+      'data: {"turn":1,"payload":{"tool_call_id":"call-99","name":"search_context","duration_ms":640,"details":{"count":5}}}\n\n' +
+      'event: turn.started\n' +
+      'data: {"turn":2,"payload":{"message_count":4,"tool_count":1}}\n\n' +
+      'event: message.completed\n' +
+      'data: {"turn":2,"payload":{"message":{"role":"assistant","content":"Final [1] [S1]."},"duration_ms":1180,"has_tool_calls":false}}\n\n' +
+      'event: message.delta\n' +
+      'data: {"turn":2,"payload":{"role":"assistant","delta":"Final [1] [S1]."}}\n\n' +
+      'event: run.completed\n' +
+      'data: ' +
+      JSON.stringify({
+        payload: {
+          message_id: 'msg-a2',
+          reply_to_message_id: 'msg-u2',
+          output: 'Final [1] [S1].',
+          answer_status: 'answered',
+          citations: [],
+          steps: [
+            {
+              kind: 'session_context',
+              mode: 'on',
+              ms: 42,
+              audit: { selected_groups: [{ citation_tag: 'S1' }] },
+              session_citations: [
+                {
+                  ref: 'S1',
+                  source: 'selected_group',
+                  group_id: 'grp-1',
+                  turn_ids: ['msg-prev-1'],
+                  summary_excerpt: 'Prior sprint handover agreement.',
+                  mapped: true,
+                  claim_level: 'claim',
+                },
+              ],
+            },
+            { kind: 'thinking', step: 1, ms: 210 },
+            {
+              kind: 'tool',
+              step: 1,
+              name: 'search_context',
+              label: 'Tìm trong kho tri thức',
+              ms: 640,
+              count: 5,
+            },
+            { kind: 'answer', step: 2, ms: 1180 },
+          ],
+        },
+      }) +
+      '\n\n';
+
+    const frames: AiChatSseFrame[] = [];
+    for await (const frame of transformSagSseStream(
+      streamFromByteChunks([encoder.encode(rawSse)]),
+      { threadId: 'thread-live' },
+    )) {
+      frames.push(frame);
+    }
+
+    expect(frames).toEqual([
+      {
+        event: 'started',
+        data: {
+          runId: 'run-live-1',
+          threadId: 'thread-live',
+          userMessageId: 'msg-u2',
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'session-context',
+          status: 'completed',
+          kind: 'session_context',
+          label: 'Session Memory (ECCE)',
+          durationMs: 42,
+          mode: 'on',
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'model-turn-1',
+          status: 'running',
+          kind: 'thinking',
+          label: 'Reasoning',
+          durationMs: 0,
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'model-turn-1',
+          status: 'completed',
+          kind: 'thinking',
+          label: 'Reasoning',
+          durationMs: 210,
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'tool-call-99',
+          status: 'running',
+          kind: 'tool',
+          label: 'Tìm trong kho tri thức',
+          durationMs: 0,
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'tool-call-99',
+          status: 'completed',
+          kind: 'tool',
+          label: 'Tìm trong kho tri thức',
+          durationMs: 640,
+          count: 5,
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'model-turn-2',
+          status: 'running',
+          kind: 'answer',
+          label: 'Answer Synthesis',
+          durationMs: 0,
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'model-turn-2',
+          status: 'completed',
+          kind: 'answer',
+          label: 'Answer Synthesis',
+          durationMs: 1180,
+        },
+      },
+      {
+        event: 'delta',
+        data: { text: 'Final [1] [S1].' },
+      },
+      {
+        event: 'completed',
+        data: {
+          messageId: 'msg-a2',
+          replyToMessageId: 'msg-u2',
+          content: 'Final [1] [S1].',
+          answerStatus: 'answered',
+          citations: [],
+          sessionCitations: [
+            {
+              ref: 'S1',
+              source: 'selected_group',
+              groupId: 'grp-1',
+              turnIds: ['msg-prev-1'],
+              summaryExcerpt: 'Prior sprint handover agreement.',
+              mapped: true,
+              claimLevel: 'claim',
+            },
+          ],
+          retrievalSteps: [
+            {
+              kind: 'session_context',
+              label: 'Session Memory (ECCE)',
+              durationMs: 42,
+              mode: 'on',
+            },
+            {
+              kind: 'thinking',
+              label: 'Reasoning',
+              durationMs: 210,
+            },
+            {
+              kind: 'tool',
+              label: 'Tìm trong kho tri thức',
+              durationMs: 640,
+              count: 5,
+            },
+            {
+              kind: 'answer',
+              label: 'Answer Synthesis',
+              durationMs: 1180,
+            },
+          ],
+        },
+      },
+    ]);
+
+    const serialized = JSON.stringify(frames);
+    expect(serialized).not.toContain('PRIVATE_COT');
+    expect(serialized).not.toContain('secret internal query');
+  });
+
+  it('marks failed tool steps with status failed while stripping internal tool error messages', async () => {
+    const encoder = new TextEncoder();
+    const rawSse =
+      'event: tool.started\n' +
+      'data: {"turn":1,"payload":{"tool_call_id":"call-err","name":"get_entity","label":"Tra cứu thực thể"}}\n\n' +
+      'event: tool.failed\n' +
+      'data: {"turn":1,"payload":{"tool_call_id":"call-err","name":"get_entity","duration_ms":65,"error":{"message":"Postgres DSN postgres://admin:secret@10.0.0.5"}}}\n\n' +
+      'event: run.completed\n' +
+      'data: {"payload":{"message_id":"msg-a3","output":"Fallback","answer_status":"no_answer","citations":[]}}\n\n';
+
+    const frames: AiChatSseFrame[] = [];
+    for await (const frame of transformSagSseStream(
+      streamFromByteChunks([encoder.encode(rawSse)]),
+      { threadId: 'thread-err' },
+    )) {
+      frames.push(frame);
+    }
+
+    expect(frames).toEqual([
+      {
+        event: 'step',
+        data: {
+          id: 'tool-call-err',
+          status: 'running',
+          kind: 'tool',
+          label: 'Tra cứu thực thể',
+          durationMs: 0,
+        },
+      },
+      {
+        event: 'step',
+        data: {
+          id: 'tool-call-err',
+          status: 'failed',
+          kind: 'tool',
+          label: 'Tra cứu thực thể',
+          durationMs: 65,
+        },
+      },
+      {
+        event: 'completed',
+        data: {
+          messageId: 'msg-a3',
+          content: 'Fallback',
+          answerStatus: 'no_answer',
+          citations: [],
+          sessionCitations: [],
+          retrievalSteps: [
+            {
+              status: 'failed',
+              kind: 'tool',
+              label: 'Tra cứu thực thể',
+              durationMs: 65,
+            },
+          ],
+        },
+      },
+    ]);
+    expect(JSON.stringify(frames)).not.toContain('10.0.0.5');
+    expect(JSON.stringify(frames)).not.toContain('admin:secret');
+
+    const persistedWithFailedTool = mapSagMessage({
+      id: 'msg-a3',
+      role: 'assistant',
+      content: 'Fallback',
+      status: 'ok',
+      citations: [],
+      steps: [
+        {
+          kind: 'tool',
+          step: 1,
+          name: 'get_entity',
+          label: 'Tra cứu thực thể',
+          ms: 65,
+          error: 'Postgres DSN postgres://admin:secret@10.0.0.5',
+        },
+      ],
+      created_at: '2026-10-30T08:00:00Z',
+    });
+    expect(persistedWithFailedTool?.retrievalSteps).toEqual([
+      {
+        status: 'failed',
+        kind: 'tool',
+        label: 'Tra cứu thực thể',
+        durationMs: 65,
+      },
+    ]);
+    expect(JSON.stringify(persistedWithFailedTool)).not.toContain(
+      'admin:secret',
+    );
   });
 });

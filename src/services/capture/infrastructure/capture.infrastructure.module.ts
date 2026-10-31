@@ -8,12 +8,19 @@ import {
 } from '../../../common/redis/redis-connection';
 import { AuditService } from './audit/audit.service';
 import { MongoInfrastructureModule } from './mongodb/mongodb.module';
+import {
+  HttpSagKnowledgeSyncTransport,
+  KnowledgeOutboxConsumer,
+  SAG_KNOWLEDGE_SYNC_TRANSPORT,
+} from './outbox/knowledge-outbox.consumer';
 import { OutboxService } from './outbox/outbox.service';
 import { IdempotencyService } from './redis/idempotency.service';
 import { RedisService } from './redis/redis.service';
 import { R2Storage } from './storage/r2.storage';
 import { ProjectDocumentStorage } from './storage/project-document.storage';
 import { CAPTURE_PERSISTENCE, CAPTURE_QUEUES } from './persistence';
+import { KnowledgeIngestionProcessor } from './queues/knowledge-ingestion.processor';
+import { CAPTURE_QUEUE_RUNTIME } from './queues/queue.names';
 import { DEFAULT_JOB_OPTIONS } from './queues/queue.policy';
 import { QueueRuntime } from './queues/queue-runtime';
 
@@ -26,7 +33,19 @@ export class CaptureInfrastructureModule {
       IdempotencyService,
       R2Storage,
       ProjectDocumentStorage,
-      ...(enabled ? [AuditService, OutboxService] : []),
+      HttpSagKnowledgeSyncTransport,
+      {
+        provide: SAG_KNOWLEDGE_SYNC_TRANSPORT,
+        useExisting: HttpSagKnowledgeSyncTransport,
+      },
+      ...(enabled
+        ? [
+            AuditService,
+            OutboxService,
+            KnowledgeOutboxConsumer,
+            KnowledgeIngestionProcessor,
+          ]
+        : []),
       ...(enabled
         ? [
             {
@@ -34,6 +53,10 @@ export class CaptureInfrastructureModule {
               inject: [ConfigService],
               useFactory: (config: ConfigService) =>
                 new QueueRuntime(config, CAPTURE_QUEUES),
+            },
+            {
+              provide: CAPTURE_QUEUE_RUNTIME,
+              useExisting: QueueRuntime,
             },
           ]
         : []),

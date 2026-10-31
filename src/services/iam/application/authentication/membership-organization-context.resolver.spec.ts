@@ -133,4 +133,33 @@ describe('MembershipOrganizationContextResolver', () => {
       context: { orgId: orgA, roles: [] },
     });
   });
+
+  it('fetches organization options and role assignments concurrently for a valid requested organization', async () => {
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([orgA]);
+
+    let releaseOptions!: (value: Array<{ id: string; name: string }>) => void;
+    repository.findOrganizationOptions.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseOptions = resolve;
+        }),
+    );
+    repository.findOrganizationRoleAssignments.mockResolvedValue([
+      { organizationId: orgA, roleCode: 'ADMIN' },
+    ]);
+
+    const pending = resolver.resolveForUser(userId, orgA);
+    await Promise.resolve();
+
+    expect(repository.findOrganizationOptions.mock.calls).toHaveLength(1);
+    expect(repository.findOrganizationRoleAssignments.mock.calls).toHaveLength(
+      1,
+    );
+
+    releaseOptions([{ id: orgA, name: 'Alpha' }]);
+    await expect(pending).resolves.toEqual({
+      outcome: 'RESOLVED',
+      context: { orgId: orgA, roles: ['ADMIN'] },
+    });
+  });
 });

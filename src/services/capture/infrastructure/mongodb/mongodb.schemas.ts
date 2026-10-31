@@ -65,6 +65,55 @@ export const SUPPORTED_DOCUMENT_CONTENT_TYPES = [
   'image/webp',
 ] as const;
 
+export const WORK_REPORT_SCOPES = ['MEMBER', 'LEADER'] as const;
+
+export const WORK_REPORT_CADENCE_FREQUENCIES = [
+  'DAILY',
+  'EVERY_2_DAYS',
+  'EVERY_3_DAYS',
+  'EVERY_4_DAYS',
+  'EVERY_5_DAYS',
+  'EVERY_6_DAYS',
+  'WEEKLY',
+] as const;
+
+export const WORK_REPORT_REVIEW_ACTIONS = [
+  'APPROVED',
+  'CHANGES_REQUESTED',
+  'REJECTED',
+] as const;
+
+const workReportReviewHistoryEntrySchema = new Schema(
+  {
+    action: {
+      type: String,
+      enum: [...WORK_REPORT_REVIEW_ACTIONS],
+      required: true,
+    },
+    reviewerId: { type: String, required: true },
+    reviewerRole: {
+      type: String,
+      enum: ['MANAGER', 'LEADER'],
+    },
+    comment: { type: String, maxlength: 5000 },
+    at: { type: Date, required: true },
+  },
+  { _id: false, strict: true },
+);
+
+const workReportSettingHistoryEntrySchema = new Schema(
+  {
+    frequency: {
+      type: String,
+      enum: [...WORK_REPORT_CADENCE_FREQUENCIES],
+      required: true,
+    },
+    effectiveAt: { type: Date, required: true },
+    updatedBy: { type: String, required: true },
+  },
+  { _id: false, strict: true },
+);
+
 const captureSchemas: Record<string, Schema> = {
   work_note_agent_drafts: new Schema(
     {
@@ -321,6 +370,7 @@ const captureSchemas: Record<string, Schema> = {
         required: true,
       },
       updatedByUserId: { type: Schema.Types.ObjectId, required: true },
+      knowledgeSync: Schema.Types.Mixed,
     },
     { collection: 'project_documents', timestamps: true, strict: true },
   ),
@@ -343,7 +393,9 @@ const captureSchemas: Record<string, Schema> = {
           enum: SUPPORTED_DOCUMENT_CONTENT_TYPES,
         },
         size: { type: Number, min: 1, max: 20 * 1024 * 1024 },
+        sha256: { type: String, maxlength: 64 },
       },
+      knowledgeSync: Schema.Types.Mixed,
       status: {
         type: String,
         enum: [
@@ -395,20 +447,13 @@ const captureSchemas: Record<string, Schema> = {
       provenance: Schema.Types.Mixed,
       reportScope: {
         type: String,
-        enum: ['MEMBER', 'LEADER'],
+        enum: [...WORK_REPORT_SCOPES],
         default: 'MEMBER',
+        required: true,
       },
       frequency: {
         type: String,
-        enum: [
-          'DAILY',
-          'EVERY_2_DAYS',
-          'EVERY_3_DAYS',
-          'EVERY_4_DAYS',
-          'EVERY_5_DAYS',
-          'EVERY_6_DAYS',
-          'WEEKLY',
-        ],
+        enum: [...WORK_REPORT_CADENCE_FREQUENCIES],
         required: true,
       },
       periodStart: { type: Date, required: true },
@@ -425,30 +470,7 @@ const captureSchemas: Record<string, Schema> = {
         name: String,
         contentType: {
           type: String,
-          enum: [
-            'application/pdf',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'application/vnd.ms-excel',
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-            'application/vnd.ms-powerpoint',
-            'application/vnd.oasis.opendocument.text',
-            'application/vnd.oasis.opendocument.spreadsheet',
-            'application/vnd.oasis.opendocument.presentation',
-            'application/rtf',
-            'text/plain',
-            'text/markdown',
-            'text/csv',
-            'text/tab-separated-values',
-            'application/json',
-            'application/yaml',
-            'application/xml',
-            'application/sql',
-            'image/png',
-            'image/jpeg',
-            'image/webp',
-          ],
+          enum: [...SUPPORTED_DOCUMENT_CONTENT_TYPES],
         },
         size: { type: Number, min: 1, max: 20 * 1024 * 1024 },
       },
@@ -468,7 +490,10 @@ const captureSchemas: Record<string, Schema> = {
       reviewedByUserId: Schema.Types.ObjectId,
       reviewedAt: Date,
       reviewComment: { type: String, maxlength: 5000 },
-      reviewHistory: { type: [Schema.Types.Mixed], default: [] },
+      reviewHistory: {
+        type: [workReportReviewHistoryEntrySchema],
+        default: [],
+      },
     },
     { collection: 'work_reports', timestamps: true, strict: true },
   ),
@@ -509,36 +534,39 @@ const captureSchemas: Record<string, Schema> = {
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
+      reportScope: {
+        type: String,
+        enum: [...WORK_REPORT_SCOPES],
+        default: 'MEMBER',
+        required: true,
+      },
       frequency: {
         type: String,
-        enum: [
-          'DAILY',
-          'EVERY_2_DAYS',
-          'EVERY_3_DAYS',
-          'EVERY_4_DAYS',
-          'EVERY_5_DAYS',
-          'EVERY_6_DAYS',
-          'WEEKLY',
-        ],
+        enum: [...WORK_REPORT_CADENCE_FREQUENCIES],
         required: true,
       },
       effectiveAt: { type: Date, required: true },
+      nextFrequency: {
+        type: String,
+        enum: [...WORK_REPORT_CADENCE_FREQUENCIES],
+      },
+      nextEffectiveAt: Date,
       createdByUserId: { type: Schema.Types.ObjectId, required: true },
+      updatedByUserId: Schema.Types.ObjectId,
+      history: {
+        type: [workReportSettingHistoryEntrySchema],
+        default: [],
+      },
       leaderFrequency: {
         type: String,
-        enum: [
-          'DAILY',
-          'EVERY_2_DAYS',
-          'EVERY_3_DAYS',
-          'EVERY_4_DAYS',
-          'EVERY_5_DAYS',
-          'EVERY_6_DAYS',
-          'WEEKLY',
-        ],
+        enum: [...WORK_REPORT_CADENCE_FREQUENCIES],
       },
       leaderEffectiveAt: Date,
       leaderUpdatedByUserId: Schema.Types.ObjectId,
-      leaderHistory: { type: [Schema.Types.Mixed], default: [] },
+      leaderHistory: {
+        type: [workReportSettingHistoryEntrySchema],
+        default: [],
+      },
     },
     { collection: 'work_report_settings', timestamps: true, strict: true },
   ),

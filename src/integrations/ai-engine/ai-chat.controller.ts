@@ -10,6 +10,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   Res,
@@ -20,7 +21,14 @@ import {
   validCsrfPair,
 } from '../../services/iam/application/authentication/authentication.application.service';
 import { AiChatService } from './ai-chat.service';
-import type { AiChatRequestHeaders, AiChatSseFrame } from './ai-chat.types';
+import {
+  AI_CHAT_FEEDBACK_REASON_CATEGORIES,
+  type AiChatFeedbackInputDto,
+  type AiChatFeedbackReasonCategory,
+  type AiChatMindMapInputDto,
+  type AiChatRequestHeaders,
+  type AiChatSseFrame,
+} from './ai-chat.types';
 
 const SAFE_PATH_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -151,6 +159,119 @@ function validateAskBody(body: unknown): { query: string } {
     });
   }
   return { query: trimmed };
+}
+
+function validateEmptyBody(body: unknown): void {
+  if (!isPlainRecord(body) || Object.keys(body).length > 0) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Request body must be an empty JSON object.',
+    });
+  }
+}
+
+function validateGenerateMindMapBody(body: unknown): AiChatMindMapInputDto {
+  if (body === undefined || body === null) return {};
+  if (!isPlainRecord(body)) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Request body must be a JSON object.',
+    });
+  }
+  const unknownKeys = Object.keys(body).filter((key) => key !== 'topic');
+  if (unknownKeys.length > 0) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Unexpected properties in request body.',
+    });
+  }
+  if (body.topic === undefined || body.topic === null) return {};
+  if (typeof body.topic !== 'string') {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'topic must be a string between 1 and 200 characters.',
+    });
+  }
+  const normalized = body.topic.trim().replace(/\s+/g, ' ');
+  if (normalized.length < 1 || normalized.length > 200) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'topic must be between 1 and 200 characters.',
+    });
+  }
+  return { topic: normalized };
+}
+
+function validateFeedbackBody(body: unknown): AiChatFeedbackInputDto {
+  if (!isPlainRecord(body)) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Request body must be a JSON object.',
+    });
+  }
+  const allowedKeys = new Set(['rating', 'reasonCategory', 'reasonText']);
+  if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Unexpected properties in feedback body.',
+    });
+  }
+  if (body.rating !== 'LIKE' && body.rating !== 'DISLIKE') {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'rating must be LIKE or DISLIKE.',
+    });
+  }
+
+  if (body.rating === 'LIKE') {
+    if (body.reasonCategory !== undefined || body.reasonText !== undefined) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'LIKE feedback cannot include reasonCategory or reasonText.',
+      });
+    }
+    return { rating: 'LIKE' };
+  }
+
+  if (
+    typeof body.reasonCategory !== 'string' ||
+    !(AI_CHAT_FEEDBACK_REASON_CATEGORIES as readonly string[]).includes(
+      body.reasonCategory,
+    )
+  ) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'DISLIKE feedback requires a valid reasonCategory.',
+    });
+  }
+  const reasonCategory = body.reasonCategory as AiChatFeedbackReasonCategory;
+
+  let reasonText: string | undefined;
+  if (body.reasonText !== undefined) {
+    if (
+      typeof body.reasonText !== 'string' ||
+      body.reasonText.length > 1000 ||
+      !/\S/.test(body.reasonText)
+    ) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message:
+          'reasonText must contain between 1 and 1000 non-whitespace characters.',
+      });
+    }
+    reasonText = body.reasonText.trim();
+  } else if (reasonCategory === 'OTHER') {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'reasonText is required when reasonCategory is OTHER.',
+    });
+  }
+
+  return {
+    rating: 'DISLIKE',
+    reasonCategory,
+    ...(reasonText ? { reasonText } : {}),
+  };
 }
 
 @Controller('ai-chat/projects/:projectId')
@@ -288,6 +409,190 @@ export class AiChatController {
     const dto = validateAskBody(body);
     const headers = this.mutationHeaders(request);
 
+    await this.pipeSseStream(response, (signal) =>
+      this.aiChat.openAskStream(
+        headers,
+        validProjectId,
+        validThreadId,
+        dto,
+        signal,
+      ),
+    );
+  }
+
+  @Get('threads/:threadId/messages/:messageId/feedback')
+  async getOwnFeedback(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validThreadId = validatePathIdentifier(threadId, 'threadId');
+    const validMessageId = validatePathIdentifier(messageId, 'messageId');
+    return this.aiChat.getOwnFeedback(
+      this.readHeaders(request),
+      validProjectId,
+      validThreadId,
+      validMessageId,
+    );
+  }
+
+  @Put('threads/:threadId/messages/:messageId/feedback')
+  async putOwnFeedback(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+    @Body() body: unknown,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validThreadId = validatePathIdentifier(threadId, 'threadId');
+    const validMessageId = validatePathIdentifier(messageId, 'messageId');
+    const dto = validateFeedbackBody(body);
+    return this.aiChat.putOwnFeedback(
+      this.mutationHeaders(request),
+      validProjectId,
+      validThreadId,
+      validMessageId,
+      dto,
+    );
+  }
+
+  @Delete('threads/:threadId/messages/:messageId/feedback')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteOwnFeedback(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+  ): Promise<void> {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validThreadId = validatePathIdentifier(threadId, 'threadId');
+    const validMessageId = validatePathIdentifier(messageId, 'messageId');
+    await this.aiChat.deleteOwnFeedback(
+      this.mutationHeaders(request),
+      validProjectId,
+      validThreadId,
+      validMessageId,
+    );
+  }
+
+  @Post('threads/:threadId/messages/:messageId/shares')
+  async createShare(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+    @Body() body: unknown,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validThreadId = validatePathIdentifier(threadId, 'threadId');
+    const validMessageId = validatePathIdentifier(messageId, 'messageId');
+    validateEmptyBody(body);
+    const created = await this.aiChat.createShare(
+      this.mutationHeaders(request),
+      validProjectId,
+      validThreadId,
+      validMessageId,
+    );
+    response.status(created.status);
+    return created.share;
+  }
+
+  @Get('shares/:shareId')
+  async readSharedAnswer(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('shareId') shareId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validShareId = validatePathIdentifier(shareId, 'shareId');
+    return this.aiChat.readSharedAnswer(
+      this.readHeaders(request),
+      validProjectId,
+      validShareId,
+    );
+  }
+
+  @Delete('shares/:shareId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async revokeShare(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('shareId') shareId: string,
+  ): Promise<void> {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validShareId = validatePathIdentifier(shareId, 'shareId');
+    await this.aiChat.revokeShare(
+      this.mutationHeaders(request),
+      validProjectId,
+      validShareId,
+    );
+  }
+
+  @Post('mind-map')
+  @HttpCode(HttpStatus.OK)
+  async generateMindMap(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Body() body: unknown,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const input = validateGenerateMindMapBody(body);
+    return this.aiChat.generateMindMap(
+      this.mutationHeaders(request),
+      validProjectId,
+      input,
+    );
+  }
+
+  @Post('threads/:threadId/messages/:messageId/regenerate')
+  async regenerate(
+    @Req() request: Request,
+    @Res() response: Response,
+    @Param('projectId') projectId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validThreadId = validatePathIdentifier(threadId, 'threadId');
+    const validMessageId = validatePathIdentifier(messageId, 'messageId');
+    validateEmptyBody(body);
+    const headers = this.mutationHeaders(request);
+
+    await this.pipeSseStream(response, (signal) =>
+      this.aiChat.openRegenerateStream(
+        headers,
+        validProjectId,
+        validThreadId,
+        validMessageId,
+        signal,
+      ),
+    );
+  }
+
+  private async pipeSseStream(
+    response: Response,
+    openStream: (
+      signal: AbortSignal,
+    ) => Promise<AsyncGenerator<AiChatSseFrame>>,
+  ): Promise<void> {
     const abortController = new AbortController();
     const onClose = () => {
       if (!response.writableEnded) {
@@ -302,13 +607,7 @@ export class AiChatController {
     try {
       let eventStream: AsyncGenerator<AiChatSseFrame>;
       try {
-        eventStream = await this.aiChat.openAskStream(
-          headers,
-          validProjectId,
-          validThreadId,
-          dto,
-          abortController.signal,
-        );
+        eventStream = await openStream(abortController.signal);
       } catch (error) {
         if (abortController.signal.aborted || response.destroyed) {
           return;

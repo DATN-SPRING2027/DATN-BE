@@ -1,12 +1,16 @@
 import { UnprocessableEntityException } from '@nestjs/common';
 import { WORK_REPORT_FREQUENCIES } from './work-notes.domain';
 import type {
+  DocumentConfirmUploadInput,
   DocumentType,
+  DocumentUploadIntentInput,
   ProjectDocumentInput,
   ReviewInput,
   TaskNoteInput,
   WorkReportInput,
+  WorkReportPeriodFilter,
   WorkReportScope,
+  WorkReportsListFilters,
 } from './work-notes.types';
 
 const objectRecord = (value: unknown): Record<string, unknown> => {
@@ -130,6 +134,49 @@ export function validateReportScope(
   return value;
 }
 
+export function validateWorkReportsListFilters(rawQuery: {
+  memberId?: unknown;
+  period?: unknown;
+  search?: unknown;
+}): WorkReportsListFilters | undefined {
+  let memberId: string | undefined;
+  if (rawQuery.memberId !== undefined) {
+    if (
+      typeof rawQuery.memberId !== 'string' ||
+      !/^[a-f\d]{24}$/i.test(rawQuery.memberId.trim())
+    ) {
+      return invalid();
+    }
+    memberId = rawQuery.memberId.trim().toLowerCase();
+  }
+
+  let period: WorkReportPeriodFilter | undefined;
+  if (rawQuery.period !== undefined) {
+    if (rawQuery.period !== 'CURRENT' && rawQuery.period !== 'ALL') {
+      return invalid();
+    }
+    period = rawQuery.period;
+  }
+
+  let search: string | undefined;
+  if (rawQuery.search !== undefined) {
+    if (typeof rawQuery.search !== 'string' || rawQuery.search.length > 200) {
+      return invalid();
+    }
+    const trimmed = rawQuery.search.trim();
+    if (trimmed.length > 0) search = trimmed;
+  }
+
+  if (memberId === undefined && period === undefined && search === undefined) {
+    return undefined;
+  }
+  return {
+    ...(memberId !== undefined ? { memberId } : {}),
+    ...(period !== undefined ? { period } : {}),
+    ...(search !== undefined ? { search } : {}),
+  };
+}
+
 export function validateReviewInput(
   value: unknown,
   requireComment: boolean,
@@ -162,4 +209,62 @@ export function positiveInteger(
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed > max) return invalid();
   return parsed;
+}
+
+export function validateDocumentUploadIntentInput(
+  value: unknown,
+): DocumentUploadIntentInput {
+  const record = objectRecord(value);
+  assertKeys(record, ['fileName', 'contentType', 'size', 'sha256']);
+  const fileName = requiredText(record.fileName, 180);
+  if (
+    /[\\/]/.test(fileName) ||
+    [...fileName].some((character) => character.charCodeAt(0) < 32)
+  ) {
+    return invalid();
+  }
+  const rawContentType =
+    record.contentType === undefined || record.contentType === ''
+      ? 'application/octet-stream'
+      : (optionalText(record.contentType, 160) ?? invalid());
+  const size = record.size;
+  if (
+    typeof size !== 'number' ||
+    !Number.isSafeInteger(size) ||
+    size < 1 ||
+    size > 20 * 1024 * 1024
+  ) {
+    return invalid();
+  }
+  const sha256 = requiredText(record.sha256, 64).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    return invalid();
+  }
+  return {
+    fileName,
+    contentType: rawContentType || 'application/octet-stream',
+    size,
+    sha256,
+  };
+}
+
+export function validateDocumentConfirmUploadInput(
+  value: unknown,
+): DocumentConfirmUploadInput {
+  const record = objectRecord(value);
+  assertKeys(record, ['uploadToken', 'autoSyncSag']);
+  const uploadToken = requiredText(record.uploadToken, 4096);
+  if (uploadToken.length < 16) return invalid();
+  if (
+    record.autoSyncSag !== undefined &&
+    typeof record.autoSyncSag !== 'boolean'
+  ) {
+    return invalid();
+  }
+  return {
+    uploadToken,
+    ...(record.autoSyncSag !== undefined
+      ? { autoSyncSag: record.autoSyncSag }
+      : {}),
+  };
 }
