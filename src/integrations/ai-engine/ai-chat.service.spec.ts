@@ -8,7 +8,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AiChatService } from './ai-chat.service';
-import { sanitizeContinuumActorHeaderName } from './ai-chat.types';
+import {
+  mapSagCitation,
+  sanitizeContinuumActorHeaderName,
+} from './ai-chat.types';
 import type { AiEngineClient } from './ai-engine.port';
 import type { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
 import type { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
@@ -1311,5 +1314,50 @@ describe('AiChatService', () => {
     expect(parsed.components?.schemas?.MindMapCoverage).toBeDefined();
     expect(parsed.components?.schemas?.MindMapNode).toBeDefined();
     expect(parsed.components?.schemas?.MindMapResponse).toBeDefined();
+  });
+
+  it('prefers public_document_id for Continuum deep-linking and preserves multiline Markdown/diagram snippets and chunkId in mapSagCitation', () => {
+    const multilineDiagram = [
+      '6. Trực Quan Hóa Vũ Trụ Tri Thức 3D',
+      '> ⭐ ĐIỂM NHẤN CỐT LÕI',
+      '```',
+      '┌───────────────────────┐',
+      '│ 3D KNOWLEDGE PIPELINE │',
+      '└───────────────────────┘',
+      '```',
+    ].join('\n');
+
+    const mapped = mapSagCitation({
+      n: 4,
+      source_id: 'src-fe',
+      source_name: 'Frontend Docs',
+      document_id: 'sag-internal-uuid-999',
+      public_document_id: '507f1f77bcf86cd799439011',
+      document_name: '02_FRONTEND_NEXTJS.md',
+      chunk_id: 'su_chunk_4',
+      section_path: 'Architecture > 6. 3D Universe',
+      version_no: 1,
+      heading: 'Architecture > 6. 3D Universe',
+      snippet: multilineDiagram,
+      page_from: 1,
+      page_to: 1,
+    });
+
+    expect(mapped).toEqual({
+      number: 4,
+      sourceId: 'src-fe',
+      sourceName: 'Frontend Docs',
+      documentId: '507f1f77bcf86cd799439011',
+      sagDocumentId: 'sag-internal-uuid-999',
+      documentName: '02_FRONTEND_NEXTJS.md',
+      chunkId: 'su_chunk_4',
+      sectionPath: 'Architecture > 6. 3D Universe',
+      versionNo: 1,
+      heading: 'Architecture > 6. 3D Universe',
+      snippet: multilineDiagram,
+      label: '02_FRONTEND_NEXTJS.md · Architecture > 6. 3D Universe',
+      pageFrom: 1,
+      pageTo: 1,
+    });
   });
 });
