@@ -570,9 +570,54 @@
       "parameters": [
         { "$ref": "#/components/parameters/ProjectId" }
       ],
+      "get": {
+        "operationId": "getAiChatMindMap",
+        "description": "Reads the latest persisted Mind Map snapshot for the active Project (optional focus topic) without invoking LLM synthesis. Returns status='ready' (cached=true) when a valid snapshot exists over non-revoked ready sources, status='empty' when no search-ready authorized documents exist, and status='uninitialized' when documents exist but no snapshot has been generated yet.",
+        "parameters": [
+          {
+            "name": "topic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "description": "Optional trimmed focus topic (1..200 chars). Omit for the Project-wide overview snapshot."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Persisted Mind Map snapshot, empty Project state, or uninitialized state",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MindMapResponse"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      },
       "post": {
         "operationId": "generateAiChatMindMap",
-        "description": "Generates an on-demand Mind Map (up to 4 levels, max 60 nodes) over authorized search-ready documents in the active Project. Cookie-authenticated calls require X-CSRF-Token. Returns status='empty' when no search-ready authorized documents exist, and generationMode='outline_fallback' only when authorized sources were loaded cleanly but LLM synthesis failed.",
+        "description": "Generates and persists an on-demand Mind Map (up to 4 levels, max 60 nodes) over authorized search-ready documents in the active Project. Cookie-authenticated calls require X-CSRF-Token. Returns status='empty' when no search-ready authorized documents exist, and generationMode='outline_fallback' only when authorized sources were loaded cleanly but LLM synthesis failed.",
         "parameters": [
           { "$ref": "#/components/parameters/CsrfTokenHeader" }
         ],
@@ -1259,6 +1304,11 @@
             "minLength": 1,
             "maxLength": 200,
             "description": "Optional trimmed focus topic (1..200 non-whitespace chars). Omit for a Project-wide overview Mind Map."
+          },
+          "refresh": {
+            "type": "boolean",
+            "default": true,
+            "description": "When true (default), synthesizes and overwrites the Project snapshot; when false, returns an existing valid snapshot if present before synthesizing."
           }
         }
       },
@@ -1342,7 +1392,7 @@
           },
           "status": {
             "type": "string",
-            "enum": ["ready", "empty"]
+            "enum": ["ready", "empty", "uninitialized"]
           },
           "generationMode": {
             "type": "string",
@@ -1356,6 +1406,14 @@
             "type": "string",
             "minLength": 16,
             "maxLength": 128
+          },
+          "cached": {
+            "type": "boolean",
+            "description": "True when served directly from a persisted Project snapshot without re-running synthesis."
+          },
+          "hasSourceUpdates": {
+            "type": "boolean",
+            "description": "True when additional authorized ready documents exist beyond the persisted snapshot's scopeFingerprint."
           },
           "coverage": {
             "$ref": "#/components/schemas/MindMapCoverage"

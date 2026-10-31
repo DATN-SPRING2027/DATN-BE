@@ -439,9 +439,25 @@ describe('HttpAiEngineClient', () => {
     });
     expect(ok.status).toBe(200);
     expect(timeoutSpy).toHaveBeenCalledWith(120000);
+    timeoutSpy.mockClear();
+
+    // GET /api/v1/projects/:projectId/mind-map uses fast backendTimeoutMs (5000ms) with BFF service token
+    fetchMock.mockResolvedValueOnce(Response.json({ status: 'uninitialized' }));
+    const getOk = await client.request({
+      path: '/api/v1/projects/507f1f77bcf86cd799439033/mind-map?topic=Handover',
+      method: 'GET',
+      headers: {
+        'X-Continuum-User-Id': '507f1f77bcf86cd799439011',
+        'X-SAG-BFF-Service-Token': 'forged-token',
+      },
+    });
+    expect(getOk.status).toBe(200);
+    expect(timeoutSpy).toHaveBeenCalledWith(5000);
     timeoutSpy.mockRestore();
     const reqHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
     expect(reqHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+    const getHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(getHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
 
     // Upstream 400 -> BadRequestException
     fetchMock.mockResolvedValueOnce(

@@ -799,11 +799,13 @@ export class AiChatService {
     return mapped;
   }
 
-  async generateMindMap(
+  private async resolveActiveMindMapScope(
     headers: AiChatRequestHeaders,
     projectId: string,
-    input: AiChatMindMapInputDto,
-  ): Promise<AiChatMindMapResponseDto> {
+  ): Promise<{
+    projectId: string;
+    bffHeaders: Record<string, string>;
+  }> {
     const actor = await this.auth.getCurrentIdentity(
       headers.authorization,
       headers.cookie,
@@ -815,18 +817,55 @@ export class AiChatService {
         message: 'Project not found.',
       });
     }
-
-    const result = await this.aiEngine.request<unknown>({
-      path: `/api/v1/projects/${encodeURIComponent(project.id)}/mind-map`,
-      method: 'POST',
-      headers: {
+    return {
+      projectId: project.id,
+      bffHeaders: {
         'X-Continuum-User-Id': actor.id,
         'X-Continuum-Organization-Id': project.organizationId,
         'X-Continuum-Tenant-Id': project.organizationId,
         'X-Continuum-Project-Id': project.id,
         'X-Continuum-Security-Partition': project.id,
       },
-      body: input.topic ? { topic: input.topic } : {},
+    };
+  }
+
+  async getMindMap(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    topic?: string,
+  ): Promise<AiChatMindMapResponseDto> {
+    const scope = await this.resolveActiveMindMapScope(headers, projectId);
+    const querySuffix = topic ? `?topic=${encodeURIComponent(topic)}` : '';
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/projects/${encodeURIComponent(scope.projectId)}/mind-map${querySuffix}`,
+      method: 'GET',
+      headers: scope.bffHeaders,
+    });
+
+    const mapped = mapSagMindMapResponse(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid mind map payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async generateMindMap(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    input: AiChatMindMapInputDto,
+  ): Promise<AiChatMindMapResponseDto> {
+    const scope = await this.resolveActiveMindMapScope(headers, projectId);
+
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/projects/${encodeURIComponent(scope.projectId)}/mind-map`,
+      method: 'POST',
+      headers: scope.bffHeaders,
+      body: {
+        ...(input.topic ? { topic: input.topic } : {}),
+        ...(input.refresh !== undefined ? { refresh: input.refresh } : {}),
+      },
     });
 
     const mapped = mapSagMindMapResponse(result.body);

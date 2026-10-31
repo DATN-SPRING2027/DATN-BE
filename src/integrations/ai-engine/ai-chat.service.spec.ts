@@ -1142,17 +1142,167 @@ describe('AiChatService', () => {
     ).rejects.toThrow(BadGatewayException);
   });
 
+  it('fetches persisted Project MindMap via getMindMap, maps uninitialized and cached flags, and forwards refresh on generateMindMap', async () => {
+    const { service, getProject, requestMock } = setup();
+
+    // Archived project fails closed with 404 before calling SAG
+    getProject.mockResolvedValueOnce({
+      ...project,
+      status: 'ARCHIVED' as const,
+    });
+    await expect(
+      service.getMindMap({ authorization: 'Bearer ok' }, project.id),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Uninitialized snapshot response maps cleanly with null tree
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: null,
+        status: 'uninitialized',
+        generationMode: 'none',
+        fallbackReason: null,
+        scopeFingerprint: 'a'.repeat(64),
+        cached: false,
+        hasSourceUpdates: false,
+        coverage: {
+          accessibleReadyDocumentCount: 3,
+          usedDocumentCount: 0,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 0,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-31T05:30:00Z',
+      },
+    });
+    const uninitialized = await service.getMindMap(
+      { authorization: 'Bearer ok' },
+      project.id,
+    );
+    expect(requestMock).toHaveBeenCalledWith({
+      path: `/api/v1/projects/${project.id}/mind-map`,
+      method: 'GET',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': project.organizationId,
+        'X-Continuum-Tenant-Id': project.organizationId,
+        'X-Continuum-Project-Id': project.id,
+        'X-Continuum-Security-Partition': project.id,
+      },
+    });
+    expect(uninitialized.status).toBe('uninitialized');
+    expect(uninitialized.cached).toBe(false);
+    expect(uninitialized.hasSourceUpdates).toBe(false);
+    expect(uninitialized.tree).toBeNull();
+
+    // Cached ready snapshot with topic and hasSourceUpdates=true
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: 'Kiến trúc Microservice',
+        status: 'ready',
+        generationMode: 'llm',
+        fallbackReason: null,
+        scopeFingerprint: 'b'.repeat(64),
+        cached: true,
+        hasSourceUpdates: true,
+        coverage: {
+          accessibleReadyDocumentCount: 4,
+          usedDocumentCount: 3,
+          omittedDocumentCount: 1,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 9,
+        },
+        tree: {
+          id: 'root',
+          label: 'Kiến trúc Microservice',
+          summary: 'Tổng quan kiến trúc',
+          citationNumbers: [],
+          children: [],
+        },
+        citations: [],
+        generatedAt: '2026-10-31T05:31:00Z',
+      },
+    });
+    const saved = await service.getMindMap(
+      { authorization: 'Bearer ok' },
+      project.id,
+      'Kiến trúc Microservice',
+    );
+    expect(requestMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        path: `/api/v1/projects/${project.id}/mind-map?topic=${encodeURIComponent('Kiến trúc Microservice')}`,
+        method: 'GET',
+      }),
+    );
+    expect(saved.status).toBe('ready');
+    expect(saved.cached).toBe(true);
+    expect(saved.hasSourceUpdates).toBe(true);
+
+    // generateMindMap forwards explicit refresh boolean
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: null,
+        status: 'empty',
+        generationMode: 'none',
+        fallbackReason: null,
+        scopeFingerprint: '0'.repeat(64),
+        cached: false,
+        hasSourceUpdates: false,
+        coverage: {
+          accessibleReadyDocumentCount: 0,
+          usedDocumentCount: 0,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 0,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-31T05:32:00Z',
+      },
+    });
+    await service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {
+      refresh: false,
+    });
+    expect(requestMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        body: { refresh: false },
+      }),
+    );
+  });
+
   it('keeps BFF OpenAPI MindMap route and schemas synchronized with approved contract', () => {
     const raw = readFileSync(
       resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
       'utf8',
     );
     const parsed = JSON.parse(raw) as {
-      paths?: Record<string, { post?: { operationId?: string } }>;
+      paths?: Record<
+        string,
+        {
+          get?: { operationId?: string };
+          post?: { operationId?: string };
+        }
+      >;
       components?: {
         schemas?: Record<string, unknown>;
       };
     };
+    expect(
+      parsed.paths?.['/api/v1/ai-chat/projects/{projectId}/mind-map']?.get
+        ?.operationId,
+    ).toBe('getAiChatMindMap');
     expect(
       parsed.paths?.['/api/v1/ai-chat/projects/{projectId}/mind-map']?.post
         ?.operationId,
