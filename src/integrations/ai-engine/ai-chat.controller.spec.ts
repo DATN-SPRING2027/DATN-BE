@@ -473,6 +473,7 @@ describe('AiChatController', () => {
       { topic: ['a', 'b'] },
       { topic: '   ' },
       { topic: 'x'.repeat(201) },
+      { topic: 'ß'.repeat(101) },
     ]) {
       await expect(
         controller.getMindMap(

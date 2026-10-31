@@ -178,7 +178,11 @@ function validateMindMapTopicString(value: unknown): string {
     });
   }
   const normalized = value.trim().replace(/\s+/g, ' ');
-  if (normalized.length < 1 || normalized.length > 200) {
+  if (
+    normalized.length < 1 ||
+    normalized.length > 200 ||
+    normalized.toUpperCase().length > 200
+  ) {
     throw new BadRequestException({
       code: 'VALIDATION_FAILED',
       message: 'topic must be between 1 and 200 characters.',
