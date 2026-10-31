@@ -1,8 +1,11 @@
 {{- if .Values.mongodb.enabled }}
 {{- $mongoName := include "continuum-ai.fullname" . -}}
 {{- $mongoMembers := list -}}
+{{- $mongoHosts := list -}}
 {{- range $index, $_ := until (int .Values.mongodb.replicas) -}}
-{{- $mongoMembers = append $mongoMembers (dict "_id" $index "host" (printf "%s-mongo-%d.%s-mongo-headless:%d" $mongoName $index $mongoName (int $.Values.mongodb.port))) -}}
+{{- $mongoHost := printf "%s-mongo-%d.%s-mongo-headless:%d" $mongoName $index $mongoName (int $.Values.mongodb.port) -}}
+{{- $mongoMembers = append $mongoMembers (dict "_id" $index "host" $mongoHost) -}}
+{{- $mongoHosts = append $mongoHosts $mongoHost -}}
 {{- end }}
 ---
 apiVersion: v1
@@ -51,8 +54,8 @@ spec:
             - >-
               test -s /keyfile-source/keyfile;
               cp /keyfile-source/keyfile /keyfile/keyfile;
-              chown mongodb:mongodb /keyfile/keyfile;
-              chmod 400 /keyfile/keyfile
+              chmod 400 /keyfile/keyfile;
+              chown mongodb:mongodb /keyfile/keyfile
           securityContext:
             runAsUser: 0
             allowPrivilegeEscalation: false
@@ -141,11 +144,19 @@ spec:
           command: ["sh", "-ec"]
           args:
             - |
+              attempt=0
               until mongosh --quiet --eval '
                 const uri = `mongodb://${encodeURIComponent(process.env.MONGO_INITDB_ROOT_USERNAME)}:${encodeURIComponent(process.env.MONGO_INITDB_ROOT_PASSWORD)}@${process.env.MONGO_HOST}/admin?authSource=admin&directConnection=true`;
                 const admin = connect(uri).getSiblingDB("admin");
                 if (admin.runCommand({ ping: 1 }).ok !== 1) quit(1);
-              ' >/dev/null 2>&1; do sleep 2; done
+              ' >/dev/null 2>&1; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge 60 ]; then
+                  echo "MongoDB did not become available for initialization." >&2
+                  exit 1
+                fi
+                sleep 2
+              done
 
               mongosh --quiet --eval '
                 const uri = `mongodb://${encodeURIComponent(process.env.MONGO_INITDB_ROOT_USERNAME)}:${encodeURIComponent(process.env.MONGO_INITDB_ROOT_PASSWORD)}@${process.env.MONGO_HOST}/admin?authSource=admin&directConnection=true`;
@@ -167,14 +178,22 @@ spec:
                 }
               '
 
+              attempt=0
               until mongosh --quiet --eval '
-                const uri = `mongodb://${encodeURIComponent(process.env.MONGO_INITDB_ROOT_USERNAME)}:${encodeURIComponent(process.env.MONGO_INITDB_ROOT_PASSWORD)}@${process.env.MONGO_HOST}/admin?authSource=admin&directConnection=true`;
+                const uri = `mongodb://${encodeURIComponent(process.env.MONGO_INITDB_ROOT_USERNAME)}:${encodeURIComponent(process.env.MONGO_INITDB_ROOT_PASSWORD)}@${process.env.MONGO_REPLICA_HOSTS}/admin?authSource=admin&replicaSet=rs0`;
                 const admin = connect(uri).getSiblingDB("admin");
                 if (admin.runCommand({ hello: 1 }).isWritablePrimary !== true) quit(1);
-              ' >/dev/null 2>&1; do sleep 2; done
+              ' >/dev/null 2>&1; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge 60 ]; then
+                  echo "MongoDB replica set did not elect a primary." >&2
+                  exit 1
+                fi
+                sleep 2
+              done
 
               mongosh --quiet --eval '
-                const uri = `mongodb://${encodeURIComponent(process.env.MONGO_INITDB_ROOT_USERNAME)}:${encodeURIComponent(process.env.MONGO_INITDB_ROOT_PASSWORD)}@${process.env.MONGO_HOST}/admin?authSource=admin&directConnection=true`;
+                const uri = `mongodb://${encodeURIComponent(process.env.MONGO_INITDB_ROOT_USERNAME)}:${encodeURIComponent(process.env.MONGO_INITDB_ROOT_PASSWORD)}@${process.env.MONGO_REPLICA_HOSTS}/admin?authSource=admin&replicaSet=rs0`;
                 const admin = connect(uri).getSiblingDB("admin");
                 const username = process.env.MONGO_APPLICATION_USERNAME;
                 if (!username || username === process.env.MONGO_INITDB_ROOT_USERNAME) throw new Error("MongoDB application user must be distinct from the root user.");
@@ -187,6 +206,8 @@ spec:
           env:
             - name: MONGO_HOST
               value: {{ include "continuum-ai.fullname" . }}-mongo-0.{{ include "continuum-ai.fullname" . }}-mongo-headless:{{ .Values.mongodb.port }}
+            - name: MONGO_REPLICA_HOSTS
+              value: {{ join "," $mongoHosts | quote }}
             - name: MONGO_INITDB_ROOT_USERNAME
               valueFrom:
                 secretKeyRef:
