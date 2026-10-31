@@ -120,4 +120,149 @@ describe('TaskWorkspaceRepository', () => {
     expect(events.insertOne).toHaveBeenCalledTimes(1);
     expect(session.endSession).toHaveBeenCalledTimes(1);
   });
+
+  it('allocates task keys with hyphenated project codes and skips pre-seeded key collisions', async () => {
+    const projectId = new Types.ObjectId().toHexString();
+    let counterSeq = 0;
+    const counters = {
+      findOneAndUpdate: jest.fn(
+        (
+          _filter: unknown,
+          update: { $inc?: { seq: number }; $max?: { seq: number } },
+        ) => {
+          if (update.$inc?.seq) counterSeq += update.$inc.seq;
+          if (update.$max?.seq && update.$max.seq > counterSeq) {
+            counterSeq = update.$max.seq;
+          }
+          return Promise.resolve({
+            _id: new Types.ObjectId(projectId),
+            seq: counterSeq,
+          });
+        },
+      ),
+    };
+    const tasks = {
+      findOne: jest.fn((query: { key: string }) =>
+        Promise.resolve(
+          query.key === 'CONT-FE-1' ? { _id: new Types.ObjectId() } : null,
+        ),
+      ),
+      find: jest.fn(() => ({
+        toArray: jest
+          .fn()
+          .mockResolvedValue([{ key: 'CONT-FE-1' }, { key: 'CONT-FE-2' }]),
+      })),
+    };
+    const db = {
+      collection: jest.fn((name: string) =>
+        name === WORKSPACE_TASKS_COLLECTION ? tasks : counters,
+      ),
+    };
+    const repository = new TaskWorkspaceRepository({
+      useDb: jest.fn(() => ({ db })),
+    } as unknown as Connection);
+
+    await expect(
+      repository.allocateNextTaskKey(projectId, 'CONT-FE'),
+    ).resolves.toBe('CONT-FE-3');
+    await expect(
+      repository.allocateNextTaskKey(projectId, 'CONT-FE'),
+    ).resolves.toBe('CONT-FE-4');
+  });
+
+  it('recognizes hyphenated task keys in listTasks search queries', async () => {
+    const organizationId = new Types.ObjectId().toHexString();
+    const projectId = new Types.ObjectId().toHexString();
+    const cursor = {
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maxTimeMS: jest.fn().mockReturnThis(),
+      toArray: jest.fn().mockResolvedValue([]),
+    };
+    const tasks = { find: jest.fn(() => cursor) };
+    const db = { collection: jest.fn(() => tasks) };
+    const repository = new TaskWorkspaceRepository({
+      useDb: jest.fn(() => ({ db })),
+    } as unknown as Connection);
+
+    await repository.listTasks({
+      organizationId,
+      projectId,
+      limit: 50,
+      q: 'cont-fe-2',
+    });
+
+    const queryArg = (
+      tasks.find.mock.calls[0] as unknown as [Record<string, unknown>]
+    )?.[0];
+    expect(queryArg?.$and).toEqual([
+      {
+        $or: [
+          { key: 'CONT-FE-2' },
+          { title: { $regex: 'cont-fe-2', $options: 'i' } },
+        ],
+      },
+    ]);
+  });
+
+  it('unsets legacy subtaskCounts during transitionTaskStatus so seeded tasks pass MongoDB $jsonSchema validation', async () => {
+    const organizationId = new Types.ObjectId().toHexString();
+    const projectId = new Types.ObjectId().toHexString();
+    const taskId = new Types.ObjectId().toHexString();
+    const actorId = new Types.ObjectId().toHexString();
+    const session = {
+      endSession: jest.fn().mockResolvedValue(undefined),
+      withTransaction: jest.fn(),
+    };
+    session.withTransaction.mockImplementation(
+      async (work: (activeSession: unknown) => Promise<unknown>) =>
+        work(session),
+    );
+
+    const updatedTask = {
+      _id: new Types.ObjectId(taskId),
+      parentId: null,
+      status: 'IN_PROGRESS',
+      version: 2,
+    } as WorkspaceTaskDocument;
+    const tasks = {
+      findOneAndUpdate: jest.fn().mockResolvedValue(updatedTask),
+      aggregate: jest.fn(() => ({
+        toArray: jest.fn().mockResolvedValue([]),
+      })),
+    };
+    const events = { insertOne: jest.fn().mockResolvedValue({}) };
+    const db = {
+      client: { startSession: jest.fn(() => session) },
+      collection: jest.fn((name: string) =>
+        name === WORKSPACE_TASKS_COLLECTION ? tasks : events,
+      ),
+    };
+    const repository = new TaskWorkspaceRepository({
+      useDb: jest.fn(() => ({ db })),
+    } as unknown as Connection);
+
+    await repository.transitionTaskStatus({
+      organizationId,
+      projectId,
+      taskId,
+      actorId,
+      expectedVersion: 1,
+      fromStatus: 'TODO',
+      toStatus: 'IN_PROGRESS',
+      operationId: 'op-seed-transition-1',
+      correlationId: 'corr-seed-transition-1',
+    });
+
+    expect(tasks.findOneAndUpdate).toHaveBeenCalledWith(
+      {
+        _id: new Types.ObjectId(taskId),
+        projectId: new Types.ObjectId(projectId),
+        status: 'TODO',
+        version: 1,
+      },
+      expect.objectContaining({ $unset: { subtaskCounts: '' } }),
+      expect.objectContaining({ returnDocument: 'after', session }),
+    );
+  });
 });
