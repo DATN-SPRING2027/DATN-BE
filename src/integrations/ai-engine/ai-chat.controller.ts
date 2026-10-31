@@ -96,7 +96,7 @@ function validateCreateThreadBody(body: unknown): { title?: string } {
       message: 'Unexpected properties in request body.',
     });
   }
-  if (body.title === undefined) return {};
+  if (body.title === undefined || body.title === null) return {};
   if (typeof body.title !== 'string') {
     throw new BadRequestException({
       code: 'VALIDATION_FAILED',
@@ -612,6 +612,30 @@ export class AiChatController {
       this.mutationHeaders(request),
       validProjectId,
       input,
+    );
+  }
+
+  @Post('threads/:threadId/messages/:messageId/branch')
+  @HttpCode(HttpStatus.CREATED)
+  async branchThread(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+    @Body() body: unknown,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validThreadId = validatePathIdentifier(threadId, 'threadId');
+    const validMessageId = validatePathIdentifier(messageId, 'messageId');
+    const dto = validateCreateThreadBody(body);
+    return this.aiChat.branchThread(
+      this.mutationHeaders(request),
+      validProjectId,
+      validThreadId,
+      validMessageId,
+      dto,
     );
   }
 
