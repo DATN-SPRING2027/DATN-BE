@@ -478,6 +478,55 @@
         }
       }
     },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages/{messageId}/branch": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" },
+        { "$ref": "#/components/parameters/MessageId" }
+      ],
+      "post": {
+        "operationId": "branchAiChatThread",
+        "description": "Creates an O(1) zero-duplication branched conversation thread anchored at a completed assistant message (own or inherited in valid lineage) inside the active Project. Enforces active Organization membership, active Project access, thread ownership, live evidence provenance, and CSRF validation for cookie-authenticated mutations. Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/CsrfTokenHeader" }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BranchThread" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Branched thread created in the selected Project",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Thread" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/v1/platform/ai/feedback": {
       "get": {
         "operationId": "listPlatformAiAnswerFeedback",
@@ -752,6 +801,10 @@
         "properties": {
           "id": { "type": "string" },
           "title": { "type": "string" },
+          "isBranched": { "type": "boolean" },
+          "parentThreadId": { "type": ["string", "null"] },
+          "parentThreadTitle": { "type": ["string", "null"] },
+          "branchPointMessageId": { "type": ["string", "null"] },
           "createdAt": { "type": "string", "format": "date-time" },
           "updatedAt": { "type": "string", "format": "date-time" }
         }
@@ -762,6 +815,17 @@
         "properties": {
           "title": {
             "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "BranchThread": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": ["string", "null"],
             "minLength": 1,
             "maxLength": 200
           }
@@ -883,6 +947,7 @@
           "id": { "type": "string" },
           "replyToMessageId": { "type": "string" },
           "regeneratedFromMessageId": { "type": "string" },
+          "isInherited": { "type": "boolean" },
           "role": {
             "type": "string",
             "enum": ["user", "assistant"]
