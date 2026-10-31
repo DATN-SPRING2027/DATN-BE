@@ -424,9 +424,63 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         ...(session ? { session } : {}),
       },
     );
-    const seq = updated?.seq ?? 1;
-    const prefix = /^[A-Z0-9]{2,10}$/.test(projectCode) ? projectCode : 'TASK';
-    return `${prefix}-${seq}`;
+    let seq = updated?.seq ?? 1;
+    const normalizedCode = projectCode.trim().toUpperCase();
+    const prefix =
+      normalizedCode.length >= 2 &&
+      normalizedCode.length <= 20 &&
+      /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(normalizedCode)
+        ? normalizedCode
+        : 'TASK';
+    let candidate = `${prefix}-${seq}`;
+
+    const tasks = this.db.collection<WorkspaceTaskDocument>(
+      WORKSPACE_TASKS_COLLECTION,
+    );
+    if (typeof tasks?.findOne === 'function') {
+      const collision = await tasks.findOne(
+        { projectId: projectObjectId, key: candidate },
+        { projection: { _id: 1 }, ...(session ? { session } : {}) },
+      );
+      if (collision && typeof tasks?.find === 'function') {
+        const prefixPattern = new RegExp(
+          `^${escapeLiteralRegex(prefix)}-(\\d+)$`,
+        );
+        const existingKeys = await tasks
+          .find(
+            {
+              projectId: projectObjectId,
+              key: { $regex: `^${escapeLiteralRegex(prefix)}-[0-9]+$` },
+            },
+            { projection: { key: 1 }, ...(session ? { session } : {}) },
+          )
+          .toArray();
+        let maxExisting = seq;
+        for (const doc of existingKeys) {
+          const match =
+            typeof doc.key === 'string' ? prefixPattern.exec(doc.key) : null;
+          if (match) {
+            const parsed = Number.parseInt(match[1], 10);
+            if (Number.isFinite(parsed) && parsed > maxExisting) {
+              maxExisting = parsed;
+            }
+          }
+        }
+        const synced = await counters.findOneAndUpdate(
+          { _id: projectObjectId },
+          { $max: { seq: maxExisting + 1 } },
+          {
+            upsert: true,
+            returnDocument: 'after',
+            ...(session ? { session } : {}),
+          },
+        );
+        seq = Math.max(synced?.seq ?? maxExisting + 1, maxExisting + 1);
+        candidate = `${prefix}-${seq}`;
+      }
+    }
+
+    return candidate;
   }
 
   async listTasks(
@@ -483,7 +537,10 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     const andClauses: Record<string, unknown>[] = [];
     if (filter.q) {
       const trimmed = filter.q.trim();
-      if (/^[A-Za-z0-9]{2,10}-[1-9][0-9]*$/.test(trimmed)) {
+      if (
+        trimmed.length <= 32 &&
+        /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*-[1-9][0-9]*$/.test(trimmed)
+      ) {
         andClauses.push({
           $or: [
             { key: trimmed.toUpperCase() },
@@ -1021,6 +1078,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
             organizationId: orgObjectId,
             updatedAt: now,
           },
+          $unset: { subtaskCounts: '' },
           $inc: { version: 1 },
         },
         {
@@ -1737,6 +1795,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
                     sprintId: targetSprintObjectId,
                     updatedAt: now,
                   },
+                  $unset: { subtaskCounts: '' },
                   $inc: { version: 1 },
                 },
               },
