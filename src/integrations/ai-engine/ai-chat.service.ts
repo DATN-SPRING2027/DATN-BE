@@ -40,6 +40,7 @@ import {
   mapSagShare,
   mapSagSharedAnswer,
   mapSagThread,
+  sanitizeContinuumActorDisplayName,
   sanitizeContinuumActorHeaderName,
 } from './ai-chat.types';
 
@@ -120,7 +121,8 @@ export class AiChatService {
       });
     }
     const sanitizedName = sanitizeContinuumActorHeaderName(actor.name);
-    const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${sanitizedName}`;
+    const displayName = sanitizeContinuumActorDisplayName(actor.name);
+    const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${displayName}`;
 
     const cached = this.sessionCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -144,7 +146,7 @@ export class AiChatService {
             'X-Continuum-Organization-Id': project.organizationId,
             'X-Continuum-Project-Id': project.id,
           },
-          body: {},
+          body: { displayName },
         });
 
         const token = loginResult.body?.access_token;
