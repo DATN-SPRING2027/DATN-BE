@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
 import type { ServiceCollectionDefinition } from './mongodb.types';
+import {
+  validPrivateAssessmentState,
+  withinAbsoluteDraftLifetime,
+} from './work-note-assessment-state.validation';
 
 export const OUTBOX_COLLECTION = 'outbox_events';
 
@@ -111,6 +115,119 @@ const workReportSettingHistoryEntrySchema = new Schema(
 );
 
 const captureSchemas: Record<string, Schema> = {
+  work_note_agent_drafts: new Schema(
+    {
+      _id: { type: String, required: true },
+      workflow: {
+        type: String,
+        enum: ['TASK_NOTE', 'PROJECT_DOCUMENT', 'WORK_REPORT'],
+        default: 'TASK_NOTE',
+      },
+      resourceId: {
+        type: Schema.Types.ObjectId,
+        validate: {
+          validator: function (this: { workflow?: string }, value: unknown) {
+            return (
+              this.workflow === 'PROJECT_DOCUMENT' ||
+              this.workflow === 'WORK_REPORT' ||
+              value == null
+            );
+          },
+          message: 'Task Notes use Task/note identity only',
+        },
+        required: function (this: { workflow?: string }) {
+          return this.workflow === 'WORK_REPORT';
+        },
+      },
+      context: Schema.Types.Mixed,
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      projectId: { type: Schema.Types.ObjectId, required: true },
+      taskId: {
+        type: Schema.Types.ObjectId,
+        required: function (this: { workflow?: string }) {
+          return !this.workflow || this.workflow === 'TASK_NOTE';
+        },
+        validate: {
+          validator: function (this: { workflow?: string }, value: unknown) {
+            return (
+              !this.workflow || this.workflow === 'TASK_NOTE' || value == null
+            );
+          },
+          message: 'Only Task Notes may carry a Task identity',
+        },
+      },
+      ownerUserId: { type: Schema.Types.ObjectId, required: true },
+      noteId: {
+        type: Schema.Types.ObjectId,
+        validate: {
+          validator: function (this: { workflow?: string }, value: unknown) {
+            return (
+              !this.workflow || this.workflow === 'TASK_NOTE' || value == null
+            );
+          },
+          message: 'Only Task Notes may carry a Task note identity',
+        },
+      },
+      revision: { type: Number, min: 1, required: true },
+      baseNoteVersion: { type: Number, min: 0, required: true },
+      state: {
+        type: Schema.Types.Mixed,
+        required: true,
+        validate: {
+          validator: function (
+            this: { workflow?: string; expiresAt?: Date; createdAt?: Date },
+            value: unknown,
+          ) {
+            return validPrivateAssessmentState(
+              value,
+              this.workflow,
+              this.expiresAt,
+              this.createdAt,
+            );
+          },
+          message:
+            'Assessment must remain versioned private Task Note draft state',
+        },
+      },
+      expiresAt: {
+        type: Date,
+        required: true,
+        validate: {
+          validator: function (this: { createdAt?: Date }, value: Date) {
+            return withinAbsoluteDraftLifetime(value, this.createdAt);
+          },
+          message:
+            'Private draft retention cannot exceed its original 24-hour lifetime',
+        },
+      },
+      inferenceOperationId: String,
+      inferenceLeaseUntil: Date,
+    },
+    { collection: 'work_note_agent_drafts', timestamps: true, strict: true },
+  ),
+  work_note_agent_operations: new Schema(
+    {
+      _id: { type: String, required: true },
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      projectId: { type: Schema.Types.ObjectId, required: true },
+      ownerUserId: { type: Schema.Types.ObjectId, required: true },
+      draftId: { type: String, required: true },
+      payloadHash: { type: String, required: true },
+      status: {
+        type: String,
+        enum: ['PENDING', 'COMPLETED', 'FAILED'],
+        required: true,
+      },
+      result: Schema.Types.Mixed,
+      failureCode: String,
+      expiresAt: { type: Date, required: true },
+    },
+    {
+      collection: 'work_note_agent_operations',
+      timestamps: true,
+      strict: true,
+    },
+  ),
   work_notes: new Schema(
     {
       organizationId: { type: Schema.Types.ObjectId, required: true },
@@ -124,9 +241,40 @@ const captureSchemas: Record<string, Schema> = {
       jiraIssueKey: String,
       gitCommitHash: String,
       title: { type: String, required: true },
-      whatDone: { type: String, required: true },
-      howSolved: { type: String, required: true },
-      whyThisWay: { type: String, required: true },
+      contentMarkdown: {
+        type: String,
+        maxlength: 30000,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion === 2;
+        },
+      },
+      contentSchemaVersion: { type: Number, enum: [2] },
+      currentVersionNumber: {
+        type: Number,
+        min: 1,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion === 2;
+        },
+      },
+      provenance: Schema.Types.Mixed,
+      whatDone: {
+        type: String,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion !== 2;
+        },
+      },
+      howSolved: {
+        type: String,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion !== 2;
+        },
+      },
+      whyThisWay: {
+        type: String,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion !== 2;
+        },
+      },
       status: {
         type: String,
         enum: ['DRAFT', 'CONFIRMED', 'ARCHIVED'],
@@ -152,9 +300,33 @@ const captureSchemas: Record<string, Schema> = {
       workNoteId: { type: Schema.Types.ObjectId, required: true },
       versionNumber: { type: Number, required: true },
       title: { type: String, required: true },
-      whatDone: { type: String, required: true },
-      howSolved: { type: String, required: true },
-      whyThisWay: { type: String, required: true },
+      contentMarkdown: {
+        type: String,
+        maxlength: 30000,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion === 2;
+        },
+      },
+      contentSchemaVersion: { type: Number, enum: [2] },
+      provenance: Schema.Types.Mixed,
+      whatDone: {
+        type: String,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion !== 2;
+        },
+      },
+      howSolved: {
+        type: String,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion !== 2;
+        },
+      },
+      whyThisWay: {
+        type: String,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion !== 2;
+        },
+      },
       editedByUserId: { type: Schema.Types.ObjectId, required: true },
     },
     { collection: 'work_note_versions', timestamps: true, strict: true },
@@ -184,6 +356,7 @@ const captureSchemas: Record<string, Schema> = {
       createdByUserId: { type: Schema.Types.ObjectId, required: true },
       currentVersionNumber: { type: Number, required: true, min: 1 },
       latestApprovedVersionNumber: { type: Number, min: 1 },
+      editorVersionNumber: { type: Number, min: 0 },
       status: {
         type: String,
         enum: [
@@ -207,6 +380,7 @@ const captureSchemas: Record<string, Schema> = {
       projectId: { type: Schema.Types.ObjectId, required: true },
       documentId: { type: Schema.Types.ObjectId, required: true },
       versionNumber: { type: Number, required: true, min: 1 },
+      provenance: Schema.Types.Mixed,
       title: { type: String, required: true, trim: true, maxlength: 240 },
       description: { type: String, maxlength: 2000 },
       documentType: { type: String, required: true },
@@ -252,6 +426,29 @@ const captureSchemas: Record<string, Schema> = {
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
       memberUserId: { type: Schema.Types.ObjectId, required: true },
+      title: {
+        type: String,
+        maxlength: 300,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion === 2;
+        },
+      },
+      contentMarkdown: {
+        type: String,
+        maxlength: 30000,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion === 2;
+        },
+      },
+      contentSchemaVersion: { type: Number, enum: [2] },
+      currentVersionNumber: {
+        type: Number,
+        min: 1,
+        required: function (this: { contentSchemaVersion?: number }) {
+          return this.contentSchemaVersion === 2;
+        },
+      },
+      provenance: Schema.Types.Mixed,
       reportScope: {
         type: String,
         enum: [...WORK_REPORT_SCOPES],
@@ -303,6 +500,39 @@ const captureSchemas: Record<string, Schema> = {
       },
     },
     { collection: 'work_reports', timestamps: true, strict: true },
+  ),
+  work_report_versions: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      projectId: { type: Schema.Types.ObjectId, required: true },
+      reportId: { type: Schema.Types.ObjectId, required: true },
+      versionNumber: { type: Number, min: 1, required: true },
+      title: { type: String, required: true, maxlength: 300 },
+      contentMarkdown: { type: String, required: true, maxlength: 30000 },
+      canonicalResult: { type: Schema.Types.Mixed, required: true },
+      editedByUserId: { type: Schema.Types.ObjectId, required: true },
+      provenance: Schema.Types.Mixed,
+    },
+    { collection: 'work_report_versions', timestamps: true, strict: true },
+  ),
+  project_document_editor_versions: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      projectId: { type: Schema.Types.ObjectId, required: true },
+      documentId: { type: Schema.Types.ObjectId, required: true },
+      versionNumber: { type: Number, min: 1, required: true },
+      documentVersionNumber: { type: Number, min: 1, required: true },
+      title: { type: String, required: true, maxlength: 240 },
+      contentMarkdown: { type: String, default: '', maxlength: 30000 },
+      canonicalResult: { type: Schema.Types.Mixed, required: true },
+      editedByUserId: { type: Schema.Types.ObjectId, required: true },
+      provenance: Schema.Types.Mixed,
+    },
+    {
+      collection: 'project_document_editor_versions',
+      timestamps: true,
+      strict: true,
+    },
   ),
   work_report_settings: new Schema(
     {

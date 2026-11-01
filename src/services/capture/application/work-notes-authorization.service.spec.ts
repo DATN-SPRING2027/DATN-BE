@@ -28,6 +28,63 @@ describe('WorkNotesAuthorizationService', () => {
 
   afterEach(() => fetchSpy.mockRestore());
 
+  const scopedTaskResponse = (patch: Record<string, unknown> = {}) => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({ id: userId, organizationId, name: 'Author' }),
+      )
+      .mockResolvedValueOnce(
+        response({ id: projectId, organizationId, status: 'ACTIVE' }),
+      )
+      .mockResolvedValueOnce(response({ canUpdateProject: true }))
+      .mockResolvedValueOnce(
+        response({
+          id: taskId,
+          projectId,
+          title: 'Existing task',
+          description: null,
+          status: 'DONE',
+          version: 4,
+          steps: [],
+          ...patch,
+        }),
+      );
+  };
+
+  it.each([
+    ['description object', { description: { text: 'lost by projection' } }],
+    ['description number', { description: 42 }],
+    ['non-string status', { status: 42 }],
+    ['blank status', { status: '  ' }],
+    ['nonpositive version', { version: 0 }],
+    ['fractional version', { version: 1.5 }],
+    ['string version', { version: '4' }],
+    ['null version', { version: null }],
+  ])(
+    'marks malformed Task %s as an acquisition error instead of missing authored requirements',
+    async (_label, patch) => {
+      scopedTaskResponse(patch);
+      const actor = await service.resolveTask({}, projectId, taskId);
+      expect(actor.taskContextInvalid).toBe(true);
+      if (Object.hasOwn(patch, 'version'))
+        expect(actor.taskContextVersion).toBeUndefined();
+    },
+  );
+
+  it('keeps a genuinely sparse authored task valid and preserves the current Task version', async () => {
+    scopedTaskResponse();
+    expect(await service.resolveTask({}, projectId, taskId)).toMatchObject({
+      taskContextInvalid: false,
+      taskContextVersion: '4',
+      taskContext: {
+        title: 'Existing task',
+        description: null,
+        status: 'DONE',
+        steps: [],
+      },
+    });
+  });
+
   it('resolves Project access and review permission from IAM using the caller session', async () => {
     fetchSpy
       .mockResolvedValueOnce(
@@ -343,5 +400,77 @@ describe('WorkNotesAuthorizationService', () => {
       response: { code: 'PLATFORM_OPERATOR_PROJECT_ACCESS_FORBIDDEN' },
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces concurrent 10-file upload bursts into a single IAM resolution and isolates distinct credentials', async () => {
+    const user2Id = new Types.ObjectId().toHexString();
+    fetchSpy.mockImplementation((input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const auth = new Headers(init?.headers).get('authorization');
+      if (url.endsWith('/api/v1/auth/me')) {
+        return Promise.resolve(
+          response({
+            id: auth === 'Bearer user-2' ? user2Id : userId,
+            organizationId,
+            name: auth === 'Bearer user-2' ? 'Second User' : 'Leader One',
+          }),
+        );
+      }
+      if (url.endsWith(`/api/v1/iam/projects/${projectId}`)) {
+        return Promise.resolve(
+          response({ id: projectId, organizationId, status: 'ACTIVE' }),
+        );
+      }
+      if (url.endsWith(`/api/v1/iam/projects/${projectId}/settings-access`)) {
+        return Promise.resolve(
+          response({ canUpdateProject: auth !== 'Bearer user-2' }),
+        );
+      }
+      if (url.includes(`/api/v1/iam/projects/${projectId}/memberships`)) {
+        return Promise.resolve(
+          response({
+            data: [{ userId: user2Id, joinedAt: '2026-10-20T00:00:00.000Z' }],
+            pagination: { totalPages: 1 },
+          }),
+        );
+      }
+      return Promise.resolve(response({}, 404));
+    });
+
+    const leaderHeaders = {
+      authorization: 'Bearer leader-1',
+      cookie: '__Host-session=leader-1',
+      organizationId,
+    };
+
+    // 1. 10 concurrent calls (e.g. batch upload burst) coalesce into 1 IAM lookup (3 fetches)
+    const burstActors = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        service.resolveProject(leaderHeaders, projectId),
+      ),
+    );
+    expect(burstActors).toHaveLength(10);
+    expect(burstActors.every((actor) => actor.userId === userId)).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    // 2. Immediate follow-up upload-intent / confirm-upload calls hit the short burst cache (0 extra fetches)
+    const followUp = await service.resolveProject(leaderHeaders, projectId);
+    expect(followUp.userId).toBe(userId);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    // 3. A different user session is strictly isolated and resolved independently
+    const secondUserActor = await service.resolveProject(
+      {
+        authorization: 'Bearer user-2',
+        cookie: '__Host-session=user-2',
+        organizationId,
+      },
+      projectId,
+    );
+    expect(secondUserActor).toMatchObject({
+      userId: user2Id,
+      canReview: false,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(7);
   });
 });

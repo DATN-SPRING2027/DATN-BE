@@ -13,6 +13,13 @@ import { WorkReportOverdueScheduler } from './application/work-report-overdue.sc
 import { ProjectReportRosterService } from '../iam/application/projects/project-report-roster.service';
 import { IamInfrastructureModule } from '../iam/infrastructure/iam.infrastructure.module';
 import { NotificationModule } from '../notification/notification.module';
+import { WorkNoteAgentController } from './controllers/work-note-agent.controller';
+import { WorkNoteAgentDraftsService } from './application/work-note-agent/work-note-agent-drafts.service';
+import { WorkNoteAgentModel } from './infrastructure/ai/work-note-agent.model';
+import { WorkNoteEditorService } from './application/work-note-agent/work-note-editor.service';
+import { WorkNoteEditorController } from './controllers/work-note-editor.controller';
+import { WorkNoteAssessmentController } from './controllers/work-note-assessment.controller';
+import { WorkNoteAssessmentService } from './application/work-note-agent/work-note-assessment.service';
 
 @Module({
   imports: [
@@ -21,11 +28,21 @@ import { NotificationModule } from '../notification/notification.module';
     CaptureInfrastructureModule.register(),
     NotificationModule,
   ],
-  controllers: [CaptureController, WorkNotesController],
+  controllers: [
+    CaptureController,
+    WorkNotesController,
+    WorkNoteAgentController,
+    WorkNoteEditorController,
+    WorkNoteAssessmentController,
+  ],
   providers: [
     CaptureApplicationService,
     WorkNotesAuthorizationService,
     WorkNotesService,
+    WorkNoteAgentDraftsService,
+    WorkNoteAgentModel,
+    WorkNoteEditorService,
+    WorkNoteAssessmentService,
     HandoverCaptureSourceService,
     ProjectReportRosterService,
     WorkReportOverdueScheduler,

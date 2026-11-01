@@ -54,13 +54,18 @@ redis:
   image: redis:7.2-alpine
   replicas: 6
   port: 6379
+  auth:
+    # Pre-create this Secret with a high-entropy `password` key.
+    existingSecretName: continuum-redis-auth
 
 mongodb:
   enabled: true
-  uri: ""
   image: mongo:7.0
   replicas: 3
   port: 27017
+  auth:
+    # Pre-create this Secret with the keys documented in charts/continuum-ai/README.md.
+    existingSecretName: continuum-mongodb-auth
 
 autoscaling:
   enabled: true

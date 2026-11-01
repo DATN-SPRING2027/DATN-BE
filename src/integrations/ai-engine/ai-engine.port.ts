@@ -1,6 +1,6 @@
 export const AI_ENGINE_CLIENT = Symbol('AI_ENGINE_CLIENT');
 
-export type AiEngineHttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+export type AiEngineHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export type AiEngineRequest = Readonly<{
   path: string;

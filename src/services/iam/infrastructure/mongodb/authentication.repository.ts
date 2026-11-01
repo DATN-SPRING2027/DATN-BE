@@ -2,6 +2,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
+import { memoizeInRequest } from '../../../../common/http/request-context';
 import type {
   AuthenticationAccount,
   AuthenticationProfile,
@@ -254,19 +255,26 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
 
   async findActiveOrganizationMembershipIds(userId: string): Promise<string[]> {
     if (!Types.ObjectId.isValid(userId)) return [];
-    const model = this.getModel<OrganizationMembershipDocument>(
-      ORGANIZATION_MEMBERSHIPS_MODEL,
-      'ORGANIZATION_MEMBERSHIP_MODEL_UNAVAILABLE',
+    const normalizedUserId = userId.toLowerCase();
+    return memoizeInRequest(
+      'iam:active-org-memberships',
+      normalizedUserId,
+      async () => {
+        const model = this.getModel<OrganizationMembershipDocument>(
+          ORGANIZATION_MEMBERSHIPS_MODEL,
+          'ORGANIZATION_MEMBERSHIP_MODEL_UNAVAILABLE',
+        );
+        const rows = await model
+          .find(
+            { userId: new Types.ObjectId(normalizedUserId), status: 'ACTIVE' },
+            { organizationId: 1, _id: 0 },
+          )
+          .sort({ organizationId: 1 })
+          .lean()
+          .exec();
+        return [...new Set(rows.map((row) => String(row.organizationId)))];
+      },
     );
-    const rows = await model
-      .find(
-        { userId: new Types.ObjectId(userId), status: 'ACTIVE' },
-        { organizationId: 1, _id: 0 },
-      )
-      .sort({ organizationId: 1 })
-      .lean()
-      .exec();
-    return [...new Set(rows.map((row) => String(row.organizationId)))];
   }
 
   async findOrganizationOptions(
@@ -274,21 +282,24 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
   ): Promise<LoginOrganizationOption[]> {
     const validIds = ids.filter((id) => Types.ObjectId.isValid(id));
     if (validIds.length === 0) return [];
-    const model = this.getModel<OrganizationDocument>(
-      ORGANIZATIONS_MODEL,
-      'ORGANIZATION_MODEL_UNAVAILABLE',
-    );
-    const rows = await model
-      .find(
-        { _id: { $in: validIds.map((id) => new Types.ObjectId(id)) } },
-        { _id: 1, name: 1 },
-      )
-      .lean()
-      .exec();
-    const names = new Map(rows.map((row) => [String(row._id), row.name]));
-    return validIds.flatMap((id) => {
-      const name = names.get(id);
-      return name ? [{ id, name }] : [];
+    const cacheKey = validIds.map((id) => id.toLowerCase()).join(',');
+    return memoizeInRequest('iam:org-options', cacheKey, async () => {
+      const model = this.getModel<OrganizationDocument>(
+        ORGANIZATIONS_MODEL,
+        'ORGANIZATION_MODEL_UNAVAILABLE',
+      );
+      const rows = await model
+        .find(
+          { _id: { $in: validIds.map((id) => new Types.ObjectId(id)) } },
+          { _id: 1, name: 1 },
+        )
+        .lean()
+        .exec();
+      const names = new Map(rows.map((row) => [String(row._id), row.name]));
+      return validIds.flatMap((id) => {
+        const name = names.get(id);
+        return name ? [{ id, name }] : [];
+      });
     });
   }
 

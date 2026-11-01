@@ -6,12 +6,13 @@ import {
   HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
-  createHash,
-  randomBytes,
-  randomUUID,
-  timingSafeEqual,
-} from 'node:crypto';
+  clearRequestMemo,
+  memoizeInRequest,
+} from '../../../../common/http/request-context';
+import { readCookieValue } from '../../../../common/http/cookies';
+import { validCsrfPair as compareCsrfPair } from '../../../../common/security/csrf';
 import { AccessTokenError, AccessTokenService } from './access-token.service';
 import type { AccessTokenClaims } from './access-token.types';
 import {
@@ -119,19 +120,7 @@ export function validCsrfPair(
   cookieValue: string | undefined,
   headerValue: string | undefined,
 ): boolean {
-  if (
-    !cookieValue ||
-    !headerValue ||
-    cookieValue.length > 4096 ||
-    headerValue.length > 4096
-  )
-    return false;
-  const cookieBytes = Buffer.from(cookieValue);
-  const headerBytes = Buffer.from(headerValue);
-  return (
-    cookieBytes.length === headerBytes.length &&
-    timingSafeEqual(cookieBytes, headerBytes)
-  );
+  return compareCsrfPair(cookieValue, headerValue);
 }
 
 function validRefreshCredential(value: string | undefined): value is string {
@@ -151,20 +140,7 @@ export function readCookie(
   cookieHeader: string | undefined,
   name: string,
 ): string | undefined {
-  if (!cookieHeader) return undefined;
-
-  const values = cookieHeader
-    .split(';')
-    .map((part) => part.trim())
-    .filter((part) => part.startsWith(`${name}=`))
-    .map((part) => part.slice(name.length + 1));
-  if (values.length !== 1) return undefined;
-
-  try {
-    return decodeURIComponent(values[0]);
-  } catch {
-    return undefined;
-  }
+  return readCookieValue(cookieHeader, name);
 }
 
 export function extractAccessToken(
@@ -790,44 +766,47 @@ export class AuthenticationApplicationService {
     authorization: string | undefined,
     cookieHeader: string | undefined,
   ): Promise<AuthenticatedIdentity | AuthenticatedAccountIdentity> {
-    const { claims, profile } = await this.getVerifiedActiveSubject(
-      authorization,
-      cookieHeader,
-    );
-    if (claims.context === 'PLATFORM') throw unauthorized();
-    if (claims.context === 'ACCOUNT') {
+    const requestMemoKey = `${authorization ?? ''}\0${cookieHeader ?? ''}`;
+    return memoizeInRequest('auth:session', requestMemoKey, async () => {
+      const { claims, profile } = await this.getVerifiedActiveSubject(
+        authorization,
+        cookieHeader,
+      );
+      if (claims.context === 'PLATFORM') throw unauthorized();
+      if (claims.context === 'ACCOUNT') {
+        return {
+          id: claims.sub,
+          email: claims.email,
+          name: profile.name,
+          context: 'ACCOUNT' as const,
+        };
+      }
+
+      const activeMembershipIds =
+        await this.repository.findActiveOrganizationMembershipIds(claims.sub);
+      if (!activeMembershipIds.includes(claims.orgId)) throw unauthorized();
+
+      // Token roles describe issuance time. Consumers of /auth/me (including
+      // Task and Capture authorization) need the current Organization roles so
+      // revocation takes effect while the access token is still valid.
+      const organization = await this.organizationResolver.resolveForUser(
+        claims.sub,
+        claims.orgId,
+      );
+      if (
+        organization.outcome !== 'RESOLVED' ||
+        organization.context.orgId !== claims.orgId
+      )
+        throw unauthorized();
+
       return {
         id: claims.sub,
         email: claims.email,
         name: profile.name,
-        context: 'ACCOUNT',
+        organizationId: claims.orgId,
+        roles: organization.context.roles,
       };
-    }
-
-    const activeMembershipIds =
-      await this.repository.findActiveOrganizationMembershipIds(claims.sub);
-    if (!activeMembershipIds.includes(claims.orgId)) throw unauthorized();
-
-    // Token roles describe issuance time. Consumers of /auth/me (including
-    // Task and Capture authorization) need the current Organization roles so
-    // revocation takes effect while the access token is still valid.
-    const organization = await this.organizationResolver.resolveForUser(
-      claims.sub,
-      claims.orgId,
-    );
-    if (
-      organization.outcome !== 'RESOLVED' ||
-      organization.context.orgId !== claims.orgId
-    )
-      throw unauthorized();
-
-    return {
-      id: claims.sub,
-      email: claims.email,
-      name: profile.name,
-      organizationId: claims.orgId,
-      roles: organization.context.roles,
-    };
+    });
   }
 
   async selectOrganization(
@@ -851,13 +830,15 @@ export class AuthenticationApplicationService {
       organizationId: organization.context.orgId,
       roles: organization.context.roles,
     };
+    const issued = await this.issueSession(user.id, 'ORGANIZATION', {
+      sub: user.id,
+      email: user.email,
+      orgId: user.organizationId,
+      roles: user.roles,
+    });
+    clearRequestMemo('auth');
     return {
-      ...(await this.issueSession(user.id, 'ORGANIZATION', {
-        sub: user.id,
-        email: user.email,
-        orgId: user.organizationId,
-        roles: user.roles,
-      })),
+      ...issued,
       user,
     };
   }
@@ -986,15 +967,14 @@ export class AuthenticationApplicationService {
     // individually. They must refresh once to receive the family-bound claim.
     if (!claims.sid) throw unauthorized();
 
-    if (
-      await this.securityStore.isTokenRevoked(
-        createHash('sha256').update(token).digest('hex'),
-      )
-    ) {
+    const tokenDigest = createHash('sha256').update(token).digest('hex');
+    const [revoked, profile] = await Promise.all([
+      this.securityStore.isTokenRevoked(tokenDigest),
+      this.repository.findProfileById(claims.sub),
+    ]);
+    if (revoked) {
       throw unauthorized();
     }
-
-    const profile = await this.repository.findProfileById(claims.sub);
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
     if ((claims.userFence ?? 0) !== (profile.mutationFence ?? 0))
       throw unauthorized();
@@ -1014,6 +994,7 @@ export class AuthenticationApplicationService {
     authorization: string | undefined,
     cookieHeader: string | undefined,
   ): Promise<void> {
+    clearRequestMemo('auth');
     const accessToken = extractAccessToken(authorization, cookieHeader);
     if (accessToken) {
       try {
@@ -1066,12 +1047,15 @@ export class AuthenticationApplicationService {
     }
     if (current.expiresAt.getTime() <= now.getTime()) throw unauthorized();
 
-    const account = await this.repository.findAccountById(current.userId);
+    const [account, profile] = await Promise.all([
+      this.repository.findAccountById(current.userId),
+      this.repository.findProfileById(current.userId),
+    ]);
     if (!account || account.status !== 'ACTIVE' || account.twoFactorEnabled) {
       throw unauthorized();
     }
-    const profile = await this.repository.findProfileById(current.userId);
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
+    clearRequestMemo('auth');
     const userFence = profile.mutationFence ?? 0;
     if (current.userFence !== userFence) throw unauthorized();
     let accessToken: string;

@@ -357,6 +357,7 @@ export class HandoverTaskAssignmentService {
               assigneeId: targetObjId,
               updatedAt: now,
             },
+            $unset: { subtaskCounts: '' },
             $inc: { version: 1 },
           },
           { session },
