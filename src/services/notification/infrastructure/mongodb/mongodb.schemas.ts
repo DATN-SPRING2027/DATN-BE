@@ -56,6 +56,7 @@ export const NOTIFICATION_MVP_TYPES = [
   'WORK_REPORT_REJECTED',
   'WORK_REPORT_OVERDUE',
   'WORK_REPORT_FREQUENCY_CHANGED',
+  'WORK_REPORT_DEADLINE_APPROACHING',
 ] as const;
 
 export type NotificationMvpType = (typeof NOTIFICATION_MVP_TYPES)[number];
@@ -185,7 +186,8 @@ export function createCollectionSchema(
   definition: ServiceCollectionDefinition,
 ): Schema {
   const schema =
-    notificationSchemas[definition.name] ?? new Schema({}, { strict: true });
+    notificationSchemas[definition.name]?.clone() ??
+    new Schema({}, { strict: true });
   schema.set('collection', definition.name);
 
   for (const index of definition.indexes ?? []) {
