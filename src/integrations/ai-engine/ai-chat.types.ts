@@ -1,6 +1,10 @@
 export type AiChatThreadDto = Readonly<{
   id: string;
   title: string;
+  isBranched?: boolean;
+  parentThreadId?: string | null;
+  parentThreadTitle?: string | null;
+  branchPointMessageId?: string | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -10,7 +14,10 @@ export type AiChatCitationDto = Readonly<{
   sourceId: string;
   sourceName?: string;
   documentId: string;
+  sagDocumentId?: string;
   documentName?: string;
+  chunkId?: string;
+  sectionPath?: string;
   versionNo?: number;
   heading?: string;
   snippet?: string;
@@ -48,6 +55,7 @@ export type AiChatMessageDto = Readonly<{
   id: string;
   replyToMessageId?: string;
   regeneratedFromMessageId?: string;
+  isInherited?: boolean;
   role: 'user' | 'assistant';
   content: string;
   status: 'ok' | 'failed' | 'cancelled';
@@ -172,7 +180,7 @@ export type PlatformAiFeedbackPageDto = Readonly<{
   nextCursor: string | null;
 }>;
 
-export type AiChatMindMapStatus = 'ready' | 'empty';
+export type AiChatMindMapStatus = 'ready' | 'empty' | 'uninitialized';
 
 export type AiChatMindMapGenerationMode = 'llm' | 'outline_fallback' | 'none';
 
@@ -181,6 +189,7 @@ export type AiChatMindMapFallbackReason =
 
 export type AiChatMindMapInputDto = Readonly<{
   topic?: string;
+  refresh?: boolean;
 }>;
 
 export type AiChatMindMapCoverageDto = Readonly<{
@@ -207,6 +216,8 @@ export type AiChatMindMapResponseDto = Readonly<{
   generationMode: AiChatMindMapGenerationMode;
   fallbackReason: AiChatMindMapFallbackReason;
   scopeFingerprint: string;
+  cached: boolean;
+  hasSourceUpdates: boolean;
   coverage: AiChatMindMapCoverageDto;
   tree: AiChatMindMapNodeDto | null;
   citations: readonly AiChatCitationDto[];
@@ -262,17 +273,31 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
   if (!isRecord(raw)) return null;
   const number = positiveInt(raw.n ?? raw.number);
   const sourceId = nonEmptyString(raw.source_id ?? raw.sourceId, 128);
-  const documentId = nonEmptyString(raw.document_id ?? raw.documentId, 128);
+  const rawDocumentId = nonEmptyString(raw.document_id ?? raw.documentId, 128);
+  const publicDocumentId = nonEmptyString(
+    raw.public_document_id ?? raw.publicDocumentId,
+    128,
+  );
+  const documentId = publicDocumentId ?? rawDocumentId;
   if (!number || !sourceId || !documentId) return null;
+  const sagDocumentId =
+    rawDocumentId && rawDocumentId !== documentId
+      ? rawDocumentId
+      : nonEmptyString(raw.sag_document_id ?? raw.sagDocumentId, 128);
 
   const sourceName = nonEmptyString(raw.source_name ?? raw.sourceName, 240);
   const documentName = nonEmptyString(
     raw.document_name ?? raw.documentName ?? raw.doc_name,
     240,
   );
+  const chunkId = nonEmptyString(
+    raw.chunk_id ?? raw.chunkId ?? raw.search_unit_id ?? raw.searchUnitId,
+    128,
+  );
+  const sectionPath = nonEmptyString(raw.section_path ?? raw.sectionPath, 240);
   const versionNo = positiveInt(raw.version_no ?? raw.versionNo);
   const heading = nonEmptyString(raw.heading ?? raw.section, 240);
-  const snippet = nonEmptyString(raw.snippet ?? raw.excerpt, 1200);
+  const snippet = nonEmptyString(raw.snippet ?? raw.excerpt, 2400);
   const pageFrom = positiveInt(raw.page_from ?? raw.pageFrom);
   const pageTo = positiveInt(raw.page_to ?? raw.pageTo);
   const mapped = typeof raw.mapped === 'boolean' ? raw.mapped : undefined;
@@ -294,7 +319,10 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
     sourceId,
     ...(sourceName ? { sourceName } : {}),
     documentId,
+    ...(sagDocumentId ? { sagDocumentId } : {}),
     ...(documentName ? { documentName } : {}),
+    ...(chunkId ? { chunkId } : {}),
+    ...(sectionPath ? { sectionPath } : {}),
     ...(versionNo ? { versionNo } : {}),
     ...(heading ? { heading } : {}),
     ...(snippet ? { snippet } : {}),
@@ -319,6 +347,20 @@ export function sanitizeContinuumActorHeaderName(rawName: string): string {
     .trim()
     .slice(0, 120);
   return ascii || 'Continuum user';
+}
+
+export function sanitizeContinuumActorDisplayName(rawName: string): string {
+  const utf8 = rawName
+    .normalize('NFC')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  if (!utf8 || !/[\p{L}\p{N}]/u.test(utf8)) {
+    return 'Continuum user';
+  }
+  return utf8;
 }
 
 export type SessionCitationAuditHint = Readonly<{
@@ -548,6 +590,16 @@ export function extractSanitizedStepsAndSessionCitations(rawSteps: unknown): {
   return { retrievalSteps, sessionCitations };
 }
 
+const SAFE_LINEAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function safeLineageId(value: unknown): string | null {
+  const candidate = nonEmptyString(value, 64);
+  if (!candidate || !SAFE_LINEAGE_ID_PATTERN.test(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
 export function mapSagThread(raw: unknown): AiChatThreadDto | null {
   if (!isRecord(raw)) return null;
   const id = nonEmptyString(raw.id, 128);
@@ -555,7 +607,49 @@ export function mapSagThread(raw: unknown): AiChatThreadDto | null {
   const updatedAt = nonEmptyString(raw.updated_at ?? raw.updatedAt, 64);
   if (!id || !createdAt || !updatedAt) return null;
   const title = nonEmptyString(raw.title, 200) ?? 'New chat';
-  return { id, title, createdAt, updatedAt };
+
+  const rawIsBranched = 'is_branched' in raw ? raw.is_branched : raw.isBranched;
+  const rawParentThreadId =
+    'parent_thread_id' in raw ? raw.parent_thread_id : raw.parentThreadId;
+  const rawParentThreadTitle =
+    'parent_thread_title' in raw
+      ? raw.parent_thread_title
+      : raw.parentThreadTitle;
+  const rawBranchPointMessageId =
+    'branch_point_message_id' in raw
+      ? raw.branch_point_message_id
+      : raw.branchPointMessageId;
+
+  const hasParentIdField = rawParentThreadId !== undefined;
+  const parentThreadId =
+    rawParentThreadId === null ? null : safeLineageId(rawParentThreadId);
+  const hasParentTitleField = rawParentThreadTitle !== undefined;
+  const parentThreadTitle =
+    rawParentThreadTitle === null || parentThreadId === null
+      ? null
+      : (nonEmptyString(rawParentThreadTitle, 200) ?? null);
+  const hasBranchPointField = rawBranchPointMessageId !== undefined;
+  const branchPointMessageId =
+    rawBranchPointMessageId === null
+      ? null
+      : safeLineageId(rawBranchPointMessageId);
+  const isBranched =
+    typeof rawIsBranched === 'boolean'
+      ? rawIsBranched
+      : typeof branchPointMessageId === 'string'
+        ? true
+        : undefined;
+
+  return {
+    id,
+    title,
+    ...(isBranched !== undefined ? { isBranched } : {}),
+    ...(hasParentIdField ? { parentThreadId } : {}),
+    ...(hasParentTitleField ? { parentThreadTitle } : {}),
+    ...(hasBranchPointField ? { branchPointMessageId } : {}),
+    createdAt,
+    updatedAt,
+  };
 }
 
 const WHITELISTED_MESSAGE_ERROR_CODES = new Set<string>([
@@ -584,6 +678,9 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
     raw.regenerated_from_message_id ?? raw.regeneratedFromMessageId,
     128,
   );
+  const rawIsInherited = raw.is_inherited ?? raw.isInherited;
+  const isInherited =
+    typeof rawIsInherited === 'boolean' ? rawIsInherited : undefined;
   const content = typeof raw.content === 'string' ? raw.content : '';
   const status =
     raw.status === 'failed' || raw.status === 'cancelled' ? raw.status : 'ok';
@@ -609,6 +706,7 @@ export function mapSagMessage(raw: unknown): AiChatMessageDto | null {
     id,
     ...(replyToMessageId ? { replyToMessageId } : {}),
     ...(regeneratedFromMessageId ? { regeneratedFromMessageId } : {}),
+    ...(isInherited !== undefined ? { isInherited } : {}),
     role,
     content,
     status,
@@ -885,7 +983,11 @@ export function mapSagMindMapResponse(
   }
 
   const status =
-    raw.status === 'ready' || raw.status === 'empty' ? raw.status : null;
+    raw.status === 'ready' ||
+    raw.status === 'empty' ||
+    raw.status === 'uninitialized'
+      ? raw.status
+      : null;
   const rawMode = raw.generationMode ?? raw.generation_mode;
   const generationMode =
     rawMode === 'llm' || rawMode === 'outline_fallback' || rawMode === 'none'
@@ -902,6 +1004,21 @@ export function mapSagMindMapResponse(
     return null;
   }
   const fallbackReason: AiChatMindMapFallbackReason = rawFallbackReason;
+
+  if (raw.cached !== undefined && typeof raw.cached !== 'boolean') {
+    return null;
+  }
+  const cached = raw.cached === true;
+
+  const rawHasSourceUpdates =
+    raw.hasSourceUpdates ?? raw.has_source_updates ?? undefined;
+  if (
+    rawHasSourceUpdates !== undefined &&
+    typeof rawHasSourceUpdates !== 'boolean'
+  ) {
+    return null;
+  }
+  const hasSourceUpdates = rawHasSourceUpdates === true;
 
   const rawFingerprint = raw.scopeFingerprint ?? raw.scope_fingerprint;
   if (
@@ -961,12 +1078,14 @@ export function mapSagMindMapResponse(
   if (!generatedAt) return null;
 
   let tree: AiChatMindMapNodeDto | null = null;
-  if (status === 'empty') {
+  if (status === 'empty' || status === 'uninitialized') {
     if (
       generationMode !== 'none' ||
       fallbackReason !== null ||
       raw.tree !== null ||
-      citations.length > 0
+      citations.length > 0 ||
+      cached ||
+      hasSourceUpdates
     ) {
       return null;
     }
@@ -995,6 +1114,8 @@ export function mapSagMindMapResponse(
     generationMode,
     fallbackReason,
     scopeFingerprint,
+    cached,
+    hasSourceUpdates,
     coverage: {
       accessibleReadyDocumentCount,
       usedDocumentCount,

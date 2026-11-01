@@ -50,6 +50,9 @@ export interface WorkNotesActor {
   joinedAt?: string;
   taskKey?: string;
   taskTitle?: string;
+  taskContextInvalid?: boolean;
+  taskContextVersion?: string;
+  taskContext?: import('./work-note-agent/work-note-agent.types').AgentInput['task'];
 }
 
 export type TaskNoteSortOrder = 'recent' | 'oldest';
@@ -66,6 +69,42 @@ export interface TaskNoteInput {
   accomplishments: string;
   approach: string;
   reason: string;
+}
+
+export interface TaskNoteAiChatCitationInput {
+  number: number;
+  sourceLabel: string;
+  documentId?: string;
+  versionNo?: number;
+  chunkId?: string;
+  heading?: string;
+  sectionPath?: string;
+  pageFrom?: number;
+  pageTo?: number;
+}
+
+export interface TaskNoteAiChatCitation extends TaskNoteAiChatCitationInput {
+  documentName?: string;
+}
+
+export interface TaskNoteAiChatSessionCitation {
+  ref: string;
+  groupId?: string;
+  turnIds: string[];
+}
+
+export interface TaskNoteAiChatSourceInput {
+  threadId: string;
+  messageId: string;
+  citations: TaskNoteAiChatCitationInput[];
+  sessionCitations: TaskNoteAiChatSessionCitation[];
+}
+
+export interface TaskNoteAiChatSource extends Omit<
+  TaskNoteAiChatSourceInput,
+  'citations'
+> {
+  citations: TaskNoteAiChatCitation[];
 }
 
 export interface ProjectDocumentInput {
@@ -163,6 +202,10 @@ export interface WorkNotesPermissions {
 }
 
 export interface TaskNoteRecord extends TaskNoteInput {
+  contentMarkdown?: string;
+  contentSchemaVersion?: 2;
+  currentVersionNumber?: number;
+  aiChatSource?: TaskNoteAiChatSource;
   id: string;
   projectId: string;
   taskId: string;
@@ -318,6 +361,10 @@ export interface ProjectDocumentRecord extends ProjectDocumentSummaryRecord {
 }
 
 export interface WorkReportRecord extends WorkReportInput {
+  title?: string;
+  contentMarkdown?: string;
+  contentSchemaVersion?: 2;
+  currentVersionNumber?: number;
   id: string;
   projectId: string;
   memberId: string;

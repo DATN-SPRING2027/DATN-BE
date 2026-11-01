@@ -125,4 +125,42 @@ describe('GatewayCaptureController Work Note forwarding', () => {
     );
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('DELETE');
   });
+
+  it('allocates at least 185s proxy timeout for AI agent messages and split assessments', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    const controller = new GatewayCaptureController(config as never);
+    jest.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new globalThis.Response('{}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const responseState = createResponse();
+
+    await controller.agentMessage(
+      {
+        method: 'POST',
+        originalUrl:
+          '/api/v1/capture/projects/111111111111111111111111/work-note-drafts/f081a006-489c-4a50-a0df-a54567fdc01b/agent/messages',
+        headers: { 'content-type': 'application/json' },
+        body: { instruction: 'Clarify' },
+      } as unknown as Request,
+      responseState.response,
+    );
+    expect(timeout).toHaveBeenLastCalledWith(185_000);
+
+    await controller.updateTaskAssessment(
+      {
+        method: 'POST',
+        originalUrl:
+          '/api/v1/capture/projects/111111111111111111111111/work-note-drafts/f081a006-489c-4a50-a0df-a54567fdc01b/agent/assessments/a1/replies',
+        headers: { 'content-type': 'application/json' },
+        body: { disposition: 'unknown' },
+      } as unknown as Request,
+      responseState.response,
+    );
+    expect(timeout).toHaveBeenLastCalledWith(185_000);
+  });
 });

@@ -8,7 +8,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AiChatService } from './ai-chat.service';
-import { sanitizeContinuumActorHeaderName } from './ai-chat.types';
+import {
+  mapSagCitation,
+  sanitizeContinuumActorDisplayName,
+  sanitizeContinuumActorHeaderName,
+} from './ai-chat.types';
 import type { AiEngineClient } from './ai-engine.port';
 import type { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
 import type { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
@@ -188,7 +192,7 @@ describe('AiChatService', () => {
         'X-Continuum-Organization-Id': project.organizationId,
         'X-Continuum-Project-Id': project.id,
       },
-      body: {},
+      body: { displayName: 'Nguyễn Văn Thắng Đức' },
     });
 
     expect(page).toEqual({
@@ -391,6 +395,11 @@ describe('AiChatService', () => {
 
   it('normalizes real SAG session_memory citations (message_ids, primary_message_id, turn_ordinals) and filters mapped=false pool items', async () => {
     expect(sanitizeContinuumActorHeaderName('🚀✨')).toBe('Continuum user');
+    expect(sanitizeContinuumActorDisplayName('🚀✨')).toBe('Continuum user');
+    expect(sanitizeContinuumActorDisplayName('  KeyT  ')).toBe('KeyT');
+    expect(sanitizeContinuumActorDisplayName('Trần Kim Thắng\r\n')).toBe(
+      'Trần Kim Thắng',
+    );
 
     const { service, requestMock } = setup();
     requestMock
@@ -1142,17 +1151,167 @@ describe('AiChatService', () => {
     ).rejects.toThrow(BadGatewayException);
   });
 
+  it('fetches persisted Project MindMap via getMindMap, maps uninitialized and cached flags, and forwards refresh on generateMindMap', async () => {
+    const { service, getProject, requestMock } = setup();
+
+    // Archived project fails closed with 404 before calling SAG
+    getProject.mockResolvedValueOnce({
+      ...project,
+      status: 'ARCHIVED' as const,
+    });
+    await expect(
+      service.getMindMap({ authorization: 'Bearer ok' }, project.id),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Uninitialized snapshot response maps cleanly with null tree
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: null,
+        status: 'uninitialized',
+        generationMode: 'none',
+        fallbackReason: null,
+        scopeFingerprint: 'a'.repeat(64),
+        cached: false,
+        hasSourceUpdates: false,
+        coverage: {
+          accessibleReadyDocumentCount: 3,
+          usedDocumentCount: 0,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 0,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-31T05:30:00Z',
+      },
+    });
+    const uninitialized = await service.getMindMap(
+      { authorization: 'Bearer ok' },
+      project.id,
+    );
+    expect(requestMock).toHaveBeenCalledWith({
+      path: `/api/v1/projects/${project.id}/mind-map`,
+      method: 'GET',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': project.organizationId,
+        'X-Continuum-Tenant-Id': project.organizationId,
+        'X-Continuum-Project-Id': project.id,
+        'X-Continuum-Security-Partition': project.id,
+      },
+    });
+    expect(uninitialized.status).toBe('uninitialized');
+    expect(uninitialized.cached).toBe(false);
+    expect(uninitialized.hasSourceUpdates).toBe(false);
+    expect(uninitialized.tree).toBeNull();
+
+    // Cached ready snapshot with topic and hasSourceUpdates=true
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: 'Kiến trúc Microservice',
+        status: 'ready',
+        generationMode: 'llm',
+        fallbackReason: null,
+        scopeFingerprint: 'b'.repeat(64),
+        cached: true,
+        hasSourceUpdates: true,
+        coverage: {
+          accessibleReadyDocumentCount: 4,
+          usedDocumentCount: 3,
+          omittedDocumentCount: 1,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 9,
+        },
+        tree: {
+          id: 'root',
+          label: 'Kiến trúc Microservice',
+          summary: 'Tổng quan kiến trúc',
+          citationNumbers: [],
+          children: [],
+        },
+        citations: [],
+        generatedAt: '2026-10-31T05:31:00Z',
+      },
+    });
+    const saved = await service.getMindMap(
+      { authorization: 'Bearer ok' },
+      project.id,
+      'Kiến trúc Microservice',
+    );
+    expect(requestMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        path: `/api/v1/projects/${project.id}/mind-map?topic=${encodeURIComponent('Kiến trúc Microservice')}`,
+        method: 'GET',
+      }),
+    );
+    expect(saved.status).toBe('ready');
+    expect(saved.cached).toBe(true);
+    expect(saved.hasSourceUpdates).toBe(true);
+
+    // generateMindMap forwards explicit refresh boolean
+    requestMock.mockResolvedValueOnce({
+      status: 200,
+      body: {
+        projectId: project.id,
+        topic: null,
+        status: 'empty',
+        generationMode: 'none',
+        fallbackReason: null,
+        scopeFingerprint: '0'.repeat(64),
+        cached: false,
+        hasSourceUpdates: false,
+        coverage: {
+          accessibleReadyDocumentCount: 0,
+          usedDocumentCount: 0,
+          omittedDocumentCount: 0,
+          pendingDocumentCount: 0,
+          truncatedDocumentCount: 0,
+          evidenceUnitCount: 0,
+        },
+        tree: null,
+        citations: [],
+        generatedAt: '2026-10-31T05:32:00Z',
+      },
+    });
+    await service.generateMindMap({ authorization: 'Bearer ok' }, project.id, {
+      refresh: false,
+    });
+    expect(requestMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        body: { refresh: false },
+      }),
+    );
+  });
+
   it('keeps BFF OpenAPI MindMap route and schemas synchronized with approved contract', () => {
     const raw = readFileSync(
       resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
       'utf8',
     );
     const parsed = JSON.parse(raw) as {
-      paths?: Record<string, { post?: { operationId?: string } }>;
+      paths?: Record<
+        string,
+        {
+          get?: { operationId?: string };
+          post?: { operationId?: string };
+        }
+      >;
       components?: {
         schemas?: Record<string, unknown>;
       };
     };
+    expect(
+      parsed.paths?.['/api/v1/ai-chat/projects/{projectId}/mind-map']?.get
+        ?.operationId,
+    ).toBe('getAiChatMindMap');
     expect(
       parsed.paths?.['/api/v1/ai-chat/projects/{projectId}/mind-map']?.post
         ?.operationId,
@@ -1161,5 +1320,241 @@ describe('AiChatService', () => {
     expect(parsed.components?.schemas?.MindMapCoverage).toBeDefined();
     expect(parsed.components?.schemas?.MindMapNode).toBeDefined();
     expect(parsed.components?.schemas?.MindMapResponse).toBeDefined();
+  });
+
+  it('prefers public_document_id for Continuum deep-linking and preserves multiline Markdown/diagram snippets and chunkId in mapSagCitation', () => {
+    const multilineDiagram = [
+      '6. Trực Quan Hóa Vũ Trụ Tri Thức 3D',
+      '> ⭐ ĐIỂM NHẤN CỐT LÕI',
+      '```',
+      '┌───────────────────────┐',
+      '│ 3D KNOWLEDGE PIPELINE │',
+      '└───────────────────────┘',
+      '```',
+    ].join('\n');
+
+    const mapped = mapSagCitation({
+      n: 4,
+      source_id: 'src-fe',
+      source_name: 'Frontend Docs',
+      document_id: 'sag-internal-uuid-999',
+      public_document_id: '507f1f77bcf86cd799439011',
+      document_name: '02_FRONTEND_NEXTJS.md',
+      chunk_id: 'su_chunk_4',
+      section_path: 'Architecture > 6. 3D Universe',
+      version_no: 1,
+      heading: 'Architecture > 6. 3D Universe',
+      snippet: multilineDiagram,
+      page_from: 1,
+      page_to: 1,
+    });
+
+    expect(mapped).toEqual({
+      number: 4,
+      sourceId: 'src-fe',
+      sourceName: 'Frontend Docs',
+      documentId: '507f1f77bcf86cd799439011',
+      sagDocumentId: 'sag-internal-uuid-999',
+      documentName: '02_FRONTEND_NEXTJS.md',
+      chunkId: 'su_chunk_4',
+      sectionPath: 'Architecture > 6. 3D Universe',
+      versionNo: 1,
+      heading: 'Architecture > 6. 3D Universe',
+      snippet: multilineDiagram,
+      label: '02_FRONTEND_NEXTJS.md · Architecture > 6. 3D Universe',
+      pageFrom: 1,
+      pageTo: 1,
+    });
+  });
+
+  it('branches a thread at a target message over active Project scope, maps lineage & inherited flags, and evicts session cache on failure', async () => {
+    const { service, getProject, requestMock } = setup();
+
+    // Archived / non-ACTIVE Project fails closed with safe 404 before touching SAG
+    getProject.mockResolvedValueOnce({ ...project, status: 'ARCHIVED' });
+    await expect(
+      service.branchThread(
+        { authorization: 'Bearer ok' },
+        project.id,
+        'thread_parent_1',
+        'msg_assist_2',
+        {},
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Successful branch maps lineage fields (including tombstoned null parent metadata) and isInherited messages
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'header.payload.signature' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_default_1' },
+      })
+      .mockResolvedValueOnce({
+        status: 201,
+        body: {
+          id: 'thread_branch_1',
+          title: 'Branch · Architecture Q&A',
+          is_branched: true,
+          parent_thread_id: 'thread_parent_1',
+          parent_thread_title: 'Architecture Q&A',
+          branch_point_message_id: 'msg_assist_2',
+          created_at: '2026-10-31T10:00:00Z',
+          updated_at: '2026-10-31T10:00:00Z',
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          items: [
+            {
+              id: 'msg_assist_2',
+              thread_id: 'thread_parent_1',
+              role: 'assistant',
+              content: 'Inherited answer [1]',
+              is_inherited: true,
+              citations: [],
+              steps: [],
+              status: 'ok',
+              created_at: '2026-10-31T09:59:00Z',
+            },
+          ],
+          next_cursor: null,
+          has_more: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: [
+          {
+            id: 'thread_branch_1',
+            title: 'Branch · Architecture Q&A',
+            is_branched: true,
+            parent_thread_id: null,
+            parent_thread_title: null,
+            branch_point_message_id: 'msg_assist_2',
+            created_at: '2026-10-31T10:00:00Z',
+            updated_at: '2026-10-31T10:00:00Z',
+          },
+        ],
+      });
+
+    const branched = await service.branchThread(
+      { authorization: 'Bearer ok' },
+      project.id,
+      'thread_parent_1',
+      'msg_assist_2',
+      { title: 'Branch · Architecture Q&A' },
+    );
+    expect(requestMock).toHaveBeenNthCalledWith(3, {
+      path: '/api/v1/agents/agent_default_1/threads/thread_parent_1/messages/msg_assist_2/branch',
+      method: 'POST',
+      headers: { Authorization: 'Bearer header.payload.signature' },
+      body: { title: 'Branch · Architecture Q&A' },
+    });
+    expect(branched).toEqual({
+      id: 'thread_branch_1',
+      title: 'Branch · Architecture Q&A',
+      isBranched: true,
+      parentThreadId: 'thread_parent_1',
+      parentThreadTitle: 'Architecture Q&A',
+      branchPointMessageId: 'msg_assist_2',
+      createdAt: '2026-10-31T10:00:00Z',
+      updatedAt: '2026-10-31T10:00:00Z',
+    });
+
+    const msgPage = await service.listMessages(
+      { authorization: 'Bearer ok' },
+      project.id,
+      'thread_branch_1',
+      { limit: 40 },
+    );
+    expect(msgPage.items[0]?.isInherited).toBe(true);
+
+    // Tombstoned parent returns isBranched=true with null parentThreadId & parentThreadTitle
+    const threadsAfterParentDelete = await service.listThreads(
+      { authorization: 'Bearer ok' },
+      project.id,
+      { limit: 20, offset: 0 },
+    );
+    expect(threadsAfterParentDelete[0]).toEqual({
+      id: 'thread_branch_1',
+      title: 'Branch · Architecture Q&A',
+      isBranched: true,
+      parentThreadId: null,
+      parentThreadTitle: null,
+      branchPointMessageId: 'msg_assist_2',
+      createdAt: '2026-10-31T10:00:00Z',
+      updatedAt: '2026-10-31T10:00:00Z',
+    });
+
+    // Malformed lineage identifiers in upstream payload are sanitized to null
+    requestMock.mockResolvedValueOnce({
+      status: 201,
+      body: {
+        id: 'thread_branch_sanitized',
+        title: 'Sanitized Branch',
+        is_branched: true,
+        parent_thread_id: '../evil/parent',
+        parent_thread_title: 'Should Be Cleared',
+        branch_point_message_id: 'bad/msg',
+        created_at: '2026-10-31T10:00:00Z',
+        updated_at: '2026-10-31T10:00:00Z',
+      },
+    });
+    const sanitizedBranch = await service.branchThread(
+      { authorization: 'Bearer ok' },
+      project.id,
+      'thread_parent_1',
+      'msg_assist_2',
+      {},
+    );
+    expect(sanitizedBranch.isBranched).toBe(true);
+    expect(sanitizedBranch.parentThreadId).toBeNull();
+    expect(sanitizedBranch.parentThreadTitle).toBeNull();
+    expect(sanitizedBranch.branchPointMessageId).toBeNull();
+
+    // Invalid upstream payload throws BadGatewayException
+    requestMock.mockResolvedValueOnce({ status: 201, body: { invalid: true } });
+    await expect(
+      service.branchThread(
+        { authorization: 'Bearer ok' },
+        project.id,
+        'thread_parent_1',
+        'msg_assist_2',
+        {},
+      ),
+    ).rejects.toThrow(BadGatewayException);
+  });
+
+  it('keeps BFF OpenAPI branch route and lineage schemas synchronized with approved contract', () => {
+    const raw = readFileSync(
+      resolve(__dirname, '../../../docs/openapi/ai-chat-sag.openapi.json'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as {
+      paths?: Record<string, { post?: { operationId?: string } }>;
+      components?: {
+        schemas?: Record<string, { properties?: Record<string, unknown> }>;
+      };
+    };
+    expect(
+      parsed.paths?.[
+        '/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages/{messageId}/branch'
+      ]?.post?.operationId,
+    ).toBe('branchAiChatThread');
+    expect(parsed.components?.schemas?.BranchThread).toBeDefined();
+    expect(
+      parsed.components?.schemas?.Thread?.properties?.isBranched,
+    ).toBeDefined();
+    expect(
+      parsed.components?.schemas?.Thread?.properties?.parentThreadId,
+    ).toBeDefined();
+    expect(
+      parsed.components?.schemas?.Message?.properties?.isInherited,
+    ).toBeDefined();
   });
 });

@@ -70,9 +70,7 @@
       },
       "post": {
         "operationId": "createAiChatThread",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "requestBody": {
           "required": false,
           "content": {
@@ -112,9 +110,7 @@
       ],
       "patch": {
         "operationId": "updateAiChatThread",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "requestBody": {
           "required": true,
           "content": {
@@ -148,9 +144,7 @@
       },
       "delete": {
         "operationId": "deleteAiChatThread",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "responses": {
           "204": {
             "description": "Thread and its SAG session memory purged"
@@ -222,9 +216,7 @@
       ],
       "post": {
         "operationId": "askAiChatThread",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "description": "POST returns text/event-stream (SSE). Validates active Organization membership, Project read access, CSRF (for cookie auth), and thread ownership before streaming. Emits allowlisted JSON events: started (StartedEvent), step (StepEvent), delta (DeltaEvent), and at most one terminal event: completed (CompletedEvent) or failed (FailedEvent). Never automatically retries paid LLM generation and never forwards prompt previews, raw upstream errors, or credentials.",
         "requestBody": {
           "required": true,
@@ -291,9 +283,7 @@
       "put": {
         "operationId": "putOwnAiAnswerFeedback",
         "description": "Creates or updates the single active vote per (messageId, voter). Enforces CSRF on cookie-authenticated mutations. Cache-Control: no-store.",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "requestBody": {
           "required": true,
           "content": {
@@ -324,9 +314,7 @@
       "delete": {
         "operationId": "deleteOwnAiAnswerFeedback",
         "description": "Idempotently removes the current voter's feedback on the target assistant answer. Enforces CSRF on cookie-authenticated mutations. Cache-Control: no-store.",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "responses": {
           "204": {
             "description": "Feedback removed"
@@ -351,9 +339,7 @@
       "post": {
         "operationId": "createAiAnswerShare",
         "description": "Creates or returns the creator's active Project-scoped share for a single question and completed assistant answer version. Never exposes full thread history, prompt previews, or hidden reasoning. Cache-Control: no-store.",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "requestBody": {
           "required": true,
           "content": {
@@ -419,9 +405,7 @@
       "delete": {
         "operationId": "revokeAiAnswerShare",
         "description": "Creator-only revocation of a Project-scoped answer share. Non-creator, missing, or cross-scope shares return safe 404. Cache-Control: no-store.",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "responses": {
           "204": {
             "description": "Share revoked"
@@ -446,9 +430,7 @@
       "post": {
         "operationId": "regenerateAiChatMessage",
         "description": "SSE regeneration of an assistant answer against its resolved original user question without duplicating the user turn. Excludes the target answer and later turns from generation context while preserving prior answer versions. Returns 409 when another live generation is active in the same thread.",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "requestBody": {
           "required": true,
           "content": {
@@ -463,6 +445,53 @@
             "content": {
               "text/event-stream": {
                 "schema": { "type": "string" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/ai-chat/projects/{projectId}/threads/{threadId}/messages/{messageId}/branch": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectId" },
+        { "$ref": "#/components/parameters/ThreadId" },
+        { "$ref": "#/components/parameters/MessageId" }
+      ],
+      "post": {
+        "operationId": "branchAiChatThread",
+        "description": "Creates an O(1) zero-duplication branched conversation thread anchored at a completed assistant message (own or inherited in valid lineage) inside the active Project. Enforces active Organization membership, active Project access, thread ownership, live evidence provenance, and CSRF validation for cookie-authenticated mutations. Cache-Control: no-store.",
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BranchThread" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Branched thread created in the selected Project",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Thread" }
               }
             }
           },
@@ -567,15 +596,56 @@
       }
     },
     "/api/v1/ai-chat/projects/{projectId}/mind-map": {
-      "parameters": [
-        { "$ref": "#/components/parameters/ProjectId" }
-      ],
+      "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+      "get": {
+        "operationId": "getAiChatMindMap",
+        "description": "Reads the latest persisted Mind Map snapshot for the active Project (optional focus topic) without invoking LLM synthesis. Returns status='ready' (cached=true) when a valid snapshot exists over non-revoked ready sources, status='empty' when no search-ready authorized documents exist, and status='uninitialized' when documents exist but no snapshot has been generated yet.",
+        "parameters": [
+          {
+            "name": "topic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "description": "Optional trimmed focus topic (1..200 chars). Omit for the Project-wide overview snapshot."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Persisted Mind Map snapshot, empty Project state, or uninitialized state",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MindMapResponse"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      },
       "post": {
         "operationId": "generateAiChatMindMap",
-        "description": "Generates an on-demand Mind Map (up to 4 levels, max 60 nodes) over authorized search-ready documents in the active Project. Cookie-authenticated calls require X-CSRF-Token. Returns status='empty' when no search-ready authorized documents exist, and generationMode='outline_fallback' only when authorized sources were loaded cleanly but LLM synthesis failed.",
-        "parameters": [
-          { "$ref": "#/components/parameters/CsrfTokenHeader" }
-        ],
+        "description": "Generates and persists an on-demand Mind Map (up to 4 levels, max 60 nodes) over authorized search-ready documents in the active Project. Cookie-authenticated calls require X-CSRF-Token. Returns status='empty' when no search-ready authorized documents exist, and generationMode='outline_fallback' only when authorized sources were loaded cleanly but LLM synthesis failed.",
+        "parameters": [{ "$ref": "#/components/parameters/CsrfTokenHeader" }],
         "requestBody": {
           "required": false,
           "content": {
@@ -707,6 +777,10 @@
         "properties": {
           "id": { "type": "string" },
           "title": { "type": "string" },
+          "isBranched": { "type": "boolean" },
+          "parentThreadId": { "type": ["string", "null"] },
+          "parentThreadTitle": { "type": ["string", "null"] },
+          "branchPointMessageId": { "type": ["string", "null"] },
           "createdAt": { "type": "string", "format": "date-time" },
           "updatedAt": { "type": "string", "format": "date-time" }
         }
@@ -718,7 +792,20 @@
           "title": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 200
+            "maxLength": 200,
+            "pattern": "\\S"
+          }
+        }
+      },
+      "BranchThread": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "\\S"
           }
         }
       },
@@ -730,7 +817,8 @@
           "title": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 200
+            "maxLength": 200,
+            "pattern": "\\S"
           }
         }
       },
@@ -755,7 +843,10 @@
           "sourceId": { "type": "string" },
           "sourceName": { "type": "string" },
           "documentId": { "type": "string" },
+          "sagDocumentId": { "type": "string" },
           "documentName": { "type": "string" },
+          "chunkId": { "type": "string" },
+          "sectionPath": { "type": "string" },
           "versionNo": { "type": "integer", "minimum": 1 },
           "heading": { "type": "string" },
           "snippet": { "type": "string" },
@@ -835,6 +926,7 @@
           "id": { "type": "string" },
           "replyToMessageId": { "type": "string" },
           "regeneratedFromMessageId": { "type": "string" },
+          "isInherited": { "type": "boolean" },
           "role": {
             "type": "string",
             "enum": ["user", "assistant"]
@@ -999,9 +1091,7 @@
               }
             },
             "then": {
-              "required": [
-                "reasonCategory"
-              ]
+              "required": ["reasonCategory"]
             }
           },
           {
@@ -1016,14 +1106,10 @@
               "not": {
                 "anyOf": [
                   {
-                    "required": [
-                      "reasonCategory"
-                    ]
+                    "required": ["reasonCategory"]
                   },
                   {
-                    "required": [
-                      "reasonText"
-                    ]
+                    "required": ["reasonText"]
                   }
                 ]
               }
@@ -1031,9 +1117,7 @@
           },
           {
             "if": {
-              "required": [
-                "reasonCategory"
-              ],
+              "required": ["reasonCategory"],
               "properties": {
                 "reasonCategory": {
                   "const": "OTHER"
@@ -1041,9 +1125,7 @@
               }
             },
             "then": {
-              "required": [
-                "reasonText"
-              ]
+              "required": ["reasonText"]
             }
           }
         ]
@@ -1259,6 +1341,11 @@
             "minLength": 1,
             "maxLength": 200,
             "description": "Optional trimmed focus topic (1..200 non-whitespace chars). Omit for a Project-wide overview Mind Map."
+          },
+          "refresh": {
+            "type": "boolean",
+            "default": true,
+            "description": "When true (default), synthesizes and overwrites the Project snapshot; when false, returns an existing valid snapshot if present before synthesizing."
           }
         }
       },
@@ -1342,7 +1429,7 @@
           },
           "status": {
             "type": "string",
-            "enum": ["ready", "empty"]
+            "enum": ["ready", "empty", "uninitialized"]
           },
           "generationMode": {
             "type": "string",
@@ -1356,6 +1443,14 @@
             "type": "string",
             "minLength": 16,
             "maxLength": 128
+          },
+          "cached": {
+            "type": "boolean",
+            "description": "True when served directly from a persisted Project snapshot without re-running synthesis."
+          },
+          "hasSourceUpdates": {
+            "type": "boolean",
+            "description": "True when additional authorized ready documents exist beyond the persisted snapshot's scopeFingerprint."
           },
           "coverage": {
             "$ref": "#/components/schemas/MindMapCoverage"

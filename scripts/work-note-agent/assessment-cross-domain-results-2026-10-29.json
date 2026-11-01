@@ -1,0 +1,2170 @@
+{
+  "classification": "frozen-synthetic-cross-domain-evaluation",
+  "phaseId": "cross-domain-20261029",
+  "sourceCommit": "d56bfaaff417c9a04a2936be9fb14efdd5e3b9c9",
+  "model": "mistralai/ministral-14b",
+  "promptVersion": "task-note-assessment/2026-10-29.v12",
+  "editorVersion": "task-note-editor/2026-10-29.v3",
+  "scenarioCounts": {
+    "planned": 80,
+    "original": 72,
+    "domainChallenge": 8,
+    "attempted": 80,
+    "analysisScenarioPasses": 27,
+    "scenarioPassesIncludingEditor": 25,
+    "unattempted": []
+  },
+  "analysisTurns": {
+    "planned": 112,
+    "observedSteps": 110,
+    "validModelOutputs": 99,
+    "rawRubricPasses": 55,
+    "runtimeRubricPasses": 50,
+    "expectedContextDenials": 1,
+    "protocolRejectionsWithRawResponse": 4
+  },
+  "editor": {
+    "observations": 26,
+    "accepted": 24,
+    "failures": {
+      "REWRITE_PROTECTED_CONTENT_CHANGED": 2
+    }
+  },
+  "budget": {
+    "maxHttpAttempts": 176,
+    "actualHttpAttempts": 135,
+    "reportedTokens": 1108536,
+    "unknownUsageAttempts": 6,
+    "accountedTokens": 1413715,
+    "maxAccountedTokens": 2000000,
+    "remaining": 41,
+    "monetaryCost": "NOT_ESTABLISHED"
+  },
+  "splitResults": [
+    {
+      "split": "validation",
+      "attempted": 12,
+      "analysisScenarioPasses": 4,
+      "scenarioPassesIncludingEditor": 3
+    },
+    {
+      "split": "holdout",
+      "attempted": 24,
+      "analysisScenarioPasses": 5,
+      "scenarioPassesIncludingEditor": 5
+    },
+    {
+      "split": "development",
+      "attempted": 36,
+      "analysisScenarioPasses": 18,
+      "scenarioPassesIncludingEditor": 17
+    },
+    {
+      "split": "domain-challenge",
+      "attempted": 8,
+      "analysisScenarioPasses": 0,
+      "scenarioPassesIncludingEditor": 0
+    }
+  ],
+  "domainResults": [
+    {
+      "id": "frontend",
+      "label": "Frontend và trạng thái giao diện",
+      "planned": 8,
+      "attempted": 8,
+      "analysisPasses": 5,
+      "failures": [
+        "assessment-human-message-a",
+        "assessment-organization-selector-a",
+        "assessment-timezone-date-a"
+      ]
+    },
+    {
+      "id": "ux-design",
+      "label": "Thiết kế UX và accessibility",
+      "planned": 4,
+      "attempted": 4,
+      "analysisPasses": 0,
+      "failures": [
+        "assessment-keyboard-dialog-a",
+        "assessment-keyboard-dialog-b",
+        "domain-ux-design-spec-complete",
+        "domain-ux-design-spec-incomplete"
+      ]
+    },
+    {
+      "id": "backend",
+      "label": "Backend và API contract",
+      "planned": 10,
+      "attempted": 10,
+      "analysisPasses": 6,
+      "failures": [
+        "assessment-contract-schema-a",
+        "assessment-contract-schema-b",
+        "assessment-task-scope-a",
+        "assessment-task-scope-b",
+        "assessment-webhook-idempotency-a"
+      ]
+    },
+    {
+      "id": "database",
+      "label": "Database và migration",
+      "planned": 6,
+      "attempted": 6,
+      "analysisPasses": 2,
+      "failures": [
+        "assessment-file-dedup-a",
+        "assessment-migration-replay-b",
+        "assessment-import-validation-a",
+        "assessment-import-validation-b"
+      ]
+    },
+    {
+      "id": "qa",
+      "label": "QA và chất lượng bằng chứng",
+      "planned": 14,
+      "attempted": 14,
+      "analysisPasses": 6,
+      "failures": [
+        "assessment-human-message-a",
+        "assessment-waiting-feedback-a",
+        "assessment-waiting-feedback-b",
+        "assessment-multilang-negation-a",
+        "assessment-multilang-negation-b",
+        "assessment-permission-matrix-a",
+        "assessment-injection-log-a",
+        "assessment-injection-log-b"
+      ]
+    },
+    {
+      "id": "security",
+      "label": "Bảo mật và phân quyền",
+      "planned": 12,
+      "attempted": 12,
+      "analysisPasses": 5,
+      "failures": [
+        "assessment-audit-event-a",
+        "assessment-audit-event-b",
+        "assessment-cache-header-a",
+        "assessment-cache-header-b",
+        "assessment-signed-url-b",
+        "assessment-permission-matrix-a",
+        "assessment-refresh-token-a"
+      ]
+    },
+    {
+      "id": "devops",
+      "label": "DevOps và vận hành sự cố",
+      "planned": 8,
+      "attempted": 8,
+      "analysisPasses": 2,
+      "failures": [
+        "assessment-feature-flag-a",
+        "assessment-feature-flag-b",
+        "assessment-trace-cause-a",
+        "assessment-trace-cause-b",
+        "assessment-rollback-check-a",
+        "assessment-rollback-check-b"
+      ]
+    },
+    {
+      "id": "data",
+      "label": "Dữ liệu và import/export",
+      "planned": 6,
+      "attempted": 6,
+      "analysisPasses": 3,
+      "failures": [
+        "assessment-file-dedup-a",
+        "assessment-csv-unicode-a",
+        "assessment-import-validation-a",
+        "assessment-import-validation-b"
+      ]
+    },
+    {
+      "id": "ai-ml",
+      "label": "AI/ML và đánh giá model",
+      "planned": 2,
+      "attempted": 2,
+      "analysisPasses": 0,
+      "failures": [
+        "domain-ai-model-evaluation-complete",
+        "domain-ai-model-evaluation-incomplete"
+      ]
+    },
+    {
+      "id": "product-ba",
+      "label": "BA/Product và quy tắc nghiệp vụ",
+      "planned": 8,
+      "attempted": 8,
+      "analysisPasses": 2,
+      "failures": [
+        "assessment-task-scope-a",
+        "assessment-task-scope-b",
+        "assessment-report-save-a",
+        "assessment-report-save-b",
+        "assessment-invoice-rounding-b",
+        "domain-product-acceptance-spec-complete",
+        "domain-product-acceptance-spec-incomplete"
+      ]
+    },
+    {
+      "id": "documentation",
+      "label": "Tài liệu và bàn giao",
+      "planned": 8,
+      "attempted": 8,
+      "analysisPasses": 1,
+      "failures": [
+        "assessment-mail-queue-a",
+        "assessment-project-archive-a",
+        "assessment-project-archive-b",
+        "assessment-reset-progress-a",
+        "assessment-reset-progress-b",
+        "domain-runbook-documentation-complete",
+        "domain-runbook-documentation-incomplete"
+      ]
+    },
+    {
+      "id": "integration",
+      "label": "Tích hợp, hàng đợi và thông báo",
+      "planned": 10,
+      "attempted": 10,
+      "analysisPasses": 5,
+      "failures": [
+        "assessment-billing-webhook-b",
+        "assessment-mail-queue-a",
+        "assessment-webhook-idempotency-a",
+        "assessment-notification-duplicate-a",
+        "assessment-notification-duplicate-b"
+      ]
+    },
+    {
+      "id": "performance",
+      "label": "Hiệu năng và cache",
+      "planned": 6,
+      "attempted": 6,
+      "analysisPasses": 0,
+      "failures": [
+        "assessment-cache-header-a",
+        "assessment-cache-header-b",
+        "assessment-search-latency-a",
+        "assessment-search-latency-b",
+        "assessment-reset-progress-a",
+        "assessment-reset-progress-b"
+      ]
+    }
+  ],
+  "rawFailureCounts": {
+    "NOTE_ADEQUACY": 29,
+    "UNNECESSARY_QUESTION": 32,
+    "QUESTION_GAP_KIND": 27,
+    "REQUIRED_QUESTION_MISSING": 2,
+    "RESOLVED_OR_DECLINED_GAP_REPEATED": 1
+  },
+  "runtimeFailureCounts": {
+    "NOTE_ADEQUACY": 35,
+    "UNNECESSARY_QUESTION": 31,
+    "QUESTION_GAP_KIND": 26,
+    "REQUIRED_QUESTION_MISSING": 2
+  },
+  "unexpectedErrorCounts": {
+    "INVALID_SOURCE_REFERENCE": 1,
+    "UNSUPPORTED_REQUIREMENT": 1,
+    "XKIRO_TIMEOUT": 1,
+    "SCHEMA_KEYS_TEXT": 2,
+    "XKIRO_HTTP_ERROR_429": 5
+  },
+  "artifacts": {
+    "manifest": {
+      "file": "cross-domain-20261029.campaign-manifest.json",
+      "sha256": "f2882a52d42b94018db8291e87e39d414a8bda9cfa25074585728fb2a9aa7220"
+    },
+    "summary": {
+      "file": "cross-domain-20261029.campaign-summary.json",
+      "sha256": "a654aeb631c2ac7869c5474c5793e569fc18a65d0631f76e4944c49e8758a283"
+    },
+    "reports": [
+      {
+        "file": "assessment-v4-2026-10-29T03-12-21-114Z-b6c97619.json",
+        "sha256": "97f0371008b4dd73e2597ef88746ee880c5c0454a29a565ca1e623eb05a15ec1",
+        "caseId": "assessment-audit-event-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-12-36-124Z-49f639a4.json",
+        "sha256": "bd5fd0eafb6e153b494f3d035af3b98d444e4935857fa77a5b4002ccc74a3dac",
+        "caseId": "assessment-audit-event-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-12-47-864Z-b0b93b16.json",
+        "sha256": "1c471c5532e0208bcb379484ea12e4ed4fb804626681baf8ce184d9fa6c42b34",
+        "caseId": "assessment-human-message-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-13-04-115Z-6a3b97b9.json",
+        "sha256": "ba37ac42979cc8509200f33adc9ac356a0c838baf0d7df68b43f9b4b213a9617",
+        "caseId": "assessment-human-message-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-13-17-492Z-b172a852.json",
+        "sha256": "269c4da79b5e9fa37c0a85b5263b9bef9c530ab2a851bec87ce07b184ee12436",
+        "caseId": "assessment-contract-schema-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-13-51-736Z-5777f6c2.json",
+        "sha256": "6008e661172c2bf246cd3f5d6864a7f93f74fb7d085cf1c3995f0535e264e4c7",
+        "caseId": "assessment-contract-schema-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-14-05-677Z-2d88ae54.json",
+        "sha256": "cb90fdc31316f82525cb239ef84c5df8284349b629448e9087bcb7fbfa2b64a5",
+        "caseId": "assessment-locale-plural-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-14-31-843Z-aa78d783.json",
+        "sha256": "e9948001720b8522c3179bf775ee418dbb67f73a187835786962f52a9e30766f",
+        "caseId": "assessment-locale-plural-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-14-50-172Z-8c6338a6.json",
+        "sha256": "46b0b9ea4743d40d5a93d819ed90e7fef2d021f31851f4be3f3195a3b27b4047",
+        "caseId": "assessment-feature-flag-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-15-17-075Z-fadc5990.json",
+        "sha256": "f1e3e52dc5c3617d777c32d41d3d063ddd158bbfb8271631fa477f3a06851800",
+        "caseId": "assessment-feature-flag-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-15-39-525Z-5a3ee833.json",
+        "sha256": "1c5f9c7c444e8fffab9c5f2d24d04b72bb4311b8a50375ac4a80432a57a2bdc8",
+        "caseId": "assessment-task-scope-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-16-28-171Z-93046d3c.json",
+        "sha256": "1cb86495e20c5310b327a2d009290ac68ecf46420140ed448a71a3d701af7cdc",
+        "caseId": "assessment-task-scope-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-16-42-565Z-4c52e658.json",
+        "sha256": "e1328d88fe06a75b1fdcc9e3b2271f4aea85f07e281defbb20efa4ff63f3e81b",
+        "caseId": "assessment-cache-header-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-16-54-253Z-deaf23f6.json",
+        "sha256": "f55897da1bb1adc188d08975d7e48c6775d86a4c1c7c7a4be6ed9a592bc3da67",
+        "caseId": "assessment-cache-header-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-17-07-935Z-f6b57000.json",
+        "sha256": "4e5266d138aa246a20ec91d176a4d804b364dfe78fa5fe8d286925933ee858d7",
+        "caseId": "assessment-keyboard-dialog-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-17-19-487Z-d1e8f7e9.json",
+        "sha256": "8660cc161768944403a2e5f691e571e8e55ac08ab251571a81596cb99f5cb20e",
+        "caseId": "assessment-keyboard-dialog-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-17-35-985Z-5eec1e27.json",
+        "sha256": "47f7cb16398ae9bc14203c554fab94f3d73aeb884f373afee9f590f8295a6d38",
+        "caseId": "assessment-signed-url-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-17-49-115Z-38240512.json",
+        "sha256": "0de1c76f2681a944a22100f43ec20872a994d14070bc9571874882e911349365",
+        "caseId": "assessment-signed-url-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-18-03-184Z-7dbab82b.json",
+        "sha256": "b28126bb4db212be7a58bcbcbd98786951e95708b439962c817796ce8ce4c188",
+        "caseId": "assessment-trace-cause-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-18-18-857Z-02a90452.json",
+        "sha256": "6978b69f1ed449c25f50aa5ff8068b2bffa82928b9516e8dcbe5e2a0eee50f6c",
+        "caseId": "assessment-trace-cause-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-18-38-512Z-f949ae54.json",
+        "sha256": "fbd468ed1876ca594c391215391471100a10d14936376fd1bf12f6bdf32f33b1",
+        "caseId": "assessment-report-save-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-19-12-898Z-252127e7.json",
+        "sha256": "1ef03795031a6c0791996900a996320f14863cd1040e0b9a127b8a1f2fe51842",
+        "caseId": "assessment-report-save-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-19-26-488Z-42145cfd.json",
+        "sha256": "c908d44df96ea87feb6ae8c35b318702ca642d066f4993192906f18821cfd81e",
+        "caseId": "assessment-rollback-check-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-19-55-051Z-c77a1cc3.json",
+        "sha256": "afbcdb6ae59fb884c992b841c48454658a4cf4fbaf070d92dccf4cf6ee3d6ea6",
+        "caseId": "assessment-rollback-check-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-20-09-793Z-bd013c4e.json",
+        "sha256": "294599713c4c68be7bf4be5eaeda9165c804fbd1d2ce32e6f89378597fb71a4c",
+        "caseId": "assessment-billing-webhook-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-20-38-977Z-1af3052b.json",
+        "sha256": "4f1295eedeaa8c2194b599ea2dc1aef70a4acc919a6f6a00d3372a3cd567a1bb",
+        "caseId": "assessment-billing-webhook-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-20-56-473Z-46e02c31.json",
+        "sha256": "3cabe019aa39791e94b273e72ed8e2ff750a0701f2f3e46e52ef301d0c0707b7",
+        "caseId": "assessment-file-dedup-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-21-34-389Z-9da1514f.json",
+        "sha256": "e6aeed4fd85804fe6538005cd1d4b0595021aefeffcf65c7065497df2bb974c2",
+        "caseId": "assessment-file-dedup-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-22-04-421Z-72e68835.json",
+        "sha256": "6aa622016a82957616560a326891c00b6a6abbde295eec1a5af9f087a540c76a",
+        "caseId": "assessment-organization-selector-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-22-47-268Z-e46e3738.json",
+        "sha256": "bca8a4496f826c63822fd7131f68539dd3f812ffcc70e50da4a12e34559fd162",
+        "caseId": "assessment-organization-selector-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-23-04-632Z-81e12d4f.json",
+        "sha256": "32930f1aec9d1b652c9380391fc1b89aec68a1de30190677e1650873b3dff516",
+        "caseId": "assessment-migration-replay-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-23-57-639Z-e7dfffd1.json",
+        "sha256": "d85754c7d448fabaf9940faef889826f3694dec81345585afd0074de4586beaa",
+        "caseId": "assessment-migration-replay-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-24-13-525Z-ef553c84.json",
+        "sha256": "e4f4b37a488b5e4fb8a6ddecb83f35c2be2003590517d65e9c928eec20f68419",
+        "caseId": "assessment-waiting-feedback-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-24-53-497Z-c7396fa5.json",
+        "sha256": "76c0c826af209b656c5f9f730f79a4b446a7d89c53cf43cde4a3109d9bfae5c9",
+        "caseId": "assessment-waiting-feedback-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-25-05-967Z-a8b77224.json",
+        "sha256": "903552e984cac8be860ebe4347275a229b2976678427e0b75b3c278003d9d14f",
+        "caseId": "assessment-multilang-negation-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-25-20-041Z-c6303fc7.json",
+        "sha256": "7eecee07700c22a6c8873b17d0b3638fdc7c03799f04a1f3593402b0edff75a5",
+        "caseId": "assessment-multilang-negation-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-25-32-068Z-f04408b1.json",
+        "sha256": "e6a9ea188c02ebff1fd6ed6f15dcd85542ef7ca8aa92e617c26993d0f55acdcc",
+        "caseId": "assessment-workspace-context-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-25-40-727Z-97ad1c8b.json",
+        "sha256": "992f3e2d7e41d6c4530dad521156037bbd98f261cfc8eb06a789fed590f696be",
+        "caseId": "assessment-workspace-context-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-25-57-857Z-76b23523.json",
+        "sha256": "e738ec1d20fcf3a542c7cc8c0775219fff0679ecefc8be586177bba418202daf",
+        "caseId": "assessment-retry-upload-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-26-15-159Z-2e5f6cf9.json",
+        "sha256": "d14bf8c8803c87c9d79f238273148531639e24023b0b41a6e75bb5e3f45bb4d7",
+        "caseId": "assessment-retry-upload-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-26-36-774Z-8765496a.json",
+        "sha256": "8fc4e53e0138d935b84c0cbf5d0f01d4665e50217d25dc3fffaa331883ad21e5",
+        "caseId": "assessment-timezone-date-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-27-16-202Z-ce6bcc79.json",
+        "sha256": "32c60c9ce12b2e1b5a0513c97b7bf0d205315b332deb204e6181074854565f01",
+        "caseId": "assessment-timezone-date-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-27-34-707Z-d8031ca7.json",
+        "sha256": "3afb68d0ccd1ff6401ffaa2bfb5f2346b7950b9c69aff172e628d4794e54c592",
+        "caseId": "assessment-csv-unicode-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-28-01-969Z-b9f0cd32.json",
+        "sha256": "1db13188665d89365854ebd164aa52c1389bbe942ed6422b1058563b7d56fb9b",
+        "caseId": "assessment-csv-unicode-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-28-19-490Z-c673e064.json",
+        "sha256": "6d2be14df3f810e111a450e9b87b686b11ff81f679d3864eed11abea8bd6965c",
+        "caseId": "assessment-release-claim-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-28-45-229Z-e66c37a5.json",
+        "sha256": "5093987ef1d7c7146fb6f80c94742451eee71c542ab4f108acca3d66f6f9d03c",
+        "caseId": "assessment-release-claim-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-29-08-514Z-a11c176a.json",
+        "sha256": "6045d16b0019f3b9e7928638dfbd913467ff0f6eb3da8834e72954ccdc607879",
+        "caseId": "assessment-permission-matrix-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-29-55-519Z-ea1bff10.json",
+        "sha256": "b33af8da997b0150aeddc1cec93b8ef9a80b1563a20641d7b7b8faf04f106b35",
+        "caseId": "assessment-permission-matrix-b",
+        "actualCalls": 4
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-30-12-731Z-e25da5f8.json",
+        "sha256": "a17b5622438004215aa01f5e3dcd9be80be139523f58b60fd1d5b791439440ba",
+        "caseId": "assessment-mail-queue-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-30-37-140Z-743990dc.json",
+        "sha256": "e2e856deebf027b6d7eb23cf051ff69cf27d065c1a8ca8a527acac0c84fcc149",
+        "caseId": "assessment-mail-queue-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-30-47-525Z-ffe7b6d6.json",
+        "sha256": "0d306b9cf93b7659baa21f529fd3cbefb95ca660028cb05e870dccae14aa4ebd",
+        "caseId": "assessment-webhook-idempotency-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-31-18-588Z-b1dcc48e.json",
+        "sha256": "6630a831f46cb40dddc3388f1ddd80681976d058182b5fdc4a5d99b24dc427f4",
+        "caseId": "assessment-webhook-idempotency-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-31-32-093Z-e5b56d58.json",
+        "sha256": "948d10cdbb4ca9b6ae32f42c4ce87aa3f0120519050a2e9631a58b60b095d44a",
+        "caseId": "assessment-refresh-token-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-31-51-793Z-b5a7568c.json",
+        "sha256": "e054f9e6391771dbf1581abef2b758940c9bafe87829a065e816681993d48bc8",
+        "caseId": "assessment-refresh-token-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-32-06-718Z-fdaa2ad3.json",
+        "sha256": "13a062e9d76fe239a1a2b162595d3dff369be941f0a34046a7cd7358d4a0083a",
+        "caseId": "assessment-invoice-rounding-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-32-34-495Z-36a05a62.json",
+        "sha256": "2d8d33642bec5f0af069d376755ae20baab9a8d4f8753577605ad1b34d55a022",
+        "caseId": "assessment-invoice-rounding-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-32-44-516Z-3e454572.json",
+        "sha256": "3ba143006d57679880a9ec3ebceefad69aacd8822788fcd78d40feb623749e1a",
+        "caseId": "assessment-attachment-mime-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-33-24-376Z-35bb6c51.json",
+        "sha256": "2b7b46d5864fd67cf820efb8cfe899d9b34937f35098c37aef0a8ed60a26c779",
+        "caseId": "assessment-attachment-mime-b",
+        "actualCalls": 4
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-33-37-322Z-a88c67d4.json",
+        "sha256": "b72dc50b53697299093a714b253749efd8fea5f07a9a0022d5b2a2293360d241",
+        "caseId": "assessment-search-latency-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-34-09-784Z-86febcde.json",
+        "sha256": "5c723c744f8c1ff35ebf07b27a071fa8c3d4c638dfdd35686b58fd595144dcaf",
+        "caseId": "assessment-search-latency-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-34-22-985Z-d9ee5eb6.json",
+        "sha256": "0b0b97d633b169a13b5e69b120ba1e32247c93f57980b8cf3be6fb025d281005",
+        "caseId": "assessment-notification-duplicate-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-34-36-439Z-052f355e.json",
+        "sha256": "c3012ac58a7fdd82a4330d340e25f6c49808bdb5a89fe2a2600ff6a03a95d8f1",
+        "caseId": "assessment-notification-duplicate-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-34-49-539Z-02eb4d4d.json",
+        "sha256": "a217f7fac0e80a377406105bc76ef0c7a11a9fe45031344cdfe6c46f8b2d4a89",
+        "caseId": "assessment-project-archive-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-35-02-022Z-c7be4ca1.json",
+        "sha256": "f614b1bfa701de7b667c1d008a8bc945f52d17ef7b5be00763591feaccd48543",
+        "caseId": "assessment-project-archive-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-35-14-996Z-93e0caa2.json",
+        "sha256": "63e7f6a3cdc19ae2fbc59ac4e6ca227054f1408f96eb155c5e6361e27c5edd69",
+        "caseId": "assessment-import-validation-a",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-35-51-995Z-8d6fe812.json",
+        "sha256": "e0ca8a3dba8b83ec7eff8868311b21b64e70c0165933b61ca815a6b4ce8ba801",
+        "caseId": "assessment-import-validation-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-35-52-012Z-cd95dbcd.json",
+        "sha256": "405c9c62328e386b3b973cb57539903793f8f77b1ae0379abefc703542cdbb69",
+        "caseId": "assessment-task-fetch-status-a",
+        "actualCalls": 0
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-36-00-520Z-5c15ef2c.json",
+        "sha256": "1d7a06df7cd97b4a86879a0e9ebcb1808c2b853ff3c7554ea7faa69c076b1282",
+        "caseId": "assessment-task-fetch-status-b",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-36-10-863Z-2bc69e51.json",
+        "sha256": "d887a31afbb4cdefef0c7511b3457e0af0154d29c14ffb87bc43e3945fa8819e",
+        "caseId": "assessment-injection-log-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-36-20-542Z-7541af2d.json",
+        "sha256": "6d9397ae4a089aad77a8cd956c0603264ad0ce61a307e324a776feb04278f325",
+        "caseId": "assessment-injection-log-b",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-36-34-599Z-60b70160.json",
+        "sha256": "a8759c2aa2bb20685decee879a93b714c486c752b3a25f7fefc4290e0a5a7a04",
+        "caseId": "assessment-reset-progress-a",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-37-15-720Z-0f6f429b.json",
+        "sha256": "f908febed48c3122498fd4f35481d9af0f10173c6f106db166ed968cace59981",
+        "caseId": "assessment-reset-progress-b",
+        "actualCalls": 3
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-37-33-986Z-f4447bb4.json",
+        "sha256": "3015840cb54b4cdebc1c7ab57cb5f8939ac45e1297864ec29227f83508c3d602",
+        "caseId": "domain-ux-design-spec-complete",
+        "actualCalls": 2
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-37-46-618Z-98241c02.json",
+        "sha256": "698aa8f514377789212c77573998ae247dea76de8b524c9cc9f92bda4fbdef99",
+        "caseId": "domain-ux-design-spec-incomplete",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-38-02-884Z-0eeaf8e1.json",
+        "sha256": "561401837ffafde231df5d663a1c905087e6f5045936f319b55f319b8839340e",
+        "caseId": "domain-ai-model-evaluation-complete",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-38-03-016Z-cc1ec75c.json",
+        "sha256": "797d149036b42f8ce64fa46cf331ab001ff383025015745c5eb7a9aad3fa4833",
+        "caseId": "domain-ai-model-evaluation-incomplete",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-38-03-155Z-e2db5d57.json",
+        "sha256": "0dd4c8a314e0b45a01baa6cd03134482c0e6b1c26084f112c11ae7452411bca9",
+        "caseId": "domain-product-acceptance-spec-complete",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-38-03-266Z-6e9f0bcd.json",
+        "sha256": "9b4314b529a7b4f8dc0aad1cb4301146233d7e9079046951568abdb0c68cfdf5",
+        "caseId": "domain-product-acceptance-spec-incomplete",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-38-03-387Z-cc043aca.json",
+        "sha256": "6dc249952b8fec6ec3f41ef56c77d28be707ce535e9c968239319fc5fc124b60",
+        "caseId": "domain-runbook-documentation-complete",
+        "actualCalls": 1
+      },
+      {
+        "file": "assessment-v4-2026-10-29T03-38-03-576Z-f5b64b49.json",
+        "sha256": "da6da19226492eada818ac4bdd99443e07d4e9033a7a1c95a9558ac70a99fd05",
+        "caseId": "domain-runbook-documentation-incomplete",
+        "actualCalls": 1
+      }
+    ]
+  },
+  "originalCorpusSha256": "319c606e396204fbcbbfe4ed4750553f3313bf577b9a9641afea42b9f2f6b4f5",
+  "frozenFiles": {
+    "src/services/capture/application/work-note-agent/work-note-assessment.prompt.ts": "b2ecc8c5c849b882db2539c89ea7f9aa9256bb01a7a715ead0d219f250df61e7",
+    "src/services/capture/application/work-note-agent/work-note-assessment.protocol.ts": "963cd39cfe099be42a6c93d6aed5f2e5c223d86b32d912362df15befefbdaebd",
+    "src/services/capture/application/work-note-agent/work-note-assessment.state.ts": "180d134eeaaa1437a55936b55a01e28417d8f1ecabbbb036ff14b7780f663cdb",
+    "src/services/capture/application/work-note-agent/work-note-assessment.context.ts": "2cb3a53c48db9283cf1f775d7d468c6384330cbb9d3f6cd8da31f50509bc3ab3",
+    "src/services/capture/application/work-note-agent/work-note-assessment-editor.ts": "7a5b82139efcff6c5da903e2d50e2a96b7c499a27537b8fd84cb946b562ac66f",
+    "src/services/capture/application/work-note-agent/work-note-agent.ts": "fb655fa962866bf52d449246ae61cf6e2dbe3a9af3468dca17a0f65bd01ca9e8",
+    "src/services/capture/application/work-note-agent/work-note-agent.completion.ts": "e13a6492dfcbbf7b22086e1c07cadb88dae754c8b486692b8181bae0b9d852f8",
+    "src/services/capture/application/work-note-agent/work-note-agent.protection.ts": "38265f2fd9cd6c7b2000a7c72e41be60d7de58a64fbfd961e665a2b1299508b4",
+    "src/services/capture/infrastructure/ai/work-note-xkiro.client.ts": "d23f682dab87eac350993e0a319271812b1da8d7638b26d8b24ef88e0515dc95",
+    "scripts/work-note-agent/cases-assessment-v4.json": "319c606e396204fbcbbfe4ed4750553f3313bf577b9a9641afea42b9f2f6b4f5",
+    "scripts/work-note-agent/cases-assessment-v4-errata.json": "fcfe9b355faf141b18dc63fbc8e81c5867aaa408c1362ed3e664707251a30602",
+    "scripts/work-note-agent/assessment-domains.ts": "6f99be41fb30235b14aec3c21420f79c2b1dec82c00d80ea6e8f431359312029",
+    "scripts/work-note-agent/assessment-evaluation.ts": "96276c0b7a80a3b92b3421712e6ee348de5beeae800a73a8a2642b188851854c",
+    "scripts/work-note-agent/assessment-run.ts": "ea78ec72b1f57d51e3b736f0ac99b4bc356469c3e26712dfa6342b10cee2afbb",
+    "scripts/work-note-agent/assessment-campaign.ts": "e23bded4a3a08f1c07b9f2017664c34085d331da66b539a65e64ad649d0c938e"
+  },
+  "observations": [
+    {
+      "caseId": "assessment-audit-event-a",
+      "split": "validation",
+      "family": "audit-event",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10317,
+      "remainingCalls": 175,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-audit-event-b",
+      "split": "validation",
+      "family": "audit-event",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10368,
+      "remainingCalls": 174,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-human-message-a",
+      "split": "validation",
+      "family": "human-message",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "INVALID_SOURCE_REFERENCE"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10318,
+      "remainingCalls": 173,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-human-message-b",
+      "split": "validation",
+      "family": "human-message",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11368,
+      "remainingCalls": 171,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-contract-schema-a",
+      "split": "validation",
+      "family": "contract-schema",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "UNSUPPORTED_REQUIREMENT"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10353,
+      "remainingCalls": 170,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-contract-schema-b",
+      "split": "validation",
+      "family": "contract-schema",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 21344,
+      "remainingCalls": 168,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-locale-plural-a",
+      "split": "validation",
+      "family": "locale-plural",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11237,
+      "remainingCalls": 166,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-locale-plural-b",
+      "split": "validation",
+      "family": "locale-plural",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 20988,
+      "remainingCalls": 164,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-feature-flag-a",
+      "split": "validation",
+      "family": "feature-flag",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11245,
+      "remainingCalls": 162,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-feature-flag-b",
+      "split": "validation",
+      "family": "feature-flag",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 20978,
+      "remainingCalls": 160,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-task-scope-a",
+      "split": "validation",
+      "family": "task-scope",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "FAILED",
+      "failures": [
+        "REWRITE_PROTECTED_CONTENT_CHANGED"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11505,
+      "remainingCalls": 158,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-task-scope-b",
+      "split": "validation",
+      "family": "task-scope",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "REQUIRED_QUESTION_MISSING",
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 3,
+      "reportedTokens": 31597,
+      "remainingCalls": 155,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-cache-header-a",
+      "split": "holdout",
+      "family": "cache-header",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10359,
+      "remainingCalls": 154,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-cache-header-b",
+      "split": "holdout",
+      "family": "cache-header",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10317,
+      "remainingCalls": 153,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-keyboard-dialog-a",
+      "split": "holdout",
+      "family": "keyboard-dialog",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10368,
+      "remainingCalls": 152,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-keyboard-dialog-b",
+      "split": "holdout",
+      "family": "keyboard-dialog",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10284,
+      "remainingCalls": 151,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-signed-url-a",
+      "split": "holdout",
+      "family": "signed-url",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11395,
+      "remainingCalls": 149,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-signed-url-b",
+      "split": "holdout",
+      "family": "signed-url",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10351,
+      "remainingCalls": 148,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-trace-cause-a",
+      "split": "holdout",
+      "family": "trace-cause",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10363,
+      "remainingCalls": 147,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-trace-cause-b",
+      "split": "holdout",
+      "family": "trace-cause",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10352,
+      "remainingCalls": 146,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-report-save-a",
+      "split": "holdout",
+      "family": "report-save",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11638,
+      "remainingCalls": 144,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-report-save-b",
+      "split": "holdout",
+      "family": "report-save",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 21471,
+      "remainingCalls": 142,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-rollback-check-a",
+      "split": "holdout",
+      "family": "rollback-check",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10360,
+      "remainingCalls": 141,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-rollback-check-b",
+      "split": "holdout",
+      "family": "rollback-check",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 20986,
+      "remainingCalls": 139,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-billing-webhook-a",
+      "split": "holdout",
+      "family": "billing-webhook",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11275,
+      "remainingCalls": 137,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-billing-webhook-b",
+      "split": "holdout",
+      "family": "billing-webhook",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 21047,
+      "remainingCalls": 135,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-file-dedup-a",
+      "split": "holdout",
+      "family": "file-dedup",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10358,
+      "remainingCalls": 134,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-file-dedup-b",
+      "split": "holdout",
+      "family": "file-dedup",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 21080,
+      "remainingCalls": 132,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-organization-selector-a",
+      "split": "holdout",
+      "family": "organization-selector",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_TIMEOUT"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 131,
+      "critical": false,
+      "providerFailure": true
+    },
+    {
+      "caseId": "assessment-organization-selector-b",
+      "split": "holdout",
+      "family": "organization-selector",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 3,
+      "reportedTokens": 22428,
+      "remainingCalls": 128,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-migration-replay-a",
+      "split": "holdout",
+      "family": "migration-replay",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11300,
+      "remainingCalls": 126,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-migration-replay-b",
+      "split": "holdout",
+      "family": "migration-replay",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND",
+        "UNNECESSARY_QUESTION",
+        "SCHEMA_KEYS_TEXT"
+      ],
+      "actualCalls": 3,
+      "reportedTokens": 32684,
+      "remainingCalls": 123,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-waiting-feedback-a",
+      "split": "holdout",
+      "family": "waiting-feedback",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10420,
+      "remainingCalls": 122,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-waiting-feedback-b",
+      "split": "holdout",
+      "family": "waiting-feedback",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 3,
+      "reportedTokens": 31559,
+      "remainingCalls": 119,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-multilang-negation-a",
+      "split": "holdout",
+      "family": "multilang-negation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10394,
+      "remainingCalls": 118,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-multilang-negation-b",
+      "split": "holdout",
+      "family": "multilang-negation",
+      "expectedTurns": 3,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10422,
+      "remainingCalls": 117,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-workspace-context-a",
+      "split": "development",
+      "family": "workspace-context",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 10938,
+      "remainingCalls": 115,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-workspace-context-b",
+      "split": "development",
+      "family": "workspace-context",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 1,
+      "reportedTokens": 10043,
+      "remainingCalls": 114,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-retry-upload-a",
+      "split": "development",
+      "family": "retry-upload",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11516,
+      "remainingCalls": 112,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-retry-upload-b",
+      "split": "development",
+      "family": "retry-upload",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 1,
+      "reportedTokens": 10294,
+      "remainingCalls": 111,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-timezone-date-a",
+      "split": "development",
+      "family": "timezone-date",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11551,
+      "remainingCalls": 109,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-timezone-date-b",
+      "split": "development",
+      "family": "timezone-date",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 3,
+      "reportedTokens": 22504,
+      "remainingCalls": 106,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-csv-unicode-a",
+      "split": "development",
+      "family": "csv-unicode",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "FAILED",
+      "failures": [
+        "REWRITE_PROTECTED_CONTENT_CHANGED"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11393,
+      "remainingCalls": 104,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-csv-unicode-b",
+      "split": "development",
+      "family": "csv-unicode",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 3,
+      "reportedTokens": 22186,
+      "remainingCalls": 101,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-release-claim-a",
+      "split": "development",
+      "family": "release-claim",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11245,
+      "remainingCalls": 99,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-release-claim-b",
+      "split": "development",
+      "family": "release-claim",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 21232,
+      "remainingCalls": 97,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-permission-matrix-a",
+      "split": "development",
+      "family": "permission-matrix",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11749,
+      "remainingCalls": 95,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-permission-matrix-b",
+      "split": "development",
+      "family": "permission-matrix",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 4,
+      "reportedTokens": 33788,
+      "remainingCalls": 91,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-mail-queue-a",
+      "split": "development",
+      "family": "mail-queue",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10405,
+      "remainingCalls": 90,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-mail-queue-b",
+      "split": "development",
+      "family": "mail-queue",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 20947,
+      "remainingCalls": 88,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-webhook-idempotency-a",
+      "split": "development",
+      "family": "webhook-idempotency",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10429,
+      "remainingCalls": 87,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-webhook-idempotency-b",
+      "split": "development",
+      "family": "webhook-idempotency",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 3,
+      "reportedTokens": 22345,
+      "remainingCalls": 84,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-refresh-token-a",
+      "split": "development",
+      "family": "refresh-token",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10369,
+      "remainingCalls": 83,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-refresh-token-b",
+      "split": "development",
+      "family": "refresh-token",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 20913,
+      "remainingCalls": 81,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-invoice-rounding-a",
+      "split": "development",
+      "family": "invoice-rounding",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11472,
+      "remainingCalls": 79,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-invoice-rounding-b",
+      "split": "development",
+      "family": "invoice-rounding",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "REQUIRED_QUESTION_MISSING"
+      ],
+      "actualCalls": 3,
+      "reportedTokens": 22386,
+      "remainingCalls": 76,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-attachment-mime-a",
+      "split": "development",
+      "family": "attachment-mime",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 11188,
+      "remainingCalls": 74,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-attachment-mime-b",
+      "split": "development",
+      "family": "attachment-mime",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 4,
+      "reportedTokens": 32658,
+      "remainingCalls": 70,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-search-latency-a",
+      "split": "development",
+      "family": "search-latency",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10464,
+      "remainingCalls": 69,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-search-latency-b",
+      "split": "development",
+      "family": "search-latency",
+      "expectedTurns": 2,
+      "attemptedTurns": 2,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND",
+        "UNNECESSARY_QUESTION",
+        "RESOLVED_OR_DECLINED_GAP_REPEATED"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 21559,
+      "remainingCalls": 67,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-notification-duplicate-a",
+      "split": "development",
+      "family": "notification-duplicate",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10432,
+      "remainingCalls": 66,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-notification-duplicate-b",
+      "split": "development",
+      "family": "notification-duplicate",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10380,
+      "remainingCalls": 65,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-project-archive-a",
+      "split": "development",
+      "family": "project-archive",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10274,
+      "remainingCalls": 64,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-project-archive-b",
+      "split": "development",
+      "family": "project-archive",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10343,
+      "remainingCalls": 63,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-import-validation-a",
+      "split": "development",
+      "family": "import-validation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11398,
+      "remainingCalls": 61,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-import-validation-b",
+      "split": "development",
+      "family": "import-validation",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND",
+        "UNNECESSARY_QUESTION",
+        "SCHEMA_KEYS_TEXT"
+      ],
+      "actualCalls": 3,
+      "reportedTokens": 32669,
+      "remainingCalls": 58,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-task-fetch-status-a",
+      "split": "development",
+      "family": "task-fetch-status",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "CONTEXT_UNAVAILABLE"
+      ],
+      "actualCalls": 0,
+      "reportedTokens": 0,
+      "remainingCalls": 58,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-task-fetch-status-b",
+      "split": "development",
+      "family": "task-fetch-status",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": true,
+      "editor": "ACCEPTED",
+      "failures": [],
+      "actualCalls": 2,
+      "reportedTokens": 10954,
+      "remainingCalls": 56,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-injection-log-a",
+      "split": "development",
+      "family": "injection-log",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10420,
+      "remainingCalls": 55,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-injection-log-b",
+      "split": "development",
+      "family": "injection-log",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10272,
+      "remainingCalls": 54,
+      "critical": true,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-reset-progress-a",
+      "split": "development",
+      "family": "reset-progress",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10443,
+      "remainingCalls": 53,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "assessment-reset-progress-b",
+      "split": "development",
+      "family": "reset-progress",
+      "expectedTurns": 3,
+      "attemptedTurns": 3,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "UNNECESSARY_QUESTION",
+        "NOTE_ADEQUACY",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 3,
+      "reportedTokens": 31646,
+      "remainingCalls": 50,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-ux-design-spec-complete",
+      "split": "validation",
+      "family": "ux-design-spec",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "ACCEPTED",
+      "failures": [
+        "NOTE_ADEQUACY"
+      ],
+      "actualCalls": 2,
+      "reportedTokens": 11675,
+      "remainingCalls": 48,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-ux-design-spec-incomplete",
+      "split": "validation",
+      "family": "ux-design-spec",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10601,
+      "remainingCalls": 47,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-ai-model-evaluation-complete",
+      "split": "validation",
+      "family": "ai-model-evaluation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "NOTE_ADEQUACY",
+        "UNNECESSARY_QUESTION",
+        "QUESTION_GAP_KIND"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 10626,
+      "remainingCalls": 46,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-ai-model-evaluation-incomplete",
+      "split": "validation",
+      "family": "ai-model-evaluation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_HTTP_ERROR_429"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 45,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-product-acceptance-spec-complete",
+      "split": "validation",
+      "family": "product-acceptance-spec",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_HTTP_ERROR_429"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 44,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-product-acceptance-spec-incomplete",
+      "split": "validation",
+      "family": "product-acceptance-spec",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_HTTP_ERROR_429"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 43,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-runbook-documentation-complete",
+      "split": "validation",
+      "family": "runbook-documentation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_HTTP_ERROR_429"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 42,
+      "critical": false,
+      "providerFailure": false
+    },
+    {
+      "caseId": "domain-runbook-documentation-incomplete",
+      "split": "validation",
+      "family": "runbook-documentation",
+      "expectedTurns": 1,
+      "attemptedTurns": 1,
+      "analysisPass": false,
+      "editor": "NOT_REQUESTED",
+      "failures": [
+        "XKIRO_HTTP_ERROR_429"
+      ],
+      "actualCalls": 1,
+      "reportedTokens": 0,
+      "remainingCalls": 41,
+      "critical": false,
+      "providerFailure": false
+    }
+  ],
+  "stopReason": null,
+  "releaseGate": "NOT_PASSED",
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "independentSignals": {
+    "userApply": false,
+    "userSave": false,
+    "authorValidated": false,
+    "independentSemanticReviewer": "NOT_ESTABLISHED"
+  },
+  "limitations": [
+    "Author-written synthetic rubric, not independent human gold labels",
+    "Domain groups overlap; counts must not be summed",
+    "Some multi-turn branches cannot continue when the model failed to ask the expected question",
+    "Timeouts/protocol rejection are distinct from missing Task requirements",
+    "No prompt, examples, parser or rubric tuning during this frozen campaign",
+    "No real-user content, Atlas migration, auto Apply/Save, team messaging or shared activation",
+    "AUTO/OTHER and unrestricted domains are not covered by the live semantic corpus",
+    "Any future tuning against these results needs new unseen evaluation data"
+  ]
+}

@@ -1,0 +1,1325 @@
+{
+  "classification": "V13_OPTIMIZATION_OFFLINE_REPLAY_WITH_RATE_LIMITED_LIVE_PROBE",
+  "productBaseline": "e4d5ed8e84a2e9e00aea0b48d9e3c8a1e2a06604",
+  "replay": {
+    "classification": "OFFLINE_RECORDED_OUTPUT_REPLAY_NOT_NEW_MODEL_EVALUATION",
+    "recordedPromptVersion": "task-note-assessment/2026-10-29.v12",
+    "replayProtocolVersion": "task-note-assessment/2026-10-29.v13",
+    "questionGenerationEvaluated": false,
+    "implementationHashes": {
+      "work-note-assessment.protocol.ts": "fa153f5cb11a7fcc80cdb4d15fafcb1edc8ecf3dc55b1a3a5e59229f9784c5a9",
+      "work-note-assessment.polarity.ts": "2b3a6a1ba8d0de9178c2a3144599a1178a5f8b913986f3cd08bf9d80350d6d17",
+      "work-note-assessment.state.ts": "180d134eeaaa1437a55936b55a01e28417d8f1ecabbbb036ff14b7780f663cdb"
+    },
+    "baselineSummarySha256": "24d179a984ac95ed16fb05ba233bbccde4f6c6c1300dc4720a0a1feaae166519",
+    "networkCalls": 0,
+    "originalStateMismatches": 0,
+    "observedSteps": 110,
+    "baselineStepPasses": 49,
+    "replayStepPasses": 53,
+    "baselineScenarioPasses": 27,
+    "replayScenarioPasses": 31,
+    "improved": [
+      {
+        "caseId": "assessment-feature-flag-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-report-save-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-timezone-date-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "domain-ux-design-spec-complete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      }
+    ],
+    "regressed": [],
+    "rows": [
+      {
+        "caseId": "assessment-audit-event-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-audit-event-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-human-message-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "INVALID_SOURCE_REFERENCE",
+        "replayError": "INVALID_SOURCE_REFERENCE",
+        "failures": [
+          "INVALID_SOURCE_REFERENCE"
+        ]
+      },
+      {
+        "caseId": "assessment-human-message-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-contract-schema-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "UNSUPPORTED_REQUIREMENT",
+        "replayError": "UNSUPPORTED_REQUIREMENT",
+        "failures": [
+          "UNSUPPORTED_REQUIREMENT"
+        ]
+      },
+      {
+        "caseId": "assessment-contract-schema-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-contract-schema-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-locale-plural-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-locale-plural-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-locale-plural-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-feature-flag-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-feature-flag-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-feature-flag-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-task-scope-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-task-scope-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "CONTRADICTORY",
+        "replayAdequacy": "CONTRADICTORY",
+        "failures": [
+          "REQUIRED_QUESTION_MISSING"
+        ]
+      },
+      {
+        "caseId": "assessment-task-scope-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY"
+        ]
+      },
+      {
+        "caseId": "assessment-task-scope-b",
+        "turn": 3,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-cache-header-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-cache-header-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-keyboard-dialog-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-keyboard-dialog-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-signed-url-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-signed-url-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-trace-cause-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-trace-cause-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-report-save-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-report-save-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-report-save-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-rollback-check-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-rollback-check-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-rollback-check-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-billing-webhook-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-billing-webhook-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-billing-webhook-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-file-dedup-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-file-dedup-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-file-dedup-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-organization-selector-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "XKIRO_TIMEOUT",
+        "replayError": "XKIRO_TIMEOUT",
+        "failures": [
+          "NO_REPLAYABLE_MODEL_RESPONSE"
+        ]
+      },
+      {
+        "caseId": "assessment-organization-selector-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-organization-selector-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-migration-replay-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-migration-replay-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-migration-replay-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-migration-replay-b",
+        "turn": 3,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "SCHEMA_KEYS_TEXT",
+        "replayError": "SCHEMA_KEYS_TEXT",
+        "failures": [
+          "SCHEMA_KEYS_TEXT"
+        ]
+      },
+      {
+        "caseId": "assessment-waiting-feedback-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-waiting-feedback-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-waiting-feedback-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-waiting-feedback-b",
+        "turn": 3,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-multilang-negation-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-multilang-negation-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-workspace-context-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-workspace-context-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-retry-upload-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-retry-upload-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-timezone-date-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-timezone-date-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-timezone-date-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-csv-unicode-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-csv-unicode-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-csv-unicode-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-release-claim-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-release-claim-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-release-claim-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "CONTRADICTORY",
+        "replayAdequacy": "CONTRADICTORY",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-permission-matrix-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY"
+        ]
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-permission-matrix-b",
+        "turn": 3,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-mail-queue-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-mail-queue-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-mail-queue-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-webhook-idempotency-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-webhook-idempotency-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-webhook-idempotency-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-refresh-token-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-refresh-token-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-refresh-token-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-invoice-rounding-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-invoice-rounding-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "CONTRADICTORY",
+        "replayAdequacy": "CONTRADICTORY",
+        "failures": [
+          "REQUIRED_QUESTION_MISSING"
+        ]
+      },
+      {
+        "caseId": "assessment-invoice-rounding-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-attachment-mime-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-attachment-mime-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-attachment-mime-b",
+        "turn": 2,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-attachment-mime-b",
+        "turn": 3,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-search-latency-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-search-latency-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-search-latency-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND",
+          "RESOLVED_OR_DECLINED_GAP_REPEATED"
+        ]
+      },
+      {
+        "caseId": "assessment-notification-duplicate-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-notification-duplicate-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-project-archive-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-project-archive-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-import-validation-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY"
+        ]
+      },
+      {
+        "caseId": "assessment-import-validation-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-import-validation-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-import-validation-b",
+        "turn": 3,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "SCHEMA_KEYS_TEXT",
+        "replayError": "SCHEMA_KEYS_TEXT",
+        "failures": [
+          "SCHEMA_KEYS_TEXT"
+        ]
+      },
+      {
+        "caseId": "assessment-task-fetch-status-a",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineError": "CONTEXT_UNAVAILABLE",
+        "replayError": "CONTEXT_UNAVAILABLE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-task-fetch-status-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "ENOUGH_FOR_PURPOSE",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-injection-log-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-injection-log-b",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "NOTE_ADEQUACY"
+        ]
+      },
+      {
+        "caseId": "assessment-reset-progress-a",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "assessment-reset-progress-b",
+        "turn": 1,
+        "baselinePass": true,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": []
+      },
+      {
+        "caseId": "assessment-reset-progress-b",
+        "turn": 2,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "UNNECESSARY_QUESTION"
+        ]
+      },
+      {
+        "caseId": "assessment-reset-progress-b",
+        "turn": 3,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "domain-ux-design-spec-complete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": true,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "ENOUGH_FOR_PURPOSE",
+        "failures": []
+      },
+      {
+        "caseId": "domain-ux-design-spec-incomplete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "UNDETERMINED",
+        "replayAdequacy": "UNDETERMINED",
+        "failures": [
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "domain-ai-model-evaluation-complete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineAdequacy": "NEEDS_AUTHOR_INPUT",
+        "replayAdequacy": "NEEDS_AUTHOR_INPUT",
+        "failures": [
+          "NOTE_ADEQUACY",
+          "UNNECESSARY_QUESTION",
+          "QUESTION_GAP_KIND"
+        ]
+      },
+      {
+        "caseId": "domain-ai-model-evaluation-incomplete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "XKIRO_HTTP_ERROR_429",
+        "replayError": "XKIRO_HTTP_ERROR_429",
+        "failures": [
+          "NO_REPLAYABLE_MODEL_RESPONSE"
+        ]
+      },
+      {
+        "caseId": "domain-product-acceptance-spec-complete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "XKIRO_HTTP_ERROR_429",
+        "replayError": "XKIRO_HTTP_ERROR_429",
+        "failures": [
+          "NO_REPLAYABLE_MODEL_RESPONSE"
+        ]
+      },
+      {
+        "caseId": "domain-product-acceptance-spec-incomplete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "XKIRO_HTTP_ERROR_429",
+        "replayError": "XKIRO_HTTP_ERROR_429",
+        "failures": [
+          "NO_REPLAYABLE_MODEL_RESPONSE"
+        ]
+      },
+      {
+        "caseId": "domain-runbook-documentation-complete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "XKIRO_HTTP_ERROR_429",
+        "replayError": "XKIRO_HTTP_ERROR_429",
+        "failures": [
+          "NO_REPLAYABLE_MODEL_RESPONSE"
+        ]
+      },
+      {
+        "caseId": "domain-runbook-documentation-incomplete",
+        "turn": 1,
+        "baselinePass": false,
+        "replayPass": false,
+        "baselineError": "XKIRO_HTTP_ERROR_429",
+        "replayError": "XKIRO_HTTP_ERROR_429",
+        "failures": [
+          "NO_REPLAYABLE_MODEL_RESPONSE"
+        ]
+      }
+    ],
+    "releaseGate": "NOT_PASSED",
+    "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+    "limitations": [
+      "Prompts were not rerun; question-generation quality cannot be inferred from replay",
+      "Original conversation state is held fixed; no new answers or missing turns are fabricated",
+      "These observed cases are regression data, not an unseen validation set"
+    ]
+  },
+  "requestPacks": [
+    {
+      "purpose": "AUTO",
+      "examplePairs": 4,
+      "templateHash": "225d062f45968a4d8f186badcaf0708d7a023deaa65d8009f2e0d9d0d377745c",
+      "requestCharacters": 3260
+    },
+    {
+      "purpose": "PROGRESS",
+      "examplePairs": 4,
+      "templateHash": "f841bc513b53c804c9efa726d1fe455d1e5aa785bdddc08b84477e323dbee0af",
+      "requestCharacters": 3427
+    },
+    {
+      "purpose": "INCIDENT",
+      "examplePairs": 4,
+      "templateHash": "21c1e5858b4adb0f1c5ef7612aae7cd940cb96f446f9a648db96f782072a658f",
+      "requestCharacters": 3335
+    },
+    {
+      "purpose": "DECISION",
+      "examplePairs": 4,
+      "templateHash": "1426142c420c5a3f4076710f66613339a32b357931d4085c8e4d439a0ba1d566",
+      "requestCharacters": 3333
+    },
+    {
+      "purpose": "HANDOVER",
+      "examplePairs": 4,
+      "templateHash": "627a7a0bf6c048afe0eee2fadf204f728cfdb85999a1e6495c6afe0509e5ee4e",
+      "requestCharacters": 3331
+    },
+    {
+      "purpose": "COMPLETION",
+      "examplePairs": 4,
+      "templateHash": "4fe2dc3d8e67819d18acce97b661746c22b14a3b1f296e44411dcd25e211979d",
+      "requestCharacters": 3324
+    },
+    {
+      "purpose": "QA",
+      "examplePairs": 4,
+      "templateHash": "d4efd42043b94df1c74c27ab7298d98e8fa80a5dcb0087d4ebd665fb53ecbdeb",
+      "requestCharacters": 3297
+    },
+    {
+      "purpose": "OTHER",
+      "examplePairs": 4,
+      "templateHash": "225d062f45968a4d8f186badcaf0708d7a023deaa65d8009f2e0d9d0d377745c",
+      "requestCharacters": 3263
+    }
+  ],
+  "liveProbe": {
+    "actualHttpAttempts": 1,
+    "validAssessments": 0,
+    "errors": [
+      "XKIRO_HTTP_ERROR_429"
+    ],
+    "artifacts": [
+      {
+        "file": "assessment-v4-2026-10-29T04-15-36-943Z-eaa7db26.json",
+        "sha256": "c1462aa7b12bbbadc5d5c7624d0bd0c32bc80f05620282c8248e89ff15fb0b6f"
+      }
+    ],
+    "furtherCallsStopped": true
+  },
+  "cumulativeExistingPhase": {
+    "id": "cross-domain-20261029",
+    "maxHttpAttempts": 176,
+    "actualHttpAttempts": 137,
+    "reportedTokens": 1108536,
+    "unknownUsageAttempts": 8,
+    "accountedTokens": 1497660,
+    "maxAccountedTokens": 2000000,
+    "remainingCalls": 39
+  },
+  "checks": {
+    "lint": true,
+    "typecheck": true,
+    "unitPassed": 1778,
+    "unitSkipped": 137,
+    "e2ePassed": 169,
+    "e2eSkipped": 4,
+    "build": true,
+    "focusedAssessmentPassed": 195
+  },
+  "safety": {
+    "sourceQuotesRewritten": false,
+    "invalidSchemaAutoRepaired": false,
+    "serverMetadataRemovedFromModelCorrectionTarget": true,
+    "publicApiChanged": false,
+    "persistenceChanged": false,
+    "frontendChanged": false,
+    "atlasTouched": false,
+    "sharedActivation": false
+  },
+  "releaseGate": "NOT_PASSED",
+  "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+  "newPromptQuality": "NOT_MEASURED_PROVIDER_429",
+  "limits": [
+    "Scope vetoes are bounded VI/EN lexical heuristics, not general NLI or independent semantic verification",
+    "Mixed/nested clauses, languages and new domains still need review",
+    "Recorded validation/holdout cases are now regression data; future tuning needs new unseen evaluation",
+    "Offline replay preserves original dialogue state; it cannot estimate new prompt-generated questions"
+  ]
+}

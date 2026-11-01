@@ -40,6 +40,7 @@ import {
   mapSagShare,
   mapSagSharedAnswer,
   mapSagThread,
+  sanitizeContinuumActorDisplayName,
   sanitizeContinuumActorHeaderName,
 } from './ai-chat.types';
 
@@ -120,7 +121,8 @@ export class AiChatService {
       });
     }
     const sanitizedName = sanitizeContinuumActorHeaderName(actor.name);
-    const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${sanitizedName}`;
+    const displayName = sanitizeContinuumActorDisplayName(actor.name);
+    const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${displayName}`;
 
     const cached = this.sessionCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -144,7 +146,7 @@ export class AiChatService {
             'X-Continuum-Organization-Id': project.organizationId,
             'X-Continuum-Project-Id': project.id,
           },
-          body: {},
+          body: { displayName },
         });
 
         const token = loginResult.body?.access_token;
@@ -257,6 +259,40 @@ export class AiChatService {
     if (!mapped) {
       throw new BadGatewayException(
         'AI Engine returned an invalid thread payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async branchThread(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    threadId: string,
+    messageId: string,
+    input: Readonly<{ title?: string }>,
+  ): Promise<AiChatThreadDto> {
+    const { agentId, bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+      { requireActiveProject: true },
+    );
+    let result: { status: number; body: unknown };
+    try {
+      result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/branch`,
+        method: 'POST',
+        headers: bearerHeaders,
+        body: input.title ? { title: input.title } : {},
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+
+    const mapped = mapSagThread(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid branched thread payload.',
       );
     }
     return mapped;
@@ -799,11 +835,13 @@ export class AiChatService {
     return mapped;
   }
 
-  async generateMindMap(
+  private async resolveActiveMindMapScope(
     headers: AiChatRequestHeaders,
     projectId: string,
-    input: AiChatMindMapInputDto,
-  ): Promise<AiChatMindMapResponseDto> {
+  ): Promise<{
+    projectId: string;
+    bffHeaders: Record<string, string>;
+  }> {
     const actor = await this.auth.getCurrentIdentity(
       headers.authorization,
       headers.cookie,
@@ -815,18 +853,55 @@ export class AiChatService {
         message: 'Project not found.',
       });
     }
-
-    const result = await this.aiEngine.request<unknown>({
-      path: `/api/v1/projects/${encodeURIComponent(project.id)}/mind-map`,
-      method: 'POST',
-      headers: {
+    return {
+      projectId: project.id,
+      bffHeaders: {
         'X-Continuum-User-Id': actor.id,
         'X-Continuum-Organization-Id': project.organizationId,
         'X-Continuum-Tenant-Id': project.organizationId,
         'X-Continuum-Project-Id': project.id,
         'X-Continuum-Security-Partition': project.id,
       },
-      body: input.topic ? { topic: input.topic } : {},
+    };
+  }
+
+  async getMindMap(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    topic?: string,
+  ): Promise<AiChatMindMapResponseDto> {
+    const scope = await this.resolveActiveMindMapScope(headers, projectId);
+    const querySuffix = topic ? `?topic=${encodeURIComponent(topic)}` : '';
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/projects/${encodeURIComponent(scope.projectId)}/mind-map${querySuffix}`,
+      method: 'GET',
+      headers: scope.bffHeaders,
+    });
+
+    const mapped = mapSagMindMapResponse(result.body);
+    if (!mapped) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid mind map payload.',
+      );
+    }
+    return mapped;
+  }
+
+  async generateMindMap(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    input: AiChatMindMapInputDto,
+  ): Promise<AiChatMindMapResponseDto> {
+    const scope = await this.resolveActiveMindMapScope(headers, projectId);
+
+    const result = await this.aiEngine.request<unknown>({
+      path: `/api/v1/projects/${encodeURIComponent(scope.projectId)}/mind-map`,
+      method: 'POST',
+      headers: scope.bffHeaders,
+      body: {
+        ...(input.topic ? { topic: input.topic } : {}),
+        ...(input.refresh !== undefined ? { refresh: input.refresh } : {}),
+      },
     });
 
     const mapped = mapSagMindMapResponse(result.body);

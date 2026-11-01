@@ -8,6 +8,7 @@ import type { AiChatSseFrame } from './ai-chat.types';
 describe('AiChatController', () => {
   function setup() {
     const createThreadMock = jest.fn();
+    const branchThreadMock = jest.fn();
     const openAskStreamMock = jest.fn();
     const getOwnFeedbackMock = jest.fn();
     const putOwnFeedbackMock = jest.fn();
@@ -16,10 +17,12 @@ describe('AiChatController', () => {
     const readSharedAnswerMock = jest.fn();
     const revokeShareMock = jest.fn();
     const openRegenerateStreamMock = jest.fn();
+    const getMindMapMock = jest.fn();
     const generateMindMapMock = jest.fn();
     const service = {
       listThreads: jest.fn(),
       createThread: createThreadMock,
+      branchThread: branchThreadMock,
       updateThread: jest.fn(),
       deleteThread: jest.fn(),
       listMessages: jest.fn(),
@@ -31,12 +34,14 @@ describe('AiChatController', () => {
       readSharedAnswer: readSharedAnswerMock,
       revokeShare: revokeShareMock,
       openRegenerateStream: openRegenerateStreamMock,
+      getMindMap: getMindMapMock,
       generateMindMap: generateMindMapMock,
     } as unknown as AiChatService;
     const controller = new AiChatController(service);
     return {
       controller,
       createThreadMock,
+      branchThreadMock,
       openAskStreamMock,
       getOwnFeedbackMock,
       putOwnFeedbackMock,
@@ -45,6 +50,7 @@ describe('AiChatController', () => {
       readSharedAnswerMock,
       revokeShareMock,
       openRegenerateStreamMock,
+      getMindMapMock,
       generateMindMapMock,
     };
   }
@@ -434,5 +440,179 @@ describe('AiChatController', () => {
       { topic: 'Kiến trúc bàn giao' },
     );
     expect(out).toEqual(mockMap);
+
+    // Rejects non-boolean refresh
+    await expect(
+      controller.generateMindMap(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        { refresh: 'true' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    // Forwards boolean refresh
+    generateMindMapMock.mockResolvedValueOnce(mockMap);
+    await controller.generateMindMap(
+      makeReq({ authorization: 'Bearer token' }),
+      res,
+      'proj-1',
+      { topic: '  API  ', refresh: true },
+    );
+    expect(generateMindMapMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ authorization: 'Bearer token' }),
+      'proj-1',
+      { topic: 'API', refresh: true },
+    );
+  });
+
+  it('validates getMindMap query parameters, sets Cache-Control: no-store, and allows cookie GET without CSRF', async () => {
+    const { controller, getMindMapMock } = setup();
+    const { res, headers } = makeRes();
+
+    // Rejects invalid query keys, array topic, blank topic, or >200 chars
+    for (const invalidQuery of [
+      { unexpected: '1' },
+      { topic: ['a', 'b'] },
+      { topic: '   ' },
+      { topic: 'x'.repeat(201) },
+      { topic: 'ß'.repeat(101) },
+    ]) {
+      await expect(
+        controller.getMindMap(
+          makeReq({ cookie: 'continuum_access=jwt' }),
+          res,
+          'proj-1',
+          invalidQuery as Record<string, string | string[] | undefined>,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    }
+    expect(getMindMapMock).not.toHaveBeenCalled();
+
+    const mockUninitialized = {
+      projectId: 'proj-1',
+      topic: 'Kiến trúc',
+      status: 'uninitialized' as const,
+      generationMode: 'none' as const,
+      fallbackReason: null,
+      scopeFingerprint: 'a'.repeat(64),
+      cached: false,
+      hasSourceUpdates: false,
+      coverage: {
+        accessibleReadyDocumentCount: 2,
+        usedDocumentCount: 0,
+        omittedDocumentCount: 0,
+        pendingDocumentCount: 0,
+        truncatedDocumentCount: 0,
+        evidenceUnitCount: 0,
+      },
+      tree: null,
+      citations: [],
+      generatedAt: '2026-10-31T05:30:00Z',
+    };
+    getMindMapMock.mockResolvedValueOnce(mockUninitialized);
+
+    const out = await controller.getMindMap(
+      makeReq({ cookie: 'continuum_access=jwt' }),
+      res,
+      'proj-1',
+      { topic: '  Kiến   trúc ' },
+    );
+    expect(headers['cache-control']).toBe('no-store');
+    expect(getMindMapMock).toHaveBeenCalledWith(
+      expect.objectContaining({ cookie: 'continuum_access=jwt' }),
+      'proj-1',
+      'Kiến trúc',
+    );
+    expect(out).toEqual(mockUninitialized);
+  });
+
+  it('enforces CSRF, path validation, strict body rules, and Cache-Control: no-store on branchThread', async () => {
+    const { controller, branchThreadMock } = setup();
+    const { res, headers } = makeRes();
+
+    // Missing/mismatched CSRF on cookie auth -> 403 Forbidden
+    await expect(
+      controller.branchThread(
+        makeReq({
+          cookie: 'continuum_access=jwt; continuum_csrf=csrf-good',
+          'x-csrf-token': 'csrf-bad',
+        }),
+        res,
+        'proj-1',
+        'thread-1',
+        'msg-1',
+        {},
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(branchThreadMock).not.toHaveBeenCalled();
+
+    // Invalid path identifiers or body fields -> 400 BadRequestException
+    await expect(
+      controller.branchThread(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        'thread-1',
+        'bad/id',
+        {},
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    for (const invalidBody of [
+      ['array'],
+      { unexpected: true },
+      { title: '   ' },
+      { title: 'x'.repeat(201) },
+      { title: 123 },
+    ]) {
+      await expect(
+        controller.branchThread(
+          makeReq({ authorization: 'Bearer token' }),
+          res,
+          'proj-1',
+          'thread-1',
+          'msg-1',
+          invalidBody,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    }
+
+    // Valid empty body & explicit trimmed title succeed with Cache-Control: no-store
+    const mockBranched = {
+      id: 'thread-2',
+      title: 'Architecture Q&A',
+      isBranched: true,
+      parentThreadId: 'thread-1',
+      parentThreadTitle: 'Architecture Q&A',
+      branchPointMessageId: 'msg-1',
+      createdAt: '2026-10-31T10:00:00Z',
+      updatedAt: '2026-10-31T10:00:00Z',
+    };
+    branchThreadMock.mockResolvedValueOnce(mockBranched);
+
+    const out = await controller.branchThread(
+      makeReq({
+        cookie: 'continuum_access=jwt; __Host-csrf=csrf-ok',
+        'x-csrf-token': 'csrf-ok',
+      }),
+      res,
+      'proj-1',
+      'thread-1',
+      'msg-1',
+      { title: '  Architecture Q&A  ' },
+    );
+    expect(headers['cache-control']).toBe('no-store');
+    expect(branchThreadMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cookie: 'continuum_access=jwt; __Host-csrf=csrf-ok',
+        csrfToken: 'csrf-ok',
+      }),
+      'proj-1',
+      'thread-1',
+      'msg-1',
+      { title: 'Architecture Q&A' },
+    );
+    expect(out).toEqual(mockBranched);
   });
 });

@@ -321,6 +321,24 @@ describe('HttpAiEngineClient', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
 
     fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ detail: 'Target message is not branchable' }),
+        {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    await expect(
+      client.request({
+        path: '/api/v1/agents/agent_1/threads/thread_1/messages/m1/branch',
+        method: 'POST',
+        headers: { Authorization: 'Bearer user.jwt.token' },
+        body: {},
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ detail: 'Generation already active' }), {
         status: 409,
         headers: { 'content-type': 'application/json' },
@@ -340,6 +358,7 @@ describe('HttpAiEngineClient', () => {
     ['PUT', 'feedback'],
     ['DELETE', 'feedback'],
     ['POST', 'shares'],
+    ['POST', 'branch'],
   ] as const)(
     'authenticates answer mutation %s /%s with the configured service token and the original owner bearer',
     async (method, action) => {
@@ -439,9 +458,25 @@ describe('HttpAiEngineClient', () => {
     });
     expect(ok.status).toBe(200);
     expect(timeoutSpy).toHaveBeenCalledWith(120000);
+    timeoutSpy.mockClear();
+
+    // GET /api/v1/projects/:projectId/mind-map uses fast backendTimeoutMs (5000ms) with BFF service token
+    fetchMock.mockResolvedValueOnce(Response.json({ status: 'uninitialized' }));
+    const getOk = await client.request({
+      path: '/api/v1/projects/507f1f77bcf86cd799439033/mind-map?topic=Handover',
+      method: 'GET',
+      headers: {
+        'X-Continuum-User-Id': '507f1f77bcf86cd799439011',
+        'X-SAG-BFF-Service-Token': 'forged-token',
+      },
+    });
+    expect(getOk.status).toBe(200);
+    expect(timeoutSpy).toHaveBeenCalledWith(5000);
     timeoutSpy.mockRestore();
     const reqHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
     expect(reqHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+    const getHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(getHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
 
     // Upstream 400 -> BadRequestException
     fetchMock.mockResolvedValueOnce(
