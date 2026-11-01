@@ -22,6 +22,7 @@ import { ConfigService } from '@nestjs/config';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { Request, Response } from 'express';
+import { hasCookieName } from '../../../common/http/cookies';
 import {
   classifyGoogleOAuthError,
   createGoogleOAuthRequestId,
@@ -523,9 +524,23 @@ export class AuthenticationController {
   async logout(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ status: 'logged_out' }> {
     response.setHeader('Cache-Control', 'no-store');
+    const hasSessionCookie = [
+      'continuum_access',
+      '__Secure-refresh',
+      'continuum_refresh',
+    ].some((name) => hasCookieName(cookie, name));
+    if (
+      hasSessionCookie &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({
+        code: 'AUTH_CSRF_INVALID',
+        message: 'CSRF validation failed.',
+      });
     try {
       await this.service.logout(authorization, cookie);
       return { status: 'logged_out' };
@@ -533,6 +548,7 @@ export class AuthenticationController {
       response.setHeader('Set-Cookie', [
         clearAccessCookie(),
         clearRefreshCookie(),
+        clearCsrfCookie(),
       ]);
     }
   }

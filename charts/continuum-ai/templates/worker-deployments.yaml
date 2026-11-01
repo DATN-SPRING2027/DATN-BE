@@ -18,6 +18,7 @@ spec:
     metadata:
       labels:
         {{- include "continuum-ai.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: worker
         continuum.ai/worker: {{ $name }}
     spec:
       containers:
@@ -33,4 +34,9 @@ spec:
               value: {{ $worker.queue | quote }}
             - name: WORKER_CONCURRENCY
               value: {{ $worker.concurrency | quote }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.redis.auth.existingSecretName }}
+                  key: password
 {{- end }}
