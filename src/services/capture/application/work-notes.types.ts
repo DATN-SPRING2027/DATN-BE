@@ -71,6 +71,42 @@ export interface TaskNoteInput {
   reason: string;
 }
 
+export interface TaskNoteAiChatCitationInput {
+  number: number;
+  sourceLabel: string;
+  documentId?: string;
+  versionNo?: number;
+  chunkId?: string;
+  heading?: string;
+  sectionPath?: string;
+  pageFrom?: number;
+  pageTo?: number;
+}
+
+export interface TaskNoteAiChatCitation extends TaskNoteAiChatCitationInput {
+  documentName?: string;
+}
+
+export interface TaskNoteAiChatSessionCitation {
+  ref: string;
+  groupId?: string;
+  turnIds: string[];
+}
+
+export interface TaskNoteAiChatSourceInput {
+  threadId: string;
+  messageId: string;
+  citations: TaskNoteAiChatCitationInput[];
+  sessionCitations: TaskNoteAiChatSessionCitation[];
+}
+
+export interface TaskNoteAiChatSource extends Omit<
+  TaskNoteAiChatSourceInput,
+  'citations'
+> {
+  citations: TaskNoteAiChatCitation[];
+}
+
 export interface ProjectDocumentInput {
   title: string;
   description?: string;
@@ -169,6 +205,7 @@ export interface TaskNoteRecord extends TaskNoteInput {
   contentMarkdown?: string;
   contentSchemaVersion?: 2;
   currentVersionNumber?: number;
+  aiChatSource?: TaskNoteAiChatSource;
   id: string;
   projectId: string;
   taskId: string;

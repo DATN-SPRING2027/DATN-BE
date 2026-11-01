@@ -381,6 +381,118 @@ describe('Task Note Agent persisted local workflow', () => {
     expect(JSON.stringify(receipts)).not.toContain('Chưa test.');
     expect(receipts).toHaveLength(3);
   });
+  it('saves same-Project AI Chat citations on the note and immutable version, then preserves them on edit', async () => {
+    const sourceDocumentId = new Types.ObjectId();
+    await connection.db!.collection('project_documents').insertOne({
+      _id: sourceDocumentId,
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'Architecture Runbook',
+      currentVersionNumber: 2,
+    });
+    const aiChatSource = {
+      threadId: 'thread-1',
+      messageId: 'message-1',
+      citations: [
+        {
+          number: 1,
+          sourceLabel: 'Runbook',
+          documentId: sourceDocumentId.toHexString(),
+          versionNo: 2,
+          heading: 'Project boundaries',
+        },
+      ],
+      sessionCitations: [
+        { ref: 'S1', groupId: 'group-1', turnIds: ['turn-1'] },
+      ],
+    };
+    const initial = await draft('Answer with source [1] and context [S1].');
+    const saved = await service.save(headers, projectId, initial.id, {
+      ...operation(),
+      expectedRevision: initial.revision,
+      discardOriginalConfirmed: false,
+      aiChatSource,
+    });
+    expect(saved.aiChatSource).toMatchObject({
+      threadId: 'thread-1',
+      messageId: 'message-1',
+      citations: [
+        {
+          number: 1,
+          documentId: sourceDocumentId.toHexString(),
+          documentName: 'Architecture Runbook',
+        },
+      ],
+      sessionCitations: [{ ref: 'S1', turnIds: ['turn-1'] }],
+    });
+    const stored = await connection
+      .db!.collection('work_notes')
+      .findOne({ _id: new Types.ObjectId(saved.id) });
+    expect(stored?.provenance).toMatchObject({
+      aiChatSource: saved.aiChatSource,
+    });
+    const firstVersion = await connection
+      .db!.collection('work_note_versions')
+      .findOne({ workNoteId: new Types.ObjectId(saved.id), versionNumber: 1 });
+    expect(firstVersion?.provenance).toMatchObject({
+      aiChatSource: saved.aiChatSource,
+    });
+
+    const edit = await service.create(headers, projectId, {
+      ...operation(),
+      taskId,
+      noteId: saved.id,
+    });
+    const updated = await service.update(headers, projectId, edit.id, {
+      ...operation(),
+      expectedRevision: edit.revision,
+      title: 'Edited AI note',
+      contentMarkdown: 'Revised answer [1].',
+    });
+    const resaved = await service.save(headers, projectId, updated.id, {
+      ...operation(),
+      expectedRevision: updated.revision,
+      discardOriginalConfirmed: false,
+    });
+    expect(resaved.aiChatSource).toEqual(saved.aiChatSource);
+    const secondVersion = await connection
+      .db!.collection('work_note_versions')
+      .findOne({ workNoteId: new Types.ObjectId(saved.id), versionNumber: 2 });
+    expect(secondVersion?.provenance).toMatchObject({
+      aiChatSource: saved.aiChatSource,
+    });
+  });
+  it('rejects an AI Chat citation whose Project Document belongs to another Project', async () => {
+    const sourceDocumentId = new Types.ObjectId();
+    await connection.db!.collection('project_documents').insertOne({
+      _id: sourceDocumentId,
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(),
+      title: 'Other project document',
+    });
+    const d = await draft();
+    await expect(
+      service.save(headers, projectId, d.id, {
+        ...operation(),
+        expectedRevision: d.revision,
+        discardOriginalConfirmed: false,
+        aiChatSource: {
+          threadId: 'thread-1',
+          messageId: 'message-1',
+          citations: [
+            {
+              number: 1,
+              sourceLabel: 'Other project document',
+              documentId: sourceDocumentId.toHexString(),
+            },
+          ],
+          sessionCitations: [],
+        },
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'AI_CHAT_SOURCE_NOT_FOUND' },
+    });
+  });
   it('requires original deletion confirmation after Apply and preserves recovery on cancelled Save', async () => {
     const d = await draft();
     const response = await service.message(

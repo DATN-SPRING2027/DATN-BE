@@ -32,6 +32,95 @@ const text = (v: unknown, max: number, empty = false): string =>
   typeof v === 'string' && v.length <= max && (empty || !!v.trim())
     ? v
     : invalid();
+const parseAiChatSource = (value: unknown): SaveInput['aiChatSource'] => {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return invalid();
+  const source = value as Record<string, unknown>;
+  const allowed = ['threadId', 'messageId', 'citations', 'sessionCitations'];
+  if (
+    Object.keys(source).some((key) => !allowed.includes(key)) ||
+    !Array.isArray(source.citations) ||
+    source.citations.length > 100 ||
+    !Array.isArray(source.sessionCitations) ||
+    source.sessionCitations.length > 100
+  )
+    return invalid();
+  const citations = source.citations.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item))
+      return invalid();
+    const citation = item as Record<string, unknown>;
+    const keys = [
+      'number',
+      'sourceLabel',
+      'documentId',
+      'versionNo',
+      'chunkId',
+      'heading',
+      'sectionPath',
+      'pageFrom',
+      'pageTo',
+    ];
+    if (Object.keys(citation).some((key) => !keys.includes(key)))
+      return invalid();
+    const parsed = {
+      number: positive(citation.number, 1000),
+      sourceLabel: text(citation.sourceLabel, 300),
+      ...(citation.documentId !== undefined
+        ? { documentId: objectId(citation.documentId) }
+        : {}),
+      ...(citation.versionNo !== undefined
+        ? { versionNo: positive(citation.versionNo) }
+        : {}),
+      ...(citation.chunkId !== undefined
+        ? { chunkId: text(citation.chunkId, 300, true) }
+        : {}),
+      ...(citation.heading !== undefined
+        ? { heading: text(citation.heading, 500, true) }
+        : {}),
+      ...(citation.sectionPath !== undefined
+        ? { sectionPath: text(citation.sectionPath, 1000, true) }
+        : {}),
+      ...(citation.pageFrom !== undefined
+        ? { pageFrom: positive(citation.pageFrom) }
+        : {}),
+      ...(citation.pageTo !== undefined
+        ? { pageTo: positive(citation.pageTo) }
+        : {}),
+    };
+    if (
+      parsed.pageFrom !== undefined &&
+      parsed.pageTo !== undefined &&
+      parsed.pageTo < parsed.pageFrom
+    )
+      return invalid();
+    return parsed;
+  });
+  const sessionCitations = source.sessionCitations.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item))
+      return invalid();
+    const citation = item as Record<string, unknown>;
+    const keys = ['ref', 'groupId', 'turnIds'];
+    if (
+      Object.keys(citation).some((key) => !keys.includes(key)) ||
+      !Array.isArray(citation.turnIds) ||
+      citation.turnIds.length > 100
+    )
+      return invalid();
+    return {
+      ref: text(citation.ref, 20),
+      ...(citation.groupId !== undefined
+        ? { groupId: text(citation.groupId, 200, true) }
+        : {}),
+      turnIds: citation.turnIds.map((id) => text(id, 200)),
+    };
+  });
+  return {
+    threadId: text(source.threadId, 200),
+    messageId: text(source.messageId, 200),
+    citations,
+    sessionCitations,
+  };
+};
 type InputMap = {
   create: CreateDraftInput;
   update: UpdateDraftInput;
@@ -58,7 +147,12 @@ const fields: Record<keyof InputMap, readonly string[]> = {
     'answer',
   ],
   apply: ['operationId', 'expectedRevision', 'action', 'applyTitle'],
-  save: ['operationId', 'expectedRevision', 'discardOriginalConfirmed'],
+  save: [
+    'operationId',
+    'expectedRevision',
+    'discardOriginalConfirmed',
+    'aiChatSource',
+  ],
   reset: ['operationId', 'expectedRevision'],
   restore: ['operationId', 'expectedVersion', 'versionNumber'],
   discard: ['expectedRevision', 'discardConfirmed'],
@@ -107,6 +201,9 @@ export function parseDraftInput<K extends keyof InputMap>(
     return {
       ...base,
       discardOriginalConfirmed: r.discardOriginalConfirmed,
+      ...(r.aiChatSource !== undefined
+        ? { aiChatSource: parseAiChatSource(r.aiChatSource) }
+        : {}),
     } as InputMap[K];
   }
   if (kind === 'apply') {

@@ -23,6 +23,8 @@ import { WorkNotesAuthorizationService } from '../work-notes-authorization.servi
 import { WorkNotesService } from '../work-notes.service';
 import type {
   CaptureRequestHeaders,
+  TaskNoteAiChatSource,
+  TaskNoteAiChatSourceInput,
   WorkNotesActor,
 } from '../work-notes.types';
 import { CAPTURE_PERSISTENCE } from '../../infrastructure/persistence';
@@ -1039,6 +1041,8 @@ export class WorkNoteAgentDraftsService {
 
   private canonical(row: Document, actor: WorkNotesActor): CanonicalTaskNote {
     const manage = String(row.authorUserId) === actor.userId || actor.canReview;
+    const provenance = row.provenance as
+      { aiChatSource?: TaskNoteAiChatSource } | undefined;
     return {
       id: String(row._id),
       projectId: String(row.projectId),
@@ -1051,6 +1055,9 @@ export class WorkNoteAgentDraftsService {
       contentMarkdown: legacyBody(row),
       contentSchemaVersion: 2,
       currentVersionNumber: Number(row.currentVersionNumber ?? 0),
+      ...(provenance?.aiChatSource
+        ? { aiChatSource: provenance.aiChatSource }
+        : {}),
       createdAt: new Date(row.createdAt as string).toISOString(),
       updatedAt: new Date(row.updatedAt as string).toISOString(),
       permissions: {
@@ -1103,9 +1110,63 @@ export class WorkNoteAgentDraftsService {
         contentMarkdown: legacyBody(version),
         currentVersionNumber: receipt.version,
         updatedAt: version.createdAt as Date,
+        provenance: version.provenance as unknown,
       },
       actor,
     );
+  }
+  private async resolveAiChatSource(
+    db: Db,
+    session: ClientSession,
+    actor: WorkNotesActor,
+    projectId: string,
+    input: TaskNoteAiChatSourceInput,
+  ): Promise<TaskNoteAiChatSource> {
+    const documentIds = [
+      ...new Set(
+        input.citations
+          .map((citation) => citation.documentId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const documents = documentIds.length
+      ? await db
+          .collection('project_documents')
+          .find(
+            {
+              _id: { $in: documentIds.map(oid) },
+              organizationId: oid(actor.organizationId),
+              projectId: oid(projectId),
+            },
+            { session, projection: { _id: 1, title: 1 } },
+          )
+          .toArray()
+      : [];
+    const names = new Map(
+      documents.map((document) => [
+        String(document._id),
+        String(document.title ?? '').slice(0, 240),
+      ]),
+    );
+    if (documentIds.some((id) => !names.has(id)))
+      throw new NotFoundException({
+        code: 'AI_CHAT_SOURCE_NOT_FOUND',
+        message: 'One or more AI Chat sources are unavailable.',
+      });
+    return {
+      threadId: input.threadId,
+      messageId: input.messageId,
+      citations: input.citations.map((citation) => ({
+        ...citation,
+        ...(citation.documentId
+          ? { documentName: names.get(citation.documentId) }
+          : {}),
+      })),
+      sessionCitations: input.sessionCitations.map((citation) => ({
+        ...citation,
+        turnIds: [...citation.turnIds],
+      })),
+    };
   }
   async save(
     headers: CaptureRequestHeaders,
@@ -1195,15 +1256,29 @@ export class WorkNoteAgentDraftsService {
             contentSchemaVersion: 2,
             editedByUserId: previous.authorUserId,
             createdAt: previous.updatedAt ?? now,
+            ...(previous.provenance ? { provenance: previous.provenance } : {}),
           },
           { session },
         );
         version = baseline + 1;
       }
+      const aiChatSource = input.aiChatSource
+        ? await this.resolveAiChatSource(
+            db,
+            session,
+            actor,
+            projectId,
+            input.aiChatSource,
+          )
+        : (
+            previous?.provenance as
+              { aiChatSource?: TaskNoteAiChatSource } | undefined
+          )?.aiChatSource;
       const provenance = {
         kind: 'AUTHOR_SAVE',
         actorUserId: actor.userId,
         at: now.toISOString(),
+        ...(aiChatSource ? { aiChatSource } : {}),
         ...(d.state.hasAppliedRewrite ? { agent: d.state.provenance } : {}),
       };
       const originalAuthor = previous
@@ -1409,6 +1484,17 @@ export class WorkNoteAgentDraftsService {
       if (!historic) throw missing();
       const now = new Date(),
         version = input.expectedVersion + 1;
+      const historicProvenance = historic.provenance as
+        { aiChatSource?: TaskNoteAiChatSource } | undefined;
+      const provenance = {
+        kind: 'RESTORE',
+        restoredVersion: input.versionNumber,
+        actorUserId: actor.userId,
+        at: now.toISOString(),
+        ...(historicProvenance?.aiChatSource
+          ? { aiChatSource: historicProvenance.aiChatSource }
+          : {}),
+      };
       const row: Document = {
         ...previous,
         title: String(historic.title),
@@ -1416,12 +1502,7 @@ export class WorkNoteAgentDraftsService {
         contentSchemaVersion: 2,
         currentVersionNumber: version,
         updatedAt: now,
-        provenance: {
-          kind: 'RESTORE',
-          restoredVersion: input.versionNumber,
-          actorUserId: actor.userId,
-          at: now.toISOString(),
-        },
+        provenance,
       };
       delete row.whatDone;
       delete row.howSolved;
@@ -1447,6 +1528,9 @@ export class WorkNoteAgentDraftsService {
           provenance: {
             kind: 'RESTORE',
             restoredVersion: input.versionNumber,
+            ...(historicProvenance?.aiChatSource
+              ? { aiChatSource: historicProvenance.aiChatSource }
+              : {}),
           },
           createdAt: now,
         },

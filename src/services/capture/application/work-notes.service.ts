@@ -70,6 +70,9 @@ import type {
   ProjectTaskNotesQueryOptions,
   ReviewInput,
   TaskNoteInput,
+  TaskNoteAiChatCitation,
+  TaskNoteAiChatSessionCitation,
+  TaskNoteAiChatSource,
   TaskNoteRecord,
   WorkNotesActor,
   WorkNotesPage,
@@ -112,6 +115,82 @@ const record = (value: Document | null): MongoRecord | null =>
   value as unknown as MongoRecord | null;
 const text = (value: unknown): string =>
   typeof value === 'string' ? value : '';
+const serializeAiChatSource = (value: unknown): TaskNoteAiChatSource | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (
+    typeof source.threadId !== 'string' ||
+    typeof source.messageId !== 'string' ||
+    !Array.isArray(source.citations) ||
+    !Array.isArray(source.sessionCitations)
+  )
+    return null;
+  const citations = source.citations.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const citation = value as Record<string, unknown>;
+    if (
+      !Number.isSafeInteger(citation.number) ||
+      typeof citation.sourceLabel !== 'string'
+    )
+      return [];
+    const safe: TaskNoteAiChatCitation = {
+      number: citation.number as number,
+      sourceLabel: citation.sourceLabel.slice(0, 300),
+      ...(typeof citation.documentId === 'string' &&
+      validId(citation.documentId)
+        ? { documentId: citation.documentId.toLowerCase() }
+        : {}),
+      ...(typeof citation.documentName === 'string'
+        ? { documentName: citation.documentName.slice(0, 240) }
+        : {}),
+      ...(Number.isSafeInteger(citation.versionNo) &&
+      Number(citation.versionNo) > 0
+        ? { versionNo: Number(citation.versionNo) }
+        : {}),
+      ...(typeof citation.chunkId === 'string'
+        ? { chunkId: citation.chunkId.slice(0, 300) }
+        : {}),
+      ...(typeof citation.heading === 'string'
+        ? { heading: citation.heading.slice(0, 500) }
+        : {}),
+      ...(typeof citation.sectionPath === 'string'
+        ? { sectionPath: citation.sectionPath.slice(0, 1000) }
+        : {}),
+      ...(Number.isSafeInteger(citation.pageFrom) &&
+      Number(citation.pageFrom) > 0
+        ? { pageFrom: Number(citation.pageFrom) }
+        : {}),
+      ...(Number.isSafeInteger(citation.pageTo) && Number(citation.pageTo) > 0
+        ? { pageTo: Number(citation.pageTo) }
+        : {}),
+    };
+    return [safe];
+  });
+  const sessionCitations = source.sessionCitations.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const citation = value as Record<string, unknown>;
+    if (
+      typeof citation.ref !== 'string' ||
+      !Array.isArray(citation.turnIds) ||
+      !citation.turnIds.every((id): id is string => typeof id === 'string')
+    )
+      return [];
+    const safe: TaskNoteAiChatSessionCitation = {
+      ref: citation.ref.slice(0, 20),
+      ...(typeof citation.groupId === 'string'
+        ? { groupId: citation.groupId.slice(0, 200) }
+        : {}),
+      turnIds: citation.turnIds.slice(0, 100).map((id) => id.slice(0, 200)),
+    };
+    return [safe];
+  });
+  return {
+    threadId: source.threadId.slice(0, 200),
+    messageId: source.messageId.slice(0, 200),
+    citations: citations.slice(0, 100),
+    sessionCitations: sessionCitations.slice(0, 100),
+  };
+};
 const idText = (value: unknown): string =>
   typeof value === 'string'
     ? value
@@ -5711,6 +5790,11 @@ export class WorkNotesService {
 
   private taskNoteRecord(row: Document, actor: WorkNotesActor): TaskNoteRecord {
     const value = row as unknown as Record<string, unknown>;
+    const provenance =
+      value.provenance && typeof value.provenance === 'object'
+        ? (value.provenance as Record<string, unknown>)
+        : undefined;
+    const aiChatSource = serializeAiChatSource(provenance?.aiChatSource);
     const authorId = String(value.authorUserId);
     return {
       id: String(value._id),
@@ -5732,6 +5816,7 @@ export class WorkNotesService {
             currentVersionNumber: Number(value.currentVersionNumber ?? 1),
           }
         : {}),
+      ...(aiChatSource ? { aiChatSource } : {}),
       accomplishments: text(value.whatDone),
       approach: text(value.howSolved),
       reason: text(value.whyThisWay),
