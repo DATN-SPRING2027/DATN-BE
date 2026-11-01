@@ -168,7 +168,8 @@
           "WORK_REPORT_CHANGES_REQUESTED",
           "WORK_REPORT_REJECTED",
           "WORK_REPORT_OVERDUE",
-          "WORK_REPORT_FREQUENCY_CHANGED"
+          "WORK_REPORT_FREQUENCY_CHANGED",
+          "WORK_REPORT_DEADLINE_APPROACHING"
         ]
       },
       "NotificationTargetKind": {
@@ -186,6 +187,7 @@
         "type": "object",
         "required": ["kind", "url"],
         "properties": {
+          "reportId": { "type": "string", "nullable": true },
           "kind": { "$ref": "#/components/schemas/NotificationTargetKind" },
           "url": { "type": "string" },
           "organizationId": { "type": ["string", "null"] },

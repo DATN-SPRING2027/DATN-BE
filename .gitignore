@@ -17,3 +17,6 @@ coverage/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Persistent local development document storage
+/.local/

@@ -1574,4 +1574,51 @@ describe('Capture Work Notes Mongo workflows', () => {
       }),
     ).toBe(2);
   });
+  it('persists reminders by project/tier without changing periods and enforces existing governance', async () => {
+    await expect(
+      service.updateWorkReportReminder({}, projectId, 60),
+    ).rejects.toMatchObject({ status: 403 });
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      isLeader: true,
+      isManager: false,
+      canConfigure: true,
+      canReview: true,
+    };
+    const before = await service.getWorkReportSettings({}, projectId);
+    const reportCount = await connection
+      .collection('work_reports')
+      .countDocuments();
+    const updated = await service.updateWorkReportReminder({}, projectId, 120);
+    expect(updated.reminderLeadMinutes).toBe(120);
+    expect(updated.frequency).toBe(before.frequency);
+    expect(updated.history).toEqual(before.history);
+    expect(updated.effectiveAt).toBe(before.effectiveAt);
+    expect(await connection.collection('work_reports').countDocuments()).toBe(
+      reportCount,
+    );
+    await expect(
+      service.updateWorkReportReminder({}, projectId, 1440, 'LEADER'),
+    ).rejects.toMatchObject({ status: 403 });
+    await service.updateWorkReportSettings({}, projectId, 'EVERY_3_DAYS');
+    expect(
+      (await service.getWorkReportSettings({}, projectId)).reminderLeadMinutes,
+    ).toBe(120);
+    currentActor = { ...currentActor, isLeader: false, isManager: true };
+    await service.updateWorkReportReminder({}, projectId, 2880, 'LEADER');
+    expect(
+      (await service.getWorkReportSettings({}, projectId, 'LEADER'))
+        .reminderLeadMinutes,
+    ).toBe(2880);
+    expect(
+      (await service.getWorkReportSettings({}, projectId, 'MEMBER'))
+        .reminderLeadMinutes,
+    ).toBe(120);
+    await service.updateWorkReportReminder({}, projectId, null, 'LEADER');
+    expect(
+      (await service.getWorkReportSettings({}, projectId, 'LEADER'))
+        .reminderLeadMinutes,
+    ).toBeNull();
+  });
 });

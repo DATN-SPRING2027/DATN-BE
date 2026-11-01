@@ -358,6 +358,7 @@ export interface WorkReportTierSettingsSummary {
 }
 
 export interface WorkReportSettingsRecord {
+  reminderLeadMinutes?: number | null;
   projectId: string;
   scope?: WorkReportScope;
   actorRole?: 'MANAGER' | 'LEADER' | 'MEMBER';

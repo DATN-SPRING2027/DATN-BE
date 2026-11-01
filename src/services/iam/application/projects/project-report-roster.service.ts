@@ -11,6 +11,7 @@ export interface ReportingProjectMembers {
   organizationId: string;
   projectId: string;
   projectCreatedBy: string;
+  projectName?: string;
   members: Array<{ userId: string; joinedAt: string }>;
   leaders?: Array<{ userId: string; joinedAt: string }>;
 }
@@ -33,7 +34,7 @@ export class ProjectReportRosterService {
     const projects = db.collection('projects').find(
       { status: 'ACTIVE' },
       {
-        projection: { _id: 1, organizationId: 1, createdBy: 1 },
+        projection: { _id: 1, organizationId: 1, createdBy: 1, name: 1 },
       },
     );
     for await (const project of projects) {
@@ -120,6 +121,8 @@ export class ProjectReportRosterService {
         organizationId: String(organizationId),
         projectId: String(projectId),
         projectCreatedBy: String(project.createdBy),
+        projectName:
+          typeof project.name === 'string' ? project.name : undefined,
         members: memberships.flatMap((item) => {
           const userId = String(item.userId);
           const joinedAt = item.joinedAt as Date;
@@ -142,6 +145,47 @@ export class ProjectReportRosterService {
         }),
       };
     }
+  }
+
+  /** Delivery address remains owned by IAM; Capture never reads IAM collections. */
+  async activeReportRecipientEmail(
+    organizationId: string,
+    projectId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const db = this.connection?.db;
+    if (!db || ![organizationId, projectId, userId].every(validObjectId))
+      return null;
+    const org = new Types.ObjectId(organizationId);
+    const project = new Types.ObjectId(projectId);
+    const user = new Types.ObjectId(userId);
+    const [membership, orgMembership, activeProject, recipient] =
+      await Promise.all([
+        db.collection('project_memberships').findOne({
+          organizationId: org,
+          projectId: project,
+          userId: user,
+          status: 'ACTIVE',
+        }),
+        db
+          .collection('organization_memberships')
+          .findOne({ organizationId: org, userId: user, status: 'ACTIVE' }),
+        db
+          .collection('projects')
+          .findOne({ _id: project, organizationId: org, status: 'ACTIVE' }),
+        db
+          .collection('users')
+          .findOne(
+            { _id: user, status: 'ACTIVE' },
+            { projection: { email: 1 } },
+          ),
+      ]);
+    return membership &&
+      orgMembership &&
+      activeProject &&
+      typeof recipient?.email === 'string'
+      ? recipient.email
+      : null;
   }
 
   async listActiveProjectLeaderIds(

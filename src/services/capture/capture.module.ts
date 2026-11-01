@@ -1,3 +1,5 @@
+import { WorkReportReminderService } from './application/work-report-reminder.service';
+import { WorkReportReminderMailer } from './application/work-report-reminder.mailer';
 import { Module } from '@nestjs/common';
 import { RuntimeConfigModule } from '../../config/runtime-config.module';
 import { CaptureApplicationService } from './application/capture.service';
@@ -27,6 +29,8 @@ import { NotificationModule } from '../notification/notification.module';
     HandoverCaptureSourceService,
     ProjectReportRosterService,
     WorkReportOverdueScheduler,
+    WorkReportReminderService,
+    WorkReportReminderMailer,
   ],
   exports: [WorkNotesService, HandoverCaptureSourceService],
 })
