@@ -548,6 +548,7 @@ export class AuthenticationController {
       response.setHeader('Set-Cookie', [
         clearAccessCookie(),
         clearRefreshCookie(),
+        clearCsrfCookie(),
       ]);
     }
   }

@@ -642,7 +642,7 @@ describe('AuthenticationController', () => {
       undefined,
       '__Secure-refresh=opaque-refresh; __Host-csrf=csrf-value',
     );
-    expect(response.headers['set-cookie']).toHaveLength(2);
+    expect(response.headers['set-cookie']).toHaveLength(3);
     expect(response.headers['set-cookie'][0]).toContain('continuum_access=');
     expect(response.headers['set-cookie'][0]).toContain('Path=/');
     expect(response.headers['set-cookie'][0]).toContain('Max-Age=0');
@@ -651,6 +651,10 @@ describe('AuthenticationController', () => {
     expect(response.headers['set-cookie'][1]).toContain('Max-Age=0');
     expect(response.headers['set-cookie'][1]).toContain('HttpOnly');
     expect(response.headers['set-cookie'][1]).toContain('Secure');
+    expect(response.headers['set-cookie'][2]).toContain('__Host-csrf=');
+    expect(response.headers['set-cookie'][2]).toContain('Max-Age=0');
+    expect(response.headers['set-cookie'][2]).toContain('Path=/');
+    expect(response.headers['set-cookie'][2]).toContain('Secure');
   });
 
   it.each([
