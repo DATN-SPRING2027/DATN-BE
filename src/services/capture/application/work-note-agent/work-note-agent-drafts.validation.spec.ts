@@ -60,4 +60,64 @@ describe('Agent HTTP input boundary', () => {
       parseDraftInput('create', { operationId: randomUUID(), taskId: 'bad' }),
     ).toThrow();
   });
+  it('accepts bounded AI Chat source references without excerpts or caller URLs', () => {
+    const aiChatSource = {
+      threadId: 'thread-1',
+      messageId: 'message-1',
+      citations: [
+        {
+          number: 1,
+          sourceLabel: 'Architecture runbook',
+          documentId: '507f1f77bcf86cd799439088',
+          versionNo: 2,
+          heading: 'Project boundaries',
+          pageFrom: 3,
+          pageTo: 4,
+        },
+      ],
+      sessionCitations: [
+        { ref: 'S1', groupId: 'group-1', turnIds: ['turn-1', 'turn-2'] },
+      ],
+    };
+    const save = {
+      ...base,
+      discardOriginalConfirmed: false,
+      aiChatSource,
+    };
+    expect(parseDraftInput('save', save)).toMatchObject(save);
+    expect(() =>
+      parseDraftInput('save', {
+        ...save,
+        aiChatSource: {
+          ...aiChatSource,
+          citations: [
+            { ...aiChatSource.citations[0], snippet: 'private excerpt' },
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseDraftInput('save', {
+        ...save,
+        aiChatSource: {
+          ...aiChatSource,
+          citations: [
+            { ...aiChatSource.citations[0], documentId: 'foreign-document' },
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseDraftInput('save', {
+        ...save,
+        aiChatSource: {
+          ...aiChatSource,
+          citations: Array.from({ length: 101 }, (_, index) => ({
+            number: index + 1,
+            sourceLabel: 'Source',
+          })),
+        },
+      }),
+    ).toThrow();
+  });
 });

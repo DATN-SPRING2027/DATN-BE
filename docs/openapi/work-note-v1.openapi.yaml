@@ -1,14 +1,16 @@
 openapi: 3.1.0
 info:
   title: Continuum AI Work Notes API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Contract for Task Notes, Project Documents and Periodic Work Reports.
     This contract implements the product decisions in the Work Note Full
     Implementation request dated 2026-10-24. Public paths are served under
-    /api/v1/capture by the Capture service and Gateway.
+    /api/v1/capture by the Capture service and Gateway. Version 1.1.0 adds
+    requester-approved saving of an AI Chat answer as a Task Note with
+    project-scoped citation provenance.
   x-approval-status: APPROVED_BY_PRODUCT_REQUEST
-  x-approval-reference: Work Note Full Implementation request, 2026-10-24
+  x-approval-reference: Work Note Full Implementation request, 2026-10-24; AI Chat answer to Task Note request, 2026-11-01
 servers:
   - url: /api/v1
 security:
@@ -156,6 +158,39 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskNote' }
+        default: { $ref: '#/components/responses/Error' }
+  /capture/projects/{projectId}/work-note-drafts/{draftId}/save:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: draftId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [TaskNotes]
+      operationId: saveTaskNoteEditorDraft
+      summary: Confirm a Task Note editor draft
+      description: |
+        Saves a user-owned editor draft for a Task in the requested Project as
+        a confirmed, versioned Task Note. When aiChatSource is provided, the
+        server validates every mapped Project Document reference against the
+        same Organization and Project and derives its display name from that
+        record. Conversation citations retain identifiers only; excerpts and
+        caller-provided URLs are not accepted.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/OrganizationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskNoteEditorSaveInput' }
+      responses:
+        '200':
+          description: Confirmed versioned Task Note
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CanonicalTaskNote' }
         default: { $ref: '#/components/responses/Error' }
   /capture/projects/{projectId}/documents:
     parameters:
@@ -712,6 +747,105 @@ components:
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
             permissions: { $ref: '#/components/schemas/Permissions' }
+            contentMarkdown: { type: string, maxLength: 30000 }
+            contentSchemaVersion: { const: 2 }
+            currentVersionNumber: { type: integer, minimum: 1 }
+            aiChatSource: { $ref: '#/components/schemas/AiChatTaskNoteSource' }
+    TaskNoteEditorSaveInput:
+      type: object
+      additionalProperties: false
+      required: [operationId, expectedRevision, discardOriginalConfirmed]
+      properties:
+        operationId: { type: string, format: uuid }
+        expectedRevision: { type: integer, minimum: 1 }
+        discardOriginalConfirmed: { type: boolean }
+        aiChatSource: { $ref: '#/components/schemas/AiChatTaskNoteSourceInput' }
+    AiChatTaskNoteSourceInput:
+      type: object
+      additionalProperties: false
+      required: [threadId, messageId, citations, sessionCitations]
+      properties:
+        threadId: { type: string, minLength: 1, maxLength: 200 }
+        messageId: { type: string, minLength: 1, maxLength: 200 }
+        citations:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AiChatTaskNoteCitationInput' }
+        sessionCitations:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AiChatTaskNoteSessionCitationInput' }
+    AiChatTaskNoteCitationInput:
+      type: object
+      additionalProperties: false
+      required: [number, sourceLabel]
+      properties:
+        number: { type: integer, minimum: 1, maximum: 1000 }
+        sourceLabel: { type: string, minLength: 1, maxLength: 300 }
+        documentId: { $ref: '#/components/schemas/ObjectId' }
+        versionNo: { type: integer, minimum: 1 }
+        chunkId: { type: string, maxLength: 300 }
+        heading: { type: string, maxLength: 500 }
+        sectionPath: { type: string, maxLength: 1000 }
+        pageFrom: { type: integer, minimum: 1 }
+        pageTo: { type: integer, minimum: 1 }
+    AiChatTaskNoteSessionCitationInput:
+      type: object
+      additionalProperties: false
+      required: [ref, turnIds]
+      properties:
+        ref: { type: string, minLength: 1, maxLength: 20 }
+        groupId: { type: string, maxLength: 200 }
+        turnIds:
+          type: array
+          maxItems: 100
+          items: { type: string, minLength: 1, maxLength: 200 }
+    CanonicalTaskNote:
+      type: object
+      additionalProperties: false
+      required:
+        [id, projectId, taskId, authorId, authorName, type, status, title,
+         contentMarkdown, contentSchemaVersion, currentVersionNumber, createdAt,
+         updatedAt, permissions]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectId' }
+        projectId: { $ref: '#/components/schemas/ObjectId' }
+        taskId: { $ref: '#/components/schemas/ObjectId' }
+        authorId: { $ref: '#/components/schemas/ObjectId' }
+        authorName: { type: string }
+        type: { const: TASK_NOTE }
+        status: { const: CONFIRMED }
+        title: { type: string, maxLength: 300 }
+        contentMarkdown: { type: string, maxLength: 30000 }
+        contentSchemaVersion: { const: 2 }
+        currentVersionNumber: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        permissions: { $ref: '#/components/schemas/Permissions' }
+        aiChatSource: { $ref: '#/components/schemas/AiChatTaskNoteSource' }
+    AiChatTaskNoteSource:
+      type: object
+      additionalProperties: false
+      required: [threadId, messageId, citations, sessionCitations]
+      properties:
+        threadId: { type: string, minLength: 1, maxLength: 200 }
+        messageId: { type: string, minLength: 1, maxLength: 200 }
+        citations:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AiChatTaskNoteCitation' }
+        sessionCitations:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AiChatTaskNoteSessionCitation' }
+    AiChatTaskNoteCitation:
+      allOf:
+        - $ref: '#/components/schemas/AiChatTaskNoteCitationInput'
+        - type: object
+          properties:
+            documentName: { type: string, maxLength: 240 }
+    AiChatTaskNoteSessionCitation:
+      $ref: '#/components/schemas/AiChatTaskNoteSessionCitationInput'
     DocumentType:
       type: string
       enum:

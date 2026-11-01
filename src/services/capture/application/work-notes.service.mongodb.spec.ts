@@ -206,6 +206,60 @@ describe('Capture Work Notes Mongo workflows', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
+  it('returns only bounded AI Chat source references with a Task Note', async () => {
+    const created = await service.createTaskNote({}, projectId, taskId, {
+      title: 'AI summary',
+      accomplishments: 'Reviewed the deployment plan.',
+      approach: 'Compared the cited notes.',
+      reason: 'Prepare a release decision.',
+    });
+    const source = {
+      threadId: 'thread-1',
+      messageId: 'message-1',
+      citations: [
+        {
+          number: 1,
+          sourceLabel: 'Release plan',
+          documentId: new Types.ObjectId().toHexString(),
+          documentName: 'Release Plan',
+          snippet: 'must not be exposed',
+          url: 'https://untrusted.example',
+        },
+      ],
+      sessionCitations: [
+        {
+          ref: 'S1',
+          groupId: 'group-1',
+          turnIds: ['turn-1'],
+          summaryExcerpt: 'private',
+        },
+      ],
+    };
+    await connection
+      .collection('work_notes')
+      .updateOne(
+        { _id: new Types.ObjectId(created.id) },
+        { $set: { provenance: { aiChatSource: source } } },
+      );
+
+    const note = await service.getTaskNote({}, projectId, taskId, created.id);
+    expect(note.aiChatSource).toEqual({
+      threadId: 'thread-1',
+      messageId: 'message-1',
+      citations: [
+        {
+          number: 1,
+          sourceLabel: 'Release plan',
+          documentId: source.citations[0].documentId,
+          documentName: 'Release Plan',
+        },
+      ],
+      sessionCitations: [
+        { ref: 'S1', groupId: 'group-1', turnIds: ['turn-1'] },
+      ],
+    });
+  });
+
   it('blocks lossy legacy writes to upgraded freeform notes', async () => {
     const input = {
       title: 'Canonical',

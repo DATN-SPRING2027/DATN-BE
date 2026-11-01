@@ -5,6 +5,10 @@ import type {
   BoundSuggestion,
   SelectionAnchor,
 } from './work-note-agent.types';
+import type {
+  TaskNoteAiChatSource,
+  TaskNoteAiChatSourceInput,
+} from '../work-notes.types';
 export type RevisionOperation = {
   operationId: string;
   expectedRevision: number;
@@ -35,6 +39,7 @@ export type ApplyInput = RevisionOperation & {
 };
 export type SaveInput = RevisionOperation & {
   discardOriginalConfirmed: boolean;
+  aiChatSource?: TaskNoteAiChatSourceInput;
 };
 export type RestoreInput = {
   operationId: string;
@@ -92,6 +97,7 @@ export type CanonicalTaskNote = {
   contentMarkdown: string;
   contentSchemaVersion: 2;
   currentVersionNumber: number;
+  aiChatSource?: TaskNoteAiChatSource;
   createdAt: string;
   updatedAt: string;
   permissions: {
