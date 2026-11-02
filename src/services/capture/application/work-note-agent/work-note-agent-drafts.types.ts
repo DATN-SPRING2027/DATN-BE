@@ -47,9 +47,17 @@ export type RestoreInput = {
   expectedVersion: number;
   versionNumber: number;
 };
+export type PendingQuestionRequest = Pick<
+  MessageInput,
+  | 'operation'
+  | 'scope'
+  | 'instruction'
+  | 'includeWholeNoteContext'
+  | 'selection'
+>;
 export type PendingQuestion = AgentResult['questions'][number] & {
   id: string;
-  request: MessageInput;
+  request: PendingQuestionRequest;
   /** Present when the question confirms information from a previous note/answer. */
   historyRef?: import('./history/clarification-dedup').HistoryRef;
 };

@@ -86,6 +86,15 @@ export type HistoricalContext = Readonly<{
   truncated: boolean;
 }>;
 
+/** Shared caps enforced by both HistoricalContext builders and validateAgentInput. */
+export const HISTORY_VIEW_LIMITS = {
+  maxNotes: 40,
+  maxFacts: 80,
+  maxFindings: 80,
+  maxTitleLength: 1_000,
+  maxQuoteLength: 400,
+} as const;
+
 /** Compact projection for the LLM payload and the public API. */
 export type HistoricalContextView = Readonly<{
   notes: readonly Readonly<{

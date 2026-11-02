@@ -1,5 +1,6 @@
 import {
   detectSensitiveData,
+  stripInvisible,
   summarizeFindings,
 } from './sensitive-data.detector';
 import { isDummyValue, luhnValid } from './sensitive-data.rules';
@@ -236,5 +237,33 @@ describe('Output Security Validation', () => {
       validateModelOutput(out(`${ph} https://docs.internal/run`), context)
         .decision,
     ).toBe('PASS');
+  });
+
+  it('sanitizes zero-width obfuscated PII and untrusted URLs in display fields and rejects them in applied fields', () => {
+    const { ph, context } = setup();
+    const zwEmail = 'nguyen.van.a1990@\u200Bgmail.\u200Dcom';
+    const zwPhone = '0912\u200B345\u2060678';
+    const zwUrl = 'https://evil.\u200Bexample/exfil';
+    const zwImg = '![beacon](https://evil.\u200Bexample/p.png?d=1)';
+
+    const sanitized = validateModelOutput(
+      out(ph, `Liên hệ ${zwEmail} hoặc ${zwPhone}; xem ${zwUrl} ${zwImg}`),
+      context,
+    );
+    expect(sanitized.decision).toBe('SANITIZED');
+    const cleanOutput = stripInvisible(sanitized.content);
+    expect(cleanOutput).not.toContain('nguyen.van.a1990@gmail.com');
+    expect(cleanOutput).not.toContain('0912345678');
+    expect(cleanOutput).not.toContain('evil.example');
+    expect(sanitized.content).toContain('[đã ẩn: EMAIL]');
+    expect(sanitized.content).toContain('[đã ẩn: PHONE]');
+    expect(sanitized.content).toContain('[liên kết đã bị loại bỏ]');
+
+    expect(() => validateModelOutput(out(`${ph} ${zwEmail}`), context)).toThrow(
+      OutputSecurityViolation,
+    );
+    expect(() => validateModelOutput(out(`${ph} ${zwUrl}`), context)).toThrow(
+      OutputSecurityViolation,
+    );
   });
 });

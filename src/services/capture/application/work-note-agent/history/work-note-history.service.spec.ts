@@ -528,4 +528,339 @@ describe('Historical Work Note retrieval in the Agent workflow', () => {
     const viewAfterArchive = await service.history(headers, projectId, d3.id);
     expect(viewAfterArchive).toBeNull();
   });
+
+  it('masks pendingQuestion.request (instruction, selection.quote, omitting answer) and fails closed if masking fails', async () => {
+    const secretLine = `Cấu hình DB_PASSWORD=${FAKE.dbPassword} trên staging.`;
+    const d = await draft(`Phần mở đầu.\n${secretLine}\nPhần kết.`);
+    const selStart = d.contentMarkdown.indexOf(secretLine);
+    const selEnd = selStart + secretLine.length;
+
+    reply = {
+      status: 'CLARIFICATION_REQUIRED',
+      message: 'Cần xác nhận môi trường.',
+      suggestion: null,
+      questions: [
+        {
+          text: 'Cấu hình này áp dụng cho cụm nào?',
+          reason: 'Chưa nêu rõ cụm.',
+          options: ['Staging-1', 'Staging-2'],
+        },
+      ],
+      uncertainties: [],
+    };
+    const firstTurn = (await service.message(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      operation: 'clarify',
+      scope: 'selection',
+      selection: { start: selStart, end: selEnd, quote: secretLine },
+      instruction: `Kiểm tra khóa ${FAKE.openAiKey} và chuẩn hóa câu.`,
+      includeWholeNoteContext: false,
+    })) as unknown as { questions: { id: string }[] };
+
+    const afterTurn1 = (await connection
+      .db!.collection('work_note_agent_drafts')
+      .findOne({ _id: d.id as never })) as {
+      state?: {
+        pendingQuestion?: unknown;
+        conversation?: unknown;
+        clarifications?: unknown;
+      };
+    } | null;
+    const serializedChatState1 = JSON.stringify({
+      pendingQuestion: afterTurn1?.state?.pendingQuestion,
+      conversation: afterTurn1?.state?.conversation,
+      clarifications: afterTurn1?.state?.clarifications,
+    });
+    expect(serializedChatState1).not.toContain(FAKE.openAiKey);
+    expect(serializedChatState1).not.toContain(FAKE.dbPassword);
+    expect(serializedChatState1).toContain('[[WN_SEC:API_KEY:');
+    expect(serializedChatState1).toContain('[[WN_SEC:PASSWORD:');
+
+    // Second clarification turn carrying a secret in `answer`: neither turn's secret may persist raw.
+    reply = {
+      status: 'CLARIFICATION_REQUIRED',
+      message: 'Cần xác nhận mức độ chi tiết.',
+      suggestion: null,
+      questions: [
+        {
+          text: 'Bạn muốn viết ngắn gọn hay đầy đủ các bước?',
+          reason: 'Chưa rõ độ dài mong muốn.',
+          options: ['Ngắn gọn', 'Đầy đủ'],
+        },
+      ],
+      uncertainties: [],
+    };
+    const secondTurn = (await service.message(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      operation: 'clarify',
+      scope: 'selection',
+      instruction: 'Tiếp tục',
+      includeWholeNoteContext: false,
+      replyToQuestionId: firstTurn.questions[0].id,
+      questionDisposition: 'answered',
+      answer: `Liên hệ ${FAKE.personalEmail} ở cụm Staging-1`,
+    })) as unknown as { questions: { id: string }[] };
+
+    const afterTurn2 = (await connection
+      .db!.collection('work_note_agent_drafts')
+      .findOne({ _id: d.id as never })) as {
+      state?: {
+        pendingQuestion?: Record<string, unknown>;
+        conversation?: unknown;
+        clarifications?: unknown;
+      };
+    } | null;
+    const serializedChatState2 = JSON.stringify({
+      pendingQuestion: afterTurn2?.state?.pendingQuestion,
+      conversation: afterTurn2?.state?.conversation,
+      clarifications: afterTurn2?.state?.clarifications,
+    });
+    expect(serializedChatState2).not.toContain(FAKE.personalEmail);
+    expect(serializedChatState2).not.toContain(FAKE.openAiKey);
+    expect(serializedChatState2).not.toContain(FAKE.dbPassword);
+    expect(
+      (afterTurn2?.state?.pendingQuestion?.request as Record<string, unknown>)
+        ?.answer,
+    ).toBeUndefined();
+
+    // Replying to complete the selection rewrite still resolves the live selection cleanly.
+    rewrite.mockImplementationOnce((rawAgentInput: AgentInput) => {
+      const gw = new WorkNoteAgentModel(
+        new ConfigService({
+          WORKNOTE_EDITOR_ENABLED: true,
+          WORKNOTE_SECURITY_PLACEHOLDER_KEY: 'history-spec-key',
+        }),
+      ).securityGateway();
+      const masked = gw.maskAgentInput(rawAgentInput);
+      const prepared = prepareAgentRequest(masked.input);
+      const guarded = gw.protectRequest(prepared.messages, {
+        vault: masked.vault,
+        rawCorpus: masked.rawCorpus,
+        priorFindings: masked.findings,
+      });
+      const targetText = (
+        JSON.parse(prepared.messages.at(-1)!.content) as {
+          source: { text: string };
+        }
+      ).source.text;
+      const modelJson = JSON.stringify({
+        status: 'SUGGESTION_READY',
+        message: 'Đã chuẩn hóa.',
+        suggestion: {
+          replacementText: `${targetText} (cụm Staging-1)`,
+          suggestedTitle: null,
+          changeSummary: ['Chuẩn hóa câu'],
+        },
+        questions: [],
+        uncertainties: [],
+      });
+      const validated = gw.validateOutput(modelJson, guarded, 'rewrite');
+      const parsed = parseAgentResult(prepared, validated.content);
+      const finalized = gw.finalizeRewrite(parsed, rawAgentInput, guarded);
+      return Promise.resolve({
+        result: finalized.result,
+        provenance: {
+          provider: 'xkiro',
+          model: 'synthetic/model',
+          promptVersion: 'x',
+          formattingRecovery: [],
+          security: gw.report(guarded, validated, finalized.unmasked),
+        },
+      });
+    });
+    const finalRes = (await service.message(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      operation: 'clarify',
+      scope: 'selection',
+      instruction: 'Hoàn tất',
+      includeWholeNoteContext: false,
+      replyToQuestionId: secondTurn.questions[0].id,
+      questionDisposition: 'answered',
+      answer: 'Ngắn gọn',
+    })) as unknown as {
+      status: string;
+      suggestion?: { scope: string; replacementText: string };
+    };
+    expect(finalRes.status).toBe('SUGGESTION_READY');
+    expect(finalRes.suggestion?.scope).toBe('selection');
+    expect(finalRes.suggestion?.replacementText).toContain(FAKE.dbPassword);
+
+    // Fail-closed check: if maskTexts throws while persisting state, raw secret must NOT be saved.
+    const dFail = await draft('Bản nháp kiểm tra fail-closed.');
+    const badConfig = new ConfigService({
+      WORKNOTE_EDITOR_ENABLED: true,
+      WORKNOTE_SECURITY_PLACEHOLDER_KEY: 'history-spec-key',
+    });
+    const brokenModel = Object.assign(new WorkNoteAgentModel(badConfig), {
+      rewrite,
+      precheck: () => undefined,
+      securityGateway: () => ({
+        maskTexts: () => {
+          throw new Error('Synthetic vault failure');
+        },
+      }),
+    });
+    const brokenService = new WorkNoteAgentDraftsService(
+      badConfig,
+      {
+        resolveProject: jest.fn(() => Promise.resolve(actor)),
+        resolveTask: jest.fn(() => Promise.resolve(actor)),
+      } as unknown as WorkNotesAuthorizationService,
+      {
+        getTaskNote: jest.fn(() =>
+          Promise.resolve({ permissions: { canEdit: true } }),
+        ),
+      } as unknown as WorkNotesService,
+      brokenModel,
+      {
+        consumeRateLimit: jest.fn(() => Promise.resolve(true)),
+      } as unknown as RedisService,
+      connection,
+    );
+    await expect(
+      brokenService.message(headers, projectId, dFail.id, {
+        ...op(),
+        expectedRevision: dFail.revision,
+        operation: 'custom',
+        scope: 'whole_note',
+        instruction: `Đừng lưu thô ${FAKE.openAiKey}`,
+        includeWholeNoteContext: false,
+      }),
+    ).rejects.toThrow();
+    const untouched = await connection
+      .db!.collection('work_note_agent_drafts')
+      .findOne({ _id: dFail.id as never });
+    expect(JSON.stringify(untouched)).not.toContain(FAKE.openAiKey);
+  });
+
+  it('honors WORKNOTE_HISTORY_MAX_RELATED_NOTES=0 and degrades history gracefully when prompt budget is tight', async () => {
+    const parentTaskId = new Types.ObjectId().toHexString();
+    relatedTasks = [
+      { id: parentTaskId, key: 'OPS-1', title: 'Task cha', relation: 'PARENT' },
+    ];
+    await insertNote({
+      taskId: new Types.ObjectId(parentTaskId),
+      title: 'Spec cha',
+      contentMarkdown: 'Chốt chuẩn bảo mật OAuth2 cho toàn bộ hệ thống.',
+      createdAt: daysAgo(1),
+      updatedAt: daysAgo(1),
+    });
+    for (let i = 0; i < 20; i++) {
+      await insertNote({
+        title: `Ghi chú lịch sử ${i}`,
+        contentMarkdown: Array.from(
+          { length: 12 },
+          (_, j) => `Đã test thành phần ${i}-${j} trên môi trường staging.`,
+        ).join('\n'),
+        createdAt: daysAgo(i + 1),
+        updatedAt: daysAgo(i + 1),
+      });
+    }
+
+    const customConfig = new ConfigService({
+      WORKNOTE_EDITOR_ENABLED: true,
+      WORKNOTE_SECURITY_PLACEHOLDER_KEY: 'history-spec-key',
+      WORKNOTE_HISTORY_MAX_NOTES: '20',
+      WORKNOTE_HISTORY_CHAR_BUDGET: '20000',
+      WORKNOTE_HISTORY_RELATED_ENABLED: 'true',
+      WORKNOTE_HISTORY_MAX_RELATED_NOTES: '0',
+    });
+    const resolveRelatedSpy = jest.fn(() => Promise.resolve(relatedTasks));
+    const customService = new WorkNoteAgentDraftsService(
+      customConfig,
+      {
+        resolveProject: jest.fn(() => Promise.resolve(actor)),
+        resolveTask: jest.fn(() => Promise.resolve(actor)),
+        resolveRelatedTasks: resolveRelatedSpy,
+      } as unknown as WorkNotesAuthorizationService,
+      {
+        getTaskNote: jest.fn(() =>
+          Promise.resolve({ permissions: { canEdit: true } }),
+        ),
+      } as unknown as WorkNotesService,
+      Object.assign(new WorkNoteAgentModel(customConfig), { rewrite }),
+      {
+        consumeRateLimit: jest.fn(() => Promise.resolve(true)),
+      } as unknown as RedisService,
+      connection,
+    );
+
+    const dMany = await customService.create(headers, projectId, {
+      ...op(),
+      taskId,
+    });
+    const dManyUpdated = await customService.update(
+      headers,
+      projectId,
+      dMany.id,
+      {
+        ...op(),
+        expectedRevision: dMany.revision,
+        title: 'Báo cáo tổng hợp',
+        contentMarkdown: 'Đang rà soát kết quả test trên staging.',
+      },
+    );
+    await expect(
+      customService.message(
+        headers,
+        projectId,
+        dMany.id,
+        message(dManyUpdated.revision),
+      ),
+    ).resolves.toBeDefined();
+    expect(resolveRelatedSpy).not.toHaveBeenCalled();
+    const sentInput = rewrite.mock.calls.at(-1)![0];
+    expect(sentInput.historicalContext?.facts.length).toBeLessThanOrEqual(80);
+    expect(
+      sentInput.historicalContext?.notes.every((n) => n.relation === 'SELF'),
+    ).toBe(true);
+
+    // Near-limit draft (~59k serialized without history; >65k if full 20k history were attached):
+    // must degrade history gracefully instead of throwing 422.
+    const bigBody = `${'Nội dung chi tiết công việc đã thực hiện trong sprint. '.repeat(530)}Đoạn cuối cần chỉnh.`;
+    const targetPhrase = 'Đoạn cuối cần chỉnh.';
+    const start = bigBody.length - targetPhrase.length;
+    const end = bigBody.length;
+    actor = {
+      ...actor,
+      taskContext: {
+        title: 'Task lớn',
+        description: 'Mô tả yêu cầu kỹ thuật chi tiết. '.repeat(600),
+        status: 'IN_PROGRESS',
+        steps: Array.from({ length: 20 }, (_, idx) => ({
+          text: `Bước kiểm tra chi tiết số ${idx}: ${'mô tả '.repeat(35)}`,
+          done: false,
+        })),
+      },
+    };
+    const dTight = await customService.create(headers, projectId, {
+      ...op(),
+      taskId,
+    });
+    const dTightUpdated = await customService.update(
+      headers,
+      projectId,
+      dTight.id,
+      {
+        ...op(),
+        expectedRevision: dTight.revision,
+        title: 'Bản nháp sát ngưỡng ngữ cảnh',
+        contentMarkdown: bigBody,
+      },
+    );
+    await expect(
+      customService.message(headers, projectId, dTight.id, {
+        ...op(),
+        expectedRevision: dTightUpdated.revision,
+        operation: 'clarify',
+        scope: 'selection',
+        selection: { start, end, quote: targetPhrase },
+        instruction: 'Chỉnh câu này ngắn gọn hơn.',
+        includeWholeNoteContext: true,
+      }),
+    ).resolves.toBeDefined();
+  });
 });

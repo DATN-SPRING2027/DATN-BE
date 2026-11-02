@@ -9,6 +9,7 @@ import {
 } from './work-note-history.facts';
 import { verifyHistory } from './work-note-history.verification';
 import {
+  HISTORY_VIEW_LIMITS,
   buildHistoricalContext,
   historicalContextView,
   rankNotes,
@@ -552,5 +553,44 @@ describe('Prompt integration', () => {
     expect(ledgerFacts[0].quote).toBe('Chưa kiểm thử chịu tải.');
     expect(ledgerFacts[0].target).not.toContain('tac');
     expect(ledgerFacts[0].target).not.toContain('nhan');
+  });
+
+  it('caps facts/notes/findings and oversized masked titles within validateAgentInput limits even at max charBudget', () => {
+    const placeholder = '[[WN_SEC:API_KEY:0123456789ab]]';
+    const oversizedTitle = `${'Tiêu đề ghi chú lịch sử dài '.padEnd(988, 'x')} ${placeholder} hậu tố`;
+    const manyNotes = Array.from({ length: 20 }, (_, nIdx) =>
+      note(
+        `n-${nIdx}`,
+        Array.from(
+          { length: 12 },
+          (__, fIdx) =>
+            `Đã test hạng mục ${nIdx}-${fIdx} trên staging thành công.`,
+        ).join('\n'),
+        nIdx + 1,
+        nIdx === 0 ? oversizedTitle : `Ghi chú ${nIdx}`,
+      ),
+    );
+    const view = historicalContextView(
+      buildHistoricalContext({
+        notes: manyNotes,
+        currentNoteText: '',
+        taskStatus: 'IN_PROGRESS',
+        now: NOW,
+        options: { maxNotes: 20, charBudget: 20_000, staleDays: 14 },
+      }),
+    );
+    expect(view.truncated).toBe(true);
+    expect(view.notes.length).toBeLessThanOrEqual(HISTORY_VIEW_LIMITS.maxNotes);
+    expect(view.facts.length).toBeLessThanOrEqual(HISTORY_VIEW_LIMITS.maxFacts);
+    expect(view.findings.length).toBeLessThanOrEqual(
+      HISTORY_VIEW_LIMITS.maxFindings,
+    );
+    expect(view.notes[0].title.length).toBeLessThanOrEqual(
+      HISTORY_VIEW_LIMITS.maxTitleLength,
+    );
+    expect(view.notes[0].title).not.toContain('[[WN_SEC:API_KEY:0123');
+    expect(() =>
+      prepareAgentRequest({ ...base, historicalContext: view }),
+    ).not.toThrow();
   });
 });

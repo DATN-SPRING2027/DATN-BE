@@ -28,7 +28,41 @@ export type OutputValidationResult = Readonly<{
 
 const URL_PATTERN = /https?:\/\/[^\s<>"'`)\]]+/g;
 const MARKDOWN_IMAGE = /!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
+const INVISIBLE_CHAR = /[\u200B-\u200D\u2060\uFEFF\u00AD]/;
 const REMOVED_LINK = '[liên kết đã bị loại bỏ]';
+
+function buildCleanMap(text: string): {
+  clean: string;
+  rawIndex: readonly number[];
+} {
+  const rawIndex: number[] = [];
+  let clean = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (INVISIBLE_CHAR.test(ch)) continue;
+    rawIndex.push(i);
+    clean += ch;
+  }
+  return { clean, rawIndex };
+}
+
+function replaceCleanSpans(
+  rawText: string,
+  rawIndex: readonly number[],
+  spans: readonly { start: number; end: number; replacement: string }[],
+): string {
+  if (spans.length === 0) return rawText;
+  let out = '';
+  let cursor = 0;
+  for (const span of spans) {
+    const rawStart = rawIndex[span.start];
+    const rawEnd = rawIndex[span.end - 1] + 1;
+    out += rawText.slice(cursor, rawStart) + span.replacement;
+    cursor = rawEnd;
+  }
+  out += rawText.slice(cursor);
+  return out;
+}
 
 const APPLIED_PATHS = new Set([
   'suggestion.replacementText',
@@ -78,25 +112,99 @@ export function validateModelOutput(
       const allowed = context.vault.has(m[0]) || knownInput.has(m[0]);
       if (!allowed) issues.push({ code: 'PLACEHOLDER_UNKNOWN', field });
     }
-    // 2. Newly introduced sensitive data (guessed, hallucinated or leaked).
-    const findings = detectSensitiveData(stripInvisible(out), {
+    // 2. Newly introduced sensitive data (guessed, hallucinated or leaked, including zero-width obfuscation).
+    const detectorOpts = {
       maskInternalEmail: context.policy.maskInternalEmail,
       internalEmailDomains: context.policy.internalEmailDomains,
-    }).filter((f) => !context.maskedInputText.includes(f.value));
+    };
+    const sensitiveMap = buildCleanMap(out);
+    const findings = detectSensitiveData(
+      sensitiveMap.clean,
+      detectorOpts,
+    ).filter((f) => !context.maskedInputText.includes(f.value));
     for (const f of findings) {
       issues.push({ code: 'NEW_SENSITIVE_DATA', field, category: f.category });
-      if (field === 'display')
-        out = out.split(f.value).join(`[đã ẩn: ${f.category}]`);
     }
-    // 3. URLs not present in the request (exfiltration / hallucinated links).
-    if (field === 'display')
-      out = out.replace(MARKDOWN_IMAGE, (image, url: string) =>
-        rawUrls.includes(url) ? image : '',
+    if (field === 'display' && findings.length > 0) {
+      out = replaceCleanSpans(
+        out,
+        sensitiveMap.rawIndex,
+        findings.map((f) => ({
+          start: f.start,
+          end: f.end,
+          replacement: `[đã ẩn: ${f.category}]`,
+        })),
       );
-    for (const url of out.match(URL_PATTERN) ?? []) {
+    }
+    // 3. URLs not present in the request (exfiltration / hallucinated links, including zero-width obfuscation).
+    const imageMap = buildCleanMap(out);
+    const untrustedImages: {
+      start: number;
+      end: number;
+      replacement: string;
+    }[] = [];
+    for (const m of imageMap.clean.matchAll(MARKDOWN_IMAGE)) {
+      const url = m[1];
       if (rawUrls.includes(url)) continue;
       issues.push({ code: 'UNTRUSTED_URL', field });
-      if (field === 'display') out = out.split(url).join(REMOVED_LINK);
+      if (field === 'display' && m.index !== undefined) {
+        untrustedImages.push({
+          start: m.index,
+          end: m.index + m[0].length,
+          replacement: '',
+        });
+      }
+    }
+    if (field === 'display' && untrustedImages.length > 0) {
+      out = replaceCleanSpans(out, imageMap.rawIndex, untrustedImages);
+    }
+    const urlMap = buildCleanMap(out);
+    const untrustedUrls: {
+      start: number;
+      end: number;
+      replacement: string;
+    }[] = [];
+    for (const m of urlMap.clean.matchAll(URL_PATTERN)) {
+      const url = m[0];
+      if (rawUrls.includes(url)) continue;
+      issues.push({ code: 'UNTRUSTED_URL', field });
+      if (field === 'display' && m.index !== undefined) {
+        untrustedUrls.push({
+          start: m.index,
+          end: m.index + url.length,
+          replacement: REMOVED_LINK,
+        });
+      }
+    }
+    if (field === 'display' && untrustedUrls.length > 0) {
+      out = replaceCleanSpans(out, urlMap.rawIndex, untrustedUrls);
+    }
+    // 4. Fail closed on display text if any detectable secret/PII or untrusted URL survived sanitization.
+    if (field === 'display') {
+      const residualClean = stripInvisible(out);
+      const residualSensitive = detectSensitiveData(
+        residualClean,
+        detectorOpts,
+      ).filter((f) => !context.maskedInputText.includes(f.value));
+      const residualUrls = (residualClean.match(URL_PATTERN) ?? []).filter(
+        (url) => !rawUrls.includes(url),
+      );
+      if (residualSensitive.length > 0 || residualUrls.length > 0) {
+        throw new OutputSecurityViolation(
+          dedupe([
+            ...issues,
+            ...residualSensitive.map((f) => ({
+              code: 'NEW_SENSITIVE_DATA' as const,
+              field: 'display' as const,
+              category: f.category,
+            })),
+            ...residualUrls.map(() => ({
+              code: 'UNTRUSTED_URL' as const,
+              field: 'display' as const,
+            })),
+          ]),
+        );
+      }
     }
     return out;
   };

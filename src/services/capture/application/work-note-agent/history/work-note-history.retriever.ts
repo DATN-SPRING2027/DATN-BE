@@ -1,13 +1,19 @@
 import type { Db, Document } from 'mongodb';
 import { Types } from 'mongoose';
-import { contentTokens, extractFacts } from './work-note-history.facts';
+import {
+  contentTokens,
+  extractFacts,
+  truncateFactQuote,
+} from './work-note-history.facts';
 import { verifyHistory } from './work-note-history.verification';
-import type {
-  HistoricalContext,
-  HistoricalContextView,
-  HistoricalNote,
-  HistoryRelation,
+import {
+  HISTORY_VIEW_LIMITS,
+  type HistoricalContext,
+  type HistoricalContextView,
+  type HistoricalNote,
+  type HistoryRelation,
 } from './history.types';
+export { HISTORY_VIEW_LIMITS } from './history.types';
 
 export type HistoryRelatedTask = Readonly<{
   id: string;
@@ -254,7 +260,24 @@ export function buildHistoricalContext(params: {
   now: Date;
   options: HistoryOptions;
 }): HistoricalContext {
-  const facts = params.notes.flatMap(extractFacts);
+  const normalizedNotes = params.notes.map((n) => ({
+    ...n,
+    title: truncateFactQuote(
+      n.title.trim(),
+      HISTORY_VIEW_LIMITS.maxTitleLength,
+    ),
+  }));
+  const noteById = new Map(normalizedNotes.map((n) => [n.id, n] as const));
+  const facts = normalizedNotes
+    .flatMap(extractFacts)
+    .map((f) => ({
+      ...f,
+      quote: truncateFactQuote(
+        f.quote.trim(),
+        HISTORY_VIEW_LIMITS.maxQuoteLength,
+      ),
+    }))
+    .filter((f) => f.quote.length > 0);
   const verified = verifyHistory({
     facts,
     currentNoteText: params.currentNoteText,
@@ -271,17 +294,49 @@ export function buildHistoricalContext(params: {
       priority(a.status) - priority(b.status) ||
       Date.parse(b.at) - Date.parse(a.at),
   );
-  let remaining = params.options.charBudget;
-  const kept = ordered.filter((f) => {
-    const cost = f.quote.length + 80;
-    if (cost > remaining) return false;
-    remaining -= cost;
-    return true;
-  });
+  let remaining = Math.max(0, params.options.charBudget - 64);
+  const usedNotes = new Set<string>();
+  const kept: typeof ordered = [];
+  for (const f of ordered) {
+    if (kept.length >= HISTORY_VIEW_LIMITS.maxFacts) break;
+    const note = noteById.get(f.noteId);
+    const needsNewNote = Boolean(note) && !usedNotes.has(f.noteId);
+    if (needsNewNote && usedNotes.size >= HISTORY_VIEW_LIMITS.maxNotes)
+      continue;
+    const noteCost =
+      needsNewNote && note
+        ? JSON.stringify({
+            ref: 'H99',
+            title: note.title,
+            date: note.createdAt.slice(0, 10),
+            source: note.source,
+            relation: note.relation ?? 'SELF',
+            ...(note.taskKey ? { task: note.taskKey } : {}),
+          }).length + 1
+        : 0;
+    const factCost =
+      JSON.stringify({
+        ref: 'H99',
+        date: f.at.slice(0, 10),
+        kind: f.kind,
+        polarity: f.polarity,
+        status: f.status,
+        quote: f.quote,
+        relation: f.relation,
+        ...(f.taskKey ? { task: f.taskKey } : {}),
+      }).length + 1;
+    if (noteCost + factCost > remaining) continue;
+    remaining -= noteCost + factCost;
+    if (needsNewNote) usedNotes.add(f.noteId);
+    kept.push(f);
+  }
   const keptIds = new Set(kept.map((f) => f.id));
-  const usedNotes = new Set(kept.map((f) => f.noteId));
+  const allKeptFindings = verified.findings.filter((f) =>
+    keptIds.has(f.factId),
+  );
+  const findings = allKeptFindings.slice(0, HISTORY_VIEW_LIMITS.maxFindings);
   return {
-    notes: params.notes
+    notes: normalizedNotes
       .filter((n) => usedNotes.has(n.id))
       .map((n) => ({
         id: n.id,
@@ -292,8 +347,10 @@ export function buildHistoricalContext(params: {
         ...(n.taskKey ? { taskKey: n.taskKey } : {}),
       })),
     facts: kept.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)),
-    findings: verified.findings.filter((f) => keptIds.has(f.factId)),
-    truncated: kept.length < verified.facts.length,
+    findings,
+    truncated:
+      kept.length < verified.facts.length ||
+      findings.length < allKeptFindings.length,
   };
 }
 
@@ -301,18 +358,37 @@ export function buildHistoricalContext(params: {
 export function historicalContextView(
   context: HistoricalContext,
 ): HistoricalContextView {
-  const refs = new Map(context.notes.map((n, i) => [n.id, `H${i + 1}`]));
+  const cappedNotes = context.notes.slice(0, HISTORY_VIEW_LIMITS.maxNotes);
+  const refs = new Map(cappedNotes.map((n, i) => [n.id, `H${i + 1}`]));
+  const validFacts = context.facts
+    .filter((f) => refs.has(f.noteId) || f.noteId.startsWith('ledger:'))
+    .map((f) => ({
+      ...f,
+      quote: truncateFactQuote(
+        f.quote.trim(),
+        HISTORY_VIEW_LIMITS.maxQuoteLength,
+      ),
+    }))
+    .filter((f) => f.quote.length > 0);
+  const cappedFacts = validFacts.slice(0, HISTORY_VIEW_LIMITS.maxFacts);
+  const keptFactIds = new Set(cappedFacts.map((f) => f.id));
+  const cappedFindings = context.findings
+    .filter((f) => keptFactIds.has(f.factId))
+    .slice(0, HISTORY_VIEW_LIMITS.maxFindings);
   return {
-    notes: context.notes.map((n) => ({
+    notes: cappedNotes.map((n) => ({
       ref: refs.get(n.id)!,
       id: n.id.startsWith('ledger:') ? '' : n.id,
-      title: n.title,
+      title: truncateFactQuote(
+        n.title.trim(),
+        HISTORY_VIEW_LIMITS.maxTitleLength,
+      ),
       date: n.createdAt.slice(0, 10),
       source: n.source,
       relation: n.relation,
       ...(n.taskKey ? { taskKey: n.taskKey } : {}),
     })),
-    facts: context.facts.map((f) => ({
+    facts: cappedFacts.map((f) => ({
       id: f.id,
       ref: refs.get(f.noteId) ?? '',
       date: f.at.slice(0, 10),
@@ -323,7 +399,11 @@ export function historicalContextView(
       relation: f.relation,
       ...(f.taskKey ? { taskKey: f.taskKey } : {}),
     })),
-    findings: context.findings,
-    truncated: context.truncated,
+    findings: cappedFindings,
+    truncated:
+      context.truncated ||
+      cappedNotes.length < context.notes.length ||
+      cappedFacts.length < context.facts.length ||
+      cappedFindings.length < context.findings.length,
   };
 }

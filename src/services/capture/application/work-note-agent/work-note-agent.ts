@@ -24,6 +24,7 @@ import {
   type BoundSuggestion,
   type DraftSnapshot,
 } from './work-note-agent.types';
+import { HISTORY_VIEW_LIMITS } from './history/history.types';
 export type {
   AgentInput,
   AgentResult,
@@ -199,16 +200,18 @@ export function validateAgentInput(value: AgentInput): void {
       !Array.isArray(h.notes) ||
       !Array.isArray(h.facts) ||
       !Array.isArray(h.findings) ||
-      h.notes.length > 40 ||
-      h.facts.length > 80 ||
-      h.findings.length > 80 ||
+      h.notes.length > HISTORY_VIEW_LIMITS.maxNotes ||
+      h.facts.length > HISTORY_VIEW_LIMITS.maxFacts ||
+      h.findings.length > HISTORY_VIEW_LIMITS.maxFindings ||
       h.notes.some(
         (n: NonNullable<AgentInput['historicalContext']>['notes'][number]) =>
-          !validString(n.title, 1_000) || !validString(n.ref, 10, true),
+          !validString(n.title, HISTORY_VIEW_LIMITS.maxTitleLength) ||
+          !validString(n.ref, 10, true),
       ) ||
       h.facts.some(
         (f: NonNullable<AgentInput['historicalContext']>['facts'][number]) =>
-          !validString(f.quote, 400, true) || !validString(f.ref, 10),
+          !validString(f.quote, HISTORY_VIEW_LIMITS.maxQuoteLength, true) ||
+          !validString(f.ref, 10),
       )
     )
       bad();
