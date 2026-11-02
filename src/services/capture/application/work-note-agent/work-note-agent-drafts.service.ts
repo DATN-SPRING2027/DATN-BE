@@ -62,6 +62,7 @@ import {
 } from './history/work-note-history.retriever';
 import {
   dedupeClarification,
+  expandHistoryConfirmation,
   type HistoryRef,
 } from './history/clarification-dedup';
 import type {
@@ -974,12 +975,16 @@ export class WorkNoteAgentDraftsService {
         instruction: q.request.instruction,
         selection: q.request.selection,
       };
+      const expandedAnswer =
+        input.questionDisposition === 'answered'
+          ? expandHistoryConfirmation(input.answer, q.historyRef)
+          : input.answer;
       clarifications.push({
         id: q.id,
         question: q.text,
         state: input.questionDisposition!,
         ...(input.questionDisposition === 'answered'
-          ? { answer: input.answer }
+          ? { answer: expandedAnswer }
           : {}),
       });
     }
@@ -1113,13 +1118,27 @@ export class WorkNoteAgentDraftsService {
         const questionId = question ? randomUUID() : null;
         const rawUserTurn = input.answer ?? input.instruction;
         let safeUserTurn = rawUserTurn;
+        let safeClarifications = clarifications;
         try {
           const gw = this.model.securityGateway?.();
-          if (gw) [safeUserTurn] = gw.maskTexts([rawUserTurn]);
+          if (gw) {
+            [safeUserTurn] = gw.maskTexts([rawUserTurn]);
+            safeClarifications = clarifications.map((c) => {
+              const [question, answer] = gw.maskTexts([
+                c.question,
+                c.answer ?? '',
+              ]);
+              return {
+                ...c,
+                question,
+                ...(c.answer !== undefined ? { answer } : {}),
+              };
+            });
+          }
         } catch {
           // Precheck already ran on full AgentInput; preserve fallback.
         }
-        current.state.clarifications = clarifications;
+        current.state.clarifications = safeClarifications;
         current.state.conversation.push(
           { role: 'user', content: safeUserTurn },
           {

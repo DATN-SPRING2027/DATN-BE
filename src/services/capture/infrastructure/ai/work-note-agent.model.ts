@@ -60,8 +60,10 @@ export class WorkNoteAgentModel {
    * Cheap pre-flight (no network): rejects BLOCK-level data (and selections that cut
    * through a masked value) before quota or an inference lease is consumed.
    */
-  precheck(input: AgentInput): void {
-    this.securityGateway().maskAgentInput(input);
+  precheck(input: AgentInput, mode: 'editor' | 'assessment' = 'editor'): void {
+    const masked = this.securityGateway().maskAgentInput(input);
+    if (mode === 'assessment') prepareAssessmentEditorRequest(masked.input);
+    else prepareAgentRequest(masked.input);
   }
 
   async assess(input: AssessmentModelInput) {

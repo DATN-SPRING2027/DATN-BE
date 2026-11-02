@@ -123,9 +123,21 @@ export function securityPolicyFromConfig(
 ): SecurityPolicy {
   const rawMode = String(
     config.get<string>('WORKNOTE_SECURITY_GATEWAY_MODE') ?? 'enforce',
-  ).toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
   const mode: SecurityGatewayMode =
     rawMode === 'monitor' || rawMode === 'off' ? rawMode : 'enforce';
+  const nodeEnv = String(
+    config.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+  )
+    .trim()
+    .toLowerCase();
+  if (mode === 'off' && nodeEnv === 'production') {
+    throw new Error(
+      'WORKNOTE_SECURITY_GATEWAY_MODE=off is forbidden in production.',
+    );
+  }
   const max = Number(
     config.get<string | number>('WORKNOTE_SECURITY_MAX_FINDINGS'),
   );

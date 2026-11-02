@@ -41,6 +41,7 @@ import {
   expandHistoryConfirmation,
 } from './history/clarification-dedup';
 import type { HistoricalContext } from './history/history.types';
+import { AgentValidationError } from './work-note-agent';
 import {
   ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
   ASSESSMENT_EDITOR_PROVIDER_POLICY,
@@ -132,6 +133,11 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       getAssessmentArchitecture?: () => AssessmentArchitecture;
     };
     return candidate.getAssessmentArchitecture?.() ?? 'combined';
+  }
+  private maskAuthorText(text: string | undefined): string | undefined {
+    if (text === undefined) return undefined;
+    const gateway = this.model.securityGateway?.();
+    return gateway ? gateway.maskTexts([text])[0] : text;
   }
   private current(
     d: DraftRow,
@@ -246,16 +252,16 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       assessmentId,
       (d, a, h) => {
         const v = this.current(d, a, assessmentId, input);
+        const maskedAnswer = this.maskAuthorText(
+          expandHistoryConfirmation(input.answer, v.nextQuestion?.historyRef),
+        );
         try {
           return prepareReplyAssessmentInput({
             current: v,
             questionId: input.questionId,
             gapId: input.gapId,
             disposition: input.disposition,
-            answer: expandHistoryConfirmation(
-              input.answer,
-              v.nextQuestion?.historyRef,
-            ),
+            answer: maskedAnswer,
             sourcesBuilder: (answers) => this.sources(d, a, answers, h),
           });
         } catch (error) {
@@ -281,11 +287,13 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       assessmentId,
       (d, a, h) => {
         const v = this.current(d, a, assessmentId, input);
+        const maskedCorrection =
+          this.maskAuthorText(input.correctionText) ?? input.correctionText;
         try {
           return prepareCorrectionAssessmentInput({
             current: v,
             targetClaimOrGapId: input.targetClaimOrGapId,
-            correctionText: input.correctionText,
+            correctionText: maskedCorrection,
             sourcesBuilder: (answers) => this.sources(d, a, answers, h),
           });
         } catch (error) {
@@ -600,6 +608,25 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     }
     const v = this.current(d, actor, assessmentId, input);
     if (!canRequestAssessmentRewrite(v)) throw stale();
+    const editorInput = buildAssessmentEditorInput(
+      {
+        revision: d.revision,
+        title: d.state.title,
+        body: d.state.contentMarkdown,
+      },
+      actor.taskContext ?? null,
+      v,
+    );
+    try {
+      this.model.precheck?.(editorInput, 'assessment');
+    } catch (error) {
+      if (error instanceof AgentValidationError)
+        throw new UnprocessableEntityException({
+          code: error.code,
+          message: error.message,
+        });
+      throw error;
+    }
     if (!(await this.consumeAgentQuota(actor)))
       throw new HttpException({ code: 'AGENT_RATE_LIMIT' }, 429);
     await this.transaction(async (_db, session) => {
@@ -643,15 +670,6 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       );
     });
     try {
-      const editorInput = buildAssessmentEditorInput(
-        {
-          revision: d.revision,
-          title: d.state.title,
-          body: d.state.contentMarkdown,
-        },
-        actor.taskContext ?? null,
-        v,
-      );
       const completion = await this.model.rewrite(editorInput, 'assessment');
       assertAssessmentEditorProposal(editorInput, completion.result);
       const fresh = await this.owned(headers, p, id);

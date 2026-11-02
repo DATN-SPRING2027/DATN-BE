@@ -839,7 +839,7 @@ describe('Task Note Agent persisted local workflow', () => {
 
   it('returns security report on message(), masks secrets in stored user chat turns, and exposes lastSecurity until applied', async () => {
     const realGateway = new WorkNoteAgentModel(
-      new ConfigService({ WORKNOTE_SECURITY_MODE: 'enforce' }),
+      new ConfigService({ WORKNOTE_SECURITY_GATEWAY_MODE: 'enforce' }),
     ).securityGateway();
     (
       model as unknown as {

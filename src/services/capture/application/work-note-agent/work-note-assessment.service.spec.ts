@@ -1035,11 +1035,15 @@ describe('Persisted Task assessment scope and lifecycle', () => {
     });
 
     const serializedManifest = JSON.stringify(a.contextManifest.sources);
-    expect(serializedManifest).not.toContain('FORBIDDEN_SIBLING_TASK_SECRET_TEXT');
+    expect(serializedManifest).not.toContain(
+      'FORBIDDEN_SIBLING_TASK_SECRET_TEXT',
+    );
     expect(serializedManifest).not.toContain('CROSS_TENANT_ORG_LEAK_TEXT');
     expect(serializedManifest).not.toContain('DELETED_TASK_NOTE_LEAK_TEXT');
     expect(serializedManifest).not.toContain('WORK_REPORT_OUT_OF_SCOPE_TEXT');
-    expect(serializedManifest).not.toContain('PROJECT_DOCUMENT_OUT_OF_SCOPE_TEXT');
+    expect(serializedManifest).not.toContain(
+      'PROJECT_DOCUMENT_OUT_OF_SCOPE_TEXT',
+    );
 
     const relations = a.contextManifest.sources
       .filter((s) => s.kind === 'HISTORY')
@@ -1158,89 +1162,89 @@ describe('Persisted Task assessment scope and lifecycle', () => {
             )!;
             const rawOutput: AssessmentModelOutput = poisonAttempt
               ? {
-                purpose: 'COMPLETION',
-                taskUnderstanding: {
-                  objective: 'Deliver verified API.',
-                  scope: 'API',
-                  requirements: [
+                  purpose: 'COMPLETION',
+                  taskUnderstanding: {
+                    objective: 'Deliver verified API.',
+                    scope: 'API',
+                    requirements: [
+                      {
+                        text: 'Deliver verified API.',
+                        sourceRefs: [
+                          { sourceId: reqSrc.id, quote: reqSrc.text },
+                        ],
+                      },
+                    ],
+                    unknowns: [],
+                  },
+                  claims: [
                     {
-                      text: 'Deliver verified API.',
+                      text: histSrc.text,
                       sourceRefs: [
-                        { sourceId: reqSrc.id, quote: reqSrc.text },
+                        { sourceId: histSrc.id, quote: histSrc.text },
+                      ],
+                      originKind: 'HISTORICAL_REPORT',
+                      supportRelation: 'FULL',
+                    },
+                  ],
+                  coverage: [
+                    {
+                      requirementIndex: 0,
+                      status: 'SUPPORTED',
+                      sourceRefs: [
+                        { sourceId: histSrc.id, quote: histSrc.text },
                       ],
                     },
                   ],
-                  unknowns: [],
-                },
-                claims: [
-                  {
-                    text: histSrc.text,
-                    sourceRefs: [
-                      { sourceId: histSrc.id, quote: histSrc.text },
-                    ],
-                    originKind: 'HISTORICAL_REPORT',
-                    supportRelation: 'FULL',
-                  },
-                ],
-                coverage: [
-                  {
-                    requirementIndex: 0,
-                    status: 'SUPPORTED',
-                    sourceRefs: [
-                      { sourceId: histSrc.id, quote: histSrc.text },
-                    ],
-                  },
-                ],
-                gaps: [],
-                taskContextStatus: 'CLEAR',
-                noteAdequacy: 'ENOUGH_FOR_PURPOSE',
-                nextQuestion: null,
-              }
+                  gaps: [],
+                  taskContextStatus: 'CLEAR',
+                  noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+                  nextQuestion: null,
+                }
               : {
-                purpose: 'COMPLETION',
-                taskUnderstanding: {
-                  objective: 'Deliver verified API.',
-                  scope: 'API',
-                  requirements: [
+                  purpose: 'COMPLETION',
+                  taskUnderstanding: {
+                    objective: 'Deliver verified API.',
+                    scope: 'API',
+                    requirements: [
+                      {
+                        text: 'Deliver verified API.',
+                        sourceRefs: [
+                          { sourceId: reqSrc.id, quote: reqSrc.text },
+                        ],
+                      },
+                    ],
+                    unknowns: [],
+                  },
+                  claims: [
                     {
-                      text: 'Deliver verified API.',
+                      text: noteSrc.text,
                       sourceRefs: [
-                        { sourceId: reqSrc.id, quote: reqSrc.text },
+                        { sourceId: noteSrc.id, quote: noteSrc.text },
                       ],
+                      originKind: 'AUTHOR_REPORT',
+                      supportRelation: 'FULL',
+                    },
+                    {
+                      text: histSrc.text,
+                      sourceRefs: [
+                        { sourceId: histSrc.id, quote: histSrc.text },
+                      ],
+                      originKind: 'HISTORICAL_REPORT',
+                      supportRelation: 'FULL',
                     },
                   ],
-                  unknowns: [],
-                },
-                claims: [
-                  {
-                    text: noteSrc.text,
-                    sourceRefs: [
-                      { sourceId: noteSrc.id, quote: noteSrc.text },
-                    ],
-                    originKind: 'AUTHOR_REPORT',
-                    supportRelation: 'FULL',
-                  },
-                  {
-                    text: histSrc.text,
-                    sourceRefs: [
-                      { sourceId: histSrc.id, quote: histSrc.text },
-                    ],
-                    originKind: 'HISTORICAL_REPORT',
-                    supportRelation: 'FULL',
-                  },
-                ],
-                coverage: [
-                  {
-                    requirementIndex: 0,
-                    status: 'NOT_REPORTED',
-                    sourceRefs: [],
-                  },
-                ],
-                gaps: [],
-                taskContextStatus: 'CLEAR',
-                noteAdequacy: 'NEEDS_AUTHOR_INPUT',
-                nextQuestion: null,
-              };
+                  coverage: [
+                    {
+                      requirementIndex: 0,
+                      status: 'NOT_REPORTED',
+                      sourceRefs: [],
+                    },
+                  ],
+                  gaps: [],
+                  taskContextStatus: 'CLEAR',
+                  noteAdequacy: 'NEEDS_AUTHOR_INPUT',
+                  nextQuestion: null,
+                };
             const checked = gateway.validateOutput(
               JSON.stringify(rawOutput),
               guarded,
@@ -1363,12 +1367,17 @@ describe('Persisted Task assessment scope and lifecycle', () => {
       ...op(),
       taskId,
     });
-    const d = await failingHistoryService.update(headers, projectId, created.id, {
-      ...op(),
-      expectedRevision: created.revision,
-      title: 'API progress',
-      contentMarkdown: 'Updated API. Not tested.',
-    });
+    const d = await failingHistoryService.update(
+      headers,
+      projectId,
+      created.id,
+      {
+        ...op(),
+        expectedRevision: created.revision,
+        title: 'API progress',
+        contentMarkdown: 'Updated API. Not tested.',
+      },
+    );
 
     const a = await failingHistoryService.assess(headers, projectId, d.id, {
       ...op(),
@@ -1381,5 +1390,229 @@ describe('Persisted Task assessment scope and lifecycle', () => {
       false,
     );
     expect(a.claims[0].originKind).toBe('AUTHOR_REPORT');
+  });
+
+  it('masks secrets in reply() and correct(), blocks PRIVATE_KEY in reply() before quota, and completes rewriteAssessment safely with masked answers', async () => {
+    const config = new ConfigService({
+      WORKNOTE_EDITOR_ENABLED: true,
+      WORKNOTE_ASSESSMENT_ENABLED: true,
+      WORKNOTE_AGENT_ENABLED: true,
+      XKIRO_API_KEY: 'SYNTHETIC_KEY',
+      XKIRO_MODEL: 'synthetic/model',
+      WORKNOTE_SECURITY_PLACEHOLDER_KEY: 'assessment-reply-sec-key',
+    });
+    const gateway = new WorkNoteLlmSecurityGateway(
+      securityPolicyFromConfig(config),
+    );
+    const rawPassword = 'Sup3rSecretDbPassword!99';
+    const rawPrivateKey = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'MIIEowIBAAKCAQEAv3fSyntheticPrivateKeyMaterial1234567890abcdef',
+      '-----END RSA PRIVATE KEY-----',
+    ].join('\n');
+
+    const consumeRateLimit = jest.fn(async () => true);
+    const guardedModel = {
+      securityGateway: () => gateway,
+      precheck: (editorInput: AgentInput) => {
+        const masked = gateway.maskAgentInput(editorInput);
+        prepareAgentRequest(masked.input);
+      },
+      assess: jest.fn(async (input: AssessmentModelInput) => {
+        const noteSrc = input.sources.find((s) => s.id === 'note.body')!;
+        const ansSrc = input.sources.find((s) => s.kind === 'ANSWER');
+        return {
+          result: {
+            purpose: 'PROGRESS',
+            taskUnderstanding: {
+              objective: 'Implement API',
+              scope: 'API',
+              requirements: [],
+              unknowns: [],
+            },
+            claims: [
+              {
+                text: noteSrc.text,
+                sourceRefs: [{ sourceId: noteSrc.id, quote: noteSrc.text }],
+                originKind: 'AUTHOR_REPORT',
+                supportRelation: 'FULL',
+              },
+              ...(ansSrc
+                ? [
+                    {
+                      text: ansSrc.text,
+                      sourceRefs: [{ sourceId: ansSrc.id, quote: ansSrc.text }],
+                      originKind: 'AUTHOR_REPORT' as const,
+                      supportRelation: 'FULL' as const,
+                    },
+                  ]
+                : []),
+            ],
+            coverage: [],
+            gaps: ansSrc
+              ? []
+              : [
+                  {
+                    kind: 'AMBIGUOUS_STATEMENT' as const,
+                    needCode: 'CLARIFY_STATEMENT',
+                    target: 'kết nối cơ sở dữ liệu staging',
+                    impact: 'BLOCKING' as const,
+                    owner: 'AUTHOR' as const,
+                    sourceRefs: [{ sourceId: noteSrc.id, quote: noteSrc.text }],
+                  },
+                ],
+            taskContextStatus: 'CLEAR' as const,
+            noteAdequacy: ansSrc
+              ? ('ENOUGH_FOR_PURPOSE' as const)
+              : ('NEEDS_AUTHOR_INPUT' as const),
+            nextQuestion: ansSrc
+              ? null
+              : {
+                  gapIndex: 0,
+                  text: 'Bạn cấu hình kết nối cơ sở dữ liệu staging như thế nào?',
+                  reason: 'Làm rõ cấu hình đã kiểm thử.',
+                  options: [],
+                },
+          },
+          provenance: {
+            architecture: 'combined',
+            promptVersion: 'test',
+            model: 'synthetic/model',
+            calls: 1,
+            promptTokens: 10,
+            completionTokens: 10,
+            durationMs: 5,
+            formattingRecovery: [],
+          },
+        };
+      }),
+      rewrite: jest.fn(async (editorInput: AgentInput) => {
+        const masked = gateway.maskAgentInput(editorInput);
+        const prepared = prepareAgentRequest(masked.input);
+        const guarded = gateway.protectRequest(prepared.messages, {
+          vault: masked.vault,
+          rawCorpus: masked.rawCorpus,
+          priorFindings: masked.findings,
+        });
+        const answerToken =
+          /\[\[WN_SEC:PASSWORD:[a-f0-9]{10,16}\]\]/.exec(
+            editorInput.clarifications[0]?.answer ?? '',
+          )?.[0] ?? '';
+        const llmRaw = JSON.stringify({
+          status: 'SUGGESTION_READY',
+          message: 'Đã biên tập tiến độ kèm cấu hình đã che.',
+          suggestion: {
+            replacementText: `Đã cập nhật kết nối cơ sở dữ liệu staging (${answerToken}).`,
+            suggestedTitle: null,
+            changeSummary: ['Bổ sung thông tin cấu hình từ câu trả lời'],
+          },
+          questions: [],
+          uncertainties: [],
+        });
+        const checked = gateway.validateOutput(llmRaw, guarded, 'rewrite');
+        const parsed = parseAgentResult(prepared, checked.content);
+        const finalized = gateway.finalizeRewrite(parsed, editorInput, guarded);
+        return {
+          result: finalized.result,
+          provenance: {
+            provider: 'xkiro',
+            model: 'synthetic/model',
+            promptVersion: prepared.promptVersion,
+            formattingRecovery: [],
+            promptTokens: 10,
+            completionTokens: 10,
+            httpAttempts: 1,
+            durationMs: 5,
+            security: gateway.report(guarded, checked, finalized.unmasked),
+          },
+        };
+      }),
+    };
+
+    const secureService = new WorkNoteAssessmentService(
+      config,
+      {
+        resolveProject: jest.fn(async () => actor),
+        resolveTask: jest.fn(async () => actor),
+      } as unknown as WorkNotesAuthorizationService,
+      {} as WorkNotesService,
+      guardedModel as unknown as WorkNoteAgentModel,
+      { consumeRateLimit } as unknown as RedisService,
+      connection,
+    );
+
+    const created = await secureService.create(headers, projectId, {
+      ...op(),
+      taskId,
+    });
+    const d = await secureService.update(headers, projectId, created.id, {
+      ...op(),
+      expectedRevision: created.revision,
+      title: 'DB progress',
+      contentMarkdown: 'Đã cập nhật kết nối cơ sở dữ liệu staging.',
+    });
+
+    const initial = await secureService.assess(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      purpose: 'PROGRESS',
+    });
+    expect(initial.state).toBe('waiting_for_answer');
+    const callsAfterInitial = consumeRateLimit.mock.calls.length;
+
+    // 1) PRIVATE_KEY in reply() is blocked with 422 BEFORE quota is consumed!
+    await expect(
+      secureService.reply(headers, projectId, d.id, initial.id, {
+        ...op(),
+        expectedRevision: d.revision,
+        expectedAssessmentRevision: initial.revision,
+        questionId: initial.nextQuestion!.id,
+        gapId: initial.nextQuestion!.gapId,
+        disposition: 'answered',
+        answer: `Key: ${rawPrivateKey}`,
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      response: { code: 'SENSITIVE_DATA_BLOCKED' },
+    });
+    expect(consumeRateLimit.mock.calls.length).toBe(callsAfterInitial);
+
+    // 2) Maskable secret in reply() is masked in AssessmentView.answers & grounds the gap cleanly!
+    const afterReply = await secureService.reply(
+      headers,
+      projectId,
+      d.id,
+      initial.id,
+      {
+        ...op(),
+        expectedRevision: d.revision,
+        expectedAssessmentRevision: initial.revision,
+        questionId: initial.nextQuestion!.id,
+        gapId: initial.nextQuestion!.gapId,
+        disposition: 'answered',
+        answer: `Đã cấu hình DB_PASSWORD=${rawPassword} trên staging.`,
+      },
+    );
+    expect(JSON.stringify(afterReply)).not.toContain(rawPassword);
+    expect(afterReply.answers[0].answer).toContain('[[WN_SEC:PASSWORD:');
+    expect(afterReply.state).toBe('ready_to_edit');
+
+    // 3) rewriteAssessment() succeeds without 502 and converts known-input placeholder to [đã ẩn: PASSWORD]!
+    const rewritten = (await secureService.rewriteAssessment(
+      headers,
+      projectId,
+      d.id,
+      afterReply.id,
+      {
+        ...op(),
+        expectedRevision: d.revision,
+        expectedAssessmentRevision: afterReply.revision,
+      },
+    )) as { suggestion?: { replacementText: string | null } };
+    expect(rewritten.suggestion?.replacementText).toContain(
+      '[đã ẩn: PASSWORD]',
+    );
+    expect(rewritten.suggestion?.replacementText).not.toContain('[[WN_SEC:');
+    expect(rewritten.suggestion?.replacementText).not.toContain(rawPassword);
   });
 });

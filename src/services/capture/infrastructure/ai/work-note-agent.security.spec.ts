@@ -267,4 +267,124 @@ describe('Pre-LLM Security Gateway (WorkNoteAgentModel)', () => {
     expect(first[1]).toContain(placeholder);
     expect(second[0]).toBe(`DB_PASSWORD=${placeholder}`);
   });
+
+  it('masks secrets obfuscated with zero-width invisible characters before prompt construction and rejects mid-secret selections', async () => {
+    const obfuscatedKey = `${FAKE.openAiKey.slice(0, 8)}\u200B${FAKE.openAiKey.slice(8, 16)}\u200D${FAKE.openAiKey.slice(16)}`;
+    const bodyWithObfuscated = `Đã kiểm thử API với key ${obfuscatedKey} trên staging.`;
+    const network = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(echoSuggestion());
+
+    const res = await model().rewrite(
+      input({
+        draft: { revision: 1, title: 'Key test', body: bodyWithObfuscated },
+      }),
+    );
+    const sentPayload = network.mock.calls[0][1]?.body as string;
+    expect(sentPayload).not.toContain(FAKE.openAiKey.slice(8, 16));
+    expect(sentPayload).not.toContain(FAKE.openAiKey.slice(16));
+    expect(res.result.suggestion?.replacementText).toContain(FAKE.openAiKey);
+
+    const secretStart = bodyWithObfuscated.indexOf('sk-');
+    const midAfterInvisible = secretStart + 9; // right after \u200B inside the key
+    expect(
+      thrownCode(() =>
+        model().precheck(
+          input({
+            scope: 'selection',
+            draft: { revision: 1, title: 'Key test', body: bodyWithObfuscated },
+            selection: {
+              start: midAfterInvisible,
+              end: bodyWithObfuscated.length,
+              quote: bodyWithObfuscated.slice(midAfterInvisible),
+            },
+          }),
+        ),
+      ),
+    ).toBe('SELECTION_SPLITS_SENSITIVE_DATA');
+  });
+
+  it('converts known-input-only placeholders in replacementText to [đã ẩn: ...] while still rejecting forged placeholders', async () => {
+    const gateway = model().securityGateway();
+    const [maskedAnswer] = gateway.maskTexts([
+      `DB_PASSWORD=${FAKE.dbPassword}`,
+    ]);
+    const answerPlaceholder = /\[\[WN_SEC:PASSWORD:[a-f0-9]{10,16}\]\]/.exec(
+      maskedAnswer,
+    )![0];
+
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        echoSuggestion((s) => `${s}\nBổ sung: ${answerPlaceholder}`),
+      );
+    const ok = await model().rewrite(
+      input({
+        draft: {
+          revision: 1,
+          title: 'Clean body',
+          body: 'Đã kiểm thử kết nối.',
+        },
+        task: null,
+        clarifications: [
+          {
+            id: 'c1',
+            question: 'Mật khẩu staging?',
+            state: 'answered',
+            answer: maskedAnswer,
+          },
+        ],
+      }),
+    );
+    expect(ok.result.suggestion?.replacementText).toContain(
+      '[đã ẩn: PASSWORD]',
+    );
+    expect(ok.result.suggestion?.replacementText).not.toContain('[[WN_SEC:');
+    expect(ok.result.suggestion?.replacementText).not.toContain(
+      FAKE.dbPassword,
+    );
+
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        echoSuggestion((s) => `${s}\n[[WN_SEC:PASSWORD:deadbeef00]]`),
+      );
+    await expect(
+      model().rewrite(
+        input({
+          draft: {
+            revision: 1,
+            title: 'Clean body',
+            body: 'Đã kiểm thử kết nối.',
+          },
+          task: null,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'OUTPUT_SECURITY_VIOLATION' },
+    });
+  });
+
+  it('enforces post-masking prompt budgets during precheck and forbids off mode in production', () => {
+    const repeatedPhones = Array.from({ length: 120 }, () => FAKE.phone).join(
+      ' ',
+    );
+    const padded = `${repeatedPhones} ${'a'.repeat(29_500 - repeatedPhones.length)}`;
+    expect(padded.length).toBeLessThan(30_000);
+    expect(() =>
+      model().precheck(
+        input({
+          draft: { revision: 1, title: 'Budget', body: padded },
+          task: null,
+        }),
+      ),
+    ).toThrow(/oversized|exceed|vượt quá|limit/i);
+
+    expect(() =>
+      model({
+        NODE_ENV: 'production',
+        WORKNOTE_SECURITY_GATEWAY_MODE: 'off',
+      }).securityGateway(),
+    ).toThrow(/forbidden in production/i);
+  });
 });

@@ -379,10 +379,18 @@ export class WorkNoteLlmSecurityGateway {
             new RegExp(PLACEHOLDER_PATTERN.source, 'g'),
             (placeholder) => {
               const value = request.vault.reveal(placeholder);
-              if (value === undefined)
-                throw new OutputSecurityViolationException();
-              unmasked++;
-              return value;
+              if (value !== undefined) {
+                unmasked++;
+                return value;
+              }
+              if (request.maskedInputText.includes(placeholder)) {
+                const category =
+                  /\[\[WN_SEC:([A-Z_]+):[a-f0-9]{10,16}\]\]/.exec(
+                    placeholder,
+                  )?.[1] ?? 'SENSITIVE';
+                return `[đã ẩn: ${category}]`;
+              }
+              throw new OutputSecurityViolationException();
             },
           );
     const replacementText = reveal(suggestion.replacementText);

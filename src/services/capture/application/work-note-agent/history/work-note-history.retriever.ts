@@ -133,11 +133,49 @@ export async function loadTaskHistory(
 
   const ledger = await db
     .collection(LEDGER_COLLECTION)
-    .find({ ...tenant, taskId: oid(scope.taskId), disposition: 'answered' })
+    .find({
+      ...tenant,
+      taskId: oid(scope.taskId),
+      disposition: 'answered',
+      ...(scope.excludeNoteId
+        ? { noteId: { $ne: oid(scope.excludeNoteId) } }
+        : {}),
+    })
     .sort({ answeredAt: -1 })
     .limit(options.ledgerLimit ?? 20)
     .toArray();
-  for (const row of ledger)
+  const referencedNoteIds = [
+    ...new Map(
+      ledger
+        .map((row): unknown => row.noteId)
+        .filter((id): id is Types.ObjectId => id instanceof Types.ObjectId)
+        .map((id) => [id.toHexString(), id] as const),
+    ).values(),
+  ];
+  const confirmedLedgerNotes =
+    referencedNoteIds.length > 0
+      ? new Set(
+          (
+            await db
+              .collection('work_notes')
+              .find(
+                {
+                  ...tenant,
+                  _id: { $in: referencedNoteIds },
+                  status: 'CONFIRMED',
+                },
+                { projection: { _id: 1 } },
+              )
+              .toArray()
+          ).map((row) => String(row._id)),
+        )
+      : new Set<string>();
+  for (const row of ledger) {
+    if (
+      row.noteId instanceof Types.ObjectId &&
+      !confirmedLedgerNotes.has(row.noteId.toHexString())
+    )
+      continue;
     notes.push({
       id: `ledger:${String(row._id)}`,
       title: typeof row.question === 'string' ? row.question : '',
@@ -149,6 +187,7 @@ export async function loadTaskHistory(
       relation: 'SELF',
       taskId: scope.taskId,
     });
+  }
   return notes;
 }
 

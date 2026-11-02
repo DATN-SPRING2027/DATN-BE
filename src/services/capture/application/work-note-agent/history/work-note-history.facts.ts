@@ -93,10 +93,37 @@ const NEGATIVE =
 const UNCERTAIN =
   /\b(?:co the|co le|du kien|kha nang|chac|hinh nhu|maybe|might|probably|expected|dang|in progress|pending)\b/u;
 
+const CONFIRMATION_WRAPPER =
+  /^tac gia xac nhan[^:]*:\s*["“]?([\s\S]*?)["”]?\s*$/u;
+const RAW_CONFIRMATION_WRAPPER =
+  /^Tác giả xác nhận[^:]*:\s*["“]([\s\S]*)["”]\s*$/u;
+
+export function unwrapConfirmedQuote(text: string): string {
+  const match = RAW_CONFIRMATION_WRAPPER.exec(text.trim());
+  return match ? match[1].trim() : text;
+}
+
+/** Truncates to `maxLen` without ever slicing a `[[WN_SEC:...]]` placeholder in half. */
+export function truncateFactQuote(text: string, maxLen = 300): string {
+  if (text.length <= maxLen) return text;
+  let cut = maxLen - 1;
+  for (const m of text.matchAll(/\[\[WN_SEC:[A-Z_]+:[a-f0-9]{10,16}\]\]/g)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    if (cut > start && cut < end) {
+      cut = start >= 6 ? start : end;
+      break;
+    }
+  }
+  const head = text.slice(0, cut).trimEnd();
+  return head.length < text.length ? `${head}…` : text;
+}
+
 export function factPolarity(sentence: string): FactPolarity {
-  const f = fold(sentence);
-  if (NEGATIVE.test(f)) return 'NEGATIVE';
-  if (UNCERTAIN.test(f)) return 'UNCERTAIN';
+  const folded = fold(sentence).trim();
+  const unwrapped = CONFIRMATION_WRAPPER.exec(folded)?.[1]?.trim() || folded;
+  if (NEGATIVE.test(unwrapped)) return 'NEGATIVE';
+  if (UNCERTAIN.test(unwrapped)) return 'UNCERTAIN';
   return 'POSITIVE';
 }
 
@@ -121,7 +148,7 @@ export function statements(markdown: string): string[] {
     if (!line) continue;
     for (const part of line.split(/(?<=[.!?;])\s+(?=\p{Lu}|\d|\[\[)/u)) {
       const s = part.trim();
-      if (s.length >= 6) out.push(s.length > 300 ? `${s.slice(0, 297)}…` : s);
+      if (s.length >= 6) out.push(truncateFactQuote(s, 300));
     }
   }
   return out;
@@ -139,6 +166,7 @@ export function extractFacts(note: HistoricalNote): HistoricalFact[] {
   };
   if (note.source === 'CLARIFICATION_LEDGER') {
     const target = contentTokens(note.title);
+    const innerAnswer = unwrapConfirmedQuote(note.text);
     if (target.length)
       facts.push({
         id: `${note.id}#0`,
@@ -147,10 +175,9 @@ export function extractFacts(note: HistoricalNote): HistoricalFact[] {
         at: note.createdAt,
         kind: 'AUTHOR_ANSWER',
         ...origin,
-        polarity: factPolarity(note.text),
-        target: [...new Set([...target, ...contentTokens(note.text)])],
-        quote:
-          note.text.length > 300 ? `${note.text.slice(0, 297)}…` : note.text,
+        polarity: factPolarity(innerAnswer),
+        target: [...new Set([...target, ...contentTokens(innerAnswer)])],
+        quote: truncateFactQuote(innerAnswer, 300),
       });
     return facts;
   }

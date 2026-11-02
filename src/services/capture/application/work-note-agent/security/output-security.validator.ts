@@ -75,10 +75,7 @@ export function validateModelOutput(
     if (/WN_SEC/i.test(withoutValid))
       issues.push({ code: 'PLACEHOLDER_DISTORTED', field });
     for (const m of out.matchAll(new RegExp(PLACEHOLDER_PATTERN.source, 'g'))) {
-      const allowed =
-        field === 'applied'
-          ? context.vault.has(m[0])
-          : context.vault.has(m[0]) || knownInput.has(m[0]);
+      const allowed = context.vault.has(m[0]) || knownInput.has(m[0]);
       if (!allowed) issues.push({ code: 'PLACEHOLDER_UNKNOWN', field });
     }
     // 2. Newly introduced sensitive data (guessed, hallucinated or leaked).

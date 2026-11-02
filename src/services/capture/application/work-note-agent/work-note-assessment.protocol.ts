@@ -88,39 +88,39 @@ export function buildAssessmentMessages(
     ? null
     : 'text' in correctionTarget
       ? {
-        targetType: 'CLAIM',
-        text: correctionTarget.text,
-        sourceRefs: correctionTarget.sourceRefs,
-        originKind: correctionTarget.originKind,
-        supportRelation: correctionTarget.supportRelation,
-      }
+          targetType: 'CLAIM',
+          text: correctionTarget.text,
+          sourceRefs: correctionTarget.sourceRefs,
+          originKind: correctionTarget.originKind,
+          supportRelation: correctionTarget.supportRelation,
+        }
       : {
-        targetType: 'GAP',
-        kind: correctionTarget.kind,
-        target: correctionTarget.target,
-        owner: correctionTarget.owner,
-        impact: correctionTarget.impact,
-        sourceRefs: correctionTarget.sourceRefs,
-      };
+          targetType: 'GAP',
+          kind: correctionTarget.kind,
+          target: correctionTarget.target,
+          owner: correctionTarget.owner,
+          impact: correctionTarget.impact,
+          sourceRefs: correctionTarget.sourceRefs,
+        };
   const previous = input.previous
     ? {
-      purpose: input.previous.purpose,
-      gaps: input.previous.gaps.map(
-        ({ kind, target, impact, owner, sourceRefs }) => ({
-          kind,
-          target,
-          impact,
-          owner,
-          sourceRefs,
-        }),
-      ),
-      counters: input.previous.counters,
-      ...(input.correction
-        ? {
-          correctionTarget: targetContext,
-        }
-        : {}),
-    }
+        purpose: input.previous.purpose,
+        gaps: input.previous.gaps.map(
+          ({ kind, target, impact, owner, sourceRefs }) => ({
+            kind,
+            target,
+            impact,
+            owner,
+            sourceRefs,
+          }),
+        ),
+        counters: input.previous.counters,
+        ...(input.correction
+          ? {
+              correctionTarget: targetContext,
+            }
+          : {}),
+      }
     : null;
   const payload = {
     sources: input.sources,
@@ -345,7 +345,8 @@ export function parseAssessmentOutput(
       sourceRefs.some((r) => {
         const src = sourceOf(r.sourceId);
         return (
-          src?.kind === 'HISTORY' && (src.history?.relation ?? 'SELF') !== 'SELF'
+          src?.kind === 'HISTORY' &&
+          (src.history?.relation ?? 'SELF') !== 'SELF'
         );
       })
     )

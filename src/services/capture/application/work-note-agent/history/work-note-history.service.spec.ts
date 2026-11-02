@@ -399,4 +399,133 @@ describe('Historical Work Note retrieval in the Agent workflow', () => {
     const viewDisabled = await service.history(headers, projectId, d.id);
     expect(viewDisabled).toBeNull();
   });
+
+  it('expands CONFIRM_STILL_TRUE in chat message(), masks persisted state.clarifications, and drops ARCHIVED notes from task_clarification_ledger', async () => {
+    await insertNote({
+      title: 'Tiến độ ban đầu',
+      contentMarkdown: 'Đã test module cốt lõi trên staging.',
+      createdAt: daysAgo(2),
+    });
+
+    const d = await draft('Đang cập nhật tiến độ.');
+    const firstTurn = (await service.message(
+      headers,
+      projectId,
+      d.id,
+      message(d.revision),
+    )) as unknown as {
+      questions: { id: string; text: string; options: string[] }[];
+    };
+    expect(firstTurn.questions[0].options).toContain(CONFIRM_STILL_TRUE);
+
+    reply = {
+      status: 'SUGGESTION_READY',
+      message: 'Đã biên tập với xác nhận.',
+      suggestion: {
+        replacementText: 'Đã test module cốt lõi trên staging.',
+        suggestedTitle: null,
+        changeSummary: ['Cập nhật từ xác nhận'],
+      },
+      questions: [],
+      uncertainties: [],
+    };
+    const refreshed = await service.get(headers, projectId, d.id);
+    await service.message(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: refreshed.revision,
+      operation: 'clarify',
+      scope: 'whole_note',
+      instruction: 'Viết rõ tiến độ',
+      includeWholeNoteContext: false,
+      replyToQuestionId: firstTurn.questions[0].id,
+      questionDisposition: 'answered',
+      answer: CONFIRM_STILL_TRUE,
+    });
+    const secondInput = rewrite.mock.calls[1][0];
+    expect(secondInput.clarifications.at(-1)?.answer).toContain(
+      '"Đã test module cốt lõi trên staging."',
+    );
+
+    // Also verify secret masking on persisted state.clarifications & ledger filtering on ARCHIVED notes.
+    reply = {
+      status: 'CLARIFICATION_REQUIRED',
+      message: 'Cần thông tin cấu hình.',
+      suggestion: null,
+      questions: [
+        {
+          text: 'Mật khẩu kết nối DB staging là gì?',
+          reason: 'Cần bổ sung cấu hình.',
+          options: [],
+        },
+      ],
+      uncertainties: [],
+    };
+    const d2 = await draft('Ghi chú kết nối DB.');
+    const askSecret = (await service.message(
+      headers,
+      projectId,
+      d2.id,
+      message(d2.revision),
+    )) as unknown as { questions: { id: string }[] };
+    reply = {
+      status: 'SUGGESTION_READY',
+      message: 'Đã cập nhật.',
+      suggestion: {
+        replacementText: 'Ghi chú kết nối DB đã cập nhật.',
+        suggestedTitle: null,
+        changeSummary: ['Cập nhật'],
+      },
+      questions: [],
+      uncertainties: [],
+    };
+    const d2AfterAsk = await service.get(headers, projectId, d2.id);
+    await service.message(headers, projectId, d2.id, {
+      ...op(),
+      expectedRevision: d2AfterAsk.revision,
+      operation: 'clarify',
+      scope: 'whole_note',
+      instruction: 'Cập nhật',
+      includeWholeNoteContext: false,
+      replyToQuestionId: askSecret.questions[0].id,
+      questionDisposition: 'answered',
+      answer: `DB_PASSWORD=${FAKE.dbPassword}`,
+    });
+    const storedDraft = (await connection
+      .db!.collection('work_note_agent_drafts')
+      .findOne({ _id: d2.id as never })) as {
+      state?: { clarifications?: unknown };
+    } | null;
+    expect(JSON.stringify(storedDraft?.state?.clarifications)).not.toContain(
+      FAKE.dbPassword,
+    );
+    expect(JSON.stringify(storedDraft?.state?.clarifications)).toContain(
+      '[[WN_SEC:PASSWORD:',
+    );
+
+    const d2Ready = await service.get(headers, projectId, d2.id);
+    const savedNote = await service.save(headers, projectId, d2.id, {
+      ...op(),
+      expectedRevision: d2Ready.revision,
+      discardOriginalConfirmed: false,
+    });
+    const ledgerCountBefore = await connection
+      .db!.collection(LEDGER_COLLECTION)
+      .countDocuments({});
+    expect(ledgerCountBefore).toBeGreaterThan(0);
+
+    // Soft-deleting (ARCHIVED) the saved note must prevent its ledger rows from surfacing in history!
+    await connection
+      .db!.collection('work_notes')
+      .updateOne(
+        { _id: new Types.ObjectId(savedNote.id) },
+        { $set: { status: 'ARCHIVED' } },
+      );
+    await connection
+      .db!.collection('work_notes')
+      .deleteMany({ title: 'Tiến độ ban đầu' });
+
+    const d3 = await draft('Kiểm tra sau khi xoá note.');
+    const viewAfterArchive = await service.history(headers, projectId, d3.id);
+    expect(viewAfterArchive).toBeNull();
+  });
 });

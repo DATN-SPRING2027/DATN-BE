@@ -62,11 +62,7 @@ export type AssessmentClaim = {
   sourceRefs: SourceRef[];
   originKind: 'TASK_REQUIREMENT' | 'AUTHOR_REPORT' | 'HISTORICAL_REPORT';
   supportRelation:
-  | 'FULL'
-  | 'PARTIAL'
-  | 'CONTRADICTED'
-  | 'RELATED_ONLY'
-  | 'INSUFFICIENT';
+    'FULL' | 'PARTIAL' | 'CONTRADICTED' | 'RELATED_ONLY' | 'INSUFFICIENT';
   verificationStatus: 'AUTHOR_REPORTED' | 'NOT_INDEPENDENTLY_VERIFIED';
   history?: AssessmentClaimHistoryMeta;
 };
@@ -78,14 +74,14 @@ export type AssessmentRequirement = {
 export type AssessmentGap = {
   id: string;
   kind:
-  | 'SCOPE'
-  | 'IMPLEMENTATION'
-  | 'RESULT'
-  | 'EVIDENCE'
-  | 'CONTRADICTION'
-  | 'HISTORICAL_CONFLICT'
-  | 'OUTDATED_INFO'
-  | 'PURPOSE';
+    | 'SCOPE'
+    | 'IMPLEMENTATION'
+    | 'RESULT'
+    | 'EVIDENCE'
+    | 'CONTRADICTION'
+    | 'HISTORICAL_CONFLICT'
+    | 'OUTDATED_INFO'
+    | 'PURPOSE';
   target: string;
   impact: 'BLOCKING' | 'OPTIONAL';
   owner: 'NOTE_AUTHOR' | 'TASK_REQUIREMENT_OWNER';
@@ -134,17 +130,17 @@ export type AssessmentView = {
   coverage: {
     requirementId: string;
     status:
-    'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
+      'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
     sourceRefs: SourceRef[];
   }[];
   gaps: AssessmentGap[];
   nextQuestion: AssessmentQuestion | null;
   taskContextStatus: 'CLEAR' | 'PARTIAL' | 'INSUFFICIENT';
   noteAdequacy:
-  | 'ENOUGH_FOR_PURPOSE'
-  | 'NEEDS_AUTHOR_INPUT'
-  | 'UNDETERMINED'
-  | 'CONTRADICTORY';
+    | 'ENOUGH_FOR_PURPOSE'
+    | 'NEEDS_AUTHOR_INPUT'
+    | 'UNDETERMINED'
+    | 'CONTRADICTORY';
   counters: { questionCount: number; noProgress: number };
   allowedActions: string[];
   answers: AssessmentAnswer[];
@@ -152,10 +148,10 @@ export type AssessmentView = {
   reviewerSemanticAssessment: 'NOT_ESTABLISHED';
   feedback?: {
     category:
-    | 'UNNECESSARY_QUESTION'
-    | 'MISSING_QUESTION'
-    | 'WRONG_SOURCE'
-    | 'FALSE_SUFFICIENT';
+      | 'UNNECESSARY_QUESTION'
+      | 'MISSING_QUESTION'
+      | 'WRONG_SOURCE'
+      | 'FALSE_SUFFICIENT';
     at: string;
   }[];
   signals: {
@@ -221,7 +217,7 @@ export type AssessmentModelOutput = {
   coverage: {
     requirementIndex: number;
     status:
-    'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
+      'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
     sourceRefs: SourceRef[];
   }[];
   gaps: (Omit<AssessmentGap, 'id' | 'status'> & {

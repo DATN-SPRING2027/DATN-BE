@@ -19,17 +19,29 @@ export type MaskedText = Readonly<{
   splits: (offset: number) => boolean;
 }>;
 
-/** Exact-occurrence masking with an offset map (used before prompt construction). */
+const INVISIBLE_CHAR = /[\u200B-\u200D\u2060\uFEFF\u00AD]/;
+
+/** Exact-occurrence masking with an offset map (handles zero-width obfuscation). */
 export function maskTextWithMap(text: string, vault: MaskVault): MaskedText {
+  const rawIndexForClean: number[] = [];
+  let cleanText = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (INVISIBLE_CHAR.test(ch)) continue;
+    rawIndexForClean.push(i);
+    cleanText += ch;
+  }
   const spans: MaskSpan[] = [];
   for (const { value, placeholder } of vault.valuesLongestFirst()) {
+    if (!value) continue;
     let from = 0;
     for (;;) {
-      const at = text.indexOf(value, from);
+      const at = cleanText.indexOf(value, from);
       if (at < 0) break;
-      const end = at + value.length;
-      if (!spans.some((s) => at < s.end && end > s.start))
-        spans.push({ start: at, end, placeholder });
+      const start = rawIndexForClean[at];
+      const end = rawIndexForClean[at + value.length - 1] + 1;
+      if (!spans.some((s) => start < s.end && end > s.start))
+        spans.push({ start, end, placeholder });
       from = at + 1;
     }
   }

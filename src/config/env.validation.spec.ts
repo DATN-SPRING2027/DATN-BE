@@ -128,4 +128,38 @@ describe('validateEnvironment', () => {
     expect(validated.CONTINUUM_WEB_BASE_URL).toBe('http://localhost:3000');
     expect(validated.SAG_WEB_BASE_URL).toBe('http://localhost:3002');
   });
+
+  it('validates WORKNOTE_* security and history configuration and forbids off mode in production', () => {
+    const validated = validateEnvironment({
+      NODE_ENV: 'development',
+      WORKNOTE_SECURITY_GATEWAY_MODE: 'MONITOR',
+      WORKNOTE_SECURITY_MAX_FINDINGS: '30',
+      WORKNOTE_SECURITY_PLACEHOLDER_KEY: 'a-strong-placeholder-key-1234',
+      WORKNOTE_PII_MASK_INTERNAL_EMAIL: 'true',
+      WORKNOTE_HISTORY_ENABLED: 'true',
+      WORKNOTE_HISTORY_MAX_NOTES: '8',
+      WORKNOTE_HISTORY_CHAR_BUDGET: '8000',
+      WORKNOTE_HISTORY_STALE_DAYS: '21',
+      WORKNOTE_HISTORY_RELATED_ENABLED: 'true',
+      WORKNOTE_HISTORY_MAX_RELATED_NOTES: '4',
+    });
+    expect(validated.WORKNOTE_SECURITY_GATEWAY_MODE).toBe('monitor');
+    expect(validated.WORKNOTE_SECURITY_MAX_FINDINGS).toBe(30);
+    expect(validated.WORKNOTE_PII_MASK_INTERNAL_EMAIL).toBe(true);
+    expect(validated.WORKNOTE_HISTORY_MAX_NOTES).toBe(8);
+    expect(validated.WORKNOTE_HISTORY_MAX_RELATED_NOTES).toBe(4);
+
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'production',
+        WORKNOTE_SECURITY_GATEWAY_MODE: 'off',
+      }),
+    ).toThrow('WORKNOTE_SECURITY_GATEWAY_MODE cannot be "off" in production');
+
+    expect(() =>
+      validateEnvironment({
+        WORKNOTE_SECURITY_PLACEHOLDER_KEY: 'too-short',
+      }),
+    ).toThrow('WORKNOTE_SECURITY_PLACEHOLDER_KEY');
+  });
 });

@@ -199,6 +199,25 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
         index({ projectId: 1, responsibilityCode: 1 }),
       ],
     },
+    {
+      name: 'task_clarification_ledger',
+      indexes: [
+        index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            taskId: 1,
+            disposition: 1,
+            answeredAt: -1,
+          },
+          { name: 'ledger_task_answered_at' },
+        ),
+        index(
+          { organizationId: 1, projectId: 1, noteId: 1 },
+          { name: 'ledger_note_lookup' },
+        ),
+      ],
+    },
   ],
 };
 

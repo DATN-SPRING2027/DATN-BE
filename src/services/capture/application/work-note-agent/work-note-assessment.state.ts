@@ -287,16 +287,16 @@ export function assembleAssessment(
     correctionGrounded &&
     (out.purpose === 'COMPLETION'
       ? out.taskContextStatus === 'CLEAR' &&
-      requirements.length > 0 &&
-      out.coverage.length === requirements.length &&
-      out.coverage.every((c) => c.status === 'SUPPORTED') &&
-      out.coverage.some((c) =>
-        c.sourceRefs.some(
-          (r) => r.sourceId === `answer.${correctionAnswer.id}`,
-        ),
-      )
+        requirements.length > 0 &&
+        out.coverage.length === requirements.length &&
+        out.coverage.every((c) => c.status === 'SUPPORTED') &&
+        out.coverage.some((c) =>
+          c.sourceRefs.some(
+            (r) => r.sourceId === `answer.${correctionAnswer.id}`,
+          ),
+        )
       : out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-      !out.gaps.some((g) => g.impact === 'BLOCKING'));
+        !out.gaps.some((g) => g.impact === 'BLOCKING'));
   const materializeGap = (
     g: Omit<AssessmentGap, 'id' | 'status'> & { needCode?: string },
     deterministicOptional = false,
@@ -313,22 +313,22 @@ export function assembleAssessment(
     );
     const declinedSibling = !matchedPrior
       ? prior?.gaps.find((p) => {
-        const priorNeed =
-          extractGapNeedCode(p.id) ?? resolveNeed(p, prior.purpose);
-        if (p.owner !== g.owner || priorNeed !== currentNeed) return false;
-        if (disjointNoteQuotes(p.sourceRefs, g.sourceRefs)) return false;
-        const priorAns = [...input.answers]
-          .reverse()
-          .find((a) => gapMatchesId(p, a.gapId));
-        return (
-          p.status === 'unknown' ||
-          p.status === 'skipped' ||
-          (!!priorAns &&
-            (priorAns.disposition === 'unknown' ||
-              priorAns.disposition === 'skipped' ||
-              hasNoNewInformation(priorAns)))
-        );
-      })
+          const priorNeed =
+            extractGapNeedCode(p.id) ?? resolveNeed(p, prior.purpose);
+          if (p.owner !== g.owner || priorNeed !== currentNeed) return false;
+          if (disjointNoteQuotes(p.sourceRefs, g.sourceRefs)) return false;
+          const priorAns = [...input.answers]
+            .reverse()
+            .find((a) => gapMatchesId(p, a.gapId));
+          return (
+            p.status === 'unknown' ||
+            p.status === 'skipped' ||
+            (!!priorAns &&
+              (priorAns.disposition === 'unknown' ||
+                priorAns.disposition === 'skipped' ||
+                hasNoNewInformation(priorAns)))
+          );
+        })
       : undefined;
     const id = matchedPrior?.id ?? declinedSibling?.id ?? `gap-${currentKey}`;
     const answer = [...input.answers]
@@ -457,10 +457,11 @@ export function assembleAssessment(
             {
               kind: 'HISTORICAL_CONFLICT',
               needCode: 'history.conflict',
-              target: `Mâu thuẫn với ghi chú lịch sử (${h.date}): ${h.noteTitle}`.slice(
-                0,
-                160,
-              ),
+              target:
+                `Mâu thuẫn với ghi chú lịch sử (${h.date}): ${h.noteTitle}`.slice(
+                  0,
+                  160,
+                ),
               impact: 'OPTIONAL',
               owner: 'NOTE_AUTHOR',
               sourceRefs: refs,
@@ -479,7 +480,7 @@ export function assembleAssessment(
       h.factStatus === 'OUTDATED' &&
       (citedInClaims ||
         overlap(factTokens, currentTopicTokens) >=
-        Math.min(2, Math.max(1, factTokens.length)));
+          Math.min(2, Math.max(1, factTokens.length)));
     const citedSuperseded = h.factStatus === 'SUPERSEDED' && citedInClaims;
     if (relevantOutdated || citedSuperseded) {
       ensureHistoricalClaim(s.id, s.text, h, 'RELATED_ONLY');
@@ -518,9 +519,9 @@ export function assembleAssessment(
         ...g,
         status:
           correctionGrounded &&
-            g.owner === 'NOTE_AUTHOR' &&
-            out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-            (gapMatchesId(g, input.correction?.targetId) || completeCorrection)
+          g.owner === 'NOTE_AUTHOR' &&
+          out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+          (gapMatchesId(g, input.correction?.targetId) || completeCorrection)
             ? 'answered'
             : a.disposition === 'skipped'
               ? 'skipped'
@@ -533,9 +534,9 @@ export function assembleAssessment(
         ...g,
         status:
           correctionGrounded &&
-            g.owner === 'NOTE_AUTHOR' &&
-            out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-            completeCorrection
+          g.owner === 'NOTE_AUTHOR' &&
+          out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+          completeCorrection
             ? 'answered'
             : g.status,
       });

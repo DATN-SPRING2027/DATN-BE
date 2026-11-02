@@ -5,6 +5,7 @@ import {
   factPolarity,
   sameTarget,
   statements,
+  truncateFactQuote,
 } from './work-note-history.facts';
 import { verifyHistory } from './work-note-history.verification';
 import {
@@ -510,5 +511,46 @@ describe('Prompt integration', () => {
       expect.objectContaining({ relation: 'PARENT', task: 'OPS-10' }),
     );
     expect(prepared.promptVersion).toContain('history.v2');
+  });
+
+  it('never slices a [[WN_SEC:...]] placeholder across the 300-char quote boundary and preserves polarity inside confirmation wrappers', () => {
+    const placeholder = '[[WN_SEC:API_KEY:0123456789ab]]';
+    const prefix = 'Đã kiểm thử tích hợp dịch vụ xác thực '.padEnd(285, 'a');
+    const longStatement = `${prefix} ${placeholder} trên môi trường staging.`;
+    const truncated = truncateFactQuote(longStatement, 300);
+    expect(truncated.length).toBeLessThanOrEqual(300);
+    expect(truncated).not.toContain('[[WN_SEC:API_KEY:');
+
+    expect(
+      factPolarity(
+        'Tác giả xác nhận không thay đổi từ ghi chú cũ ngày 01/11/2026: "Đã test module cốt lõi trên staging."',
+      ),
+    ).toBe('POSITIVE');
+    expect(
+      factPolarity(
+        'Tác giả xác nhận lại thông tin từ ghi chú cũ ngày 01/11/2026: "Chưa kiểm thử chịu tải."',
+      ),
+    ).toBe('NEGATIVE');
+    expect(
+      factPolarity(
+        'Tác giả xác nhận lại thông tin từ ghi chú cũ ngày 01/11/2026: "Dự kiến tuần sau mới deploy."',
+      ),
+    ).toBe('UNCERTAIN');
+
+    const ledgerFacts = extractFacts({
+      id: 'ledger:1',
+      title: 'Tình trạng kiểm thử tải?',
+      text: 'Tác giả xác nhận lại thông tin từ ghi chú cũ ngày 01/11/2026: "Chưa kiểm thử chịu tải."',
+      createdAt: daysAgo(1),
+      updatedAt: daysAgo(1),
+      version: 1,
+      source: 'CLARIFICATION_LEDGER',
+      relation: 'SELF',
+      taskId: 't1',
+    });
+    expect(ledgerFacts[0].polarity).toBe('NEGATIVE');
+    expect(ledgerFacts[0].quote).toBe('Chưa kiểm thử chịu tải.');
+    expect(ledgerFacts[0].target).not.toContain('tac');
+    expect(ledgerFacts[0].target).not.toContain('nhan');
   });
 });
