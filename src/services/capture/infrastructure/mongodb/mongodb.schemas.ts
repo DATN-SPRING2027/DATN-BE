@@ -419,6 +419,10 @@ const captureSchemas: Record<string, Schema> = {
   ),
   work_reports: new Schema(
     {
+      reminderEmailLeaseToken: String,
+      reminderEmailDueAt: Date,
+      reminderEmailSentAt: Date,
+      reminderEmailLeaseUntil: Date,
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
       memberUserId: { type: Schema.Types.ObjectId, required: true },
@@ -532,6 +536,16 @@ const captureSchemas: Record<string, Schema> = {
   ),
   work_report_settings: new Schema(
     {
+      memberReminderLeadMinutes: {
+        type: Number,
+        enum: [null, 60, 120, 1440, 2880],
+        default: null,
+      },
+      leaderReminderLeadMinutes: {
+        type: Number,
+        enum: [null, 60, 120, 1440, 2880],
+        default: null,
+      },
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
       reportScope: {

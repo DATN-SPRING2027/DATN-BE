@@ -3471,6 +3471,57 @@ export class WorkNotesService {
     );
   }
 
+  async updateWorkReportReminder(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reminderLeadMinutes: number | null,
+    scope: WorkReportScope = 'MEMBER',
+  ): Promise<WorkReportSettingsRecord> {
+    if (![null, 60, 120, 1440, 2880].includes(reminderLeadMinutes)) {
+      throw new BadRequestException({
+        code: 'INVALID_INPUT',
+        message: 'Invalid reminder lead time.',
+      });
+    }
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    const hasActiveLeaders = await this.resolveHasActiveLeaders(actor, headers);
+    if (
+      scope === 'LEADER'
+        ? !this.canManageLeaderTier(actor)
+        : !this.canManageMemberTier(actor, hasActiveLeaders)
+    ) {
+      throw this.reviewPermissionDenied();
+    }
+    const timelines = await this.scopedSettingsTimelines(actor);
+    // Keep immediate reminder preferences on the stable first settings row,
+    // independently of cadence segments and their effective dates.
+    const root = timelines.memberRows[0];
+    const field =
+      scope === 'LEADER'
+        ? 'leaderReminderLeadMinutes'
+        : 'memberReminderLeadMinutes';
+    await this.transaction(async (db, session) => {
+      await db.collection('work_report_settings').updateOne(
+        {
+          _id: root._id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { $set: { [field]: reminderLeadMinutes, updatedAt: new Date() } },
+        { session },
+      );
+      await this.auditEvent(
+        actor,
+        'REPORT_REMINDER_CHANGED',
+        'PROJECT',
+        projectId,
+        { scope, reminderLeadMinutes },
+        session,
+      );
+    });
+    return this.getWorkReportSettings(headers, projectId, scope);
+  }
+
   async updateWorkReportSettings(
     headers: CaptureRequestHeaders,
     projectId: string,
@@ -5386,6 +5437,12 @@ export class WorkNotesService {
       isManager,
       isLeader,
       hasActiveLeaders,
+      reminderLeadMinutes:
+        (timelines.memberRows[0]?.[
+          scope === 'LEADER'
+            ? 'leaderReminderLeadMinutes'
+            : 'memberReminderLeadMinutes'
+        ] as number | null | undefined) ?? null,
       frequency: activeTier.frequency,
       effectiveAt: activeTier.effectiveAt,
       ...(activeTier.nextFrequency

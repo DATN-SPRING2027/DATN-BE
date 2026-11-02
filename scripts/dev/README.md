@@ -295,3 +295,30 @@ before preflight. The generic authority service remains behind its existing
 default-deny issuer/MFA policy; no public endpoint, production MFA change, or
 self-service grant path is added. This command has not been run as part of this
 implementation task.
+
+### Recover knowledge after replacing a SAG instance
+
+SAG storage and MongoDB receipts belong to different runtimes. A previous
+`SEARCH_READY` receipt does not recreate documents in an empty SAG database.
+Keep PostgreSQL, SAG uploads, and vector storage persistent and backed up.
+
+For local attachments set `WORK_NOTE_LOCAL_STORAGE_DIR` to a persistent absolute
+path (not a macOS temporary folder). Restore original bytes at their existing
+storage keys only after checking their approved SHA-256. If the original is lost,
+reupload and review a new document version; do not substitute a same-named file.
+Enable `KNOWLEDGE_OUTBOX_CONSUMER_ENABLED=true` and restart the backend for normal
+background retries. New approvals use the existing outbox and synchronization API.
+
+After `npm run build`, preview a scoped recovery from the backend root:
+
+```sh
+node scripts/dev/recover-project-knowledge.cjs ORGANIZATION_ID PROJECT_ID
+node scripts/dev/recover-project-knowledge.cjs ORGANIZATION_ID PROJECT_ID --apply
+```
+
+Run one operator recovery per project at a time. This maintenance command requires
+operator access to the backend environment. It skips missing/mismatched local
+attachments, preserves historical outbox events, and routes replay through the
+existing consumer's current approval/version/revocation guards and upload
+idempotency. It starts no mail or report workers. `PUBLISHED` may mean asynchronous
+handoff: verify the document status reports `searchReady=true` before testing AI.

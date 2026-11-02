@@ -679,10 +679,27 @@ export class WorkNotesController {
     assertQueryKeys(rawQuery, ['scope']);
     const value = record(body);
     if (
-      Object.keys(value).some((key) => key !== 'frequency' && key !== 'scope')
+      Object.keys(value).some(
+        (key) => !['frequency', 'scope', 'reminderLeadMinutes'].includes(key),
+      )
     )
       invalid();
     const scope = validateReportScope(value.scope ?? rawQuery.scope);
+    if ('reminderLeadMinutes' in value) {
+      if (
+        'frequency' in value ||
+        ![null, 60, 120, 1440, 2880].includes(
+          value.reminderLeadMinutes as number | null,
+        )
+      )
+        invalid();
+      return this.service.updateWorkReportReminder(
+        headers,
+        projectId,
+        value.reminderLeadMinutes as number | null,
+        scope ?? 'MEMBER',
+      );
+    }
     return scope
       ? this.service.updateWorkReportSettings(
           headers,

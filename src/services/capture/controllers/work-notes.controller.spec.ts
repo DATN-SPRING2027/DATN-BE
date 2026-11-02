@@ -27,6 +27,9 @@ describe('WorkNotesController CSRF enforcement', () => {
       commentDocument: jest.fn().mockResolvedValue({ id: documentId }),
       reviewDocument: jest.fn().mockResolvedValue({ id: documentId }),
       archiveDocument: jest.fn().mockResolvedValue({ id: documentId }),
+      updateWorkReportReminder: jest
+        .fn()
+        .mockResolvedValue({ reminderLeadMinutes: 60 }),
       updateWorkReportSettings: jest
         .fn()
         .mockResolvedValue({ frequency: 'DAILY' }),
@@ -55,6 +58,41 @@ describe('WorkNotesController CSRF enforcement', () => {
     const stream = Readable.from(body ? [body] : []);
     return Object.assign(stream, { headers }) as unknown as Request;
   };
+
+  it('accepts reminder-only changes, validates allowed values and rejects mixed cadence/reminder requests', async () => {
+    const req = makeRequest({
+      cookie: `continuum_session=session-1; continuum_csrf=${csrfToken}`,
+      'x-csrf-token': csrfToken,
+    });
+    for (const reminderLeadMinutes of [null, 60, 120, 1440, 2880]) {
+      await controller.updateWorkReportSettings(req, projectId, {
+        reminderLeadMinutes,
+        scope: 'LEADER',
+      });
+      expect(service.updateWorkReportReminder).toHaveBeenLastCalledWith(
+        expect.anything(),
+        projectId,
+        reminderLeadMinutes,
+        'LEADER',
+      );
+    }
+    for (const reminderLeadMinutes of [0, -1, 61, '60', {}, true]) {
+      expect(() =>
+        controller.updateWorkReportSettings(req, projectId, {
+          reminderLeadMinutes,
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      controller.updateWorkReportSettings(req, projectId, {
+        reminderLeadMinutes: 60,
+        frequency: 'DAILY',
+      }),
+    ).toThrow();
+    expect(() =>
+      controller.updateWorkReportSettings(req, projectId, {}),
+    ).toThrow();
+  });
 
   it('rejects cookie-authenticated mutations when x-csrf-token is missing or mismatched', async () => {
     const missingCsrfReq = makeRequest({

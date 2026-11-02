@@ -1292,6 +1292,7 @@ export class NotificationCenterRepository {
           conversationId:
             doc.target.conversationId ?? doc.conversationId ?? null,
           messageId: doc.target.messageId ?? null,
+          ...(doc.target.reportId ? { reportId: doc.target.reportId } : {}),
         }
       : doc.actionUrl
         ? {

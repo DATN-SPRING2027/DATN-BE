@@ -1,6 +1,8 @@
+import { WorkReportReminderService } from './work-report-reminder.service';
 import {
   Injectable,
   Logger,
+  Optional,
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
@@ -21,6 +23,7 @@ export class WorkReportOverdueScheduler
   constructor(
     private readonly workNotes: WorkNotesService,
     private readonly roster: ProjectReportRosterService,
+    @Optional() private readonly reminders?: WorkReportReminderService,
   ) {}
 
   onModuleInit(): void {
@@ -67,6 +70,7 @@ export class WorkReportOverdueScheduler
         );
       }
       if (!rosterAvailable) return;
+      await this.reminders?.sweep(activeRosters);
       try {
         await this.workNotes.sweepOverdueReports(activeRosters);
       } catch (error) {

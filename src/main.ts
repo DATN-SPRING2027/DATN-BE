@@ -2,11 +2,14 @@ import 'dotenv/config';
 import './common/observability/register-otel';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
-import { AppModule } from './app.module';
 import { configureApplication } from './bootstrap';
 import { ConfigService } from '@nestjs/config';
+import { monolithIamServiceUrl } from './monolith-configuration';
 
 async function bootstrap() {
+  process.env.IAM_SERVICE_URL = monolithIamServiceUrl(process.env);
+  // ConfigModule validates defaults while AppModule loads; set the monolith URL first.
+  const { AppModule } = await import('./app.module.js');
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log'],
   });
