@@ -34,6 +34,8 @@ export function findProtectedRanges(
   }
   if (fence) ranges.push({ start: fence.start, end: text.length });
   for (const pattern of [
+    // Security Gateway placeholders are opaque and must survive verbatim.
+    /\[\[WN_SEC:[A-Z_]+:[a-f0-9]{10,16}\]\]/g,
     /(`+)[^\r\n]*?\1/g,
     /https?:\/\/[^\s<>"`]+/g,
     /__WN_PROTECTED_[A-Za-z0-9_]+?__/g,

@@ -37,6 +37,11 @@ import type {
 } from './work-note-assessment.types';
 import { assessmentHash } from './work-note-assessment.protocol';
 import {
+  dedupeClarification,
+  expandHistoryConfirmation,
+} from './history/clarification-dedup';
+import type { HistoricalContext } from './history/history.types';
+import {
   ASSESSMENT_ANALYSIS_PROVIDER_POLICY,
   ASSESSMENT_EDITOR_PROVIDER_POLICY,
   buildAssessmentEditorInput,
@@ -168,9 +173,10 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     d: DraftRow,
     a: WorkNotesActor,
     answers: AssessmentAnswer[],
+    historical?: HistoricalContext | null,
   ): AssessmentSource[] {
     try {
-      return buildAssessmentSources({
+      const sources = buildAssessmentSources({
         taskContext: a.taskContext,
         taskContextVersion: a.taskContextVersion,
         taskContextInvalid: Boolean(a.taskContextInvalid),
@@ -180,7 +186,31 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
           contentMarkdown: d.state.contentMarkdown,
         },
         answers,
+        historicalContext: historical ?? null,
       });
+      // Source-level masking: quotes, evidence and persisted manifests never hold
+      // secrets/PII, and HMAC-stable placeholders keep quotes valid across turns.
+      const gateway = this.model.securityGateway?.();
+      if (!gateway) return sources;
+      const n = sources.length;
+      const masked = gateway.maskTexts([
+        ...sources.map((s) => s.text),
+        ...sources.map((s) => s.label),
+        ...sources.map((s) => s.history?.noteTitle ?? ''),
+      ]);
+      return sources.map((s, i) => ({
+        ...s,
+        text: masked[i],
+        label: masked[n + i],
+        ...(s.history
+          ? {
+              history: {
+                ...s.history,
+                noteTitle: masked[2 * n + i],
+              },
+            }
+          : {}),
+      }));
     } catch (error) {
       return rethrowPipelineError(error);
     }
@@ -192,10 +222,10 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     input: AssessmentInput,
   ) {
     this.enabled();
-    return this.infer(headers, p, id, input, 'assess', null, (d, a) =>
+    return this.infer(headers, p, id, input, 'assess', null, (d, a, h) =>
       prepareInitialAssessmentInput({
         purpose: input.purpose,
-        sourcesBuilder: (answers) => this.sources(d, a, answers),
+        sourcesBuilder: (answers) => this.sources(d, a, answers, h),
       }),
     );
   }
@@ -207,21 +237,32 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     input: AssessmentReply,
   ) {
     this.enabled();
-    return this.infer(headers, p, id, input, 'reply', assessmentId, (d, a) => {
-      const v = this.current(d, a, assessmentId, input);
-      try {
-        return prepareReplyAssessmentInput({
-          current: v,
-          questionId: input.questionId,
-          gapId: input.gapId,
-          disposition: input.disposition,
-          answer: input.answer,
-          sourcesBuilder: (answers) => this.sources(d, a, answers),
-        });
-      } catch (error) {
-        return rethrowPipelineError(error);
-      }
-    });
+    return this.infer(
+      headers,
+      p,
+      id,
+      input,
+      'reply',
+      assessmentId,
+      (d, a, h) => {
+        const v = this.current(d, a, assessmentId, input);
+        try {
+          return prepareReplyAssessmentInput({
+            current: v,
+            questionId: input.questionId,
+            gapId: input.gapId,
+            disposition: input.disposition,
+            answer: expandHistoryConfirmation(
+              input.answer,
+              v.nextQuestion?.historyRef,
+            ),
+            sourcesBuilder: (answers) => this.sources(d, a, answers, h),
+          });
+        } catch (error) {
+          return rethrowPipelineError(error);
+        }
+      },
+    );
   }
   async correct(
     headers: CaptureRequestHeaders,
@@ -238,14 +279,14 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       input,
       'correct',
       assessmentId,
-      (d, a) => {
+      (d, a, h) => {
         const v = this.current(d, a, assessmentId, input);
         try {
           return prepareCorrectionAssessmentInput({
             current: v,
             targetClaimOrGapId: input.targetClaimOrGapId,
             correctionText: input.correctionText,
-            sourcesBuilder: (answers) => this.sources(d, a, answers),
+            sourcesBuilder: (answers) => this.sources(d, a, answers, h),
           });
         } catch (error) {
           return rethrowPipelineError(error);
@@ -268,7 +309,7 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       input,
       'reset_assessment',
       assessmentId,
-      (d, a) => {
+      (d, a, h) => {
         const v = this.current(d, a, assessmentId, input, true);
         try {
           return prepareResetAssessmentInput({
@@ -276,13 +317,38 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
             currentTaskContextHash: taskHash(a),
             newPurpose: input.newPurpose,
             carryAnswerIds: input.carryAnswerIds,
-            sourcesBuilder: (answers) => this.sources(d, a, answers),
+            sourcesBuilder: (answers) => this.sources(d, a, answers, h),
           });
         } catch (error) {
           return rethrowPipelineError(error);
         }
       },
     );
+  }
+  /**
+   * History never counts as evidence for the current note. It only prevents re-asking:
+   * a question already answered by a previous note/answer becomes a quoted
+   * confirmation (the quote is expanded into the author's answer on reply).
+   */
+  private applyHistoryToQuestion(
+    v: AssessmentView,
+    historical: HistoricalContext | null,
+    modelInput: AssessmentModelInput,
+  ): void {
+    const question = v.nextQuestion;
+    if (!question || !historical) return;
+    const decision = dedupeClarification(question, historical);
+    if (decision.action === 'keep') return;
+    const alreadyConfirmed = modelInput.answers.some((a) =>
+      a.answer?.includes(decision.historyRef.quote),
+    );
+    if (alreadyConfirmed) return;
+    v.nextQuestion = {
+      ...question,
+      ...decision.question,
+      options: [...decision.question.options],
+      historyRef: decision.historyRef,
+    };
   }
   private async infer(
     headers: CaptureRequestHeaders,
@@ -291,7 +357,11 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     input: AssessmentInput | AssessmentMutation,
     kind: string,
     assessmentId: string | null,
-    build: (d: DraftRow, a: WorkNotesActor) => AssessmentModelInput,
+    build: (
+      d: DraftRow,
+      a: WorkNotesActor,
+      historical: HistoricalContext | null,
+    ) => AssessmentModelInput,
   ): Promise<AssessmentView> {
     const { actor, draft: d } = await this.owned(headers, p, id),
       payload = {
@@ -320,7 +390,12 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       return recorded;
     }
     if (d.revision !== input.expectedRevision) throw stale();
-    const modelInput = build(d, actor);
+    const historical = await this.loadHistoricalContext(
+      headers,
+      actor,
+      d,
+    ).catch(() => null);
+    const modelInput = build(d, actor, historical);
     try {
       validateAssessmentRequestBudget(modelInput, this.architecture());
     } catch (error) {
@@ -434,6 +509,7 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         provisionalId: provisional.id,
         provenance: completion.provenance,
       });
+      this.applyHistoryToQuestion(v, historical, modelInput);
       return await this.transaction(async (_db, session) => {
         const changed = await this.drafts().updateOne(
           {
@@ -580,7 +656,13 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       assertAssessmentEditorProposal(editorInput, completion.result);
       const fresh = await this.owned(headers, p, id);
       if (taskHash(fresh.actor) !== taskHash(actor)) throw stale();
-      const response = { ...completion.result, sourceRevision: d.revision };
+      const response = {
+        ...completion.result,
+        sourceRevision: d.revision,
+        ...(completion.provenance.security
+          ? { security: completion.provenance.security }
+          : {}),
+      };
       await this.transaction(async (_db, session) => {
         const next = {
           ...v,

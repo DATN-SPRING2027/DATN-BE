@@ -1,3 +1,11 @@
+import type { HistoryRef } from './history/clarification-dedup';
+import type {
+  FactPolarity,
+  FactStatus,
+  HistoricalFactKind,
+  HistoryRelation,
+} from './history/history.types';
+
 export const ASSESSMENT_PURPOSES = [
   'AUTO',
   'PROGRESS',
@@ -19,23 +27,48 @@ export type AssessmentState =
   | 'paused'
   | 'error';
 export type SourceRef = { sourceId: string; quote: string };
+export type AssessmentHistoryMetadata = {
+  factId: string;
+  noteId: string | null;
+  noteTitle: string;
+  date: string;
+  relation: HistoryRelation;
+  taskKey?: string;
+  factStatus: FactStatus;
+  factKind?: HistoricalFactKind;
+  factPolarity?: FactPolarity;
+  sourceType?: 'TASK_NOTE' | 'CLARIFICATION_LEDGER';
+};
+export type AssessmentClaimHistoryMeta = {
+  relation: HistoryRelation;
+  taskKey?: string;
+  date: string;
+  noteTitle: string;
+  factStatus: FactStatus;
+};
 export type AssessmentSource = {
   id: string;
-  kind: 'TASK' | 'NOTE' | 'ANSWER';
+  kind: 'TASK' | 'NOTE' | 'ANSWER' | 'HISTORY';
   label: string;
   text: string;
   version: string;
   loadStatus: 'LOADED' | 'INVALID' | 'UNAVAILABLE';
   includedInRequest: boolean;
+  history?: AssessmentHistoryMetadata;
 };
 export type AssessmentClaim = {
   id: string;
   text: string;
   sourceRefs: SourceRef[];
-  originKind: 'TASK_REQUIREMENT' | 'AUTHOR_REPORT';
+  originKind: 'TASK_REQUIREMENT' | 'AUTHOR_REPORT' | 'HISTORICAL_REPORT';
   supportRelation:
-    'FULL' | 'PARTIAL' | 'CONTRADICTED' | 'RELATED_ONLY' | 'INSUFFICIENT';
+  | 'FULL'
+  | 'PARTIAL'
+  | 'CONTRADICTED'
+  | 'RELATED_ONLY'
+  | 'INSUFFICIENT';
   verificationStatus: 'AUTHOR_REPORTED' | 'NOT_INDEPENDENTLY_VERIFIED';
+  history?: AssessmentClaimHistoryMeta;
 };
 export type AssessmentRequirement = {
   id: string;
@@ -45,12 +78,14 @@ export type AssessmentRequirement = {
 export type AssessmentGap = {
   id: string;
   kind:
-    | 'SCOPE'
-    | 'IMPLEMENTATION'
-    | 'RESULT'
-    | 'EVIDENCE'
-    | 'CONTRADICTION'
-    | 'PURPOSE';
+  | 'SCOPE'
+  | 'IMPLEMENTATION'
+  | 'RESULT'
+  | 'EVIDENCE'
+  | 'CONTRADICTION'
+  | 'HISTORICAL_CONFLICT'
+  | 'OUTDATED_INFO'
+  | 'PURPOSE';
   target: string;
   impact: 'BLOCKING' | 'OPTIONAL';
   owner: 'NOTE_AUTHOR' | 'TASK_REQUIREMENT_OWNER';
@@ -63,6 +98,8 @@ export type AssessmentQuestion = {
   text: string;
   reason: string;
   options: string[];
+  /** Present when the question confirms information from a previous note/answer. */
+  historyRef?: HistoryRef;
 };
 export type AssessmentAnswer = {
   id: string;
@@ -97,17 +134,17 @@ export type AssessmentView = {
   coverage: {
     requirementId: string;
     status:
-      'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
+    'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
     sourceRefs: SourceRef[];
   }[];
   gaps: AssessmentGap[];
   nextQuestion: AssessmentQuestion | null;
   taskContextStatus: 'CLEAR' | 'PARTIAL' | 'INSUFFICIENT';
   noteAdequacy:
-    | 'ENOUGH_FOR_PURPOSE'
-    | 'NEEDS_AUTHOR_INPUT'
-    | 'UNDETERMINED'
-    | 'CONTRADICTORY';
+  | 'ENOUGH_FOR_PURPOSE'
+  | 'NEEDS_AUTHOR_INPUT'
+  | 'UNDETERMINED'
+  | 'CONTRADICTORY';
   counters: { questionCount: number; noProgress: number };
   allowedActions: string[];
   answers: AssessmentAnswer[];
@@ -115,10 +152,10 @@ export type AssessmentView = {
   reviewerSemanticAssessment: 'NOT_ESTABLISHED';
   feedback?: {
     category:
-      | 'UNNECESSARY_QUESTION'
-      | 'MISSING_QUESTION'
-      | 'WRONG_SOURCE'
-      | 'FALSE_SUFFICIENT';
+    | 'UNNECESSARY_QUESTION'
+    | 'MISSING_QUESTION'
+    | 'WRONG_SOURCE'
+    | 'FALSE_SUFFICIENT';
     at: string;
   }[];
   signals: {
@@ -180,11 +217,11 @@ export type AssessmentModelOutput = {
     requirements: { text: string; sourceRefs: SourceRef[] }[];
     unknowns: string[];
   };
-  claims: Omit<AssessmentClaim, 'id' | 'verificationStatus'>[];
+  claims: Omit<AssessmentClaim, 'id' | 'verificationStatus' | 'history'>[];
   coverage: {
     requirementIndex: number;
     status:
-      'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
+    'SUPPORTED' | 'PARTIAL' | 'NOT_REPORTED' | 'CONTRADICTORY' | 'UNKNOWN';
     sourceRefs: SourceRef[];
   }[];
   gaps: (Omit<AssessmentGap, 'id' | 'status'> & {

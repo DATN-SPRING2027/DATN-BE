@@ -20,7 +20,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-10-30.v24';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-11-02.v25';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {
@@ -88,39 +88,39 @@ export function buildAssessmentMessages(
     ? null
     : 'text' in correctionTarget
       ? {
-          targetType: 'CLAIM',
-          text: correctionTarget.text,
-          sourceRefs: correctionTarget.sourceRefs,
-          originKind: correctionTarget.originKind,
-          supportRelation: correctionTarget.supportRelation,
-        }
+        targetType: 'CLAIM',
+        text: correctionTarget.text,
+        sourceRefs: correctionTarget.sourceRefs,
+        originKind: correctionTarget.originKind,
+        supportRelation: correctionTarget.supportRelation,
+      }
       : {
-          targetType: 'GAP',
-          kind: correctionTarget.kind,
-          target: correctionTarget.target,
-          owner: correctionTarget.owner,
-          impact: correctionTarget.impact,
-          sourceRefs: correctionTarget.sourceRefs,
-        };
+        targetType: 'GAP',
+        kind: correctionTarget.kind,
+        target: correctionTarget.target,
+        owner: correctionTarget.owner,
+        impact: correctionTarget.impact,
+        sourceRefs: correctionTarget.sourceRefs,
+      };
   const previous = input.previous
     ? {
-        purpose: input.previous.purpose,
-        gaps: input.previous.gaps.map(
-          ({ kind, target, impact, owner, sourceRefs }) => ({
-            kind,
-            target,
-            impact,
-            owner,
-            sourceRefs,
-          }),
-        ),
-        counters: input.previous.counters,
-        ...(input.correction
-          ? {
-              correctionTarget: targetContext,
-            }
-          : {}),
-      }
+      purpose: input.previous.purpose,
+      gaps: input.previous.gaps.map(
+        ({ kind, target, impact, owner, sourceRefs }) => ({
+          kind,
+          target,
+          impact,
+          owner,
+          sourceRefs,
+        }),
+      ),
+      counters: input.previous.counters,
+      ...(input.correction
+        ? {
+          correctionTarget: targetContext,
+        }
+        : {}),
+    }
     : null;
   const payload = {
     sources: input.sources,
@@ -136,6 +136,7 @@ export function buildAssessmentMessages(
     payload.requirementPassages = [];
     payload.authorPassages = [];
     payload.authorLimitPassages = [];
+    if ('historicalFacts' in payload) delete payload.historicalFacts;
     payload.passageAidsComplete = false;
   }
   if (JSON.stringify(payload).length > 65000) invalid('CONTEXT_LIMIT');
@@ -214,8 +215,12 @@ export function parseAssessmentOutput(
     'requirements',
     'unknowns',
   ]);
-  const sourceText = (sourceId: string) =>
-    input.sources.find((s) => s.id === sourceId)!.text;
+  const sourceOf = (sourceId: string) =>
+    input.sources.find(
+      (s) =>
+        s.id === sourceId && s.loadStatus === 'LOADED' && s.includedInRequest,
+    );
+  const sourceText = (sourceId: string) => sourceOf(sourceId)!.text;
   const taskTitle =
     input.sources.find((s) => s.id === 'task.title')?.text ?? '';
   const requirements = list(u.requirements, 50).map((v) => {
@@ -223,7 +228,8 @@ export function parseAssessmentOutput(
     const sourceRefs = refs(x.sourceRefs);
     if (
       sourceRefs.some(
-        (r) => !r.sourceId.startsWith('task.') || r.sourceId === 'task.status',
+        (r) =>
+          sourceOf(r.sourceId)?.kind !== 'TASK' || r.sourceId === 'task.status',
       )
     )
       return invalid('INVALID_REQUIREMENT_SOURCE');
@@ -250,13 +256,17 @@ export function parseAssessmentOutput(
     const originKind = en(x.originKind, [
       'TASK_REQUIREMENT',
       'AUTHOR_REPORT',
+      'HISTORICAL_REPORT',
     ] as const);
     if (
-      sourceRefs.some((r) =>
-        originKind === 'AUTHOR_REPORT'
-          ? !r.sourceId.startsWith('note.') && !r.sourceId.startsWith('answer.')
-          : !r.sourceId.startsWith('task.') || r.sourceId === 'task.status',
-      )
+      sourceRefs.some((r) => {
+        const src = sourceOf(r.sourceId);
+        if (!src) return true;
+        if (originKind === 'AUTHOR_REPORT')
+          return src.kind !== 'NOTE' && src.kind !== 'ANSWER';
+        if (originKind === 'HISTORICAL_REPORT') return src.kind !== 'HISTORY';
+        return src.kind !== 'TASK' || r.sourceId === 'task.status';
+      })
     )
       return invalid('CLAIM_ORIGIN_MISMATCH');
     let supportRelation = en(x.supportRelation, [
@@ -296,6 +306,22 @@ export function parseAssessmentOutput(
       )
     )
       supportRelation = 'PARTIAL';
+    if (originKind === 'HISTORICAL_REPORT') {
+      const citedHistory = sourceRefs
+        .map((r) => sourceOf(r.sourceId)?.history)
+        .filter((h): h is NonNullable<typeof h> => Boolean(h));
+      if (citedHistory.some((h) => h.factStatus.startsWith('CONFLICT_'))) {
+        if (supportRelation === 'FULL' || supportRelation === 'PARTIAL')
+          supportRelation = 'CONTRADICTED';
+      } else if (
+        citedHistory.some(
+          (h) => h.relation !== 'SELF' || h.factStatus !== 'CURRENT',
+        )
+      ) {
+        if (supportRelation === 'FULL' || supportRelation === 'PARTIAL')
+          supportRelation = 'RELATED_ONLY';
+      }
+    }
     return { text, sourceRefs, originKind, supportRelation };
   });
   const coverage = list(o.coverage, 50).map((v) => {
@@ -316,13 +342,32 @@ export function parseAssessmentOutput(
       'UNKNOWN',
     ] as const);
     if (
+      sourceRefs.some((r) => {
+        const src = sourceOf(r.sourceId);
+        return (
+          src?.kind === 'HISTORY' && (src.history?.relation ?? 'SELF') !== 'SELF'
+        );
+      })
+    )
+      return invalid('RELATED_TASK_HISTORY_IN_COVERAGE');
+    if (
+      status === 'SUPPORTED' &&
+      sourceRefs.some((r) => sourceOf(r.sourceId)?.kind === 'HISTORY')
+    )
+      return invalid('HISTORY_IS_NOT_CURRENT_EVIDENCE');
+    if (
+      status === 'PARTIAL' &&
+      sourceRefs.length > 0 &&
+      sourceRefs.every((r) => sourceOf(r.sourceId)?.kind === 'HISTORY')
+    )
+      return invalid('HISTORY_IS_NOT_CURRENT_EVIDENCE');
+    if (
       status === 'SUPPORTED' &&
       (!sourceRefs.length ||
-        sourceRefs.some(
-          (r) =>
-            !r.sourceId.startsWith('note.') &&
-            !r.sourceId.startsWith('answer.'),
-        ))
+        sourceRefs.some((r) => {
+          const k = sourceOf(r.sourceId)?.kind;
+          return k !== 'NOTE' && k !== 'ANSWER';
+        }))
     )
       return invalid('REQUIREMENT_IS_NOT_RESULT');
     // Supporting evidence must itself be a fully grounded author claim. The
@@ -365,22 +410,70 @@ export function parseAssessmentOutput(
         ? ['kind', 'needCode', 'target', 'impact', 'owner', 'sourceRefs']
         : ['kind', 'target', 'impact', 'owner', 'sourceRefs'],
     );
+    const kind = en(x.kind, [
+      'SCOPE',
+      'IMPLEMENTATION',
+      'RESULT',
+      'EVIDENCE',
+      'CONTRADICTION',
+      'HISTORICAL_CONFLICT',
+      'OUTDATED_INFO',
+      'PURPOSE',
+    ] as const);
+    const sourceRefs = refs(x.sourceRefs);
+    const historyRefs = sourceRefs
+      .map((r) => sourceOf(r.sourceId))
+      .filter((s): s is NonNullable<typeof s> => s?.kind === 'HISTORY');
+    if (kind === 'CONTRADICTION' && historyRefs.length > 0)
+      return invalid('HISTORICAL_SOURCE_IN_CURRENT_CONTRADICTION');
+    if (kind === 'HISTORICAL_CONFLICT') {
+      if (!historyRefs.length) return invalid('UNSOURCED_HISTORICAL_FINDING');
+      if (
+        historyRefs.every(
+          (s) =>
+            (s.history?.relation ?? 'SELF') !== 'SELF' &&
+            s.history?.factKind !== 'DECISION',
+        )
+      )
+        return invalid('RELATED_TASK_HISTORY_CONFLICT_INVALID');
+      const hasVerifiedConflict = historyRefs.some((s) =>
+        s.history?.factStatus.startsWith('CONFLICT_'),
+      );
+      const hasCurrentAnchor = sourceRefs.some((r) => {
+        const k = sourceOf(r.sourceId)?.kind;
+        return k === 'NOTE' || k === 'ANSWER' || k === 'TASK';
+      });
+      if (!hasVerifiedConflict && !hasCurrentAnchor)
+        return invalid('UNSOURCED_HISTORICAL_FINDING');
+    }
+    if (kind === 'OUTDATED_INFO') {
+      if (!historyRefs.length) return invalid('UNSOURCED_HISTORICAL_FINDING');
+      if (historyRefs.every((s) => (s.history?.relation ?? 'SELF') !== 'SELF'))
+        return invalid('RELATED_TASK_OUTDATED_INVALID');
+      if (
+        !historyRefs.some(
+          (s) =>
+            s.history?.factStatus === 'OUTDATED' ||
+            s.history?.factStatus === 'SUPERSEDED',
+        )
+      )
+        return invalid('UNSOURCED_OUTDATED_FINDING');
+    }
+    if (
+      historyRefs.length === sourceRefs.length &&
+      historyRefs.length > 0 &&
+      historyRefs.every((s) => (s.history?.relation ?? 'SELF') !== 'SELF')
+    )
+      return invalid('RELATED_TASK_HISTORY_GAP_INVALID');
     return {
-      kind: en(x.kind, [
-        'SCOPE',
-        'IMPLEMENTATION',
-        'RESULT',
-        'EVIDENCE',
-        'CONTRADICTION',
-        'PURPOSE',
-      ] as const),
+      kind,
       ...(hasNeedCode
         ? { needCode: en(x.needCode, ASSESSMENT_NEED_CODES) }
         : {}),
       target: str(x.target, 160),
       impact: en(x.impact, ['BLOCKING', 'OPTIONAL'] as const),
       owner: en(x.owner, ['NOTE_AUTHOR', 'TASK_REQUIREMENT_OWNER'] as const),
-      sourceRefs: refs(x.sourceRefs),
+      sourceRefs,
     };
   });
   let nextQuestion: AssessmentModelOutput['nextQuestion'] = null;
@@ -403,6 +496,18 @@ export function parseAssessmentOutput(
   if (purpose === 'AUTO') return invalid('UNRESOLVED_PURPOSE');
   if (input.purpose !== 'AUTO' && purpose !== input.purpose)
     return invalid('PURPOSE_CHANGED');
+  const noteAdequacy = en(o.noteAdequacy, [
+    'ENOUGH_FOR_PURPOSE',
+    'NEEDS_AUTHOR_INPUT',
+    'UNDETERMINED',
+    'CONTRADICTORY',
+  ] as const);
+  if (
+    noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+    claims.length > 0 &&
+    claims.every((c) => c.originKind === 'HISTORICAL_REPORT')
+  )
+    return invalid('HISTORY_IS_NOT_CURRENT_EVIDENCE');
   return {
     purpose,
     taskUnderstanding: {
@@ -419,12 +524,7 @@ export function parseAssessmentOutput(
       'PARTIAL',
       'INSUFFICIENT',
     ] as const),
-    noteAdequacy: en(o.noteAdequacy, [
-      'ENOUGH_FOR_PURPOSE',
-      'NEEDS_AUTHOR_INPUT',
-      'UNDETERMINED',
-      'CONTRADICTORY',
-    ] as const),
+    noteAdequacy,
     nextQuestion,
   };
 }

@@ -52,7 +52,17 @@ export interface WorkNotesActor {
   taskTitle?: string;
   taskContextInvalid?: boolean;
   taskContextVersion?: string;
+  /** Parent Task id (same Project) as reported by the Task service; null for top-level. */
+  taskParentId?: string | null;
   taskContext?: import('./work-note-agent/work-note-agent.types').AgentInput['task'];
+}
+
+/** A Task related to the current one, already readable by the requesting user. */
+export interface RelatedTaskRef {
+  id: string;
+  key?: string;
+  title: string;
+  relation: 'PARENT' | 'CHILD' | 'LINKED';
 }
 
 export type TaskNoteSortOrder = 'recent' | 'oldest';

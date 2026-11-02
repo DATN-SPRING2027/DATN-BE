@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { contentTokens, overlap } from './history/work-note-history.facts';
 import { hasNoNewInformation } from './work-note-assessment.context';
 import {
   assessmentHash,
@@ -11,6 +12,9 @@ import {
   type AssessmentNeedCode,
 } from './work-note-assessment.rubric';
 import type {
+  AssessmentClaim,
+  AssessmentClaimHistoryMeta,
+  AssessmentHistoryMetadata,
   AssessmentModelInput,
   AssessmentModelOutput,
   AssessmentPurpose,
@@ -139,6 +143,9 @@ const NEED_ANSWER_CUES: Record<AssessmentNeedCode, string> = {
   'handover.next_steps':
     'tiep tuc van hanh chay lenh config theo doi buoc tiep nhan',
   'contradiction.conflict': 'nham sua lai thuc te dung',
+  'history.conflict':
+    'lich su mau thuan cu moi thay doi cap nhat xac nhan thuc te',
+  'history.outdated': 'loi thoi cu cap nhat van dung thay doi moi',
 };
 const overlaps = (a: Set<string>, b: Set<string>) =>
   [...a].some((w) => b.has(w));
@@ -215,14 +222,36 @@ export function assembleAssessment(
     ...r,
     id: `req-${assessmentHash(r.sourceRefs).slice(0, 24)}`,
   }));
-  const claims = out.claims.map((c) => ({
-    ...c,
-    id: `claim-${assessmentHash([c.text, c.sourceRefs]).slice(0, 24)}`,
-    verificationStatus:
-      c.originKind === 'AUTHOR_REPORT'
-        ? ('AUTHOR_REPORTED' as const)
-        : ('NOT_INDEPENDENTLY_VERIFIED' as const),
-  }));
+  const toClaimHistory = (
+    refs: SourceRef[],
+  ): AssessmentClaimHistoryMeta | undefined => {
+    const src = refs
+      .map((r) => input.sources.find((s) => s.id === r.sourceId))
+      .find((s) => s?.kind === 'HISTORY' && s.history);
+    if (!src?.history) return undefined;
+    return {
+      relation: src.history.relation,
+      ...(src.history.taskKey ? { taskKey: src.history.taskKey } : {}),
+      date: src.history.date,
+      noteTitle: src.history.noteTitle,
+      factStatus: src.history.factStatus,
+    };
+  };
+  const claims: AssessmentClaim[] = out.claims.map((c) => {
+    const history =
+      c.originKind === 'HISTORICAL_REPORT'
+        ? toClaimHistory(c.sourceRefs)
+        : undefined;
+    return {
+      ...c,
+      id: `claim-${assessmentHash([c.text, c.sourceRefs]).slice(0, 24)}`,
+      verificationStatus:
+        c.originKind === 'AUTHOR_REPORT'
+          ? ('AUTHOR_REPORTED' as const)
+          : ('NOT_INDEPENDENTLY_VERIFIED' as const),
+      ...(history ? { history } : {}),
+    };
+  });
   const correctionAnswer =
     input.correction &&
     input.answers.find(
@@ -258,17 +287,20 @@ export function assembleAssessment(
     correctionGrounded &&
     (out.purpose === 'COMPLETION'
       ? out.taskContextStatus === 'CLEAR' &&
-        requirements.length > 0 &&
-        out.coverage.length === requirements.length &&
-        out.coverage.every((c) => c.status === 'SUPPORTED') &&
-        out.coverage.some((c) =>
-          c.sourceRefs.some(
-            (r) => r.sourceId === `answer.${correctionAnswer.id}`,
-          ),
-        )
+      requirements.length > 0 &&
+      out.coverage.length === requirements.length &&
+      out.coverage.every((c) => c.status === 'SUPPORTED') &&
+      out.coverage.some((c) =>
+        c.sourceRefs.some(
+          (r) => r.sourceId === `answer.${correctionAnswer.id}`,
+        ),
+      )
       : out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-        !out.gaps.some((g) => g.impact === 'BLOCKING'));
-  const gaps: AssessmentGap[] = out.gaps.map((g) => {
+      !out.gaps.some((g) => g.impact === 'BLOCKING'));
+  const materializeGap = (
+    g: Omit<AssessmentGap, 'id' | 'status'> & { needCode?: string },
+    deterministicOptional = false,
+  ): AssessmentGap => {
     // Classification is not identity. Preserve old IDs across prompt versions,
     // kind changes, and re-anchored needCodes on the same author statement.
     const currentNeed = resolveNeed(g, out.purpose);
@@ -281,22 +313,22 @@ export function assembleAssessment(
     );
     const declinedSibling = !matchedPrior
       ? prior?.gaps.find((p) => {
-          const priorNeed =
-            extractGapNeedCode(p.id) ?? resolveNeed(p, prior.purpose);
-          if (p.owner !== g.owner || priorNeed !== currentNeed) return false;
-          if (disjointNoteQuotes(p.sourceRefs, g.sourceRefs)) return false;
-          const priorAns = [...input.answers]
-            .reverse()
-            .find((a) => gapMatchesId(p, a.gapId));
-          return (
-            p.status === 'unknown' ||
-            p.status === 'skipped' ||
-            (!!priorAns &&
-              (priorAns.disposition === 'unknown' ||
-                priorAns.disposition === 'skipped' ||
-                hasNoNewInformation(priorAns)))
-          );
-        })
+        const priorNeed =
+          extractGapNeedCode(p.id) ?? resolveNeed(p, prior.purpose);
+        if (p.owner !== g.owner || priorNeed !== currentNeed) return false;
+        if (disjointNoteQuotes(p.sourceRefs, g.sourceRefs)) return false;
+        const priorAns = [...input.answers]
+          .reverse()
+          .find((a) => gapMatchesId(p, a.gapId));
+        return (
+          p.status === 'unknown' ||
+          p.status === 'skipped' ||
+          (!!priorAns &&
+            (priorAns.disposition === 'unknown' ||
+              priorAns.disposition === 'skipped' ||
+              hasNoNewInformation(priorAns)))
+        );
+      })
       : undefined;
     const id = matchedPrior?.id ?? declinedSibling?.id ?? `gap-${currentKey}`;
     const answer = [...input.answers]
@@ -314,13 +346,15 @@ export function assembleAssessment(
         ? 'unknown'
         : answer?.disposition === 'skipped'
           ? 'skipped'
-          : priorGap?.status === 'answered'
+          : deterministicOptional && answer?.disposition === 'answered'
             ? 'answered'
-            : priorGap?.status === 'unknown' && !correctionGrounded
-              ? 'unknown'
-              : priorGap?.status === 'skipped' && !correctionGrounded
-                ? 'skipped'
-                : 'open';
+            : priorGap?.status === 'answered'
+              ? 'answered'
+              : priorGap?.status === 'unknown' && !correctionGrounded
+                ? 'unknown'
+                : priorGap?.status === 'skipped' && !correctionGrounded
+                  ? 'skipped'
+                  : 'open';
     return {
       id,
       kind: g.kind,
@@ -330,7 +364,150 @@ export function assembleAssessment(
       status,
       sourceRefs: g.sourceRefs,
     };
-  });
+  };
+  const gaps: AssessmentGap[] = out.gaps.map((g) => materializeGap(g, false));
+
+  // Deterministically surface verified historical conflicts and relevant outdated
+  // facts of the current Task so history provenance is reliable even when the LLM
+  // omits them, without elevating forward progress ("chưa test" -> "đã test") into
+  // a false contradiction or blocking legitimate current updates.
+  const isActionableConflict = (h: AssessmentHistoryMetadata) =>
+    h.relation === 'SELF' &&
+    (h.factStatus === 'CONFLICT_TASK' ||
+      h.factStatus === 'CONFLICT_HISTORY' ||
+      (h.factStatus === 'CONFLICT_CURRENT' &&
+        (h.factPolarity !== 'NEGATIVE' || h.factKind === 'DECISION')));
+  const currentTopicTokens = contentTokens(
+    input.sources
+      .filter(
+        (s) =>
+          s.loadStatus === 'LOADED' &&
+          s.includedInRequest &&
+          (s.kind === 'NOTE' || (s.kind === 'TASK' && s.id !== 'task.status')),
+      )
+      .map((s) => s.text)
+      .join(' '),
+  );
+  const taskStatusSource = input.sources.find(
+    (s) =>
+      s.id === 'task.status' &&
+      s.loadStatus === 'LOADED' &&
+      s.includedInRequest &&
+      s.text.trim().length > 0,
+  );
+  const ensureHistoricalClaim = (
+    sourceId: string,
+    quote: string,
+    history: AssessmentHistoryMetadata,
+    supportRelation: 'CONTRADICTED' | 'RELATED_ONLY',
+  ) => {
+    if (
+      claims.some(
+        (c) =>
+          c.originKind === 'HISTORICAL_REPORT' &&
+          c.sourceRefs.some((r) => r.sourceId === sourceId),
+      ) ||
+      claims.length >= 40
+    )
+      return;
+    const refs: SourceRef[] = [{ sourceId, quote }];
+    claims.push({
+      id: `claim-${assessmentHash([quote, refs]).slice(0, 24)}`,
+      text: quote,
+      sourceRefs: refs,
+      originKind: 'HISTORICAL_REPORT',
+      supportRelation,
+      verificationStatus: 'NOT_INDEPENDENTLY_VERIFIED',
+      history: {
+        relation: history.relation,
+        ...(history.taskKey ? { taskKey: history.taskKey } : {}),
+        date: history.date,
+        noteTitle: history.noteTitle,
+        factStatus: history.factStatus,
+      },
+    });
+  };
+  for (const s of input.sources) {
+    if (
+      s.kind !== 'HISTORY' ||
+      s.loadStatus !== 'LOADED' ||
+      !s.includedInRequest ||
+      !s.history ||
+      s.history.relation !== 'SELF' ||
+      !s.text.trim()
+    )
+      continue;
+    const h = s.history;
+    if (isActionableConflict(h)) {
+      ensureHistoricalClaim(s.id, s.text, h, 'CONTRADICTED');
+      const alreadyTracked = gaps.some(
+        (g) =>
+          g.kind === 'HISTORICAL_CONFLICT' &&
+          g.sourceRefs.some((r) => r.sourceId === s.id),
+      );
+      if (!alreadyTracked && gaps.length < 8) {
+        const refs: SourceRef[] = [
+          { sourceId: s.id, quote: s.text },
+          ...(h.factStatus === 'CONFLICT_TASK' && taskStatusSource
+            ? [{ sourceId: taskStatusSource.id, quote: taskStatusSource.text }]
+            : []),
+        ];
+        gaps.push(
+          materializeGap(
+            {
+              kind: 'HISTORICAL_CONFLICT',
+              needCode: 'history.conflict',
+              target: `Mâu thuẫn với ghi chú lịch sử (${h.date}): ${h.noteTitle}`.slice(
+                0,
+                160,
+              ),
+              impact: 'OPTIONAL',
+              owner: 'NOTE_AUTHOR',
+              sourceRefs: refs,
+            },
+            true,
+          ),
+        );
+      }
+      continue;
+    }
+    const citedInClaims = claims.some((c) =>
+      c.sourceRefs.some((r) => r.sourceId === s.id),
+    );
+    const factTokens = contentTokens(s.text);
+    const relevantOutdated =
+      h.factStatus === 'OUTDATED' &&
+      (citedInClaims ||
+        overlap(factTokens, currentTopicTokens) >=
+        Math.min(2, Math.max(1, factTokens.length)));
+    const citedSuperseded = h.factStatus === 'SUPERSEDED' && citedInClaims;
+    if (relevantOutdated || citedSuperseded) {
+      ensureHistoricalClaim(s.id, s.text, h, 'RELATED_ONLY');
+      const alreadyTracked = gaps.some(
+        (g) =>
+          g.kind === 'OUTDATED_INFO' &&
+          g.sourceRefs.some((r) => r.sourceId === s.id),
+      );
+      if (!alreadyTracked && gaps.length < 8) {
+        gaps.push(
+          materializeGap(
+            {
+              kind: 'OUTDATED_INFO',
+              needCode: 'history.outdated',
+              target: (h.factStatus === 'SUPERSEDED'
+                ? `Thông tin lịch sử đã bị thay thế (${h.date}): ${h.noteTitle}`
+                : `Thông tin lịch sử đã cũ (${h.date}): ${h.noteTitle}`
+              ).slice(0, 160),
+              impact: 'OPTIONAL',
+              owner: 'NOTE_AUTHOR',
+              sourceRefs: [{ sourceId: s.id, quote: s.text }],
+            },
+            true,
+          ),
+        );
+      }
+    }
+  }
   for (const g of prior?.gaps ?? []) {
     if (gaps.some((x) => x.id === g.id)) continue;
     const a = [...input.answers]
@@ -341,9 +518,9 @@ export function assembleAssessment(
         ...g,
         status:
           correctionGrounded &&
-          g.owner === 'NOTE_AUTHOR' &&
-          out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-          (gapMatchesId(g, input.correction?.targetId) || completeCorrection)
+            g.owner === 'NOTE_AUTHOR' &&
+            out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+            (gapMatchesId(g, input.correction?.targetId) || completeCorrection)
             ? 'answered'
             : a.disposition === 'skipped'
               ? 'skipped'
@@ -356,9 +533,9 @@ export function assembleAssessment(
         ...g,
         status:
           correctionGrounded &&
-          g.owner === 'NOTE_AUTHOR' &&
-          out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-          completeCorrection
+            g.owner === 'NOTE_AUTHOR' &&
+            out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
+            completeCorrection
             ? 'answered'
             : g.status,
       });
@@ -481,10 +658,13 @@ export function assembleAssessment(
     out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
     (rawHasBlocking || out.nextQuestion !== null);
   let noteAdequacy = out.noteAdequacy;
+  const nonHistoricalClaims = claims.filter(
+    (c) => c.originKind !== 'HISTORICAL_REPORT',
+  );
   const fullyGrounded =
     claims.some(
       (c) => c.originKind === 'AUTHOR_REPORT' && c.supportRelation === 'FULL',
-    ) && claims.every((c) => c.supportRelation === 'FULL');
+    ) && nonHistoricalClaims.every((c) => c.supportRelation === 'FULL');
   if (rawInconsistentEnough) {
     // Plan v3 §5: inconsistent model output falls back to UNDETERMINED with
     // manual editing rather than fabricating adequacy or asking a contradictory question.

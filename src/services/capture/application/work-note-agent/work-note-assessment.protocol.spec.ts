@@ -418,4 +418,435 @@ describe('Task assessment sourced protocol', () => {
       parseAssessmentOutput(i, JSON.stringify(v)).claims[0].supportRelation,
     ).toBe('FULL');
   });
+
+  describe('Historical Context citation and validation boundaries', () => {
+    const historySource = (
+      id: string,
+      text: string,
+      overrides: Partial<
+        NonNullable<AssessmentModelInput['sources'][number]['history']>
+      > = {},
+    ): AssessmentModelInput['sources'][number] => ({
+      id,
+      kind: 'HISTORY',
+      label: 'Historical note (2026-10-20): Sprint 1',
+      text,
+      version: `2026-10-20:${overrides.factStatus ?? 'CURRENT'}`,
+      loadStatus: 'LOADED',
+      includedInRequest: true,
+      history: {
+        factId: id,
+        noteId: '507f1f77bcf86cd799439011',
+        noteTitle: 'Sprint 1',
+        date: '2026-10-20',
+        relation: 'SELF',
+        factStatus: 'CURRENT',
+        factKind: 'TEST_RESULT',
+        factPolarity: 'POSITIVE',
+        ...overrides,
+      },
+    });
+
+    it('accepts cited HISTORY sources with HISTORICAL_REPORT origin and normalizes supportRelation by relation and factStatus', () => {
+      const i: AssessmentModelInput = {
+        ...input,
+        sources: [
+          ...input.sources,
+          historySource('history.self', 'Tested auth on dev.'),
+          historySource('history.parent', 'Parent architecture uses Redis.', {
+            relation: 'PARENT',
+            taskKey: 'OPS-10',
+            factKind: 'DECISION',
+          }),
+          historySource('history.outdated', 'Tested queue two months ago.', {
+            factStatus: 'OUTDATED',
+          }),
+          historySource(
+            'history.conflict',
+            'API passed full integration test.',
+            {
+              factStatus: 'CONFLICT_CURRENT',
+            },
+          ),
+        ],
+      };
+      const v = output();
+      v.claims = [
+        ...v.claims,
+        {
+          text: 'Tested auth on dev.',
+          sourceRefs: [
+            { sourceId: 'history.self', quote: 'Tested auth on dev.' },
+          ],
+          originKind: 'HISTORICAL_REPORT',
+          supportRelation: 'FULL',
+        },
+        {
+          text: 'Parent architecture uses Redis.',
+          sourceRefs: [
+            {
+              sourceId: 'history.parent',
+              quote: 'Parent architecture uses Redis.',
+            },
+          ],
+          originKind: 'HISTORICAL_REPORT',
+          supportRelation: 'FULL',
+        },
+        {
+          text: 'Tested queue two months ago.',
+          sourceRefs: [
+            {
+              sourceId: 'history.outdated',
+              quote: 'Tested queue two months ago.',
+            },
+          ],
+          originKind: 'HISTORICAL_REPORT',
+          supportRelation: 'FULL',
+        },
+        {
+          text: 'API passed full integration test.',
+          sourceRefs: [
+            {
+              sourceId: 'history.conflict',
+              quote: 'API passed full integration test.',
+            },
+          ],
+          originKind: 'HISTORICAL_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      const parsed = parseAssessmentOutput(i, JSON.stringify(v));
+      expect(parsed.claims.map((c) => c.supportRelation)).toEqual([
+        'FULL',
+        'FULL',
+        'RELATED_ONLY',
+        'RELATED_ONLY',
+        'CONTRADICTED',
+      ]);
+    });
+
+    it('prevents HISTORY from acting as current work evidence in claims, requirements, coverage, or noteAdequacy', () => {
+      const i: AssessmentModelInput = {
+        ...input,
+        sources: [
+          { ...input.sources[0], text: 'Implemented API.' },
+          input.sources[1],
+          historySource('history.done', 'Implemented API.'),
+        ],
+      };
+
+      const wrongAuthorOrigin = output();
+      wrongAuthorOrigin.claims = [
+        {
+          text: 'Implemented API.',
+          sourceRefs: [{ sourceId: 'history.done', quote: 'Implemented API.' }],
+          originKind: 'AUTHOR_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(wrongAuthorOrigin)),
+      ).toThrow('CLAIM_ORIGIN_MISMATCH');
+
+      const wrongHistoryOrigin = output();
+      wrongHistoryOrigin.claims = [
+        {
+          text: 'Implemented API.',
+          sourceRefs: [{ sourceId: 'note.body', quote: 'Implemented API.' }],
+          originKind: 'HISTORICAL_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(wrongHistoryOrigin)),
+      ).toThrow('CLAIM_ORIGIN_MISMATCH');
+
+      const historyAsRequirement = output();
+      historyAsRequirement.taskUnderstanding.requirements = [
+        {
+          text: 'Implemented API.',
+          sourceRefs: [{ sourceId: 'history.done', quote: 'Implemented API.' }],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(historyAsRequirement)),
+      ).toThrow('INVALID_REQUIREMENT_SOURCE');
+
+      const historyInSupportedCoverage = output();
+      historyInSupportedCoverage.claims = [
+        {
+          text: 'Implemented API.',
+          sourceRefs: [{ sourceId: 'note.body', quote: 'Implemented API.' }],
+          originKind: 'AUTHOR_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      historyInSupportedCoverage.coverage = [
+        {
+          requirementIndex: 0,
+          status: 'SUPPORTED',
+          sourceRefs: [
+            { sourceId: 'note.body', quote: 'Implemented API.' },
+            { sourceId: 'history.done', quote: 'Implemented API.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(historyInSupportedCoverage)),
+      ).toThrow('HISTORY_IS_NOT_CURRENT_EVIDENCE');
+
+      const historyOnlyPartialCoverage = output();
+      historyOnlyPartialCoverage.claims = [
+        {
+          text: 'Implemented API.',
+          sourceRefs: [{ sourceId: 'note.body', quote: 'Implemented API.' }],
+          originKind: 'AUTHOR_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      historyOnlyPartialCoverage.coverage = [
+        {
+          requirementIndex: 0,
+          status: 'PARTIAL',
+          sourceRefs: [{ sourceId: 'history.done', quote: 'Implemented API.' }],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(historyOnlyPartialCoverage)),
+      ).toThrow('HISTORY_IS_NOT_CURRENT_EVIDENCE');
+
+      const historyOnlyAdequate = output();
+      historyOnlyAdequate.claims = [
+        {
+          text: 'Implemented API.',
+          sourceRefs: [{ sourceId: 'history.done', quote: 'Implemented API.' }],
+          originKind: 'HISTORICAL_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      historyOnlyAdequate.noteAdequacy = 'ENOUGH_FOR_PURPOSE';
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(historyOnlyAdequate)),
+      ).toThrow('HISTORY_IS_NOT_CURRENT_EVIDENCE');
+    });
+
+    it('isolates PARENT, CHILD, and LINKED Task history from current Task coverage and non-decision findings', () => {
+      const i: AssessmentModelInput = {
+        ...input,
+        sources: [
+          ...input.sources,
+          historySource('history.child', 'Child task tests passed.', {
+            relation: 'CHILD',
+            taskKey: 'OPS-12',
+            factKind: 'TEST_RESULT',
+          }),
+          historySource('history.parentDec', 'Must use PostgreSQL 16.', {
+            relation: 'PARENT',
+            taskKey: 'OPS-10',
+            factKind: 'DECISION',
+          }),
+          historySource('history.linkedOld', 'Old linked note.', {
+            relation: 'LINKED',
+            taskKey: 'OPS-99',
+            factStatus: 'OUTDATED',
+          }),
+        ],
+      };
+
+      const relatedInCoverage = output();
+      relatedInCoverage.coverage = [
+        {
+          requirementIndex: 0,
+          status: 'PARTIAL',
+          sourceRefs: [
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+            { sourceId: 'history.child', quote: 'Child task tests passed.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(relatedInCoverage)),
+      ).toThrow('RELATED_TASK_HISTORY_IN_COVERAGE');
+
+      const childStatusConflict = output();
+      childStatusConflict.gaps = [
+        {
+          kind: 'HISTORICAL_CONFLICT',
+          target: 'Child vs current test status',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.child', quote: 'Child task tests passed.' },
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(childStatusConflict)),
+      ).toThrow('RELATED_TASK_HISTORY_CONFLICT_INVALID');
+
+      const parentDecisionConflict = output();
+      parentDecisionConflict.gaps = [
+        {
+          kind: 'HISTORICAL_CONFLICT',
+          target: 'Database decision conflict with parent Task OPS-10',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.parentDec', quote: 'Must use PostgreSQL 16.' },
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+          ],
+        },
+      ];
+      expect(
+        parseAssessmentOutput(i, JSON.stringify(parentDecisionConflict)).gaps[0]
+          .kind,
+      ).toBe('HISTORICAL_CONFLICT');
+
+      const linkedOutdated = output();
+      linkedOutdated.gaps = [
+        {
+          kind: 'OUTDATED_INFO',
+          target: 'Outdated linked note',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.linkedOld', quote: 'Old linked note.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(linkedOutdated)),
+      ).toThrow('RELATED_TASK_OUTDATED_INVALID');
+
+      const soleRelatedGap = output();
+      soleRelatedGap.gaps = [
+        {
+          kind: 'EVIDENCE',
+          target: 'Child test detail',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.child', quote: 'Child task tests passed.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(soleRelatedGap)),
+      ).toThrow('RELATED_TASK_HISTORY_GAP_INVALID');
+    });
+
+    it('rejects unsourced historical findings, history in CONTRADICTION, and model-supplied claim.history', () => {
+      const i: AssessmentModelInput = {
+        ...input,
+        sources: [
+          ...input.sources,
+          historySource('history.current', 'Staging URL is v1.local.', {
+            factStatus: 'CURRENT',
+          }),
+          historySource('history.superseded', 'Used legacy endpoint v0.', {
+            factStatus: 'SUPERSEDED',
+          }),
+        ],
+      };
+
+      const historyInCurrentContradiction = output();
+      historyInCurrentContradiction.gaps = [
+        {
+          kind: 'CONTRADICTION',
+          target: 'Conflicting staging note',
+          impact: 'BLOCKING',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.current', quote: 'Staging URL is v1.local.' },
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(historyInCurrentContradiction)),
+      ).toThrow('HISTORICAL_SOURCE_IN_CURRENT_CONTRADICTION');
+
+      const unsourcedConflict = output();
+      unsourcedConflict.gaps = [
+        {
+          kind: 'HISTORICAL_CONFLICT',
+          target: 'Invented conflict',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(unsourcedConflict)),
+      ).toThrow('UNSOURCED_HISTORICAL_FINDING');
+
+      const unanchoredConflict = output();
+      unanchoredConflict.gaps = [
+        {
+          kind: 'HISTORICAL_CONFLICT',
+          target: 'Current history without conflict or current anchor',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.current', quote: 'Staging URL is v1.local.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(unanchoredConflict)),
+      ).toThrow('UNSOURCED_HISTORICAL_FINDING');
+
+      const unsourcedOutdated = output();
+      unsourcedOutdated.gaps = [
+        {
+          kind: 'OUTDATED_INFO',
+          target: 'Current fact wrongly called outdated',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.current', quote: 'Staging URL is v1.local.' },
+          ],
+        },
+      ];
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(unsourcedOutdated)),
+      ).toThrow('UNSOURCED_OUTDATED_FINDING');
+
+      const validSuperseded = output();
+      validSuperseded.gaps = [
+        {
+          kind: 'OUTDATED_INFO',
+          target: 'Superseded endpoint v0',
+          impact: 'OPTIONAL',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            {
+              sourceId: 'history.superseded',
+              quote: 'Used legacy endpoint v0.',
+            },
+          ],
+        },
+      ];
+      expect(
+        parseAssessmentOutput(i, JSON.stringify(validSuperseded)).gaps[0].kind,
+      ).toBe('OUTDATED_INFO');
+
+      const forgedClaimHistory = JSON.parse(JSON.stringify(output())) as Record<
+        string,
+        unknown
+      >;
+      (forgedClaimHistory.claims as Record<string, unknown>[])[0].history = {
+        relation: 'SELF',
+        date: '2026-10-20',
+        noteTitle: 'Forged',
+        factStatus: 'CURRENT',
+      };
+      expect(() =>
+        parseAssessmentOutput(i, JSON.stringify(forgedClaimHistory)),
+      ).toThrow();
+    });
+  });
 });

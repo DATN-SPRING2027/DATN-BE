@@ -23,6 +23,8 @@ export const ASSESSMENT_NEED_CODES = [
   'test_result.behavior',
   'handover.next_steps',
   'contradiction.conflict',
+  'history.conflict',
+  'history.outdated',
 ] as const;
 
 export type AssessmentNeedCode = (typeof ASSESSMENT_NEED_CODES)[number];
@@ -69,7 +71,11 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'Không đòi tài liệu vận hành hoặc nghiệm thu cuối.',
     ],
     requireWholeTaskCoverage: false,
-    allowedBlockingNeeds: ['scope.completed_part', 'contradiction.conflict'],
+    allowedBlockingNeeds: [
+      'scope.completed_part',
+      'contradiction.conflict',
+      'history.conflict',
+    ],
     contrastiveExamples: {
       sufficient: {
         task: 'Thêm retry upload từng phần; checklist: retry file lỗi và giữ nguyên file đã lên.',
@@ -102,6 +108,7 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'decision.choice',
       'decision.rationale',
       'contradiction.conflict',
+      'history.conflict',
     ],
     contrastiveExamples: {
       sufficient: {
@@ -133,7 +140,11 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'Không coi kết quả thực tế trái kỳ vọng của Task là mâu thuẫn lời khai của tác giả.',
     ],
     requireWholeTaskCoverage: false,
-    allowedBlockingNeeds: ['incident.symptom', 'contradiction.conflict'],
+    allowedBlockingNeeds: [
+      'incident.symptom',
+      'contradiction.conflict',
+      'history.conflict',
+    ],
     contrastiveExamples: {
       sufficient: {
         task: 'Nhập danh sách khách hàng từ tệp CSV UTF-8.',
@@ -168,6 +179,7 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'test_context.scenario',
       'test_result.behavior',
       'contradiction.conflict',
+      'history.conflict',
     ],
     contrastiveExamples: {
       sufficient: {
@@ -198,7 +210,11 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'Không đòi người giao phải hoàn tất nốt phần việc đang bàn giao.',
     ],
     requireWholeTaskCoverage: false,
-    allowedBlockingNeeds: ['handover.next_steps', 'contradiction.conflict'],
+    allowedBlockingNeeds: [
+      'handover.next_steps',
+      'contradiction.conflict',
+      'history.conflict',
+    ],
     contrastiveExamples: {
       sufficient: {
         task: 'Bàn giao worker đồng bộ lịch trực.',
@@ -236,6 +252,7 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'test_context.scenario',
       'test_result.behavior',
       'contradiction.conflict',
+      'history.conflict',
     ],
     contrastiveExamples: {
       sufficient: {
@@ -264,7 +281,11 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'Không đòi hoàn thành tiêu chí Task hoặc kết quả kiểm thử toàn Task.',
     ],
     requireWholeTaskCoverage: false,
-    allowedBlockingNeeds: ['purpose.intent', 'contradiction.conflict'],
+    allowedBlockingNeeds: [
+      'purpose.intent',
+      'contradiction.conflict',
+      'history.conflict',
+    ],
     contrastiveExamples: {
       sufficient: {
         task: ' Chuẩn hóa API thanh toán.',
@@ -318,13 +339,13 @@ export function classifyGapNeedCode(
   },
   purpose?: AssessmentPurpose,
 ): AssessmentNeedCode {
-  if (gap.needCode && isAssessmentNeedCode(gap.needCode)) {
-    if (gap.owner === 'TASK_REQUIREMENT_OWNER') return 'task.criteria';
-    if (gap.kind === 'CONTRADICTION') return 'contradiction.conflict';
-    return gap.needCode;
-  }
   if (gap.owner === 'TASK_REQUIREMENT_OWNER') return 'task.criteria';
   if (gap.kind === 'CONTRADICTION') return 'contradiction.conflict';
+  if (gap.kind === 'HISTORICAL_CONFLICT') return 'history.conflict';
+  if (gap.kind === 'OUTDATED_INFO') return 'history.outdated';
+  if (gap.needCode && isAssessmentNeedCode(gap.needCode)) {
+    return gap.needCode;
+  }
   if (gap.kind === 'PURPOSE') return 'purpose.intent';
 
   const t = fold(gap.target);

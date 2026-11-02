@@ -9,6 +9,7 @@ import type {
   TaskNoteAiChatSource,
   TaskNoteAiChatSourceInput,
 } from '../work-notes.types';
+import type { SecurityReport } from './security/security.types';
 export type RevisionOperation = {
   operationId: string;
   expectedRevision: number;
@@ -49,6 +50,8 @@ export type RestoreInput = {
 export type PendingQuestion = AgentResult['questions'][number] & {
   id: string;
   request: MessageInput;
+  /** Present when the question confirms information from a previous note/answer. */
+  historyRef?: import('./history/clarification-dedup').HistoryRef;
 };
 export type AgentDraftState = {
   assessment?: import('./work-note-assessment.types').AssessmentView;
@@ -57,7 +60,11 @@ export type AgentDraftState = {
   contentMarkdown: string;
   hasAppliedRewrite: boolean;
   rewriteOriginal?: { title: string; body: string };
-  conversation: { role: 'user' | 'assistant'; content: string }[];
+  conversation: {
+    role: 'user' | 'assistant';
+    content: string;
+    security?: SecurityReport;
+  }[];
   clarifications: AgentInput['clarifications'];
   pendingQuestion: PendingQuestion | null;
   suggestion: BoundSuggestion | null;
@@ -84,6 +91,7 @@ export type AgentDraftView = {
   conversation: AgentDraftState['conversation'];
   pendingQuestion: Omit<PendingQuestion, 'request'> | null;
   suggestion: BoundSuggestion | null;
+  lastSecurity?: SecurityReport | null;
 };
 export type CanonicalTaskNote = {
   id: string;

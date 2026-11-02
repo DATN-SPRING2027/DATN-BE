@@ -836,4 +836,94 @@ describe('Task Note Agent persisted local workflow', () => {
       await service.resume(headers, projectId, taskId, saved.id),
     ).toBeNull();
   });
+
+  it('returns security report on message(), masks secrets in stored user chat turns, and exposes lastSecurity until applied', async () => {
+    const realGateway = new WorkNoteAgentModel(
+      new ConfigService({ WORKNOTE_SECURITY_MODE: 'enforce' }),
+    ).securityGateway();
+    (
+      model as unknown as {
+        securityGateway: () => typeof realGateway;
+      }
+    ).securityGateway = () => realGateway;
+
+    const created = await service.create(headers, projectId, {
+      ...operation(),
+      taskId,
+    });
+    const draft = await service.update(headers, projectId, created.id, {
+      ...operation(),
+      expectedRevision: created.revision,
+      title: 'Staging test',
+      contentMarkdown: 'Nội dung cần viết lại.',
+    });
+    const fakeKey = ['sk-proj-', 'AbCdEfGhIjKlMnOpQrStUvWxYz123456'].join('');
+    const securitySummary = {
+      mode: 'enforce' as const,
+      input: {
+        decision: 'MASKED' as const,
+        maskedValues: 1,
+        findings: [
+          {
+            ruleId: 'openai-anthropic-key',
+            category: 'API_KEY' as const,
+            severity: 'CRITICAL' as const,
+            count: 1,
+          },
+        ],
+      },
+      output: {
+        decision: 'PASS' as const,
+        issues: [],
+        unmasked: 1,
+      },
+    };
+    model.rewrite.mockImplementationOnce((input) =>
+      Promise.resolve({
+        result: parseAgentResult(
+          prepareAgentRequest(input),
+          JSON.stringify({
+            status: 'SUGGESTION_READY',
+            message: 'Đã viết lại ghi chú an toàn.',
+            suggestion: {
+              replacementText: 'Nội dung đã viết lại.',
+              suggestedTitle: null,
+              changeSummary: ['Chuẩn hóa định dạng.'],
+            },
+            questions: [],
+            uncertainties: [],
+          }),
+        ),
+        provenance: { security: securitySummary },
+      }),
+    );
+
+    const res = await service.message(headers, projectId, draft.id, {
+      ...message(draft.revision),
+      instruction: `Viết lại giúp kèm key ${fakeKey}`,
+    });
+    expect(res.security).toEqual(securitySummary);
+
+    const resumed = await service.resume(headers, projectId, taskId);
+    expect(resumed?.lastSecurity).toEqual(securitySummary);
+    expect(resumed?.conversation[0]?.content).not.toContain(fakeKey);
+    expect(resumed?.conversation[0]?.content).toMatch(
+      /\[\[WN_SEC:API_KEY:[a-f0-9]+\]\]/,
+    );
+    expect(resumed?.conversation[1]?.security).toEqual(securitySummary);
+
+    const applied = await service.apply(
+      headers,
+      projectId,
+      draft.id,
+      res.suggestion!.id,
+      {
+        ...operation(),
+        expectedRevision: draft.revision,
+        action: 'replace_body',
+        applyTitle: false,
+      },
+    );
+    expect(applied.lastSecurity).toBeUndefined();
+  });
 });
