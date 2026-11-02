@@ -652,6 +652,24 @@ const captureSchemas: Record<string, Schema> = {
     },
     { collection: 'knowledge_requirements', timestamps: true, strict: true },
   ),
+  task_clarification_ledger: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      projectId: { type: Schema.Types.ObjectId, required: true },
+      taskId: { type: Schema.Types.ObjectId, required: true },
+      question: { type: String, required: true, maxlength: 2000 },
+      answer: { type: String, required: true, maxlength: 4000 },
+      disposition: {
+        type: String,
+        enum: ['answered'],
+        required: true,
+      },
+      answeredAt: { type: Date, required: true },
+      sourceDraftId: { type: String, required: true },
+      noteId: { type: Schema.Types.ObjectId, required: true },
+    },
+    { collection: 'task_clarification_ledger', strict: true },
+  ),
 };
 
 export function createCollectionSchema(

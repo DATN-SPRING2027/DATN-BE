@@ -622,4 +622,245 @@ describe('Code-driven assessment states', () => {
     expect(corrected.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
     expect(corrected.state).toBe('ready_to_edit');
   });
+
+  it('populates server-owned claim.history metadata and never promotes HISTORICAL_REPORT-only claims to ENOUGH_FOR_PURPOSE', () => {
+    const parentSource = {
+      id: 'history.parent#0',
+      kind: 'HISTORY' as const,
+      label: 'Historical note (2026-10-25, PARENT OPS-10): Architecture spec',
+      text: 'Parent service exposes gRPC port 9090.',
+      version: '2026-10-25:CURRENT',
+      loadStatus: 'LOADED' as const,
+      includedInRequest: true,
+      history: {
+        factId: 'parent#0',
+        noteId: '507f1f77bcf86cd799439022',
+        noteTitle: 'Architecture spec',
+        date: '2026-10-25',
+        relation: 'PARENT' as const,
+        taskKey: 'OPS-10',
+        factStatus: 'CURRENT' as const,
+        factKind: 'DECISION' as const,
+        factPolarity: 'UNCERTAIN' as const,
+      },
+    };
+    const assembled = assemble(
+      { sources: [...input.sources, parentSource] },
+      {
+        ...out,
+        taskContextStatus: 'CLEAR',
+        claims: [
+          {
+            text: parentSource.text,
+            sourceRefs: [
+              { sourceId: parentSource.id, quote: parentSource.text },
+            ],
+            originKind: 'HISTORICAL_REPORT',
+            supportRelation: 'RELATED_ONLY',
+          },
+        ],
+        gaps: [],
+        nextQuestion: null,
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+      },
+    );
+    expect(assembled.claims[0]).toMatchObject({
+      originKind: 'HISTORICAL_REPORT',
+      supportRelation: 'RELATED_ONLY',
+      verificationStatus: 'NOT_INDEPENDENTLY_VERIFIED',
+      history: {
+        relation: 'PARENT',
+        taskKey: 'OPS-10',
+        date: '2026-10-25',
+        noteTitle: 'Architecture spec',
+        factStatus: 'CURRENT',
+      },
+    });
+    expect(assembled.noteAdequacy).toBe('UNDETERMINED');
+    expect(assembled.state).toBe('missing_context');
+  });
+
+  it('deterministically surfaces actionable SELF historical conflicts and relevant outdated/superseded facts while allowing forward progress', () => {
+    const currentNoteText =
+      'Đã kiểm thử API thanh toán trên staging; module đồng bộ chưa kiểm thử.';
+    const sources: AssessmentModelInput['sources'] = [
+      {
+        id: 'note.body',
+        kind: 'NOTE',
+        label: 'Note',
+        text: currentNoteText,
+        version: '1',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+      },
+      {
+        id: 'task.status',
+        kind: 'TASK',
+        label: 'Task status',
+        text: 'IN_PROGRESS',
+        version: '1',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+      },
+      {
+        id: 'history.progress',
+        kind: 'HISTORY',
+        label: 'Earlier progress',
+        text: 'Chưa kiểm thử API thanh toán.',
+        version: '2026-10-28:CONFLICT_CURRENT',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+        history: {
+          factId: 'n1#0',
+          noteId: 'n1',
+          noteTitle: 'Ghi chú hôm qua',
+          date: '2026-10-28',
+          relation: 'SELF',
+          factStatus: 'CONFLICT_CURRENT',
+          factKind: 'TEST_RESULT',
+          factPolarity: 'NEGATIVE',
+        },
+      },
+      {
+        id: 'history.regression',
+        kind: 'HISTORY',
+        label: 'Earlier sync test',
+        text: 'Đã kiểm thử đầy đủ module đồng bộ.',
+        version: '2026-10-27:CONFLICT_CURRENT',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+        history: {
+          factId: 'n2#0',
+          noteId: 'n2',
+          noteTitle: 'Ghi chú tuần trước',
+          date: '2026-10-27',
+          relation: 'SELF',
+          factStatus: 'CONFLICT_CURRENT',
+          factKind: 'TEST_RESULT',
+          factPolarity: 'POSITIVE',
+        },
+      },
+      {
+        id: 'history.outdatedRelevant',
+        kind: 'HISTORY',
+        label: 'Old payment note',
+        text: 'Kiểm thử API thanh toán trên môi trường local cũ.',
+        version: '2026-09-01:OUTDATED',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+        history: {
+          factId: 'n3#0',
+          noteId: 'n3',
+          noteTitle: 'Ghi chú tháng 9',
+          date: '2026-09-01',
+          relation: 'SELF',
+          factStatus: 'OUTDATED',
+          factKind: 'STATUS',
+          factPolarity: 'UNCERTAIN',
+        },
+      },
+      {
+        id: 'history.outdatedUnrelated',
+        kind: 'HISTORY',
+        label: 'Old unrelated note',
+        text: 'Cập nhật tài liệu onboarding nhân sự.',
+        version: '2026-09-01:OUTDATED',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+        history: {
+          factId: 'n4#0',
+          noteId: 'n4',
+          noteTitle: 'Ghi chú khác',
+          date: '2026-09-01',
+          relation: 'SELF',
+          factStatus: 'OUTDATED',
+          factKind: 'METRIC',
+          factPolarity: 'UNCERTAIN',
+        },
+      },
+      {
+        id: 'history.supersededCited',
+        kind: 'HISTORY',
+        label: 'Superseded gateway note',
+        text: 'Dùng cổng thanh toán v1.',
+        version: '2026-10-15:SUPERSEDED',
+        loadStatus: 'LOADED',
+        includedInRequest: true,
+        history: {
+          factId: 'n5#0',
+          noteId: 'n5',
+          noteTitle: 'Thiết kế v1',
+          date: '2026-10-15',
+          relation: 'SELF',
+          factStatus: 'SUPERSEDED',
+          factKind: 'DECISION',
+          factPolarity: 'UNCERTAIN',
+        },
+      },
+    ];
+    const assembled = assemble(
+      { sources },
+      {
+        ...out,
+        taskContextStatus: 'CLEAR',
+        claims: [
+          {
+            text: currentNoteText,
+            sourceRefs: [{ sourceId: 'note.body', quote: currentNoteText }],
+            originKind: 'AUTHOR_REPORT',
+            supportRelation: 'FULL',
+          },
+          {
+            text: 'Dùng cổng thanh toán v1.',
+            sourceRefs: [
+              {
+                sourceId: 'history.supersededCited',
+                quote: 'Dùng cổng thanh toán v1.',
+              },
+            ],
+            originKind: 'HISTORICAL_REPORT',
+            supportRelation: 'RELATED_ONLY',
+          },
+        ],
+        gaps: [],
+        nextQuestion: null,
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+      },
+    );
+
+    // Forward progress ("Chưa kiểm thử" -> "Đã kiểm thử") must NOT raise a conflict gap.
+    expect(
+      assembled.gaps.some((g) =>
+        g.sourceRefs.some((r) => r.sourceId === 'history.progress'),
+      ),
+    ).toBe(false);
+
+    // Regression ("Đã kiểm thử" -> "chưa kiểm thử") surfaces HISTORICAL_CONFLICT.
+    const conflictGap = assembled.gaps.find(
+      (g) => g.kind === 'HISTORICAL_CONFLICT',
+    );
+    expect(conflictGap).toMatchObject({
+      kind: 'HISTORICAL_CONFLICT',
+      impact: 'OPTIONAL',
+      status: 'open',
+      sourceRefs: [
+        {
+          sourceId: 'history.regression',
+          quote: 'Đã kiểm thử đầy đủ module đồng bộ.',
+        },
+      ],
+    });
+
+    // Relevant OUTDATED and claim-cited SUPERSEDED surface OUTDATED_INFO; unrelated OUTDATED does not.
+    const outdatedGaps = assembled.gaps.filter(
+      (g) => g.kind === 'OUTDATED_INFO',
+    );
+    expect(
+      outdatedGaps.flatMap((g) => g.sourceRefs.map((r) => r.sourceId)).sort(),
+    ).toEqual(['history.outdatedRelevant', 'history.supersededCited']);
+
+    // Optional historical findings do not block a valid current PROGRESS note.
+    expect(assembled.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(assembled.state).toBe('ready_to_edit');
+  });
 });

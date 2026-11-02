@@ -10,6 +10,7 @@ import {
   UnprocessableEntityException,
   HttpStatus,
   GatewayTimeoutException,
+  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { staleAssessment } from './work-note-assessment.state';
@@ -46,11 +47,34 @@ import type {
   CanonicalTaskNote,
   CreateDraftInput,
   MessageInput,
+  PendingQuestion,
   RestoreInput,
   RevisionOperation,
   SaveInput,
   UpdateDraftInput,
 } from './work-note-agent-drafts.types';
+import {
+  LEDGER_COLLECTION,
+  buildHistoricalContext,
+  historicalContextView,
+  loadTaskHistory,
+  rankNotes,
+  type HistoryOptions,
+} from './history/work-note-history.retriever';
+import { truncateFactQuote } from './history/work-note-history.facts';
+import {
+  dedupeClarification,
+  expandHistoryConfirmation,
+  type HistoryRef,
+} from './history/clarification-dedup';
+import type {
+  HistoricalContext,
+  HistoricalContextView,
+  HistoricalNote,
+} from './history/history.types';
+import type { SecurityReport } from './security/security.types';
+
+const historyLogger = new Logger('WorkNoteHistory');
 
 const DAY = 86400000;
 const uuid = (value: string) =>
@@ -115,7 +139,11 @@ type OperationRow = Document & {
   failureCode?: string;
   expiresAt: Date;
 };
-type MessageResponse = AgentResult & { sourceRevision: number };
+type MessageResponse = AgentResult & {
+  sourceRevision: number;
+  history?: HistoricalContextView;
+  security?: SecurityReport;
+};
 const legacyBody = (row: Document): string =>
   typeof row.contentMarkdown === 'string'
     ? row.contentMarkdown
@@ -212,6 +240,187 @@ export class WorkNoteAgentDraftsService {
       ownerUserId: oid(actor.userId),
     };
   }
+  // ---------------------------------------------------------------------------
+  // Historical Work Note context (Phase 1: same Task; Phase 2: parent + direct children)
+  // ---------------------------------------------------------------------------
+  protected historyOptions(): HistoryOptions | null {
+    const flag = this.config.get<string | boolean>('WORKNOTE_HISTORY_ENABLED');
+    if (flag === false || flag === 'false') return null;
+    const num = (key: string, fallback: number, max: number, min = 1) => {
+      const raw = this.config.get<string | number>(key);
+      if (raw === undefined || raw === null || String(raw).trim() === '')
+        return fallback;
+      const v = Number(raw);
+      return Number.isSafeInteger(v) && v >= min ? Math.min(v, max) : fallback;
+    };
+    const relatedFlag = this.config.get<string | boolean>(
+      'WORKNOTE_HISTORY_RELATED_ENABLED',
+    );
+    return {
+      maxNotes: num('WORKNOTE_HISTORY_MAX_NOTES', 5, 20),
+      charBudget: num('WORKNOTE_HISTORY_CHAR_BUDGET', 6000, 20000),
+      staleDays: num('WORKNOTE_HISTORY_STALE_DAYS', 14, 365),
+      maxRelatedNotes:
+        relatedFlag === false || relatedFlag === 'false'
+          ? 0
+          : num('WORKNOTE_HISTORY_MAX_RELATED_NOTES', 3, 10, 0),
+    };
+  }
+  /** Masks each historical note independently; notes that hit a BLOCK rule are dropped. */
+  private maskHistory(notes: readonly HistoricalNote[]): HistoricalNote[] {
+    const gateway = this.model.securityGateway?.();
+    if (!gateway) return [...notes];
+    const out: HistoricalNote[] = [];
+    for (const note of notes) {
+      try {
+        const [title, text] = gateway.maskTexts([note.title, note.text]);
+        out.push({ ...note, title, text });
+      } catch {
+        historyLogger.warn(
+          JSON.stringify({
+            event: 'worknote.history.note_blocked',
+            source: note.source,
+          }),
+        );
+      }
+    }
+    return out;
+  }
+  /**
+   * Best-effort: history never breaks the Agent. The caller has already
+   * authorized the Task via `owned()` (same rule as listTaskNotes).
+   */
+  protected async loadHistoricalContext(
+    headers: CaptureRequestHeaders,
+    actor: WorkNotesActor,
+    d: DraftRow,
+  ): Promise<HistoricalContext | null> {
+    const options = this.historyOptions();
+    if (!options || !d.taskId || (d.workflow && d.workflow !== 'TASK_NOTE'))
+      return null;
+    try {
+      // Phase 2: parent + direct children, resolved with the caller's own credentials.
+      const relatedTasks =
+        (options.maxRelatedNotes ?? 0) > 0
+          ? ((await this.authorization.resolveRelatedTasks?.(
+              headers,
+              actor,
+              String(d.taskId),
+            )) ?? [])
+          : [];
+      const notes = await loadTaskHistory(
+        this.db(),
+        {
+          organizationId: String(d.organizationId),
+          projectId: String(d.projectId),
+          taskId: String(d.taskId),
+          excludeNoteId: d.noteId ? String(d.noteId) : null,
+          related: relatedTasks.map(({ id, key, relation }) => ({
+            id,
+            relation,
+            ...(key ? { key } : {}),
+          })),
+        },
+        options,
+      );
+      if (!notes.length) return null;
+      const ranked = rankNotes(
+        notes,
+        `${actor.taskContext?.title ?? ''} ${d.state.title} ${d.state.contentMarkdown}`,
+        options.maxNotes,
+        options.maxRelatedNotes ?? 0,
+      );
+      const context = buildHistoricalContext({
+        notes: this.maskHistory(ranked),
+        currentNoteText: d.state.contentMarkdown,
+        taskStatus: actor.taskContext?.status ?? null,
+        now: new Date(),
+        options,
+      });
+      return context.facts.length ? context : null;
+    } catch (error) {
+      historyLogger.warn(
+        JSON.stringify({
+          event: 'worknote.history.unavailable',
+          error: error instanceof Error ? error.name : 'unknown',
+        }),
+      );
+      return null;
+    }
+  }
+  /**
+   * Intelligent Clarification layer 2: turns an open question that is already
+   * answered by history into a one-click confirmation (never repeated in a draft).
+   */
+  protected dedupeQuestion(
+    question: AgentResult['questions'][number] | undefined,
+    historical: HistoricalContext | null,
+    clarifications: AgentInput['clarifications'],
+  ):
+    | (AgentResult['questions'][number] & { historyRef?: HistoryRef })
+    | undefined {
+    if (!question || !historical) return question;
+    const decision = dedupeClarification(question, historical);
+    if (decision.action === 'keep') return question;
+    const alreadyConfirmed = clarifications.some(
+      (c) => c.question === decision.question.text,
+    );
+    return alreadyConfirmed
+      ? question
+      : { ...decision.question, historyRef: decision.historyRef };
+  }
+  /** Read model for the composer's "Ngữ cảnh công việc" tab. */
+  async history(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    id: string,
+  ): Promise<HistoricalContextView | null> {
+    const { actor, draft } = await this.owned(headers, projectId, id);
+    const context = await this.loadHistoricalContext(headers, actor, draft);
+    return context ? historicalContextView(context) : null;
+  }
+  /** Task-level clarification ledger so new drafts do not re-ask answered questions. */
+  private async recordClarificationLedger(d: DraftRow, noteId: string) {
+    if (!this.historyOptions() || !d.taskId) return;
+    const answered = d.state.clarifications.filter(
+      (c) => c.state === 'answered' && c.answer?.trim(),
+    );
+    if (!answered.length) return;
+    const gateway = this.model.securityGateway?.();
+    const now = new Date();
+    const rows: Document[] = [];
+    for (const c of answered) {
+      try {
+        const [question, answer] = gateway
+          ? gateway.maskTexts([c.question, c.answer!])
+          : [c.question, c.answer!];
+        rows.push({
+          organizationId: d.organizationId,
+          projectId: d.projectId,
+          taskId: d.taskId,
+          question,
+          answer,
+          disposition: 'answered',
+          answeredAt: now,
+          sourceDraftId: d._id,
+          noteId: oid(noteId),
+        });
+      } catch {
+        // BLOCK-level content is never persisted into the ledger.
+      }
+    }
+    if (!rows.length) return;
+    try {
+      await this.db().collection(LEDGER_COLLECTION).insertMany(rows);
+    } catch (error) {
+      historyLogger.warn(
+        JSON.stringify({
+          event: 'worknote.history.ledger_failed',
+          error: error instanceof Error ? error.name : 'unknown',
+        }),
+      );
+    }
+  }
   protected opId(actor: WorkNotesActor, id: string) {
     if (!uuid(id))
       throw new UnprocessableEntityException({ code: 'INVALID_OPERATION_ID' });
@@ -258,9 +467,21 @@ export class WorkNoteAgentDraftsService {
       hasAppliedRewrite: d.state.hasAppliedRewrite,
       conversation: d.state.conversation,
       pendingQuestion: q
-        ? { id: q.id, text: q.text, reason: q.reason, options: q.options }
+        ? {
+            id: q.id,
+            text: q.text,
+            reason: q.reason,
+            options: q.options,
+            ...(q.historyRef ? { historyRef: q.historyRef } : {}),
+          }
         : null,
       suggestion: d.state.suggestion,
+      ...(d.state.suggestion && d.state.suggestionProvenance?.security
+        ? {
+            lastSecurity: d.state.suggestionProvenance
+              .security as SecurityReport,
+          }
+        : {}),
     };
   }
   protected async transaction<T>(
@@ -751,24 +972,46 @@ export class WorkNoteAgentDraftsService {
     if (input.replyToQuestionId) {
       const q = d.state.pendingQuestion;
       if (!q || q.id !== input.replyToQuestionId) throw conflict();
+      let resolvedSelection = q.request.selection;
+      if (resolvedSelection) {
+        const { start, end, quote } = resolvedSelection;
+        if (start < 0 || end <= start || end > d.state.contentMarkdown.length)
+          throw conflict();
+        const liveQuote = d.state.contentMarkdown.slice(start, end);
+        if (liveQuote !== quote) {
+          const gw = this.model.securityGateway?.();
+          const maskedLive = gw ? gw.maskTexts([liveQuote])[0] : liveQuote;
+          if (maskedLive !== quote) throw conflict();
+        }
+        resolvedSelection = { start, end, quote: liveQuote };
+      }
       request = {
-        ...q.request,
         ...input,
         operation: q.request.operation,
         scope: q.request.scope,
         instruction: q.request.instruction,
-        selection: q.request.selection,
+        includeWholeNoteContext:
+          input.includeWholeNoteContext ?? q.request.includeWholeNoteContext,
+        ...(resolvedSelection
+          ? { selection: resolvedSelection }
+          : { selection: undefined }),
       };
+      const expandedAnswer =
+        input.questionDisposition === 'answered'
+          ? expandHistoryConfirmation(input.answer, q.historyRef)
+          : input.answer;
       clarifications.push({
         id: q.id,
         question: q.text,
         state: input.questionDisposition!,
         ...(input.questionDisposition === 'answered'
-          ? { answer: input.answer }
+          ? { answer: expandedAnswer }
           : {}),
       });
     }
-    const agentInput: AgentInput = {
+    let historical = await this.loadHistoricalContext(headers, actor, d);
+    let historyView = historical ? historicalContextView(historical) : null;
+    let agentInput: AgentInput = {
       operation: request.operation,
       scope: request.scope,
       instruction: request.instruction,
@@ -786,6 +1029,7 @@ export class WorkNoteAgentDraftsService {
       history: d.state.conversation.slice(-8),
       includeWholeNoteContext: request.includeWholeNoteContext,
       ...(request.selection ? { selection: request.selection } : {}),
+      ...(historyView ? { historicalContext: historyView } : {}),
     };
     // Validate before consuming quota or claiming an inference operation.
     if (
@@ -797,23 +1041,76 @@ export class WorkNoteAgentDraftsService {
         ) !== agentInput.selection.quote)
     )
       throw conflict();
+    const validateAndPrecheck = (candidate: AgentInput) => {
+      prepareAgentRequest(candidate);
+      // Pre-LLM Security Gateway pre-flight: BLOCK before quota/lease are consumed.
+      this.model.precheck?.(candidate);
+    };
+    const throwInvalidAgentInput = (error: AgentValidationError): never => {
+      const emptyBody =
+        !['title', 'custom'].includes(agentInput.operation) &&
+        !agentInput.draft.body.trim();
+      throw new UnprocessableEntityException({
+        code: error.code,
+        message: emptyBody
+          ? 'Vui lòng nhập nội dung ghi chú trước khi sử dụng công cụ chỉnh sửa văn bản này.'
+          : error.message.includes('vượt quá giới hạn')
+            ? error.message
+            : 'Ngữ cảnh gửi đến Trợ lý AI không hợp lệ hoặc quá dài. Vui lòng chọn đoạn văn ngắn hơn hoặc điều chỉnh lại yêu cầu.',
+      });
+    };
     try {
-      prepareAgentRequest(agentInput);
+      validateAndPrecheck(agentInput);
     } catch (error) {
-      if (error instanceof AgentValidationError) {
-        const emptyBody =
-          !['title', 'custom'].includes(agentInput.operation) &&
-          !agentInput.draft.body.trim();
-        throw new UnprocessableEntityException({
-          code: error.code,
-          message: emptyBody
-            ? 'Vui lòng nhập nội dung ghi chú trước khi sử dụng công cụ chỉnh sửa văn bản này.'
-            : error.message.includes('vượt quá giới hạn')
-              ? error.message
-              : 'Ngữ cảnh gửi đến Trợ lý AI không hợp lệ hoặc quá dài. Vui lòng chọn đoạn văn ngắn hơn hoặc điều chỉnh lại yêu cầu.',
+      if (!(error instanceof AgentValidationError)) throw error;
+      if (!agentInput.historicalContext) throwInvalidAgentInput(error);
+      // Supplementary history must never reject an otherwise valid user request.
+      const withoutHistory: AgentInput = {
+        ...agentInput,
+        historicalContext: undefined,
+      };
+      let degraded = false;
+      if (historical && historical.facts.length > 8) {
+        const topFacts = historical.facts.slice(0, 8);
+        const topNoteIds = new Set(topFacts.map((f) => f.noteId));
+        const topFactIds = new Set(topFacts.map((f) => f.id));
+        const compactView = historicalContextView({
+          notes: historical.notes.filter((n) => topNoteIds.has(n.id)),
+          facts: topFacts,
+          findings: historical.findings.filter((f) => topFactIds.has(f.factId)),
+          truncated: true,
         });
+        const compactCandidate: AgentInput = {
+          ...withoutHistory,
+          historicalContext: compactView,
+        };
+        try {
+          validateAndPrecheck(compactCandidate);
+          agentInput = compactCandidate;
+          historyView = compactView;
+          degraded = true;
+        } catch (compactErr) {
+          if (!(compactErr instanceof AgentValidationError)) throw compactErr;
+        }
       }
-      throw error;
+      if (!degraded) {
+        try {
+          validateAndPrecheck(withoutHistory);
+          agentInput = withoutHistory;
+          historical = null;
+          historyView = null;
+          degraded = true;
+        } catch (fallbackErr) {
+          if (!(fallbackErr instanceof AgentValidationError)) throw fallbackErr;
+        }
+      }
+      if (!degraded) throwInvalidAgentInput(error);
+      historyLogger.warn(
+        JSON.stringify({
+          event: 'worknote.history.degraded_for_budget',
+          keptHistory: Boolean(historyView),
+        }),
+      );
     }
     if (!(await this.consumeAgentQuota(actor)))
       throw new HttpException(
@@ -885,17 +1182,69 @@ export class WorkNoteAgentDraftsService {
             current.state.assessment,
             'LEGACY_AGENT_REQUEST',
           );
-        const question = result.questions[0];
+        const question = this.dedupeQuestion(
+          result.questions[0],
+          historical,
+          clarifications,
+        );
         const questionId = question ? randomUUID() : null;
-        current.state.clarifications = clarifications;
+        const rawUserTurn = input.answer ?? input.instruction;
+        const gw = this.model.securityGateway?.();
+        // Fail closed: never swallow masking errors or persist unmasked user input/state.
+        const [safeUserTurn] = gw ? gw.maskTexts([rawUserTurn]) : [rawUserTurn];
+        const safeClarifications = gw
+          ? clarifications.map((c) => {
+              const [cQuestion, cAnswer] = gw.maskTexts([
+                c.question,
+                c.answer ?? '',
+              ]);
+              return {
+                ...c,
+                question: cQuestion,
+                ...(c.answer !== undefined ? { answer: cAnswer } : {}),
+              };
+            })
+          : clarifications;
+        let safePendingRequest: PendingQuestion['request'] | null = null;
+        if (question) {
+          const [safeInstruction, safeQuote] = gw
+            ? gw.maskTexts([
+                request.instruction,
+                request.selection?.quote ?? '',
+              ])
+            : [request.instruction, request.selection?.quote ?? ''];
+          safePendingRequest = {
+            operation: request.operation,
+            scope: request.scope,
+            instruction: truncateFactQuote(safeInstruction, 2_000),
+            includeWholeNoteContext: request.includeWholeNoteContext,
+            ...(request.selection
+              ? {
+                  selection: {
+                    start: request.selection.start,
+                    end: request.selection.end,
+                    quote: safeQuote,
+                  },
+                }
+              : {}),
+          };
+        }
+        current.state.clarifications = safeClarifications;
         current.state.conversation.push(
-          { role: 'user', content: input.answer ?? input.instruction },
-          { role: 'assistant', content: result.message },
+          { role: 'user', content: safeUserTurn },
+          {
+            role: 'assistant',
+            content: result.message,
+            ...(completion.provenance.security
+              ? { security: completion.provenance.security }
+              : {}),
+          },
         );
         current.state.conversation = current.state.conversation.slice(-40);
-        current.state.pendingQuestion = question
-          ? { ...question, id: questionId!, request }
-          : null;
+        current.state.pendingQuestion =
+          question && safePendingRequest
+            ? { ...question, id: questionId!, request: safePendingRequest }
+            : null;
         current.state.suggestion = result.suggestion;
         current.state.suggestionTaskHash = hash(actor.taskContext ?? null);
         current.state.suggestionProvenance = completion.provenance;
@@ -921,6 +1270,10 @@ export class WorkNoteAgentDraftsService {
           ...result,
           questions: question ? [{ ...question, ...{ id: questionId } }] : [],
           sourceRevision: d.revision,
+          ...(historyView ? { history: historyView } : {}),
+          ...(completion.provenance.security
+            ? { security: completion.provenance.security }
+            : {}),
         };
         await this.operations().updateOne(
           { _id: this.opId(actor, input.operationId) },
@@ -1184,7 +1537,8 @@ export class WorkNoteAgentDraftsService {
     if (replay)
       return this.saveReplay(headers, projectId, initialActor, replay);
     const { actor } = await this.owned(headers, projectId, id);
-    return this.transaction(async (db, session) => {
+    let ledger: { draft: DraftRow; noteId: string } | null = null;
+    const saved = await this.transaction(async (db, session) => {
       const op = await this.prior(actor, input.operationId, payload, session);
       if (op) return this.saveReplay(headers, projectId, actor, op);
       const d = await this.drafts().findOne(
@@ -1392,8 +1746,15 @@ export class WorkNoteAgentDraftsService {
         },
         session,
       );
+      ledger = { draft: d, noteId: String(noteId) };
       return this.canonical(row, actor);
     });
+    // After commit, best-effort: remember answered clarifications at Task level.
+    if (ledger) {
+      const { draft, noteId } = ledger;
+      await this.recordClarificationLedger(draft, noteId);
+    }
+    return saved;
   }
   async versions(
     headers: CaptureRequestHeaders,

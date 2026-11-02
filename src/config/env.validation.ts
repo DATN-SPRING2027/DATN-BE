@@ -65,6 +65,17 @@ export interface EnvironmentVariables {
   CONTINUUM_WEB_BASE_URL?: string;
   SAG_WEB_BASE_URL?: string;
   SWAGGER_ENABLED: boolean;
+  WORKNOTE_SECURITY_GATEWAY_MODE?: 'enforce' | 'monitor' | 'off';
+  WORKNOTE_SECURITY_MAX_FINDINGS?: number;
+  WORKNOTE_SECURITY_PLACEHOLDER_KEY?: string;
+  WORKNOTE_SECURITY_INTERNAL_EMAIL_DOMAINS?: string;
+  WORKNOTE_PII_MASK_INTERNAL_EMAIL?: boolean;
+  WORKNOTE_HISTORY_ENABLED?: boolean;
+  WORKNOTE_HISTORY_MAX_NOTES?: number;
+  WORKNOTE_HISTORY_CHAR_BUDGET?: number;
+  WORKNOTE_HISTORY_STALE_DAYS?: number;
+  WORKNOTE_HISTORY_RELATED_ENABLED?: boolean;
+  WORKNOTE_HISTORY_MAX_RELATED_NOTES?: number;
   [key: string]: unknown;
 }
 
@@ -250,6 +261,53 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .truthy('true')
     .falsy('false')
     .default(false),
+  WORKNOTE_SECURITY_GATEWAY_MODE: Joi.string()
+    .trim()
+    .lowercase()
+    .valid('enforce', 'monitor', 'off')
+    .default('enforce'),
+  WORKNOTE_SECURITY_MAX_FINDINGS: Joi.number()
+    .integer()
+    .min(1)
+    .max(500)
+    .optional(),
+  WORKNOTE_SECURITY_PLACEHOLDER_KEY: Joi.string()
+    .trim()
+    .min(16)
+    .allow('')
+    .optional(),
+  WORKNOTE_SECURITY_INTERNAL_EMAIL_DOMAINS: Joi.string()
+    .trim()
+    .allow('')
+    .optional(),
+  WORKNOTE_PII_MASK_INTERNAL_EMAIL: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .optional(),
+  WORKNOTE_HISTORY_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .optional(),
+  WORKNOTE_HISTORY_MAX_NOTES: Joi.number().integer().min(1).max(20).optional(),
+  WORKNOTE_HISTORY_CHAR_BUDGET: Joi.number()
+    .integer()
+    .min(200)
+    .max(20000)
+    .optional(),
+  WORKNOTE_HISTORY_STALE_DAYS: Joi.number()
+    .integer()
+    .min(1)
+    .max(365)
+    .optional(),
+  WORKNOTE_HISTORY_RELATED_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .optional(),
+  WORKNOTE_HISTORY_MAX_RELATED_NOTES: Joi.number()
+    .integer()
+    .min(0)
+    .max(10)
+    .optional(),
   XKIRO_API_KEY: Joi.string().trim().allow('').optional(),
   XKIRO_MODEL: Joi.string()
     .pattern(/^[\w.-]+\/[\w.:-]+$/)
@@ -361,6 +419,15 @@ export function validateEnvironment(
   ) {
     throw new Error(
       'Environment validation failed: GOOGLE_CALLBACK_URL must use HTTPS in production.',
+    );
+  }
+
+  if (
+    result.value.NODE_ENV === 'production' &&
+    result.value.WORKNOTE_SECURITY_GATEWAY_MODE === 'off'
+  ) {
+    throw new Error(
+      'Environment validation failed: WORKNOTE_SECURITY_GATEWAY_MODE cannot be "off" in production.',
     );
   }
 

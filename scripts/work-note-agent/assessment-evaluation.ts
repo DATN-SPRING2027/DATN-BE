@@ -301,7 +301,10 @@ export function gradeAssessment(
   for (const claim of output.claims) {
     if (
       claim.originKind === 'AUTHOR_REPORT' &&
-      claim.sourceRefs.some((ref) => sources.get(ref.sourceId)?.kind === 'TASK')
+      claim.sourceRefs.some((ref) => {
+        const k = sources.get(ref.sourceId)?.kind;
+        return k === 'TASK' || k === 'HISTORY';
+      })
     )
       failures.push('TASK_REQUIREMENT_USED_AS_AUTHOR_RESULT');
   }
@@ -309,9 +312,10 @@ export function gradeAssessment(
     if (
       coverage.status === 'SUPPORTED' &&
       (!coverage.sourceRefs.length ||
-        coverage.sourceRefs.some(
-          (ref) => sources.get(ref.sourceId)?.kind === 'TASK',
-        ))
+        coverage.sourceRefs.some((ref) => {
+          const k = sources.get(ref.sourceId)?.kind;
+          return k === 'TASK' || k === 'HISTORY';
+        }))
     )
       failures.push('TASK_REQUIREMENT_USED_AS_COMPLETION_EVIDENCE');
   }

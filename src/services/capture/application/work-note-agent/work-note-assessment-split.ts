@@ -21,9 +21,9 @@ import type {
 
 export const TASK_INTERPRETER_PROMPT_VERSION =
   'task-note-interpreter/2026-10-29.v1';
-export const TASK_ASSESSOR_PROMPT_VERSION = 'task-note-assessor/2026-10-29.v1';
+export const TASK_ASSESSOR_PROMPT_VERSION = 'task-note-assessor/2026-11-02.v2';
 export const SPLIT_ASSESSMENT_PROMPT_VERSION =
-  'task-note-assessment-split/2026-10-29.v1';
+  'task-note-assessment-split/2026-11-02.v2';
 
 export type TaskInterpreterOutput = {
   taskContextStatus: AssessmentView['taskContextStatus'];
@@ -129,8 +129,8 @@ PURPOSE RUBRIC (BẮT BUỘC):
 - HANDOVER: ĐỦ khi nêu trạng thái hiện tại và thông tin/thao tác để người nhận tiếp tục. Thiếu bước vận hành cần thiết mới hỏi (handover.next_steps). Không tự đòi người nhận xác nhận đã đọc.
 - COMPLETION: Yêu cầu taskContextStatus=CLEAR và mọi interpretedTask.requirements có coverage=SUPPORTED. Khi báo “đã kiểm tra quyền” mà chưa nêu vai trò/tài khoản, PHẢI đặt kind=EVIDENCE, needCode=test_context.actor và hỏi rõ vai trò/tài khoản (actor) cùng kết quả từng vai trò.
 - OTHER: Đủ khi ghi chú rõ nghĩa, không tự mâu thuẫn.
-CLAIMS & COVERAGE: Mỗi claim là mệnh đề ngắn trích nguyên văn từ NOTE/ANSWER (claim.text bằng đúng quote; tách riêng mệnh đề kết quả và mệnh đề giới hạn “chưa kiểm thử...”). AUTHOR_REPORT chỉ cite note.*/answer.*. coverage phải khớp requirementIndex (0..requirements.length-1). CONTRADICTORY chỉ khi kết quả tác giả báo xung đột trực tiếp với yêu cầu bắt buộc hoặc tự mâu thuẫn; khi CONTRADICTORY luôn đặt nextQuestion=null.
-NEED CODE & NO-REPEAT: Mỗi gap bắt buộc có needCode hợp lệ. Nếu clarificationLedger đã có gapId hoặc needCode với mayAskAgain=false, tuyệt đối không hỏi lại (nextQuestion=null).
+CLAIMS & COVERAGE: Mỗi claim là mệnh đề ngắn trích nguyên văn từ NOTE/ANSWER (claim.text bằng đúng quote; tách riêng mệnh đề kết quả và mệnh đề giới hạn “chưa kiểm thử...”). AUTHOR_REPORT chỉ cite note.*/answer.*; HISTORICAL_REPORT chỉ cite history.*. coverage phải khớp requirementIndex (0..requirements.length-1) và TUYỆT ĐỐI KHÔNG dùng history.* làm bằng chứng SUPPORTED hay PARTIAL. Không lấy kết quả/trạng thái của PARENT/CHILD/LINKED làm tiến độ, coverage hay mâu thuẫn thực thi của Task đang đánh giá. CONTRADICTORY chỉ khi kết quả tác giả báo xung đột trực tiếp với yêu cầu bắt buộc hoặc tự mâu thuẫn (không đặt CONTRADICTORY chỉ vì khác ghi chú lịch sử; dùng HISTORICAL_CONFLICT needCode=history.conflict cho mâu thuẫn lịch sử và OUTDATED_INFO needCode=history.outdated cho thông tin cũ lỗi thời của SELF, luôn kèm trích dẫn history.* thực tế).
+NEED CODE & NO-REPEAT: Mỗi gap bắt buộc có needCode hợp lệ. Nếu clarificationLedger đã có gapId hoặc needCode với mayAskAgain=false, tuyệt đối không hỏi lại (nextQuestion=null). Giảm hỏi lặp lại điều đã ghi rõ trong history.* CURRENT của SELF.
 OUTPUT: JSON đúng 6 root keys: purpose, claims, coverage, gaps, noteAdequacy, nextQuestion. Không xuất taskUnderstanding, taskContextStatus, id, state, revision, hash. Không Markdown fence.`;
 }
 
@@ -484,6 +484,7 @@ function buildAssessorPayload(
       : {}),
     authorPassages: ctx.authorPassages,
     authorLimitPassages: ctx.authorLimitPassages,
+    ...(ctx.historicalFacts ? { historicalFacts: ctx.historicalFacts } : {}),
     passageAidsComplete: ctx.passageAidsComplete,
     clarificationLedger: ctx.clarificationLedger,
   };
@@ -501,6 +502,7 @@ export function buildTaskAssessorMessages(
   if (JSON.stringify(payload).length > 65000) {
     payload.authorPassages = [];
     payload.authorLimitPassages = [];
+    if ('historicalFacts' in payload) delete payload.historicalFacts;
     payload.passageAidsComplete = false;
   }
   if (JSON.stringify(payload).length > 65000) invalid('CONTEXT_LIMIT');

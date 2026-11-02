@@ -70,12 +70,34 @@ export function assessmentRequestContext(input: AssessmentModelInput) {
   const authorLimitPassages = budget(
     authorPassages.filter((p) => hasExplicitUncertainty(p.quote)),
   );
+  const historicalFacts = input.sources
+    .filter((s) => s.kind === 'HISTORY')
+    .map((s) => ({
+      sourceId: s.id,
+      quote: s.text,
+      date: s.history?.date ?? '',
+      relation: s.history?.relation ?? ('SELF' as const),
+      ...(s.history?.taskKey ? { taskKey: s.history.taskKey } : {}),
+      factStatus: s.history?.factStatus ?? ('CURRENT' as const),
+      ...(s.history?.factKind ? { factKind: s.history.factKind } : {}),
+      noteTitle: s.history?.noteTitle ?? s.label,
+    }))
+    .filter((entry) => {
+      const size = JSON.stringify(entry).length;
+      if (size > remaining) {
+        complete = false;
+        return false;
+      }
+      remaining -= size;
+      return true;
+    });
   return {
     // These are extraction aids, not generated or approved acceptance criteria.
     // Full authorized Task sources remain present; candidates are never a summary.
     requirementPassages,
     authorPassages: selectedAuthorPassages,
     authorLimitPassages,
+    ...(historicalFacts.length ? { historicalFacts } : {}),
     passageAidsComplete: complete,
     clarificationLedger: input.answers.map((a) => ({
       gapId: a.gapId,

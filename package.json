@@ -61,6 +61,8 @@
     "test:task-deadline-scan-index-plan": "node --test scripts/migrations/task-deadline-scan-index.plan.test.mjs",
     "migrate:notification-request-flow-indexes": "node scripts/migrations/20261024-notification-request-flow-indexes.mjs",
     "test:notification-request-flow-indexes-plan": "node --test scripts/migrations/notification-request-flow-indexes.plan.test.mjs",
+    "migrate:task-clarification-ledger-indexes": "node scripts/migrations/20261102-task-clarification-ledger-indexes.mjs",
+    "test:task-clarification-ledger-indexes-plan": "node --test scripts/migrations/task-clarification-ledger-indexes.plan.test.mjs",
     "migrate:platform-authority-change-hardening": "node scripts/migrations/20261016-platform-authority-change-hardening.mjs",
     "migrate:platform-operator-v1-expansion-index": "node scripts/migrations/20261016-platform-operator-v1-expansion-index.mjs",
     "test:platform-operator-v1-expansion-index-plan": "node --test scripts/migrations/platform-operator-v1-expansion-index.plan.test.mjs",

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   FEW_SHOTS,
+  HISTORY_POLICY,
+  HISTORY_POLICY_VERSION,
   OPERATION_POLICY,
   PROMPT_VERSION,
   SYSTEM_PROMPT,
@@ -22,6 +24,7 @@ import {
   type BoundSuggestion,
   type DraftSnapshot,
 } from './work-note-agent.types';
+import { HISTORY_VIEW_LIMITS } from './history/history.types';
 export type {
   AgentInput,
   AgentResult,
@@ -189,6 +192,30 @@ export function validateAgentInput(value: AgentInput): void {
       ))
   )
     bad();
+  if (value.historicalContext !== undefined) {
+    const h = value.historicalContext;
+    if (
+      value.workflow !== 'TASK_NOTE' ||
+      !h ||
+      !Array.isArray(h.notes) ||
+      !Array.isArray(h.facts) ||
+      !Array.isArray(h.findings) ||
+      h.notes.length > HISTORY_VIEW_LIMITS.maxNotes ||
+      h.facts.length > HISTORY_VIEW_LIMITS.maxFacts ||
+      h.findings.length > HISTORY_VIEW_LIMITS.maxFindings ||
+      h.notes.some(
+        (n: NonNullable<AgentInput['historicalContext']>['notes'][number]) =>
+          !validString(n.title, HISTORY_VIEW_LIMITS.maxTitleLength) ||
+          !validString(n.ref, 10, true),
+      ) ||
+      h.facts.some(
+        (f: NonNullable<AgentInput['historicalContext']>['facts'][number]) =>
+          !validString(f.quote, HISTORY_VIEW_LIMITS.maxQuoteLength, true) ||
+          !validString(f.ref, 10),
+      )
+    )
+      bad();
+  }
 }
 
 export type PreparedAgentRequest = Readonly<{
@@ -250,6 +277,44 @@ export function prepareAgentRequest(input: AgentInput): PreparedAgentRequest {
       }),
     ),
     history: snapshot.history,
+    ...(snapshot.historicalContext
+      ? {
+          historicalNotes: {
+            notes: snapshot.historicalContext.notes.map(
+              ({ ref, title, date, source, relation, taskKey }) => ({
+                ref,
+                title,
+                date,
+                source,
+                relation,
+                ...(taskKey ? { task: taskKey } : {}),
+              }),
+            ),
+            facts: snapshot.historicalContext.facts.map(
+              ({
+                ref,
+                date,
+                kind,
+                polarity,
+                status,
+                quote,
+                relation,
+                taskKey,
+              }) => ({
+                ref,
+                date,
+                kind,
+                polarity,
+                status,
+                quote,
+                relation,
+                ...(taskKey ? { task: taskKey } : {}),
+              }),
+            ),
+            truncated: snapshot.historicalContext.truncated,
+          },
+        }
+      : {}),
   };
   const serialized = JSON.stringify(payload);
   if (serialized.length > LIMITS.context)
@@ -268,12 +333,18 @@ export function prepareAgentRequest(input: AgentInput): PreparedAgentRequest {
       { role: 'user', content: JSON.stringify(example.user) },
       { role: 'assistant', content: JSON.stringify(example.assistant) },
     );
+  // History policy is only added when historical data is present, so requests
+  // without history keep the exact v0.3.x prompt template.
+  if (snapshot.historicalContext)
+    messages.push({ role: 'system', content: HISTORY_POLICY });
   messages.push({ role: 'user', content: serialized });
   return {
     messages,
     input: snapshot,
     fragments: protectedText.fragments,
-    promptVersion: PROMPT_VERSION,
+    promptVersion: snapshot.historicalContext
+      ? `${PROMPT_VERSION}+${HISTORY_POLICY_VERSION}`
+      : PROMPT_VERSION,
   };
 }
 

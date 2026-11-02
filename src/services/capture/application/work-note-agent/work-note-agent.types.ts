@@ -1,3 +1,5 @@
+import type { HistoricalContextView } from './history/history.types';
+
 export const AGENT_OPERATIONS = [
   'grammar',
   'clarify',
@@ -42,6 +44,8 @@ export type AgentInput = Readonly<{
     answer?: string;
   }>[];
   history: readonly Readonly<{ role: 'user' | 'assistant'; content: string }>[];
+  /** Masked, verified facts from previous notes of the same Task (untrusted data). */
+  historicalContext?: HistoricalContextView;
 }>;
 export type AgentMessage = Readonly<{
   role: 'system' | 'user' | 'assistant';

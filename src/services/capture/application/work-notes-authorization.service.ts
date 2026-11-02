@@ -7,7 +7,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { CaptureRequestHeaders, WorkNotesActor } from './work-notes.types';
+import type {
+  CaptureRequestHeaders,
+  RelatedTaskRef,
+  WorkNotesActor,
+} from './work-notes.types';
 
 const validId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
 const PROJECT_AUTH_CACHE_TTL_MS = 3_000;
@@ -275,6 +279,11 @@ export class WorkNotesAuthorizationService {
                 typeof (step as Record<string, unknown>).done !== 'boolean',
             ))),
       ...(validTaskVersion ? { taskContextVersion: String(task.version) } : {}),
+      ...(typeof task.parentId === 'string' && validId(task.parentId)
+        ? { taskParentId: task.parentId.toLowerCase() }
+        : task.parentId === null
+          ? { taskParentId: null }
+          : {}),
       ...(taskKey ? { taskKey } : {}),
       ...(taskTitle ? { taskTitle } : {}),
       ...(taskTitle
@@ -306,6 +315,77 @@ export class WorkNotesAuthorizationService {
           }
         : {}),
     };
+  }
+
+  /**
+   * Phase-2 history scope: the parent and direct children of the current Task, in the
+   * SAME Project/Organization only. Every returned Task was fetched with the caller's own
+   * credentials from the Task service, so it is exactly as readable as the current Task
+   * (same rule used by `resolveTask` before notes of that Task are listed).
+   * Best-effort: any failure degrades to "no related Tasks", never to a broader scope.
+   */
+  async resolveRelatedTasks(
+    headers: CaptureRequestHeaders,
+    actor: WorkNotesActor,
+    taskId: string,
+    options: { maxChildren?: number } = {},
+  ): Promise<RelatedTaskRef[]> {
+    if (!validId(taskId)) return [];
+    const normalizedTaskId = taskId.toLowerCase();
+    const prefix = this.config.get<string>('TASK_SERVICE_URL') ? '' : '/api/v1';
+    const base = `${prefix}/internal/tasks/projects/${actor.projectId}/tasks`;
+    const maxChildren = Math.max(1, Math.min(options.maxChildren ?? 20, 50));
+    const related: RelatedTaskRef[] = [];
+    const accept = (
+      task: Record<string, unknown> | null | undefined,
+      relation: RelatedTaskRef['relation'],
+    ) => {
+      if (!task || typeof task.id !== 'string' || !validId(task.id)) return;
+      if (String(task.projectId).toLowerCase() !== actor.projectId) return;
+      const id = task.id.toLowerCase();
+      if (id === normalizedTaskId || related.some((r) => r.id === id)) return;
+      const title = typeof task.title === 'string' ? task.title.trim() : '';
+      if (!title) return;
+      related.push({
+        id,
+        title,
+        relation,
+        ...(typeof task.key === 'string' && task.key.trim()
+          ? { key: task.key.trim() }
+          : {}),
+      });
+    };
+    if (actor.taskParentId) {
+      try {
+        const parent = await this.request<Record<string, unknown>>(
+          `${base}/${actor.taskParentId}`,
+          headers,
+          { service: 'task', allowForbidden: true },
+        );
+        if (parent && String(parent.id).toLowerCase() === actor.taskParentId) {
+          accept(parent, 'PARENT');
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedException) throw err;
+      }
+    }
+    try {
+      const children = await this.request<{
+        items?: Array<Record<string, unknown>>;
+      }>(
+        `${base}?${new URLSearchParams({ parentId: normalizedTaskId, limit: String(maxChildren) })}`,
+        headers,
+        { service: 'task', allowForbidden: true },
+      );
+      for (const child of children?.items ?? []) {
+        if (String(child.parentId).toLowerCase() === normalizedTaskId) {
+          accept(child, 'CHILD');
+        }
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
+    }
+    return related;
   }
 
   async listActiveMembers(

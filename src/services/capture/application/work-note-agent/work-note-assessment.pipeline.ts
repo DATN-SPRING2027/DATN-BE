@@ -27,6 +27,7 @@ import {
   type TaskInterpreterOutput,
 } from './work-note-assessment-split';
 import { assembleAssessment } from './work-note-assessment.state';
+import type { HistoricalContext } from './history/history.types';
 import type {
   AssessmentAnswer,
   AssessmentModelInput,
@@ -136,12 +137,64 @@ export function extractSnapshotsFromSources(
   };
 }
 
+export const MAX_HISTORICAL_ASSESSMENT_SOURCES = 12;
+
+export function buildHistoricalAssessmentSources(
+  historicalContext: HistoricalContext | null | undefined,
+  maxFacts = MAX_HISTORICAL_ASSESSMENT_SOURCES,
+): AssessmentSource[] {
+  if (!historicalContext?.facts.length) return [];
+  const notesById = new Map(
+    historicalContext.notes.map((n) => [n.id, n] as const),
+  );
+  return historicalContext.facts.slice(0, maxFacts).map((fact) => {
+    const note = notesById.get(fact.noteId);
+    const fromLedger =
+      note?.source === 'CLARIFICATION_LEDGER' ||
+      fact.noteId.startsWith('ledger:');
+    const date = fact.at.slice(0, 10);
+    const noteTitle = note?.title ?? fact.noteTitle;
+    const relationPrefix =
+      fact.relation === 'SELF'
+        ? 'Cùng Task'
+        : fact.relation === 'PARENT'
+          ? `Task cha${fact.taskKey ? ` ${fact.taskKey}` : ''}`
+          : fact.relation === 'CHILD'
+            ? `Task con${fact.taskKey ? ` ${fact.taskKey}` : ''}`
+            : `Task liên kết${fact.taskKey ? ` ${fact.taskKey}` : ''}`;
+    return {
+      id: `history.${fact.id}`,
+      kind: 'HISTORY',
+      label: fromLedger
+        ? `Lịch sử trả lời (${date})`
+        : `Ghi chú lịch sử (${relationPrefix}, ${date}): ${noteTitle}`,
+      text: fact.quote,
+      version: `${date}:${fact.status}`,
+      loadStatus: 'LOADED',
+      includedInRequest: true,
+      history: {
+        factId: fact.id,
+        noteId: fromLedger ? null : fact.noteId,
+        noteTitle,
+        date,
+        relation: fact.relation,
+        ...(fact.taskKey ? { taskKey: fact.taskKey } : {}),
+        factStatus: fact.status,
+        factKind: fact.kind,
+        factPolarity: fact.polarity,
+        sourceType: fromLedger ? 'CLARIFICATION_LEDGER' : 'TASK_NOTE',
+      },
+    };
+  });
+}
+
 export function buildAssessmentSources(params: {
   taskContext: AssessmentTaskSnapshot | null | undefined;
   taskContextVersion?: string;
   taskContextInvalid?: boolean;
   note: AssessmentNoteSnapshot;
   answers: readonly AssessmentAnswer[];
+  historicalContext?: HistoricalContext | null;
   sourceOverrides?: readonly AssessmentSource[];
 }): AssessmentSource[] {
   if (params.taskContextInvalid || !params.taskContext) {
@@ -162,6 +215,7 @@ export function buildAssessmentSources(params: {
     label: string,
     text: string,
     version: string,
+    history?: AssessmentSource['history'],
   ): AssessmentSource => {
     const override = overrides.get(id);
     return {
@@ -172,8 +226,16 @@ export function buildAssessmentSources(params: {
       version: override?.version ?? version,
       loadStatus: override?.loadStatus ?? 'LOADED',
       includedInRequest: override?.includedInRequest ?? true,
+      ...((override?.history ?? history)
+        ? { history: override?.history ?? history }
+        : {}),
     };
   };
+  const historicalSources = buildHistoricalAssessmentSources(
+    params.historicalContext,
+  ).map((s) =>
+    makeSource(s.id, 'HISTORY', s.label, s.text, s.version, s.history),
+  );
   return [
     makeSource('task.title', 'TASK', 'Task title', t.title, v),
     makeSource(
@@ -216,6 +278,7 @@ export function buildAssessmentSources(params: {
         String(params.note.revision),
       ),
     ),
+    ...historicalSources,
   ];
 }
 

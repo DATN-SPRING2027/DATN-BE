@@ -112,6 +112,10 @@ export class GatewayCaptureController {
   getAgentDraft(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
+  @Get('work-note-drafts/:draftId/history')
+  getAgentDraftHistory(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
   @Patch('work-note-drafts/:draftId')
   updateAgentDraft(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);

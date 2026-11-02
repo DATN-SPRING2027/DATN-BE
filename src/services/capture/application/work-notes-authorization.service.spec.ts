@@ -473,4 +473,119 @@ describe('WorkNotesAuthorizationService', () => {
     });
     expect(fetchSpy).toHaveBeenCalledTimes(7);
   });
+
+  it('extracts taskParentId in resolveTask and resolves readable parent/child Tasks in the same Project', async () => {
+    const parentId = new Types.ObjectId().toHexString();
+    const childId = new Types.ObjectId().toHexString();
+    const wrongProjectTaskId = new Types.ObjectId().toHexString();
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({
+          id: userId,
+          organizationId,
+          name: 'Mina Member',
+          roles: ['ADMIN'],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({ id: projectId, organizationId, status: 'ACTIVE' }),
+      )
+      .mockResolvedValueOnce(response({ canUpdateProject: true }))
+      .mockResolvedValueOnce(
+        response({
+          id: taskId,
+          projectId,
+          parentId,
+          key: 'FE-12',
+          title: 'Subtask login',
+          status: 'IN_PROGRESS',
+        }),
+      );
+
+    const actor = await service.resolveTask({}, projectId, taskId);
+    expect(actor.taskParentId).toBe(parentId);
+
+    fetchSpy
+      .mockResolvedValueOnce(
+        response({
+          id: parentId,
+          projectId,
+          key: 'FE-10',
+          title: 'Epic authentication',
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          items: [
+            {
+              id: childId,
+              projectId,
+              parentId: taskId,
+              key: 'FE-13',
+              title: 'Write login unit tests',
+            },
+            {
+              id: wrongProjectTaskId,
+              projectId: new Types.ObjectId().toHexString(),
+              parentId: taskId,
+              key: 'OTHER-1',
+              title: 'Wrong project',
+            },
+          ],
+        }),
+      );
+
+    const related = await service.resolveRelatedTasks({}, actor, taskId);
+    expect(related).toEqual([
+      {
+        id: parentId,
+        key: 'FE-10',
+        title: 'Epic authentication',
+        relation: 'PARENT',
+      },
+      {
+        id: childId,
+        key: 'FE-13',
+        title: 'Write login unit tests',
+        relation: 'CHILD',
+      },
+    ]);
+  });
+
+  it('degrades gracefully when parent or child Task lookup returns 403/404 or fails transiently', async () => {
+    const parentId = new Types.ObjectId().toHexString();
+    const childId = new Types.ObjectId().toHexString();
+    const actor = {
+      userId,
+      userName: 'Mina Member',
+      organizationId,
+      projectId,
+      canReview: false,
+      canConfigure: false,
+      taskParentId: parentId,
+    };
+    fetchSpy.mockResolvedValueOnce(response({}, 403)).mockResolvedValueOnce(
+      response({
+        items: [
+          {
+            id: childId,
+            projectId,
+            parentId: taskId,
+            key: 'FE-14',
+            title: 'Accessible child task',
+          },
+        ],
+      }),
+    );
+
+    const related = await service.resolveRelatedTasks({}, actor, taskId);
+    expect(related).toEqual([
+      {
+        id: childId,
+        key: 'FE-14',
+        title: 'Accessible child task',
+        relation: 'CHILD',
+      },
+    ]);
+  });
 });

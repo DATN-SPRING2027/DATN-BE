@@ -74,6 +74,22 @@ export class WorkNoteAgentController {
       uuidInput(id),
     );
   }
+  @Get('work-note-drafts/:draftId/history')
+  @Header('Cache-Control', 'private, no-store')
+  async history(
+    @Req() req: Request,
+    @Param('projectId') project: string,
+    @Param('draftId') id: string,
+  ) {
+    // Masked, verified facts from previous notes of the same Task (read-only).
+    return {
+      history: await this.service.history(
+        this.headers(req),
+        objectId(project),
+        uuidInput(id),
+      ),
+    };
+  }
   @Patch('work-note-drafts/:draftId')
   @Header('Cache-Control', 'private, no-store')
   update(
