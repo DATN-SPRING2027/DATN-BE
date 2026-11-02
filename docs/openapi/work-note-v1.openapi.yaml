@@ -420,7 +420,7 @@ paths:
                 - required: [reminderLeadMinutes]
                   not: { required: [frequency] }
               properties:
-                reminderLeadMinutes: { type: integer, nullable: true, enum: [null, 60, 120, 1440, 2880] }
+                reminderLeadMinutes: { type: [integer, 'null'], enum: [null, 60, 120, 1440, 2880] }
                 frequency: { $ref: '#/components/schemas/ReportFrequency' }
                 scope: { $ref: '#/components/schemas/WorkReportScope' }
       responses:
@@ -1018,7 +1018,7 @@ components:
         isManager: { type: boolean }
         isLeader: { type: boolean }
         hasActiveLeaders: { type: boolean }
-        reminderLeadMinutes: { type: integer, nullable: true, enum: [null, 60, 120, 1440, 2880], description: "Immediate per-project, per-tier reminder configuration; missing legacy values mean disabled." }
+        reminderLeadMinutes: { type: [integer, 'null'], enum: [null, 60, 120, 1440, 2880], description: "Immediate per-project, per-tier reminder configuration; missing legacy values mean disabled." }
         frequency: { $ref: '#/components/schemas/ReportFrequency' }
         effectiveAt: { type: string, format: date-time }
         nextFrequency: { $ref: '#/components/schemas/ReportFrequency' }

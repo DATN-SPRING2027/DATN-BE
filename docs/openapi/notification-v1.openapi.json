@@ -187,7 +187,7 @@
         "type": "object",
         "required": ["kind", "url"],
         "properties": {
-          "reportId": { "type": "string", "nullable": true },
+          "reportId": { "type": ["string", "null"] },
           "kind": { "$ref": "#/components/schemas/NotificationTargetKind" },
           "url": { "type": "string" },
           "organizationId": { "type": ["string", "null"] },
