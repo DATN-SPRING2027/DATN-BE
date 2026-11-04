@@ -16,6 +16,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { WorkNotesService } from '../../services/capture/application/work-notes.service';
 import {
   readCookie,
   validCsrfPair,
@@ -313,7 +314,53 @@ function validateFeedbackBody(body: unknown): AiChatFeedbackInputDto {
 
 @Controller('ai-chat/projects/:projectId')
 export class AiChatController {
-  constructor(private readonly aiChat: AiChatService) {}
+  constructor(
+    private readonly aiChat: AiChatService,
+    private readonly workNotes: WorkNotesService,
+  ) {}
+
+  @Get('document-sources')
+  async listDocumentSources(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Query() query?: Record<string, unknown>,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const unknownKeys = Object.keys(query ?? {}).filter(
+      (key) => key !== 'page' && key !== 'pageSize',
+    );
+    if (unknownKeys.length > 0) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'Unexpected query parameters.',
+      });
+    }
+    if (
+      (query?.page !== undefined && typeof query.page !== 'string') ||
+      (query?.pageSize !== undefined && typeof query.pageSize !== 'string')
+    ) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'Pagination query parameters must be single values.',
+      });
+    }
+    const page = parseBoundedInt(
+      typeof query?.page === 'string' ? query.page : undefined,
+      { field: 'page', min: 1, max: 100_000, fallback: 1 },
+    );
+    const pageSize = parseBoundedInt(
+      typeof query?.pageSize === 'string' ? query.pageSize : undefined,
+      { field: 'pageSize', min: 1, max: 100, fallback: 25 },
+    );
+    return this.workNotes.listAiChatProjectSources(
+      this.readHeaders(request),
+      validProjectId,
+      page,
+      pageSize,
+    );
+  }
 
   @Get('threads')
   async listThreads(

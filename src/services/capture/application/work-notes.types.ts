@@ -329,6 +329,37 @@ export interface ProjectDocumentSummaryRecord {
   permissions: WorkNotesPermissions;
 }
 
+export type AiChatProjectDocumentReadinessStatus =
+  | 'READY'
+  | 'PROCESSING'
+  | 'NOT_APPROVED'
+  | 'NOT_INDEXED'
+  | 'FAILED'
+  | 'REVOKED'
+  | 'ARCHIVED'
+  | 'UNVERIFIED';
+
+export interface AiChatProjectDocumentSourceRecord {
+  documentId: string;
+  title: string;
+  fileName?: string;
+  type: DocumentType;
+  approvalStatus: DocumentStatus;
+  currentVersion: number;
+  approvedVersion: number | null;
+  readinessStatus: AiChatProjectDocumentReadinessStatus;
+  updatedAt: string;
+}
+
+export interface AiChatProjectDocumentSourcesResponse extends WorkNotesPage<AiChatProjectDocumentSourceRecord> {
+  summary: {
+    totalCount: number;
+    readyCount: number | null;
+    verificationStatus: 'VERIFIED' | 'UNAVAILABLE';
+    verifiedAt: string | null;
+  };
+}
+
 export type DocumentActivityAction =
   | 'CREATED'
   | 'UPDATED'

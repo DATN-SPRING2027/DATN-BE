@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IamModule } from '../../services/iam/iam.module';
+import { CaptureModule } from '../../services/capture/capture.module';
 import { AiChatController } from './ai-chat.controller';
 import { AiChatService } from './ai-chat.service';
 import { AiEngineController } from './ai-engine.controller';
@@ -9,7 +10,7 @@ import { HttpAiEngineClient } from './http-ai-engine.client';
 import { PlatformAiFeedbackController } from './platform-ai-feedback.controller';
 
 @Module({
-  imports: [IamModule],
+  imports: [IamModule, CaptureModule],
   controllers: [
     AiEngineController,
     AiEngineAuthController,
