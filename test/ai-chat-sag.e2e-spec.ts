@@ -22,6 +22,7 @@ import { AI_ENGINE_CLIENT } from '../src/integrations/ai-engine/ai-engine.port';
 import { HttpAiEngineClient } from '../src/integrations/ai-engine/http-ai-engine.client';
 import { AuthenticationApplicationService } from '../src/services/iam/application/authentication/authentication.application.service';
 import { ProjectService } from '../src/services/iam/application/projects/project.service';
+import { WorkNotesService } from '../src/services/capture/application/work-notes.service';
 
 describe('AI Chat <-> SAG BFF (e2e)', () => {
   let app: INestApplication;
@@ -306,6 +307,10 @@ describe('AI Chat <-> SAG BFF (e2e)', () => {
         { provide: AI_ENGINE_CLIENT, useClass: HttpAiEngineClient },
         { provide: AuthenticationApplicationService, useValue: authMock },
         { provide: ProjectService, useValue: projectsMock },
+        {
+          provide: WorkNotesService,
+          useValue: { listAiChatProjectSources: jest.fn() },
+        },
       ],
     }).compile();
 

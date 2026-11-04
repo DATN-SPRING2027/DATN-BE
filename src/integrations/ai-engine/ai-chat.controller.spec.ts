@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { AiChatController } from './ai-chat.controller';
 import type { AiChatService } from './ai-chat.service';
 import type { AiChatSseFrame } from './ai-chat.types';
+import type { WorkNotesService } from '../../services/capture/application/work-notes.service';
 
 describe('AiChatController', () => {
   function setup() {
@@ -19,6 +20,7 @@ describe('AiChatController', () => {
     const openRegenerateStreamMock = jest.fn();
     const getMindMapMock = jest.fn();
     const generateMindMapMock = jest.fn();
+    const listAiChatProjectSourcesMock = jest.fn();
     const service = {
       listThreads: jest.fn(),
       createThread: createThreadMock,
@@ -37,7 +39,10 @@ describe('AiChatController', () => {
       getMindMap: getMindMapMock,
       generateMindMap: generateMindMapMock,
     } as unknown as AiChatService;
-    const controller = new AiChatController(service);
+    const workNotes = {
+      listAiChatProjectSources: listAiChatProjectSourcesMock,
+    } as unknown as WorkNotesService;
+    const controller = new AiChatController(service, workNotes);
     return {
       controller,
       createThreadMock,
@@ -52,6 +57,7 @@ describe('AiChatController', () => {
       openRegenerateStreamMock,
       getMindMapMock,
       generateMindMapMock,
+      listAiChatProjectSourcesMock,
     };
   }
 
@@ -166,6 +172,58 @@ describe('AiChatController', () => {
         { query: 'x'.repeat(4001) },
       ),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  it('lists Project document sources with bounded pagination and no-store caching', async () => {
+    const { controller, listAiChatProjectSourcesMock } = setup();
+    const projectId = '0123456789abcdef01234567';
+    const req = makeReq({
+      authorization: 'Bearer token',
+      'x-organization-id': 'org-1',
+    });
+    const { res, headers } = makeRes();
+    listAiChatProjectSourcesMock.mockResolvedValueOnce({
+      data: [],
+      pagination: { page: 2, pageSize: 10, totalItems: 0, totalPages: 0 },
+      summary: {
+        totalCount: 0,
+        readyCount: 0,
+        verificationStatus: 'VERIFIED',
+        verifiedAt: '2026-11-04T00:00:00.000Z',
+      },
+    });
+
+    const result = await controller.listDocumentSources(req, res, projectId, {
+      page: '2',
+      pageSize: '10',
+    });
+
+    expect(result.pagination).toMatchObject({ page: 2, pageSize: 10 });
+    expect(headers['cache-control']).toBe('no-store');
+    expect(listAiChatProjectSourcesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorization: 'Bearer token',
+        organizationId: 'org-1',
+      }),
+      projectId,
+      2,
+      10,
+    );
+  });
+
+  it('rejects unsupported query parameters for Project document sources', async () => {
+    const { controller, listAiChatProjectSourcesMock } = setup();
+    const { res } = makeRes();
+
+    await expect(
+      controller.listDocumentSources(
+        makeReq(),
+        res,
+        '0123456789abcdef01234567',
+        { status: 'APPROVED' },
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(listAiChatProjectSourcesMock).not.toHaveBeenCalled();
   });
 
   it('streams formatted SSE events with no-cache/no-buffering headers and aborts upstream on client close', async () => {

@@ -595,6 +595,43 @@
         }
       }
     },
+    "/api/v1/ai-chat/projects/{projectId}/document-sources": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+      "get": {
+        "operationId": "listAiChatProjectDocumentSources",
+        "description": "Lists visible Project documents (including archived and unapproved documents) and live-checks the latest effective approved version against SAG in batches. A document ID contributes once to totalCount. Archived documents have no effective approved version. If SAG cannot verify all readiness candidates, the endpoint returns the metadata page with readyCount=null, verificationStatus=UNAVAILABLE, and UNVERIFIED rows for candidates whose live result is unknown. This read-only endpoint does not change AI retrieval scope.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100000, "default": 1 }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated Project document metadata and whole-Project live SAG readiness summary",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "const": "no-store" } }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AiChatProjectDocumentSourcesResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/v1/ai-chat/projects/{projectId}/mind-map": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
       "get": {
@@ -1330,6 +1367,60 @@
             "type": ["string", "null"],
             "maxLength": 1024
           }
+        }
+      },
+      "AiChatProjectDocumentReadiness": {
+        "type": "string",
+        "enum": ["READY", "PROCESSING", "NOT_APPROVED", "NOT_INDEXED", "FAILED", "REVOKED", "ARCHIVED", "UNVERIFIED"]
+      },
+      "AiChatProjectDocumentSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["documentId", "title", "type", "approvalStatus", "currentVersion", "approvedVersion", "readinessStatus", "updatedAt"],
+        "properties": {
+          "documentId": { "type": "string", "pattern": "^[a-fA-F0-9]{24}$" },
+          "title": { "type": "string", "maxLength": 500 },
+          "fileName": { "type": "string", "maxLength": 512 },
+          "type": { "type": "string", "enum": ["MVP", "DATABASE_DESIGN", "RSR", "ARCHITECTURE", "API_SPECIFICATION", "RESEARCH", "REQUIREMENT", "DESIGN", "TECHNICAL_SPECIFICATION", "OTHER"] },
+          "approvalStatus": { "type": "string", "enum": ["DRAFT", "PENDING_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED", "ARCHIVED"] },
+          "currentVersion": { "type": "integer", "minimum": 1 },
+          "approvedVersion": { "type": ["integer", "null"], "minimum": 1 },
+          "readinessStatus": { "$ref": "#/components/schemas/AiChatProjectDocumentReadiness" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AiChatProjectDocumentSourcesSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["totalCount", "readyCount", "verificationStatus", "verifiedAt"],
+        "properties": {
+          "totalCount": { "type": "integer", "minimum": 0, "description": "All non-deleted visible Project documents, including archived documents; each document ID counts once." },
+          "readyCount": { "type": ["integer", "null"], "minimum": 0, "description": "Null means SAG readiness could not be fully verified; it is not a zero count." },
+          "verificationStatus": { "type": "string", "enum": ["VERIFIED", "UNAVAILABLE"] },
+          "verifiedAt": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "AiChatProjectDocumentSourcesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "pagination", "summary"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AiChatProjectDocumentSource" }
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["page", "pageSize", "totalItems", "totalPages"],
+            "properties": {
+              "page": { "type": "integer", "minimum": 1 },
+              "pageSize": { "type": "integer", "minimum": 1, "maximum": 100 },
+              "totalItems": { "type": "integer", "minimum": 0 },
+              "totalPages": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "summary": { "$ref": "#/components/schemas/AiChatProjectDocumentSourcesSummary" }
         }
       },
       "GenerateMindMapRequest": {

@@ -7,6 +7,7 @@ import { WorkNotesService } from './work-notes.service';
 import type { AuditService } from '../infrastructure/audit/audit.service';
 import type { OutboxService } from '../infrastructure/outbox/outbox.service';
 import type { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
+import type { SagKnowledgeSyncTransport } from '../infrastructure/outbox/knowledge-outbox.consumer';
 
 describe('Capture Work Notes Mongo workflows', () => {
   jest.setTimeout(120_000);
@@ -258,6 +259,244 @@ describe('Capture Work Notes Mongo workflows', () => {
         { ref: 'S1', groupId: 'group-1', turnIds: ['turn-1'] },
       ],
     });
+  });
+
+  it('returns the whole-Project source summary while batching live SAG checks for approved versions', async () => {
+    const readyDocumentId = new Types.ObjectId();
+    const draftDocumentId = new Types.ObjectId();
+    const archivedDocumentId = new Types.ObjectId();
+    const verifiedAt = '2026-11-04T00:00:00.000Z';
+    await connection.collection('project_documents').insertMany([
+      {
+        _id: readyDocumentId,
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        title: 'Architecture specification',
+        documentType: 'ARCHITECTURE',
+        currentVersionNumber: 1,
+        latestApprovedVersionNumber: 1,
+        status: 'APPROVED',
+        updatedAt: new Date(verifiedAt),
+      },
+      {
+        _id: draftDocumentId,
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        title: 'Draft note',
+        documentType: 'OTHER',
+        currentVersionNumber: 1,
+        status: 'DRAFT',
+        updatedAt: new Date(verifiedAt),
+      },
+      {
+        _id: archivedDocumentId,
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        title: 'Archived guide',
+        documentType: 'RESEARCH',
+        currentVersionNumber: 2,
+        latestApprovedVersionNumber: 1,
+        status: 'ARCHIVED',
+        updatedAt: new Date(verifiedAt),
+      },
+    ]);
+    await connection.collection('project_document_versions').insertMany([
+      {
+        _id: new Types.ObjectId(),
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        documentId: readyDocumentId,
+        versionNumber: 1,
+        title: 'Architecture specification',
+        documentType: 'ARCHITECTURE',
+        content: 'Private source text',
+        file: { name: 'architecture.pdf' },
+        status: 'APPROVED',
+        knowledgeSync: {
+          version: 1,
+          sagDocumentId: 'sag-doc-ready',
+          sagVersionNo: 1,
+        },
+      },
+      {
+        _id: new Types.ObjectId(),
+        organizationId: new Types.ObjectId(organizationId),
+        projectId: new Types.ObjectId(projectId),
+        documentId: archivedDocumentId,
+        versionNumber: 1,
+        title: 'Archived guide',
+        documentType: 'RESEARCH',
+        file: { name: 'archived.pdf' },
+        status: 'APPROVED',
+        knowledgeSync: {
+          version: 1,
+          sagDocumentId: 'sag-doc-archived',
+          sagVersionNo: 1,
+        },
+      },
+    ]);
+    const getProjectDocumentReadinessBatch = jest.fn().mockResolvedValue({
+      items: [
+        {
+          documentId: 'sag-doc-ready',
+          versionNo: 1,
+          found: true,
+          status: 'READY',
+          searchStatus: 'SEARCH_READY',
+          searchReady: true,
+          documentStatus: 'READY',
+          chunkCount: 8,
+        },
+      ],
+      verifiedAt,
+    });
+    const sourceService = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getProjectDocumentReadinessBatch,
+      } as unknown as SagKnowledgeSyncTransport,
+    );
+
+    const result = await sourceService.listAiChatProjectSources(
+      {},
+      projectId,
+      1,
+      25,
+    );
+
+    expect(result.summary).toEqual({
+      totalCount: 3,
+      readyCount: 1,
+      verificationStatus: 'VERIFIED',
+      verifiedAt,
+    });
+    expect(result.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          documentId: readyDocumentId.toHexString(),
+          readinessStatus: 'READY',
+          fileName: 'architecture.pdf',
+          approvedVersion: 1,
+        }),
+        expect.objectContaining({
+          documentId: draftDocumentId.toHexString(),
+          readinessStatus: 'NOT_APPROVED',
+          approvedVersion: null,
+        }),
+        expect.objectContaining({
+          documentId: archivedDocumentId.toHexString(),
+          readinessStatus: 'ARCHIVED',
+          approvedVersion: null,
+        }),
+      ]),
+    );
+    expect(result.data[0]).not.toHaveProperty('content');
+    expect(result.data[0]).not.toHaveProperty('storageReference');
+    expect(getProjectDocumentReadinessBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId,
+        projectId,
+        documents: [{ documentId: 'sag-doc-ready', versionNo: 1 }],
+      }),
+    );
+  });
+
+  it('reports live verification as unavailable instead of trusting stale ready metadata', async () => {
+    const documentId = new Types.ObjectId();
+    await connection.collection('project_documents').insertOne({
+      _id: documentId,
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'Ready only in stale metadata',
+      documentType: 'ARCHITECTURE',
+      currentVersionNumber: 1,
+      latestApprovedVersionNumber: 1,
+      status: 'APPROVED',
+      knowledgeSync: {
+        version: 1,
+        sagDocumentId: 'sag-doc-offline',
+        sagVersionNo: 1,
+        status: 'READY',
+        searchReady: true,
+      },
+      updatedAt: new Date(),
+    });
+    await connection.collection('project_document_versions').insertOne({
+      _id: new Types.ObjectId(),
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      documentId,
+      versionNumber: 1,
+      title: 'Ready only in stale metadata',
+      documentType: 'ARCHITECTURE',
+      status: 'APPROVED',
+      knowledgeSync: {
+        version: 1,
+        sagDocumentId: 'sag-doc-offline',
+        sagVersionNo: 1,
+      },
+    });
+    const sourceService = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getProjectDocumentReadinessBatch: jest
+          .fn()
+          .mockRejectedValue(new Error('SAG unavailable')),
+      } as unknown as SagKnowledgeSyncTransport,
+    );
+
+    const result = await sourceService.listAiChatProjectSources(
+      {},
+      projectId,
+      1,
+      25,
+    );
+
+    expect(result.summary).toMatchObject({
+      totalCount: 1,
+      readyCount: null,
+      verificationStatus: 'UNAVAILABLE',
+      verifiedAt: null,
+    });
+    expect(result.data[0]?.readinessStatus).toBe('UNVERIFIED');
+
+    const incompleteService = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getProjectDocumentReadinessBatch: jest.fn().mockResolvedValue({
+          items: [],
+          verifiedAt: new Date().toISOString(),
+        }),
+      } as unknown as SagKnowledgeSyncTransport,
+    );
+    const incompleteResult = await incompleteService.listAiChatProjectSources(
+      {},
+      projectId,
+      1,
+      25,
+    );
+
+    expect(incompleteResult.summary).toMatchObject({
+      readyCount: null,
+      verificationStatus: 'UNAVAILABLE',
+      verifiedAt: null,
+    });
+    expect(incompleteResult.data[0]?.readinessStatus).toBe('UNVERIFIED');
   });
 
   it('blocks lossy legacy writes to upgraded freeform notes', async () => {
