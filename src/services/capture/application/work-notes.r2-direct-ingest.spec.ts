@@ -1151,4 +1151,474 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       chunkCount: 5,
     });
   });
+
+  it('keeps polling SEARCH_READY documents with queued knowledgeStatus, polls >10 batch uploads, and isolates v2 from v1 knowledgeSync', async () => {
+    const finalizingDocId = new Types.ObjectId().toHexString();
+    const settledDataReadyDocId = new Types.ObjectId().toHexString();
+    const v2PendingSyncDocId = new Types.ObjectId().toHexString();
+    const batchDocIds = Array.from({ length: 12 }, () =>
+      new Types.ObjectId().toHexString(),
+    );
+    const now = new Date('2026-11-02T08:00:00.000Z');
+
+    const finalizingDocRow: Record<string, unknown> = {
+      _id: new Types.ObjectId(finalizingDocId),
+      organizationId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'finalizing-99-doc',
+      documentType: 'OTHER',
+      createdByUserId: new Types.ObjectId(leaderId),
+      updatedByUserId: new Types.ObjectId(leaderId),
+      currentVersionNumber: 1,
+      latestApprovedVersionNumber: 1,
+      status: 'APPROVED',
+      createdAt: now,
+      updatedAt: now,
+      knowledgeSync: {
+        documentId: finalizingDocId,
+        version: 1,
+        sagDocumentId: 'sag-finalizing-1',
+        sagVersionNo: 1,
+        status: 'SEARCH_READY',
+        searchStatus: 'SEARCH_READY',
+        knowledgeStatus: 'QUEUED',
+        searchReady: true,
+        knowledgeReady: false,
+        currentStage: 'COMPLETE',
+        documentStatus: 'ready',
+        progress: 100,
+      },
+    };
+
+    const settledDocRow: Record<string, unknown> = {
+      _id: new Types.ObjectId(settledDataReadyDocId),
+      organizationId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'settled-data-ready-doc',
+      documentType: 'OTHER',
+      createdByUserId: new Types.ObjectId(leaderId),
+      updatedByUserId: new Types.ObjectId(leaderId),
+      currentVersionNumber: 1,
+      latestApprovedVersionNumber: 1,
+      status: 'APPROVED',
+      createdAt: now,
+      updatedAt: now,
+      knowledgeSync: {
+        documentId: settledDataReadyDocId,
+        version: 1,
+        sagDocumentId: 'sag-settled-1',
+        sagVersionNo: 1,
+        status: 'SEARCH_READY',
+        searchStatus: 'SEARCH_READY',
+        knowledgeStatus: 'DATA_READY',
+        searchReady: true,
+        knowledgeReady: false,
+        currentStage: 'COMPLETE',
+        documentStatus: 'ready',
+        progress: 100,
+      },
+    };
+
+    // v2 was just approved, while document.knowledgeSync still has stale v1 (100% SEARCH_READY)
+    // and outbox_events has v1's PUBLISHED receipt plus v2's PENDING event!
+    const v2DocRow: Record<string, unknown> = {
+      _id: new Types.ObjectId(v2PendingSyncDocId),
+      organizationId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'v2-newly-approved',
+      documentType: 'OTHER',
+      createdByUserId: new Types.ObjectId(leaderId),
+      updatedByUserId: new Types.ObjectId(leaderId),
+      currentVersionNumber: 2,
+      latestApprovedVersionNumber: 2,
+      status: 'APPROVED',
+      createdAt: now,
+      updatedAt: now,
+      knowledgeSync: {
+        documentId: v2PendingSyncDocId,
+        version: 1,
+        sagDocumentId: 'sag-v1-stale',
+        sagVersionNo: 1,
+        status: 'SEARCH_READY',
+        searchStatus: 'SEARCH_READY',
+        knowledgeStatus: 'DATA_READY',
+        searchReady: true,
+        knowledgeReady: true,
+        currentStage: 'COMPLETE',
+        documentStatus: 'ready',
+        progress: 100,
+      },
+    };
+
+    const batchDocRows: Record<string, unknown>[] = batchDocIds.map(
+      (id, idx) => ({
+        _id: new Types.ObjectId(id),
+        organizationId: new Types.ObjectId(orgId),
+        projectId: new Types.ObjectId(projectId),
+        title: `batch-doc-${idx + 1}`,
+        documentType: 'OTHER',
+        createdByUserId: new Types.ObjectId(leaderId),
+        updatedByUserId: new Types.ObjectId(leaderId),
+        currentVersionNumber: 1,
+        latestApprovedVersionNumber: 1,
+        status: 'APPROVED',
+        createdAt: now,
+        updatedAt: now,
+        knowledgeSync: {
+          documentId: id,
+          version: 1,
+          sagDocumentId: `sag-batch-${idx + 1}`,
+          sagVersionNo: 1,
+          status: 'RECEIVED',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'RECEIVE',
+          documentStatus: 'pending',
+          progress: 0,
+        },
+      }),
+    );
+
+    const allDocRows = [
+      finalizingDocRow,
+      settledDocRow,
+      v2DocRow,
+      ...batchDocRows,
+    ];
+    const allVersionRows: Record<string, unknown>[] = [
+      {
+        _id: new Types.ObjectId(),
+        documentId: new Types.ObjectId(finalizingDocId),
+        organizationId: new Types.ObjectId(orgId),
+        projectId: new Types.ObjectId(projectId),
+        versionNumber: 1,
+        status: 'APPROVED',
+        editedByUserId: new Types.ObjectId(leaderId),
+        createdAt: now,
+        knowledgeSync: finalizingDocRow.knowledgeSync,
+      },
+      {
+        _id: new Types.ObjectId(),
+        documentId: new Types.ObjectId(settledDataReadyDocId),
+        organizationId: new Types.ObjectId(orgId),
+        projectId: new Types.ObjectId(projectId),
+        versionNumber: 1,
+        status: 'APPROVED',
+        editedByUserId: new Types.ObjectId(leaderId),
+        createdAt: now,
+        knowledgeSync: settledDocRow.knowledgeSync,
+      },
+      {
+        _id: new Types.ObjectId(),
+        documentId: new Types.ObjectId(v2PendingSyncDocId),
+        organizationId: new Types.ObjectId(orgId),
+        projectId: new Types.ObjectId(projectId),
+        versionNumber: 2,
+        status: 'APPROVED',
+        editedByUserId: new Types.ObjectId(leaderId),
+        createdAt: now,
+        // v2 version row has NO knowledgeSync yet!
+      },
+      ...batchDocIds.map((id, idx) => ({
+        _id: new Types.ObjectId(),
+        documentId: new Types.ObjectId(id),
+        organizationId: new Types.ObjectId(orgId),
+        projectId: new Types.ObjectId(projectId),
+        versionNumber: 1,
+        status: 'APPROVED',
+        editedByUserId: new Types.ObjectId(leaderId),
+        createdAt: now,
+        knowledgeSync: batchDocRows[idx].knowledgeSync,
+      })),
+    ];
+
+    const docsById = new Map(
+      allDocRows.map((r) => [(r._id as Types.ObjectId).toHexString(), r]),
+    );
+    const versionsByKey = new Map(
+      allVersionRows.map((v) => [
+        `${(v.documentId as Types.ObjectId).toHexString()}:${Number(v.versionNumber)}`,
+        v,
+      ]),
+    );
+
+    const outboxEvents = [
+      {
+        aggregateType: 'PROJECT_DOCUMENT',
+        aggregateId: v2PendingSyncDocId,
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        status: 'PUBLISHED',
+        payload: {
+          version: 1,
+          delivery: {
+            receipt: {
+              documentId: 'sag-v1-stale',
+              versionNo: 1,
+              status: 'SEARCH_READY',
+              searchStatus: 'SEARCH_READY',
+              knowledgeStatus: 'DATA_READY',
+              searchReady: true,
+            },
+          },
+        },
+      },
+      {
+        aggregateType: 'PROJECT_DOCUMENT',
+        aggregateId: v2PendingSyncDocId,
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        status: 'PENDING',
+        payload: { version: 2 },
+      },
+    ];
+
+    const connection = {
+      db: {
+        collection: (name: string) => {
+          if (name === 'project_documents') {
+            return {
+              find: jest.fn(() => ({
+                sort: () => ({
+                  skip: () => ({
+                    limit: () => ({
+                      toArray: () => Promise.resolve(allDocRows),
+                    }),
+                  }),
+                }),
+              })),
+              countDocuments: jest.fn().mockResolvedValue(allDocRows.length),
+              findOne: jest.fn((filter: { _id?: Types.ObjectId }) =>
+                Promise.resolve(
+                  docsById.get(filter._id?.toHexString() ?? '') ?? null,
+                ),
+              ),
+              updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+            };
+          }
+          if (name === 'project_document_versions') {
+            return {
+              find: jest.fn(() => ({
+                toArray: () => Promise.resolve(allVersionRows),
+              })),
+              findOne: jest.fn(
+                (filter: {
+                  documentId?: Types.ObjectId;
+                  versionNumber?: number;
+                }) =>
+                  Promise.resolve(
+                    versionsByKey.get(
+                      `${filter.documentId?.toHexString() ?? ''}:${Number(filter.versionNumber)}`,
+                    ) ?? null,
+                  ),
+              ),
+              updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+            };
+          }
+          if (name === 'outbox_events') {
+            return {
+              findOne: jest.fn((filter: Record<string, unknown>) => {
+                const match = outboxEvents.find(
+                  (ev) =>
+                    ev.aggregateId === filter.aggregateId &&
+                    (filter['payload.version'] === undefined ||
+                      ev.payload.version === filter['payload.version']),
+                );
+                return Promise.resolve(match ?? null);
+              }),
+            };
+          }
+          throw new Error(`Unexpected collection ${name}`);
+        },
+      },
+    } as unknown as Connection;
+
+    const getVersionStatusMock = jest
+      .fn()
+      .mockImplementation(({ sagDocumentId }: { sagDocumentId: string }) => {
+        if (sagDocumentId === 'sag-finalizing-1') {
+          return Promise.resolve({
+            documentId: sagDocumentId,
+            versionNo: 1,
+            status: 'SEARCH_READY',
+            searchStatus: 'SEARCH_READY',
+            knowledgeStatus: 'DATA_READY',
+            searchReady: true,
+            knowledgeReady: true,
+            currentStage: 'COMPLETE',
+            documentStatus: 'ready',
+            progress: 100,
+            chunkCount: 14,
+          });
+        }
+        return Promise.resolve({
+          documentId: sagDocumentId,
+          versionNo: 1,
+          status: 'RECEIVED',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'PARSE',
+          documentStatus: 'loading',
+          progress: 35,
+        });
+      });
+
+    const service = new WorkNotesService(
+      {
+        resolveProject: jest.fn().mockResolvedValue({
+          userId: leaderId,
+          userName: 'Project Leader',
+          organizationId: orgId,
+          projectId,
+          canReview: true,
+          canConfigure: true,
+        }),
+      } as unknown as WorkNotesAuthorizationService,
+      connection,
+      undefined,
+      { append: jest.fn() } as unknown as AuditService,
+      undefined,
+      undefined,
+      {
+        uploadProjectDocument: jest.fn(),
+        revokeProjectDocument: jest.fn(),
+        getProjectDocumentVersionStatus: getVersionStatusMock,
+      },
+    );
+
+    const listed = await service.listDocuments(
+      { authorization: 'Bearer leader-token' },
+      projectId,
+      1,
+      20,
+    );
+
+    // 1. Finalizing 99% doc (knowledgeStatus: QUEUED) IS polled and updated to DATA_READY + knowledgeReady: true
+    expect(
+      listed.data.find((d) => d.id === finalizingDocId)?.knowledgeSync,
+    ).toMatchObject({
+      status: 'SEARCH_READY',
+      knowledgeStatus: 'DATA_READY',
+      knowledgeReady: true,
+      progress: 100,
+    });
+
+    // 2. Settled DATA_READY doc is NOT re-polled
+    expect(getVersionStatusMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sagDocumentId: 'sag-settled-1' }),
+    );
+
+    // 3. Stale v1 SAG doc is NEVER polled for v2, and v2 reflects QUEUED_OUTBOX (5%) instead of v1's 100%!
+    expect(getVersionStatusMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sagDocumentId: 'sag-v1-stale' }),
+    );
+    expect(
+      listed.data.find((d) => d.id === v2PendingSyncDocId)?.knowledgeSync,
+    ).toMatchObject({
+      version: 2,
+      status: 'QUEUED_OUTBOX',
+      progress: 5,
+    });
+
+    // 4. All 12 batch documents (>10) are live-synced from 0% -> 35% PARSE!
+    for (const batchId of batchDocIds) {
+      expect(
+        listed.data.find((d) => d.id === batchId)?.knowledgeSync,
+      ).toMatchObject({
+        currentStage: 'PARSE',
+        progress: 35,
+      });
+    }
+  });
+
+  it('short-circuits with DEDUPLICATED mode even on Local Vault (isDirectCloudEnabled=false) and falls back to LEGACY_PROXY for new files', async () => {
+    const existingKey = `work-notes/${orgId}/${projectId}/${documentId}/123e4567-e89b-42d3-a456-426614174088`;
+    const mongo = createInMemoryMongoStub();
+    mongo.otherVersionRows.push({
+      organizationId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId),
+      file: {
+        key: existingKey,
+        name: 'existing-local.pdf',
+        contentType: 'application/pdf',
+        size: pdfBytes.length,
+        sha256: pdfSha256,
+      },
+    });
+
+    const authorization = {
+      resolveProject: jest.fn().mockResolvedValue({
+        userId: leaderId,
+        userName: 'Project Leader',
+        organizationId: orgId,
+        projectId,
+        canReview: true,
+        canConfigure: true,
+      }),
+    } as unknown as WorkNotesAuthorizationService;
+
+    const storage = {
+      isDirectCloudEnabled: jest.fn().mockReturnValue(false),
+      inspectStoredPrefix: jest.fn().mockResolvedValue({
+        size: pdfBytes.length,
+        contentType: 'application/pdf',
+        prefix: pdfBytes.subarray(0, 16),
+      }),
+      delete: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ProjectDocumentStorage;
+
+    const service = new WorkNotesService(
+      authorization,
+      mongo.connection,
+      undefined,
+      { append: jest.fn() } as unknown as AuditService,
+      storage,
+    );
+
+    // 1. Existing SHA-256 in Local Vault -> instant DEDUPLICATED mode!
+    const dedupIntent = await service.createDocumentUploadIntent(
+      {},
+      projectId,
+      documentId,
+      {
+        fileName: 'duplicate-local.pdf',
+        contentType: 'application/pdf',
+        size: pdfBytes.length,
+        sha256: pdfSha256,
+      },
+    );
+    expect(dedupIntent.mode).toBe('DEDUPLICATED');
+    expect(typeof dedupIntent.uploadToken).toBe('string');
+
+    const confirmed = await service.confirmDocumentUpload(
+      {},
+      projectId,
+      documentId,
+      {
+        uploadToken: dedupIntent.uploadToken!,
+        autoSyncSag: false,
+      },
+    );
+    expect(confirmed.file).toEqual({
+      name: 'duplicate-local.pdf',
+      contentType: 'application/pdf',
+      size: pdfBytes.length,
+    });
+
+    // 2. Brand-new SHA-256 in Local Vault -> LEGACY_PROXY stream to Local Vault!
+    const newIntent = await service.createDocumentUploadIntent(
+      {},
+      projectId,
+      documentId,
+      {
+        fileName: 'brand-new-local.pdf',
+        contentType: 'application/pdf',
+        size: pdfBytes.length,
+        sha256: 'e'.repeat(64),
+      },
+    );
+    expect(newIntent.mode).toBe('LEGACY_PROXY');
+  });
 });

@@ -7,15 +7,27 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import type { Connection } from 'mongoose';
+import {
+  buildTaskNoteMarkdownArtifact,
+  buildWorkReportMarkdownArtifact,
+} from '../../application/markdown-artifact.builder';
 import { CAPTURE_PERSISTENCE } from '../persistence';
 import { ProjectDocumentStorage } from '../storage/project-document.storage';
 
 export const SAG_KNOWLEDGE_SYNC_TRANSPORT = Symbol(
   'SAG_KNOWLEDGE_SYNC_TRANSPORT',
 );
+
+export const KNOWLEDGE_AGGREGATE_TYPES = [
+  'PROJECT_DOCUMENT',
+  'WORK_REPORT',
+  'WORK_NOTE',
+] as const;
+
+export type KnowledgeAggregateType = (typeof KNOWLEDGE_AGGREGATE_TYPES)[number];
 
 export const KNOWLEDGE_EVENT_NAMES = [
   'KNOWLEDGE_SOURCE_APPROVED',
@@ -274,6 +286,7 @@ interface LiveProjectDocument {
   latestApprovedVersionNumber?: number;
   createdByUserId?: Types.ObjectId;
   updatedByUserId?: Types.ObjectId;
+  knowledgeSync?: Record<string, unknown>;
 }
 
 interface LiveProjectDocumentVersion {
@@ -292,6 +305,7 @@ interface LiveProjectDocumentVersion {
     size?: number;
     sha256?: string;
   };
+  knowledgeSync?: Record<string, unknown>;
 }
 
 @Injectable()
@@ -460,14 +474,17 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
       throw new Error('SAG_STATUS_RESPONSE_INVALID');
     }
 
+    const knowledgeStatus = asText(body.knowledge_status, 'NOT_STARTED');
     return {
       documentId,
       versionNo,
       status: asText(body.status, 'RECEIVED'),
       searchStatus: asText(body.search_status, 'PENDING'),
-      knowledgeStatus: asText(body.knowledge_status, 'NOT_STARTED'),
+      knowledgeStatus,
       searchReady: Boolean(body.search_ready),
-      knowledgeReady: Boolean(body.knowledge_ready),
+      knowledgeReady: Boolean(
+        body.knowledge_ready || isSettledKnowledgeStatus(knowledgeStatus),
+      ),
       currentStage:
         typeof body.current_stage === 'string' ? body.current_stage : null,
       ...(body.stage_progress && typeof body.stage_progress === 'object'
@@ -909,7 +926,7 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
       .map((id) => id.trim())
       .filter(Boolean);
     const filter: Record<string, unknown> = {
-      aggregateType: 'PROJECT_DOCUMENT',
+      aggregateType: { $in: [...KNOWLEDGE_AGGREGATE_TYPES] },
       eventName: { $in: [...KNOWLEDGE_EVENT_NAMES] },
       status: 'PENDING',
       ...(cleanedDocIds.length > 0
@@ -1010,7 +1027,7 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
 
       const event = await outbox.findOneAndUpdate(
         {
-          aggregateType: 'PROJECT_DOCUMENT',
+          aggregateType: { $in: [...KNOWLEDGE_AGGREGATE_TYPES] },
           eventName: { $in: [...KNOWLEDGE_EVENT_NAMES] },
           ...aggregateFilter,
           status: 'PENDING',
@@ -1042,10 +1059,10 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
       if (!event) return 'IDLE';
 
       // Database-level Head-of-Line (HOL) & cross-process lease guard for this aggregateId:
-      // Reject claiming `event` if another PENDING event for the same documentId currently holds
+      // Reject claiming `event` if another PENDING event for the same aggregate currently holds
       // an active lease OR precedes `event` in FIFO order (even if waiting in retry backoff).
       const blocker = await outbox.findOne({
-        aggregateType: 'PROJECT_DOCUMENT',
+        aggregateType: event.aggregateType,
         aggregateId: event.aggregateId,
         eventName: { $in: [...KNOWLEDGE_EVENT_NAMES] },
         status: 'PENDING',
@@ -1082,8 +1099,9 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      return this.withDocumentLock(event.aggregateId, () =>
-        this.executeLeasedEvent(event, leaseId),
+      return this.withDocumentLock(
+        `${event.aggregateType}:${event.aggregateId}`,
+        () => this.executeLeasedEvent(event, leaseId),
       );
     }
 
@@ -1112,6 +1130,27 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
+      if (event.aggregateType === 'WORK_REPORT') {
+        return await this.executeWorkReportEvent(
+          event,
+          leaseId,
+          documentId,
+          organizationId,
+          projectId,
+          version,
+        );
+      }
+      if (event.aggregateType === 'WORK_NOTE') {
+        return await this.executeWorkNoteEvent(
+          event,
+          leaseId,
+          documentId,
+          organizationId,
+          projectId,
+          version,
+        );
+      }
+
       const documents =
         this.connection.collection<LiveProjectDocument>('project_documents');
       const versions = this.connection.collection<LiveProjectDocumentVersion>(
@@ -1264,7 +1303,14 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
           throw new Error('SAG_UPLOAD_RECEIPT_INVALID');
         }
 
-        await this.persistKnowledgeSyncReceiptIfSupported(
+        const existingSync =
+          targetVersionDoc.knowledgeSync ??
+          (liveDoc.knowledgeSync &&
+          Number(liveDoc.knowledgeSync.version) === version
+            ? liveDoc.knowledgeSync
+            : undefined);
+
+        const persistedSync = await this.persistKnowledgeSyncReceiptIfSupported(
           documents,
           versions,
           liveDoc._id,
@@ -1273,6 +1319,8 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
           version,
           receipt,
           targetVersionDoc.file?.sha256,
+          existingSync,
+          liveDoc.currentVersionNumber,
         );
 
         const verifiedReceipt = await this.verifySearchReadyIfSupported({
@@ -1292,6 +1340,8 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
             version,
             verifiedReceipt,
             targetVersionDoc.file?.sha256,
+            persistedSync ?? existingSync,
+            liveDoc.currentVersionNumber,
           );
         }
 
@@ -1350,30 +1400,46 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async persistKnowledgeSyncReceiptIfSupported(
-    documents: { updateOne?: (...args: unknown[]) => Promise<unknown> },
-    versions: { updateOne?: (...args: unknown[]) => Promise<unknown> },
-    documentObjectId: Types.ObjectId,
-    versionObjectId: Types.ObjectId,
+  private buildSyncRecordFromReceipt(
     documentId: string,
     version: number,
     receipt: SagProjectDocumentUploadReceipt,
     fallbackFileHash?: string,
-  ): Promise<void> {
-    if (
-      typeof documents.updateOne !== 'function' ||
-      typeof versions.updateOne !== 'function'
-    ) {
-      return;
-    }
+    existingSync?: Record<string, unknown>,
+  ): Record<string, unknown> {
     const searchStatus = receipt.searchStatus ?? 'PENDING';
     const knowledgeStatus = receipt.knowledgeStatus ?? 'NOT_STARTED';
-    const searchReady = Boolean(
-      receipt.searchReady || searchStatus === 'SEARCH_READY',
+    const sameActiveSagVersion = Boolean(
+      existingSync &&
+      (existingSync.version === undefined ||
+        Number(existingSync.version) === version) &&
+      existingSync.sagDocumentId === receipt.documentId &&
+      Number(existingSync.sagVersionNo) === receipt.versionNo,
     );
-    const knowledgeReady =
-      knowledgeStatus === 'KNOWLEDGE_READY' || knowledgeStatus === 'READY';
-    const syncRecord = {
+    const existingProgress = sameActiveSagVersion
+      ? Number(existingSync?.progress ?? 0)
+      : 0;
+    const searchReady = Boolean(
+      receipt.searchReady ||
+      searchStatus === 'SEARCH_READY' ||
+      (sameActiveSagVersion && existingSync?.searchReady === true),
+    );
+    const knowledgeReady = Boolean(
+      isSettledKnowledgeStatus(knowledgeStatus) ||
+      (sameActiveSagVersion && existingSync?.knowledgeReady === true),
+    );
+    const currentStage = searchReady
+      ? 'COMPLETE'
+      : sameActiveSagVersion &&
+          existingProgress > 10 &&
+          typeof existingSync?.currentStage === 'string' &&
+          existingSync.currentStage
+        ? existingSync.currentStage
+        : receipt.isDuplicate
+          ? 'DUPLICATE'
+          : 'RECEIVE';
+    const progress = searchReady ? 100 : Math.max(10, existingProgress);
+    return {
       documentId,
       version,
       sagDocumentId: receipt.documentId,
@@ -1383,28 +1449,928 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
       ...(receipt.fileHash || fallbackFileHash
         ? { fileHash: receipt.fileHash ?? fallbackFileHash }
         : {}),
-      status: receipt.status,
-      searchStatus,
+      status: searchReady ? 'SEARCH_READY' : receipt.status,
+      searchStatus: searchReady ? 'SEARCH_READY' : searchStatus,
       knowledgeStatus,
       searchReady,
       knowledgeReady,
       isDuplicate: Boolean(receipt.isDuplicate),
-      currentStage: searchReady
-        ? 'COMPLETE'
-        : receipt.isDuplicate
-          ? 'DUPLICATE'
-          : 'RECEIVE',
-      progress: searchReady ? 100 : 10,
+      ...(sameActiveSagVersion &&
+      !searchReady &&
+      typeof existingSync?.documentStatus === 'string'
+        ? { documentStatus: existingSync.documentStatus }
+        : {}),
+      currentStage,
+      progress,
       syncedAt: new Date().toISOString(),
     };
+  }
+
+  private async findExistingStorageKeyBySha256(
+    organizationId: string,
+    projectId: string,
+    sha256: string,
+  ): Promise<string | undefined> {
+    const orgObjId = new Types.ObjectId(organizationId);
+    const projObjId = new Types.ObjectId(projectId);
+    const candidates: Array<{
+      collectionName: string;
+      filter: Record<string, unknown>;
+      extractKey: (doc: Record<string, unknown>) => string | undefined;
+    }> = [
+      {
+        collectionName: 'project_document_versions',
+        filter: {
+          organizationId: orgObjId,
+          projectId: projObjId,
+          'file.sha256': sha256,
+          'file.key': { $type: 'string', $ne: '' },
+        },
+        extractKey: (doc) =>
+          typeof (doc.file as { key?: unknown } | undefined)?.key === 'string'
+            ? (doc.file as { key: string }).key
+            : undefined,
+      },
+      {
+        collectionName: 'work_reports',
+        filter: {
+          organizationId: orgObjId,
+          projectId: projObjId,
+          'provenance.fileSha256': sha256,
+          'file.key': { $type: 'string', $ne: '' },
+        },
+        extractKey: (doc) =>
+          typeof (doc.file as { key?: unknown } | undefined)?.key === 'string'
+            ? (doc.file as { key: string }).key
+            : undefined,
+      },
+      {
+        collectionName: 'work_notes',
+        filter: {
+          organizationId: orgObjId,
+          projectId: projObjId,
+          'provenance.mdFile.sha256': sha256,
+          'provenance.mdFile.key': { $type: 'string', $ne: '' },
+        },
+        extractKey: (doc) => {
+          const prov = doc.provenance as
+            { mdFile?: { key?: unknown } } | undefined;
+          return typeof prov?.mdFile?.key === 'string'
+            ? prov.mdFile.key
+            : undefined;
+        },
+      },
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const col = this.connection.collection(candidate.collectionName);
+        if (col && typeof col.findOne === 'function') {
+          const found = (await col.findOne(candidate.filter)) as Record<
+            string,
+            unknown
+          > | null;
+          const key = found ? candidate.extractKey(found) : undefined;
+          if (key && key.trim()) {
+            return key.trim();
+          }
+        }
+      } catch {
+        // Ignore uninitialized mock collections in isolated unit tests
+      }
+    }
+    return undefined;
+  }
+
+  private async ingestArtifactToSag(params: {
+    organizationId: string;
+    projectId: string;
+    documentId: string;
+    version: number;
+    logicalSourceId: string;
+    idempotencyKey: string;
+    actorUserId: string;
+    fileKey?: string;
+    fileName: string;
+    contentType: string;
+    sha256: string;
+    sizeBytes: number;
+    inlineBytes?: Buffer;
+  }): Promise<SagProjectDocumentUploadReceipt> {
+    const canDirectObjectIngest = Boolean(
+      params.fileKey &&
+      params.fileName &&
+      params.contentType &&
+      params.sha256 &&
+      params.sizeBytes > 0 &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+      typeof this.transport.ingestProjectDocumentObject === 'function',
+    );
+
+    if (canDirectObjectIngest && params.fileKey) {
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ),
+      );
+      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
+        params.fileKey,
+        sagIngestUrlTtlSeconds,
+        {
+          fileName: params.fileName,
+          contentType: params.contentType,
+        },
+      );
+      return this.transport.ingestProjectDocumentObject!({
+        organizationId: params.organizationId,
+        projectId: params.projectId,
+        documentId: params.documentId,
+        version: params.version,
+        logicalSourceId: params.logicalSourceId,
+        idempotencyKey: params.idempotencyKey,
+        actorUserId: params.actorUserId,
+        sourceUrl,
+        fileName: params.fileName,
+        contentType: params.contentType,
+        expectedSha256: params.sha256,
+        expectedSizeBytes: params.sizeBytes,
+      });
+    }
+
+    const bytes =
+      params.inlineBytes ??
+      (params.fileKey ? await this.documentStorage.get(params.fileKey) : null);
+    if (!bytes) {
+      throw new Error('ARTIFACT_BYTES_UNAVAILABLE');
+    }
+    return this.transport.uploadProjectDocument({
+      organizationId: params.organizationId,
+      projectId: params.projectId,
+      documentId: params.documentId,
+      version: params.version,
+      logicalSourceId: params.logicalSourceId,
+      idempotencyKey: params.idempotencyKey,
+      actorUserId: params.actorUserId,
+      fileName: params.fileName,
+      contentType: params.contentType,
+      bytes,
+    });
+  }
+
+  private async executeWorkReportEvent(
+    event: KnowledgeOutboxEventDoc,
+    leaseId: string,
+    reportId: string,
+    organizationId: string,
+    projectId: string,
+    version: number,
+  ): Promise<KnowledgeOutboxRunResult> {
+    const reports = this.connection.collection('work_reports');
+    const liveReport = (await reports.findOne({
+      _id: new Types.ObjectId(reportId),
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+    })) as Record<string, unknown> | null;
+
+    const liveVersion = Math.max(
+      1,
+      Number(liveReport?.currentVersionNumber ?? 1),
+    );
+    const logicalSourceId = `continuum:work_report:${reportId}`;
+
+    if (
+      event.eventName === 'KNOWLEDGE_SOURCE_APPROVED' ||
+      event.eventName === 'KNOWLEDGE_SOURCE_REPLACED'
+    ) {
+      if (!liveReport || liveReport.status !== 'APPROVED') {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'WORK_REPORT_NOT_APPROVED',
+        });
+        return 'SKIPPED';
+      }
+
+      if (version < liveVersion) {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'SUPERSEDED_BY_NEWER_VERSION',
+        });
+        return 'SKIPPED';
+      }
+
+      if (event.eventName === 'KNOWLEDGE_SOURCE_REPLACED') {
+        const companionApproved = await this.connection
+          .collection<KnowledgeOutboxEventDoc>('outbox_events')
+          .findOne({
+            aggregateType: 'WORK_REPORT',
+            aggregateId: reportId,
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            'payload.version': version,
+            status: { $in: ['PENDING', 'PUBLISHED'] },
+          });
+        if (companionApproved) {
+          await this.markPublished(event._id, leaseId, {
+            delegatedToApprovedVersion: version,
+          });
+          return 'PUBLISHED';
+        }
+      }
+
+      const rawProv =
+        liveReport.provenance &&
+        typeof liveReport.provenance === 'object' &&
+        !Array.isArray(liveReport.provenance)
+          ? (liveReport.provenance as Record<string, unknown>)
+          : {};
+      const existingFile =
+        liveReport.file && typeof liveReport.file === 'object'
+          ? (liveReport.file as {
+              key?: string;
+              name?: string;
+              contentType?: string;
+              size?: number;
+            })
+          : undefined;
+
+      let fileKey = existingFile?.key;
+      let fileName = existingFile?.name ?? '';
+      let contentType = existingFile?.contentType ?? 'text/markdown';
+      let sizeBytes = Number(existingFile?.size ?? 0);
+      let sha256 =
+        typeof rawProv.fileSha256 === 'string' ? rawProv.fileSha256 : '';
+      let inlineBytes: Buffer | undefined;
+
+      const hasMaterializedMdForVersion = Boolean(
+        fileKey &&
+        fileName &&
+        sizeBytes > 0 &&
+        (Number(rawProv.mdFileVersion) === version ||
+          contentType !== 'text/markdown'),
+      );
+
+      if (!hasMaterializedMdForVersion) {
+        const artifact = buildWorkReportMarkdownArtifact({
+          reportId,
+          title:
+            typeof liveReport.title === 'string' ? liveReport.title : undefined,
+          reportScope:
+            typeof liveReport.reportScope === 'string'
+              ? liveReport.reportScope
+              : 'MEMBER',
+          frequency:
+            typeof liveReport.frequency === 'string'
+              ? liveReport.frequency
+              : 'WEEKLY',
+          periodStart: liveReport.periodStart as Date | string | undefined,
+          periodEnd: liveReport.periodEnd as Date | string | undefined,
+          memberId: this.toSafeIdString(liveReport.memberUserId),
+          version,
+          approvedAt:
+            liveReport.reviewedAt instanceof Date
+              ? liveReport.reviewedAt.toISOString()
+              : typeof event.payload.approvedAt === 'string'
+                ? event.payload.approvedAt
+                : undefined,
+          contentMarkdown:
+            typeof liveReport.contentMarkdown === 'string'
+              ? liveReport.contentMarkdown
+              : undefined,
+          accomplishments:
+            typeof liveReport.accomplishments === 'string'
+              ? liveReport.accomplishments
+              : undefined,
+          approach:
+            typeof liveReport.approach === 'string'
+              ? liveReport.approach
+              : undefined,
+          reason:
+            typeof liveReport.reason === 'string'
+              ? liveReport.reason
+              : undefined,
+          blockers:
+            typeof liveReport.blockers === 'string'
+              ? liveReport.blockers
+              : undefined,
+          nextSteps:
+            typeof liveReport.nextSteps === 'string'
+              ? liveReport.nextSteps
+              : undefined,
+        });
+
+        fileName = artifact.fileName;
+        contentType = artifact.contentType;
+        sizeBytes = artifact.size;
+        sha256 = artifact.sha256;
+        inlineBytes = artifact.bytes;
+
+        const existingKey = await this.findExistingStorageKeyBySha256(
+          organizationId,
+          projectId,
+          sha256,
+        );
+        if (existingKey) {
+          fileKey = existingKey;
+        } else if (typeof this.documentStorage.put === 'function') {
+          const generatedKey = `work-reports/${organizationId}/${projectId}/${reportId}/${randomUUID()}`;
+          await this.documentStorage.put(
+            generatedKey,
+            artifact.bytes,
+            artifact.contentType,
+          );
+          fileKey = generatedKey;
+        }
+
+        if (fileKey && typeof reports.updateOne === 'function') {
+          const nextProv = {
+            ...rawProv,
+            fileSha256: sha256,
+            mdFileVersion: version,
+          };
+          await reports.updateOne(
+            { _id: new Types.ObjectId(reportId) },
+            {
+              $set: {
+                file: {
+                  key: fileKey,
+                  name: fileName,
+                  contentType,
+                  size: sizeBytes,
+                },
+                provenance: nextProv,
+              },
+            },
+          );
+          Object.assign(rawProv, nextProv);
+        }
+      } else if (!sha256 && fileKey) {
+        const fetchedBytes = await this.documentStorage.get(fileKey);
+        inlineBytes = fetchedBytes;
+        sha256 = createHash('sha256').update(fetchedBytes).digest('hex');
+      }
+
+      const actorUserId = this.toSafeIdString(
+        liveReport.reviewedByUserId ?? liveReport.memberUserId,
+        '000000000000000000000000',
+      );
+      const idempotencyKey = `continuum:work_report:${reportId}:v${version}`;
+
+      const receipt = await this.ingestArtifactToSag({
+        organizationId,
+        projectId,
+        documentId: reportId,
+        version,
+        logicalSourceId,
+        idempotencyKey,
+        actorUserId,
+        fileKey,
+        fileName,
+        contentType,
+        sha256,
+        sizeBytes,
+        inlineBytes,
+      });
+
+      if (
+        !receipt.documentId ||
+        !receipt.versionId ||
+        !Number.isInteger(receipt.versionNo) ||
+        receipt.versionNo < 1
+      ) {
+        throw new Error('SAG_UPLOAD_RECEIPT_INVALID');
+      }
+
+      const existingSync =
+        rawProv.knowledgeSync && typeof rawProv.knowledgeSync === 'object'
+          ? (rawProv.knowledgeSync as Record<string, unknown>)
+          : undefined;
+
+      const persistedSync = this.buildSyncRecordFromReceipt(
+        reportId,
+        version,
+        receipt,
+        sha256,
+        existingSync,
+      );
+
+      await this.persistWorkReportKnowledgeSync(
+        reports,
+        reportId,
+        version,
+        rawProv,
+        persistedSync,
+      );
+
+      const verifiedReceipt = await this.verifySearchReadyIfSupported({
+        organizationId,
+        projectId,
+        actorUserId,
+        receipt,
+      });
+
+      if (verifiedReceipt.searchReady && !receipt.searchReady) {
+        const finalSync = this.buildSyncRecordFromReceipt(
+          reportId,
+          version,
+          verifiedReceipt,
+          sha256,
+          persistedSync,
+        );
+        await this.persistWorkReportKnowledgeSync(
+          reports,
+          reportId,
+          version,
+          rawProv,
+          finalSync,
+        );
+      }
+
+      await this.markPublished(event._id, leaseId, {
+        receipt: verifiedReceipt,
+      });
+      return 'PUBLISHED';
+    }
+
+    if (event.eventName === 'KNOWLEDGE_SOURCE_REVOKED') {
+      if (
+        liveReport &&
+        liveReport.status === 'APPROVED' &&
+        liveVersion > version
+      ) {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'REAPPROVED_AT_NEWER_VERSION',
+        });
+        return 'SKIPPED';
+      }
+      const actorUserId = this.toSafeIdString(
+        liveReport?.reviewedByUserId ?? liveReport?.memberUserId,
+        '000000000000000000000000',
+      );
+      const receipt = await this.transport.revokeProjectDocument({
+        organizationId,
+        projectId,
+        documentId: reportId,
+        version,
+        logicalSourceId,
+        actorUserId,
+        reason: String(event.payload.reason ?? 'REVOKED'),
+      });
+      await this.markPublished(event._id, leaseId, { receipt });
+      return 'PUBLISHED';
+    }
+
+    await this.markFailed(event._id, leaseId, 'UNSUPPORTED_EVENT');
+    return 'FAILED';
+  }
+
+  private async persistWorkReportKnowledgeSync(
+    reports: { updateOne?: (...args: unknown[]) => Promise<unknown> },
+    reportId: string,
+    version: number,
+    baseProv: Record<string, unknown>,
+    syncRecord: Record<string, unknown>,
+  ): Promise<void> {
+    if (typeof reports.updateOne === 'function') {
+      await reports.updateOne(
+        { _id: new Types.ObjectId(reportId) },
+        {
+          $set: {
+            provenance: {
+              ...baseProv,
+              knowledgeSync: syncRecord,
+            },
+          },
+        },
+      );
+    }
+    try {
+      const reportVersions = this.connection.collection('work_report_versions');
+      if (reportVersions && typeof reportVersions.updateOne === 'function') {
+        await reportVersions.updateOne(
+          {
+            reportId: new Types.ObjectId(reportId),
+            versionNumber: version,
+          },
+          { $set: { 'provenance.knowledgeSync': syncRecord } },
+        );
+      }
+    } catch {
+      // Optional version collection in isolated tests
+    }
+  }
+
+  private async executeWorkNoteEvent(
+    event: KnowledgeOutboxEventDoc,
+    leaseId: string,
+    noteId: string,
+    organizationId: string,
+    projectId: string,
+    version: number,
+  ): Promise<KnowledgeOutboxRunResult> {
+    const notes = this.connection.collection('work_notes');
+    const liveNote = (await notes.findOne({
+      _id: new Types.ObjectId(noteId),
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+    })) as Record<string, unknown> | null;
+
+    const rawProv =
+      liveNote?.provenance &&
+      typeof liveNote.provenance === 'object' &&
+      !Array.isArray(liveNote.provenance)
+        ? (liveNote.provenance as Record<string, unknown>)
+        : {};
+    const reviewObj =
+      rawProv.review && typeof rawProv.review === 'object'
+        ? (rawProv.review as {
+            status?: string;
+            reviewedBy?: string;
+            reviewedAt?: string;
+          })
+        : undefined;
+    const liveVersion = Math.max(
+      1,
+      Number(liveNote?.currentVersionNumber ?? 1),
+    );
+    const logicalSourceId = `continuum:work_note:${noteId}`;
+
+    if (
+      event.eventName === 'KNOWLEDGE_SOURCE_APPROVED' ||
+      event.eventName === 'KNOWLEDGE_SOURCE_REPLACED'
+    ) {
+      if (!liveNote || liveNote.status !== 'CONFIRMED' || liveNote.deletedAt) {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'WORK_NOTE_ARCHIVED_OR_DELETED',
+        });
+        return 'SKIPPED';
+      }
+
+      if (reviewObj?.status !== 'APPROVED') {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'WORK_NOTE_NOT_APPROVED',
+        });
+        return 'SKIPPED';
+      }
+
+      if (version < liveVersion) {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'SUPERSEDED_BY_NEWER_VERSION',
+        });
+        return 'SKIPPED';
+      }
+
+      if (event.eventName === 'KNOWLEDGE_SOURCE_REPLACED') {
+        const companionApproved = await this.connection
+          .collection<KnowledgeOutboxEventDoc>('outbox_events')
+          .findOne({
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            'payload.version': version,
+            status: { $in: ['PENDING', 'PUBLISHED'] },
+          });
+        if (companionApproved) {
+          await this.markPublished(event._id, leaseId, {
+            delegatedToApprovedVersion: version,
+          });
+          return 'PUBLISHED';
+        }
+      }
+
+      const existingMdFile =
+        rawProv.mdFile && typeof rawProv.mdFile === 'object'
+          ? (rawProv.mdFile as {
+              key?: string;
+              name?: string;
+              contentType?: string;
+              size?: number;
+              sha256?: string;
+              version?: number;
+            })
+          : undefined;
+
+      let fileKey = existingMdFile?.key;
+      let fileName = existingMdFile?.name ?? '';
+      let contentType = existingMdFile?.contentType ?? 'text/markdown';
+      let sizeBytes = Number(existingMdFile?.size ?? 0);
+      let sha256 = existingMdFile?.sha256 ?? '';
+      let inlineBytes: Buffer | undefined;
+
+      const hasMaterializedMdForVersion = Boolean(
+        fileKey &&
+        fileName &&
+        sha256 &&
+        sizeBytes > 0 &&
+        Number(existingMdFile?.version) === version,
+      );
+
+      if (!hasMaterializedMdForVersion) {
+        const artifact = buildTaskNoteMarkdownArtifact({
+          noteId,
+          title:
+            typeof liveNote.title === 'string' ? liveNote.title : undefined,
+          taskId: this.toSafeIdString(liveNote.taskId),
+          taskKey:
+            typeof liveNote.taskKey === 'string' && liveNote.taskKey.trim()
+              ? liveNote.taskKey
+              : typeof liveNote.jiraIssueKey === 'string'
+                ? liveNote.jiraIssueKey
+                : undefined,
+          authorId: this.toSafeIdString(liveNote.authorUserId),
+          authorName:
+            typeof liveNote.authorName === 'string'
+              ? liveNote.authorName
+              : undefined,
+          version,
+          approvedAt:
+            reviewObj?.reviewedAt ??
+            (typeof event.payload.approvedAt === 'string'
+              ? event.payload.approvedAt
+              : undefined),
+          contentMarkdown:
+            typeof liveNote.contentMarkdown === 'string'
+              ? liveNote.contentMarkdown
+              : undefined,
+          accomplishments:
+            typeof liveNote.whatDone === 'string'
+              ? liveNote.whatDone
+              : undefined,
+          approach:
+            typeof liveNote.howSolved === 'string'
+              ? liveNote.howSolved
+              : undefined,
+          reason:
+            typeof liveNote.whyThisWay === 'string'
+              ? liveNote.whyThisWay
+              : undefined,
+        });
+
+        fileName = artifact.fileName;
+        contentType = artifact.contentType;
+        sizeBytes = artifact.size;
+        sha256 = artifact.sha256;
+        inlineBytes = artifact.bytes;
+
+        const existingKey = await this.findExistingStorageKeyBySha256(
+          organizationId,
+          projectId,
+          sha256,
+        );
+        if (existingKey) {
+          fileKey = existingKey;
+        } else if (typeof this.documentStorage.put === 'function') {
+          const generatedKey = `work-notes/${organizationId}/${projectId}/${noteId}/${randomUUID()}`;
+          await this.documentStorage.put(
+            generatedKey,
+            artifact.bytes,
+            artifact.contentType,
+          );
+          fileKey = generatedKey;
+        }
+
+        if (fileKey) {
+          const mdFileMeta = {
+            key: fileKey,
+            name: fileName,
+            contentType,
+            size: sizeBytes,
+            sha256,
+            version,
+          };
+          rawProv.mdFile = mdFileMeta;
+          if (typeof notes.updateOne === 'function') {
+            await notes.updateOne(
+              { _id: new Types.ObjectId(noteId) },
+              { $set: { provenance: { ...rawProv } } },
+            );
+          }
+          try {
+            const noteVersions =
+              this.connection.collection('work_note_versions');
+            if (noteVersions && typeof noteVersions.updateOne === 'function') {
+              await noteVersions.updateOne(
+                {
+                  workNoteId: new Types.ObjectId(noteId),
+                  versionNumber: version,
+                },
+                { $set: { 'provenance.mdFile': mdFileMeta } },
+              );
+            }
+          } catch {
+            // Optional version collection in isolated tests
+          }
+        }
+      }
+
+      const actorUserId = this.toSafeIdString(
+        reviewObj?.reviewedBy ?? liveNote.authorUserId,
+        '000000000000000000000000',
+      );
+      const idempotencyKey = `continuum:work_note:${noteId}:v${version}`;
+
+      const receipt = await this.ingestArtifactToSag({
+        organizationId,
+        projectId,
+        documentId: noteId,
+        version,
+        logicalSourceId,
+        idempotencyKey,
+        actorUserId,
+        fileKey,
+        fileName,
+        contentType,
+        sha256,
+        sizeBytes,
+        inlineBytes,
+      });
+
+      if (
+        !receipt.documentId ||
+        !receipt.versionId ||
+        !Number.isInteger(receipt.versionNo) ||
+        receipt.versionNo < 1
+      ) {
+        throw new Error('SAG_UPLOAD_RECEIPT_INVALID');
+      }
+
+      const existingSync =
+        rawProv.knowledgeSync && typeof rawProv.knowledgeSync === 'object'
+          ? (rawProv.knowledgeSync as Record<string, unknown>)
+          : undefined;
+
+      const persistedSync = this.buildSyncRecordFromReceipt(
+        noteId,
+        version,
+        receipt,
+        sha256,
+        existingSync,
+      );
+
+      await this.persistWorkNoteKnowledgeSync(
+        notes,
+        noteId,
+        version,
+        rawProv,
+        persistedSync,
+      );
+
+      const verifiedReceipt = await this.verifySearchReadyIfSupported({
+        organizationId,
+        projectId,
+        actorUserId,
+        receipt,
+      });
+
+      if (verifiedReceipt.searchReady && !receipt.searchReady) {
+        const finalSync = this.buildSyncRecordFromReceipt(
+          noteId,
+          version,
+          verifiedReceipt,
+          sha256,
+          persistedSync,
+        );
+        await this.persistWorkNoteKnowledgeSync(
+          notes,
+          noteId,
+          version,
+          rawProv,
+          finalSync,
+        );
+      }
+
+      await this.markPublished(event._id, leaseId, {
+        receipt: verifiedReceipt,
+      });
+      return 'PUBLISHED';
+    }
+
+    if (event.eventName === 'KNOWLEDGE_SOURCE_REVOKED') {
+      if (
+        liveNote &&
+        liveNote.status === 'CONFIRMED' &&
+        !liveNote.deletedAt &&
+        reviewObj?.status === 'APPROVED' &&
+        liveVersion > version
+      ) {
+        await this.markPublished(event._id, leaseId, {
+          skippedReason: 'REAPPROVED_AT_NEWER_VERSION',
+        });
+        return 'SKIPPED';
+      }
+
+      const actorUserId = this.toSafeIdString(
+        reviewObj?.reviewedBy ?? liveNote?.authorUserId,
+        '000000000000000000000000',
+      );
+      const receipt = await this.transport.revokeProjectDocument({
+        organizationId,
+        projectId,
+        documentId: noteId,
+        version,
+        logicalSourceId,
+        actorUserId,
+        reason: String(event.payload.reason ?? 'ARCHIVED'),
+      });
+      await this.markPublished(event._id, leaseId, { receipt });
+      return 'PUBLISHED';
+    }
+
+    await this.markFailed(event._id, leaseId, 'UNSUPPORTED_EVENT');
+    return 'FAILED';
+  }
+
+  private toSafeIdString(value: unknown, fallback = ''): string {
+    if (typeof value === 'string') return value;
+    if (value instanceof Types.ObjectId) return value.toHexString();
+    if (
+      value &&
+      typeof value === 'object' &&
+      typeof (value as { toHexString?: () => string }).toHexString ===
+        'function'
+    ) {
+      return (value as { toHexString: () => string }).toHexString();
+    }
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      return String(value);
+    }
+    return fallback;
+  }
+
+  private async persistWorkNoteKnowledgeSync(
+    notes: { updateOne?: (...args: unknown[]) => Promise<unknown> },
+    noteId: string,
+    version: number,
+    baseProv: Record<string, unknown>,
+    syncRecord: Record<string, unknown>,
+  ): Promise<void> {
+    if (typeof notes.updateOne === 'function') {
+      await notes.updateOne(
+        { _id: new Types.ObjectId(noteId) },
+        {
+          $set: {
+            provenance: {
+              ...baseProv,
+              knowledgeSync: syncRecord,
+            },
+          },
+        },
+      );
+    }
+    try {
+      const noteVersions = this.connection.collection('work_note_versions');
+      if (noteVersions && typeof noteVersions.updateOne === 'function') {
+        await noteVersions.updateOne(
+          {
+            workNoteId: new Types.ObjectId(noteId),
+            versionNumber: version,
+          },
+          { $set: { 'provenance.knowledgeSync': syncRecord } },
+        );
+      }
+    } catch {
+      // Optional version collection in isolated tests
+    }
+  }
+
+  private async persistKnowledgeSyncReceiptIfSupported(
+    documents: { updateOne?: (...args: unknown[]) => Promise<unknown> },
+    versions: { updateOne?: (...args: unknown[]) => Promise<unknown> },
+    documentObjectId: Types.ObjectId,
+    versionObjectId: Types.ObjectId,
+    documentId: string,
+    version: number,
+    receipt: SagProjectDocumentUploadReceipt,
+    fallbackFileHash?: string,
+    existingSync?: Record<string, unknown>,
+    liveCurrentVersionNumber?: number,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (
+      typeof documents.updateOne !== 'function' ||
+      typeof versions.updateOne !== 'function'
+    ) {
+      return undefined;
+    }
+    const syncRecord = this.buildSyncRecordFromReceipt(
+      documentId,
+      version,
+      receipt,
+      fallbackFileHash,
+      existingSync,
+    );
     await versions.updateOne(
       { _id: versionObjectId },
       { $set: { knowledgeSync: syncRecord } },
     );
-    await documents.updateOne(
-      { _id: documentObjectId },
-      { $set: { knowledgeSync: syncRecord } },
-    );
+    if (
+      liveCurrentVersionNumber === undefined ||
+      Number(liveCurrentVersionNumber) === version
+    ) {
+      await documents.updateOne(
+        { _id: documentObjectId },
+        { $set: { knowledgeSync: syncRecord } },
+      );
+    }
+    return syncRecord;
   }
 
   private async verifySearchReadyIfSupported(params: {
@@ -1694,6 +2660,16 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
 
 function isValidObjectIdHex(value: string): boolean {
   return /^[a-f\d]{24}$/i.test(value);
+}
+
+function isSettledKnowledgeStatus(value: unknown): boolean {
+  const normalized =
+    typeof value === 'string' ? value.trim().toUpperCase() : '';
+  return (
+    normalized === 'DATA_READY' ||
+    normalized === 'KNOWLEDGE_READY' ||
+    normalized === 'READY'
+  );
 }
 
 function asText(value: unknown, fallback = ''): string {

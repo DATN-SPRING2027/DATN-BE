@@ -187,8 +187,69 @@ export class GatewayCaptureController {
     return this.forward(request, response);
   }
 
+  @Post('work-notes/bulk-action')
+  bulkTaskNoteAction(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Get('work-notes/:noteId')
   getProjectTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('work-notes/:noteId')
+  deleteProjectTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('work-notes/:noteId/file')
+  purgeTaskNoteFile(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-notes/:noteId/approve')
+  approveTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-notes/:noteId/request-changes')
+  requestTaskNoteChanges(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-notes/:noteId/reject')
+  rejectTaskNote(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('work-notes/:noteId/file')
+  downloadTaskNoteFile(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Get('work-notes/:noteId/knowledge-status')
+  getTaskNoteKnowledgeStatus(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Get('work-notes/:noteId/knowledge-chunks')
+  getTaskNoteKnowledgeChunks(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-notes/:noteId/knowledge-sync')
+  syncTaskNoteToSag(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-notes/:noteId/knowledge-control')
+  controlTaskNoteKnowledge(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 
@@ -209,6 +270,11 @@ export class GatewayCaptureController {
 
   @Patch('documents/:documentId')
   updateDocumentDraft(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('documents/:documentId')
+  deleteDocument(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 
@@ -314,6 +380,11 @@ export class GatewayCaptureController {
     return this.forward(request, response);
   }
 
+  @Post('work-reports/bulk-action')
+  bulkWorkReportAction(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Get('work-reports/:reportId')
   getWorkReport(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
@@ -321,6 +392,11 @@ export class GatewayCaptureController {
 
   @Put('work-reports/:reportId/file')
   uploadWorkReportFile(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Delete('work-reports/:reportId/file')
+  purgeWorkReportFile(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
   }
 
@@ -354,6 +430,35 @@ export class GatewayCaptureController {
     return this.forward(request, response);
   }
 
+  @Get('work-reports/:reportId/knowledge-status')
+  getWorkReportKnowledgeStatus(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Get('work-reports/:reportId/knowledge-chunks')
+  getWorkReportKnowledgeChunks(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-reports/:reportId/knowledge-sync')
+  syncWorkReportToSag(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('work-reports/:reportId/knowledge-control')
+  controlWorkReportKnowledge(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    return this.forward(request, response);
+  }
+
   private async forward(request: Request, response: Response): Promise<void> {
     response.setHeader('cache-control', 'no-store');
     const baseUrl = this.config.getOrThrow<string>('CAPTURE_SERVICE_URL');
@@ -365,7 +470,7 @@ export class GatewayCaptureController {
     }
 
     const fileTransfer =
-      /^\/api\/v1\/capture\/projects\/[^/]+\/(?:documents|work-reports)\/[^/]+\/file(?:\?|$)/.test(
+      /^\/api\/v1\/capture\/projects\/[^/]+\/(?:documents|work-reports|work-notes)\/[^/]+\/file(?:\?|$)/.test(
         request.originalUrl,
       );
     const streamUpload = request.method === 'PUT' && fileTransfer;
