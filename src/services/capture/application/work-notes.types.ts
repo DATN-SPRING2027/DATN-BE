@@ -408,6 +408,9 @@ export type AiChatProjectDocumentReadinessStatus =
 
 export interface AiChatProjectDocumentSourceRecord {
   documentId: string;
+  projectId?: string;
+  projectCode?: string;
+  projectName?: string;
   title: string;
   fileName?: string;
   type: DocumentType;

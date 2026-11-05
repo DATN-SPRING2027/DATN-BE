@@ -21,7 +21,7 @@ import {
   readCookie,
   validCsrfPair,
 } from '../../services/iam/application/authentication/authentication.application.service';
-import { AiChatService } from './ai-chat.service';
+import { AI_CHAT_ALL_PROJECTS_ID, AiChatService } from './ai-chat.service';
 import {
   AI_CHAT_FEEDBACK_REASON_CATEGORIES,
   type AiChatFeedbackInputDto,
@@ -354,8 +354,18 @@ export class AiChatController {
       typeof query?.pageSize === 'string' ? query.pageSize : undefined,
       { field: 'pageSize', min: 1, max: 100, fallback: 25 },
     );
+    const headers = this.readHeaders(request);
+    if (validProjectId.toLowerCase() === AI_CHAT_ALL_PROJECTS_ID) {
+      const managerScope =
+        await this.aiChat.resolveAllProjectsManagerContext(headers);
+      return this.workNotes.listAiChatAllProjectsSources(
+        managerScope,
+        page,
+        pageSize,
+      );
+    }
     return this.workNotes.listAiChatProjectSources(
-      this.readHeaders(request),
+      headers,
       validProjectId,
       page,
       pageSize,

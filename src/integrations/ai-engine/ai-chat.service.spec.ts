@@ -1557,4 +1557,211 @@ describe('AiChatService', () => {
       parsed.components?.schemas?.Message?.properties?.isInherited,
     ).toBeDefined();
   });
+
+  it('allows Organization Manager (ADMIN role) to use all-projects scope ("all") while rejecting Leader and Member with 403 Forbidden', async () => {
+    const projA = {
+      id: '507f1f77bcf86cd799439033',
+      organizationId: actor.organizationId,
+      name: 'Continuum Core',
+      code: 'CORE',
+      status: 'ACTIVE' as const,
+    };
+    const projB = {
+      id: '507f1f77bcf86cd799439044',
+      organizationId: actor.organizationId,
+      name: 'Continuum Mobile',
+      code: 'MOB',
+      status: 'ACTIVE' as const,
+    };
+    const getCurrentIdentity = jest.fn();
+    const listProjects = jest.fn().mockResolvedValue({
+      data: [projB, projA],
+      pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 },
+    });
+    const requestMock = jest.fn();
+    const service = new AiChatService(
+      { getCurrentIdentity } as unknown as AuthenticationApplicationService,
+      { get: jest.fn(), list: listProjects } as unknown as ProjectService,
+      { request: requestMock, requestStream: jest.fn() },
+    );
+
+    // 1. Member is forbidden from using "all"
+    getCurrentIdentity.mockResolvedValueOnce({
+      ...actor,
+      roles: ['MEMBER'],
+    });
+    await expect(
+      service.listThreads({ authorization: 'Bearer member' }, 'all', {
+        limit: 20,
+        offset: 0,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // 2. Team Leader is forbidden from using "all"
+    getCurrentIdentity.mockResolvedValueOnce({
+      ...actor,
+      roles: ['TEAM_LEADER'],
+    });
+    await expect(
+      service.createThread({ authorization: 'Bearer leader' }, 'all', {
+        title: 'Leader attempt',
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // 3. Organization Manager (ADMIN) succeeds with sorted allowed_project_ids
+    getCurrentIdentity.mockResolvedValueOnce({
+      ...actor,
+      roles: ['ADMIN'],
+    });
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'all.jwt.token' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_default_1' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: [
+          {
+            id: 't_all_1',
+            title: 'Tổng hợp toàn bộ dự án',
+            created_at: '2026-11-05T10:00:00Z',
+            updated_at: '2026-11-05T10:00:00Z',
+          },
+        ],
+      });
+
+    const threads = await service.listThreads(
+      { authorization: 'Bearer manager' },
+      'all',
+      { limit: 20, offset: 0 },
+    );
+    expect(threads).toHaveLength(1);
+    expect(requestMock).toHaveBeenNthCalledWith(1, {
+      path: '/api/v1/auth/continuum-login',
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Name': 'Nguyen Van Thang Duc',
+        'X-Continuum-Organization-Id': actor.organizationId,
+        'X-Continuum-Project-Id': 'all',
+      },
+      body: {
+        displayName: 'Nguyễn Văn Thắng Đức',
+        allowed_project_ids: [projA.id, projB.id],
+      },
+    });
+  });
+
+  it('supports exactly 256 active projects in "all" scope and throws BadRequestException when organization has 257 active projects', async () => {
+    const buildProjects = (count: number) =>
+      Array.from({ length: count }, (_, idx) => {
+        const hexSuffix = (idx + 1).toString(16).padStart(6, '0');
+        return {
+          id: `507f1f77bcf86cd799${hexSuffix}`,
+          organizationId: actor.organizationId,
+          name: `Project ${idx + 1}`,
+          code: `PRJ-${idx + 1}`,
+          status: 'ACTIVE' as const,
+        };
+      });
+
+    const getCurrentIdentity = jest.fn().mockResolvedValue({
+      ...actor,
+      roles: ['ADMIN'],
+    });
+
+    // Case 1: 256 active projects across 3 pages -> succeeds with all 256 projects
+    const projects256 = buildProjects(256);
+    const listProjects256 = jest
+      .fn()
+      .mockImplementation((_actor: unknown, { page }: { page: number }) => {
+        const start = (page - 1) * 100;
+        return Promise.resolve({
+          data: projects256.slice(start, start + 100),
+          pagination: {
+            page,
+            pageSize: 100,
+            totalItems: 256,
+            totalPages: 3,
+          },
+        });
+      });
+
+    const service256 = new AiChatService(
+      { getCurrentIdentity } as unknown as AuthenticationApplicationService,
+      { get: jest.fn(), list: listProjects256 } as unknown as ProjectService,
+      { request: jest.fn(), requestStream: jest.fn() },
+    );
+
+    const ctx256 = await service256.resolveAllProjectsManagerContext({
+      authorization: 'Bearer manager',
+    });
+    expect(ctx256.projects).toHaveLength(256);
+    expect(ctx256.projects[255]?.id).toBe(projects256[255]?.id);
+
+    // Case 2: 257 active projects across 3 pages -> throws explicit BadRequestException (never silently drops 257th project)
+    const projects257 = buildProjects(257);
+    const listProjects257 = jest
+      .fn()
+      .mockImplementation((_actor: unknown, { page }: { page: number }) => {
+        const start = (page - 1) * 100;
+        return Promise.resolve({
+          data: projects257.slice(start, start + 100),
+          pagination: {
+            page,
+            pageSize: 100,
+            totalItems: 257,
+            totalPages: 3,
+          },
+        });
+      });
+
+    const request257 = jest.fn();
+    const service257 = new AiChatService(
+      { getCurrentIdentity } as unknown as AuthenticationApplicationService,
+      { get: jest.fn(), list: listProjects257 } as unknown as ProjectService,
+      { request: request257, requestStream: jest.fn() },
+    );
+
+    await expect(
+      service257.resolveAllProjectsManagerContext({
+        authorization: 'Bearer manager',
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'AI_CHAT_ALL_PROJECTS_LIMIT_EXCEEDED',
+      },
+    });
+
+    await expect(
+      service257.listThreads({ authorization: 'Bearer manager' }, 'all', {
+        limit: 20,
+        offset: 0,
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(request257).not.toHaveBeenCalled();
+  });
+
+  it('preserves verified owning projectId on citations in mapSagCitation', () => {
+    const mapped = mapSagCitation({
+      n: 1,
+      source_id: 'src_alpha',
+      source_name: 'Alpha Docs',
+      project_id: '507f1f77bcf86cd799439033',
+      document_id: 'sag-doc-uuid-1',
+      public_document_id: '507f1f77bcf86cd799439011',
+      document_name: 'architecture.md',
+      chunk_id: 'su_1',
+      snippet: 'Excerpt text',
+    });
+    expect(mapped).not.toBeNull();
+    expect(mapped?.projectId).toBe('507f1f77bcf86cd799439033');
+    expect(mapped?.documentId).toBe('507f1f77bcf86cd799439011');
+  });
 });

@@ -13,6 +13,7 @@ export type AiChatCitationDto = Readonly<{
   number: number;
   sourceId: string;
   sourceName?: string;
+  projectId?: string;
   documentId: string;
   sagDocumentId?: string;
   documentName?: string;
@@ -286,6 +287,11 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
       : nonEmptyString(raw.sag_document_id ?? raw.sagDocumentId, 128);
 
   const sourceName = nonEmptyString(raw.source_name ?? raw.sourceName, 240);
+  const rawProjectId = nonEmptyString(raw.project_id ?? raw.projectId, 64);
+  const projectId =
+    rawProjectId && /^[a-f0-9]{24}$/i.test(rawProjectId)
+      ? rawProjectId.toLowerCase()
+      : undefined;
   const documentName = nonEmptyString(
     raw.document_name ?? raw.documentName ?? raw.doc_name,
     240,
@@ -318,6 +324,7 @@ export function mapSagCitation(raw: unknown): AiChatCitationDto | null {
     number,
     sourceId,
     ...(sourceName ? { sourceName } : {}),
+    ...(projectId ? { projectId } : {}),
     documentId,
     ...(sagDocumentId ? { sagDocumentId } : {}),
     ...(documentName ? { documentName } : {}),
