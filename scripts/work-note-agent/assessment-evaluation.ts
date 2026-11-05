@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createAssessmentCampaign } from './assessment-domains';
-import { validateReleaseAssessmentCorpus } from './assessment-quality-gate';
+import {
+  validateDevelopmentAssessmentCorpus,
+  validateHistoryAssessmentCorpus,
+  validateReleaseAssessmentCorpus,
+} from './assessment-quality-gate';
 import type {
   AssessmentModelInput,
   AssessmentModelOutput,
@@ -219,6 +223,41 @@ export function loadRelease60Corpus(
   });
 }
 
+export function loadRelease60V6Corpus(
+  filePath = resolve(__dirname, 'cases-assessment-v6-release.json'),
+): AssessmentCorpus {
+  const raw = JSON.parse(readFileSync(filePath, 'utf8')) as AssessmentCorpus;
+  const regression = loadRegression80Corpus();
+  const v5 = loadRelease60Corpus();
+  const priorIds = new Set([
+    ...regression.scenarios.map((s) => s.id),
+    ...v5.scenarios.map((s) => s.id),
+  ]);
+  const priorFamilies = new Set([
+    ...regression.scenarios.map((s) => s.family),
+    ...v5.scenarios.map((s) => s.family),
+  ]);
+  return validateReleaseAssessmentCorpus(
+    raw,
+    { ids: priorIds, families: priorFamilies },
+    { minContradictoryTurns: 12 },
+  );
+}
+
+export function loadHistoryAssessmentCorpus(
+  filePath = resolve(__dirname, 'cases-assessment-history-v1.json'),
+): AssessmentCorpus {
+  const raw = JSON.parse(readFileSync(filePath, 'utf8')) as AssessmentCorpus;
+  return validateHistoryAssessmentCorpus(raw);
+}
+
+export function loadDevV26AssessmentCorpus(
+  filePath = resolve(__dirname, 'cases-assessment-dev-v26.json'),
+): AssessmentCorpus {
+  const raw = JSON.parse(readFileSync(filePath, 'utf8')) as AssessmentCorpus;
+  return validateDevelopmentAssessmentCorpus(raw);
+}
+
 export type AssessmentGrade = {
   automatedPass: boolean;
   failures: string[];
@@ -399,6 +438,7 @@ export function gradeAssessment(
 }
 
 export type AssessmentEvaluationRow = {
+  responseOrigins?: import('./assessment-response-cache').ResponseCacheRead[];
   caseId: string;
   turn: number;
   role?: 'analysis' | 'editor';
@@ -501,4 +541,68 @@ export function makeAssessmentWorksheet(
         reviewedAt: null,
       })),
   };
+}
+
+export function loadDevV27AssessmentCorpus(): AssessmentCorpus {
+  return validateDevelopmentAssessmentCorpus(
+    JSON.parse(
+      readFileSync(resolve(__dirname, 'cases-assessment-dev-v27.json'), 'utf8'),
+    ) as AssessmentCorpus,
+  );
+}
+
+export function loadRelease60V7Corpus(): AssessmentCorpus {
+  const raw = JSON.parse(
+    readFileSync(
+      resolve(__dirname, 'cases-assessment-v7-release.json'),
+      'utf8',
+    ),
+  ) as AssessmentCorpus;
+  const previous = [
+    loadRegression80Corpus(),
+    loadRelease60Corpus(),
+    loadRelease60V6Corpus(),
+  ];
+  const corpus = validateReleaseAssessmentCorpus(
+    raw,
+    {
+      ids: new Set(previous.flatMap((c) => c.scenarios.map((s) => s.id))),
+      families: new Set(
+        previous.flatMap((c) => c.scenarios.map((s) => s.family)),
+      ),
+    },
+    { minContradictoryTurns: 18 },
+  );
+  for (const split of ['validation', 'holdout']) {
+    const counts = { CONTRADICTORY: 0, INSUFFICIENT: 0, SUFFICIENT: 0 };
+    for (const scenario of corpus.scenarios.filter((s) => s.split === split))
+      for (const turn of scenario.turns) {
+        counts[
+          turn.expected.noteAdequacy[0] === 'CONTRADICTORY'
+            ? 'CONTRADICTORY'
+            : turn.expected.noteAdequacy[0] === 'ENOUGH_FOR_PURPOSE'
+              ? 'SUFFICIENT'
+              : 'INSUFFICIENT'
+        ]++;
+      }
+    if (Object.values(counts).some((n) => n < 8))
+      throw Error('RELEASE_V7_LOW_SAMPLE_CLASS');
+  }
+  return corpus;
+}
+
+export function loadDevV28AssessmentCorpus(): AssessmentCorpus {
+  return validateDevelopmentAssessmentCorpus(
+    JSON.parse(
+      readFileSync(resolve(__dirname, 'cases-assessment-dev-v28.json'), 'utf8'),
+    ) as AssessmentCorpus,
+  );
+}
+
+export function loadDevV30AssessmentCorpus(): AssessmentCorpus {
+  return validateDevelopmentAssessmentCorpus(
+    JSON.parse(
+      readFileSync(resolve(__dirname, 'cases-assessment-dev-v30.json'), 'utf8'),
+    ) as AssessmentCorpus,
+  );
 }

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "surfaces": {
+    "task-note-assessment/2026-11-05.v34": "e64a8833d52c3b9d2e6011e2bbccec9383ac855eea56bd7d69a95707e5713b48",
+    "task-note-interpreter/2026-10-29.v1": "5cee7e45ecfa0a939d7a5dd9f072d194252b17f880e99d0f6120265a555c88a0",
+    "task-note-assessor/2026-11-05.v7": "f57c715810ba3241c9f0935768ffa8e53bddafbc404131015fea13400063d0fb",
+    "task-note-assessment-split/2026-11-05.v7": "9307250b63d505ebcdfd7364ea93cb49d1d38c7fdc07adc3f5d700d318cb653c",
+    "worknote-rewrite/2026-10-27.v0.3.2#grammar": "ca6df830dc86407a71ababcb21320841bd8670c77268072f17859dcca3bfbd4f",
+    "worknote-rewrite/2026-10-27.v0.3.2#clarify": "50f4cb7db54cadfc225f8589ed3207b8b0456ebe4f826e6b56c66475aac267f3",
+    "worknote-rewrite/2026-10-27.v0.3.2#shorten": "cdc34339a1557490dc18bfc0851c75fa6e119952f043b7ed9062aa9ac2c71e93",
+    "worknote-rewrite/2026-10-27.v0.3.2#restructure": "20fe96da3f5fea35aae6a273c43a11b8ba041cef64712e4a4f6a888927e8ca50",
+    "worknote-rewrite/2026-10-27.v0.3.2#tone": "fcdf2615c2ffd62b339a0cb2055d1b47dfb45dc601473f95a1fe0ffea6c95777",
+    "worknote-rewrite/2026-10-27.v0.3.2#handover": "a85b0e45100ea0e4e35b4fa21214b6a06a8ac778814ae19a30f480cf7312258b",
+    "worknote-rewrite/2026-10-27.v0.3.2#title": "4ad7e891cec19bc6096ab45dbf893e18564ce61caa4820658bedfebd540749af",
+    "worknote-rewrite/2026-10-27.v0.3.2#custom": "f469fffd981bed8fe2b81f575fecd4d1d6d6b0d83bcf84c873176982eb86ca06",
+    "worknote-rewrite/2026-10-27.v0.3.2+history.v2#history": "454ee8835cc6979a060aec78785ae9b18030da3e14f2f4f24472f27eecfe1fee",
+    "task-note-editor/2026-11-05.v6": "f73cf33031b78fef37a435e191f0f3d45eb5074a781e5166edd83f57e79aa173"
+  }
+}

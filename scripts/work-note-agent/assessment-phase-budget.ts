@@ -6,6 +6,7 @@ import {
   readFileSync,
   writeFileSync,
   unlinkSync,
+  renameSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -32,10 +33,15 @@ export class AssessmentPhaseBudget {
   }
   private locked<T>(fn: () => T): T {
     let lock: number;
-    try {
-      lock = openSync(this.file + '.lock', 'wx');
-    } catch {
-      throw Error('PHASE_BUDGET_BUSY');
+    for (let attempt = 0; ; attempt++) {
+      try {
+        lock = openSync(this.file + '.lock', 'wx');
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 20)
+          throw Error('PHASE_BUDGET_BUSY');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
     }
     try {
       return fn();
@@ -65,7 +71,9 @@ export class AssessmentPhaseBudget {
     return d;
   }
   private write(d: Ledger) {
-    writeFileSync(this.file, JSON.stringify(d, null, 2) + '\n', 'utf8');
+    const temporary = `${this.file}.${process.pid}.tmp`;
+    writeFileSync(temporary, JSON.stringify(d, null, 2) + '\n', 'utf8');
+    renameSync(temporary, this.file);
   }
   private charged(d: Ledger) {
     return d.entries.reduce((n, e) => n + (e.reported ?? e.reserved), 0);

@@ -6,8 +6,8 @@ import type {
 } from './work-note-assessment.types';
 
 /**
- * Closed internal information-need taxonomy (Plan v3 §3).
- * Kept small (12 values) so a 14B model can classify reliably while runtime
+ * Closed internal information-need taxonomy (Plan v3 §3 / Plan v4 D3).
+ * Kept small (14 values) so a 14B model can classify reliably while runtime
  * preserves stable gap identity independent of surface wording or gap `kind`.
  */
 export const ASSESSMENT_NEED_CODES = [
@@ -167,7 +167,7 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'Ghi nhận thao tác kiểm tra, phạm vi/đối tượng đã thử và kết quả quan sát được của đợt test đang báo.',
     requiredForAdequacy: [
       'Thao tác hoặc kịch bản/vai trò kiểm thử đã thực hiện.',
-      'Phạm vi đang báo cáo và kết quả quan sát được (đạt/lỗi/hành vi thực tế).',
+      'Phạm vi đang báo cáo và kết quả/hành vi thực tế quan sát được (đạt/lỗi/mã phản hồi/dữ liệu thực tế); nếu chỉ nêu đã chạy thao tác hoặc kịch bản thử nghiệm mà chưa có kết quả quan sát được thì CHƯA ĐỦ (test_result.behavior).',
     ],
     forbiddenExtraDemands: [
       'Không đòi kiểm thử các hạng mục khác trong Task mà tác giả đã nói chưa test hoặc ngoài phạm vi đợt QA này.',
@@ -202,12 +202,13 @@ export const PURPOSE_RUBRIC_TABLE: Record<
     summary:
       'Ghi nhận trạng thái hiện tại và thông tin/thao tác cần thiết để người nhận tiếp tục công việc.',
     requiredForAdequacy: [
-      'Trạng thái phần việc đã xong và phần còn tồn đọng/rủi ro.',
-      'Thông tin cấu hình, điểm tiếp nhận hoặc bước thao tác để người nhận làm tiếp.',
+      'Trạng thái hiện tại (phần việc đã xong hoặc trạng thái chưa triển khai/đang bị chặn kèm lý do) và phần còn tồn đọng.',
+      'Thông tin cấu hình, nhánh/môi trường, điểm tiếp nhận hoặc bước thao tác để người nhận làm tiếp.',
     ],
     forbiddenExtraDemands: [
       'Không đòi người nhận đã xác nhận đọc bàn giao nếu Task không có tiêu chí đó.',
       'Không đòi người giao phải hoàn tất nốt phần việc đang bàn giao.',
+      'Không đòi lệnh chi tiết, runbook, script hoặc quy trình triển khai cụ thể khi note đã nêu hành động/bước tiếp theo rõ ràng.',
     ],
     requireWholeTaskCoverage: false,
     allowedBlockingNeeds: [
@@ -313,6 +314,28 @@ export const AUTO_PURPOSE_RESOLUTION_POLICY = {
     'nếu ghi chú tham chiếu chung chọn OTHER.',
 } as const;
 
+const RESOLVED_PURPOSES_ORDER: readonly Exclude<AssessmentPurpose, 'AUTO'>[] = [
+  'PROGRESS',
+  'INCIDENT',
+  'DECISION',
+  'HANDOVER',
+  'COMPLETION',
+  'QA',
+  'OTHER',
+];
+
+/**
+ * Deterministically renders the canonical `ALLOWED BLOCKING NEEDS (<PURPOSE>)`
+ * lines from `PURPOSE_RUBRIC_TABLE` so combined and split prompts never drift
+ * from server rubric enforcement (Plan v4 D3 / F6 / G6).
+ */
+export function formatAllowedBlockingNeedsLines(): string {
+  return RESOLVED_PURPOSES_ORDER.map(
+    (p) =>
+      `ALLOWED BLOCKING NEEDS (${p}): ${PURPOSE_RUBRIC_TABLE[p].allowedBlockingNeeds.join(', ')}`,
+  ).join('\n');
+}
+
 const fold = (s: string) =>
   s
     .normalize('NFKD')
@@ -331,7 +354,7 @@ export function isAssessmentNeedCode(v: unknown): v is AssessmentNeedCode {
 
 /**
  * Deterministically maps any gap (with or without explicit model `needCode`)
- * onto the canonical 12-code information-need taxonomy.
+ * onto the canonical 14-code information-need taxonomy.
  */
 export function classifyGapNeedCode(
   gap: Pick<AssessmentGap, 'kind' | 'owner' | 'target'> & {

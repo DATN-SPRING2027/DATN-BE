@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
+import type { ClientSession } from 'mongodb';
 import {
   WorkNoteAgentDraftsService,
   type DraftRow,
@@ -66,6 +67,11 @@ import {
   assessmentActions,
   staleAssessment,
 } from './work-note-assessment.state';
+import {
+  ASSESSMENT_FEEDBACK_COLLECTION,
+  buildPrivacySafeFeedbackRecord,
+  type AssessmentFeedbackCategory,
+} from './work-note-feedback-telemetry';
 
 const DAY = 86400000;
 const stale = () =>
@@ -409,6 +415,9 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     } catch (error) {
       rethrowPipelineError(error);
     }
+    (
+      this.model as unknown as { precheckAssessment?: () => void }
+    ).precheckAssessment?.();
     if (!(await this.consumeAgentQuota(actor)))
       throw new HttpException(
         {
@@ -767,6 +776,12 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     kind: string,
     change: (v: AssessmentView) => void,
     allowStale = false,
+    afterUpdate?: (
+      v: AssessmentView,
+      actor: WorkNotesActor,
+      db: ReturnType<WorkNoteAssessmentService['db']>,
+      session: ClientSession,
+    ) => Promise<void>,
   ) {
     this.enabled();
     const boundInput = { ...input, assessmentId };
@@ -776,7 +791,7 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       id,
       boundInput,
       `assessment_${kind}`,
-      async (d, a, _db, session) => {
+      async (d, a, db, session) => {
         const v = structuredClone(
           this.current(d, a, assessmentId, input, allowStale),
         );
@@ -815,6 +830,9 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
           { session },
         );
         if (updated.modifiedCount !== 1) throw stale();
+        if (afterUpdate) {
+          await afterUpdate(v, a, db, session);
+        }
         return v;
       },
     );
@@ -845,13 +863,10 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
     id: string,
     assessmentId: string,
     input: AssessmentMutation & {
-      category:
-        | 'UNNECESSARY_QUESTION'
-        | 'MISSING_QUESTION'
-        | 'WRONG_SOURCE'
-        | 'FALSE_SUFFICIENT';
+      category: AssessmentFeedbackCategory;
     },
   ) {
+    const recordedAt = new Date();
     return this.metadata(
       headers,
       p,
@@ -862,10 +877,30 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
       (v) => {
         v.feedback = [
           ...(v.feedback ?? []),
-          { category: input.category, at: new Date().toISOString() },
+          { category: input.category, at: recordedAt.toISOString() },
         ].slice(-20);
       },
       true,
+      async (v, actor, db, session) => {
+        const safeRecord = buildPrivacySafeFeedbackRecord({
+          view: v,
+          category: input.category,
+          architecture: this.architecture(),
+          recordedAt,
+        });
+        const scope = this.scope(actor);
+        const feedbackCol = db?.collection?.(ASSESSMENT_FEEDBACK_COLLECTION);
+        if (typeof feedbackCol?.insertOne === 'function') {
+          await feedbackCol.insertOne(
+            {
+              organizationId: scope.organizationId,
+              projectId: scope.projectId,
+              ...safeRecord,
+            },
+            { session },
+          );
+        }
+      },
     );
   }
 }

@@ -9,13 +9,15 @@ const fold = (s: string) =>
     .replace(/[đĐ]/gu, 'd')
     .toLowerCase();
 const withoutIdioms = (s: string) =>
-  fold(s).replace(/\bnot only\b|\bkhong chi\b/gu, '');
+  fold(s)
+    .replace(/\bnot only\b|\bkhong chi\b/gu, '')
+    .replace(/\b((?:query|truy van)(?:\s+tuy\s+y)?)\s+chua dang ky\b/gu, '$1');
 const pendingEpistemic = (s: string) =>
   /\b(?:(?:tests?|testing|verification|deployment)\s+(?:(?:is|are)\s+)?(?:still\s+)?pending|pending\s+(?:tests?|testing|verification|deployment))\b/iu.test(
     fold(s),
   );
 export const hasNegation = (s: string) =>
-  /\b(?:not|never|cannot|can['’]t|doesn['’]t|didn['’]t|isn['’]t|wasn['’]t|hasn['’]t|haven['’]t|won['’]t|untested|unverified|unknown|chua|khong)\b/iu.test(
+  /\b(?:not|never|cannot|can['’]t|doesn['’]t|didn['’]t|isn['’]t|wasn['’]t|hasn['’]t|haven['’]t|won['’]t|untested|unverified|unknown|chua|khong|cam|forbid|forbids|forbidden|prohibit|prohibits|prohibited)\b/iu.test(
     withoutIdioms(s),
   ) ||
   /\b(?:no|without)\s+(?:evidence|confirmation|results?)\b/iu.test(fold(s)) ||
@@ -129,7 +131,7 @@ export function dropsSourceNegation(source: string, quote: string): boolean {
     const prefix = withoutIdioms(assertedScope(source.slice(part.start, at)));
     // An excerpt may not start just after a governing negator. Punctuation
     // separates independent clauses; repeated ambiguous occurrences fail closed.
-    return /\b(?:not|never|cannot|can['’]t|doesn['’]t|didn['’]t|isn['’]t|wasn['’]t|hasn['’]t|haven['’]t|won['’]t|chua|khong|(?:no|without)\s+(?:evidence|confirmation|results?))(?:\s+[\p{L}]+){0,3}\s*$/iu.test(
+    return /\b(?:not|never|cannot|can['’]t|doesn['’]t|didn['’]t|isn['’]t|wasn['’]t|hasn['’]t|haven['’]t|won['’]t|chua|khong|cam|forbid|forbids|forbidden|prohibit|prohibits|prohibited|(?:no|without)\s+(?:evidence|confirmation|results?))(?:\s+[\p{L}]+){0,3}\s*$/iu.test(
       prefix,
     );
   });
@@ -197,4 +199,165 @@ export function coveragePolarityConflict(
       return missingSpecific || shared.length >= positiveScore;
     });
   });
+}
+
+const ADVERSE_OUTCOME_RE =
+  /\b(?:that bai|bi loi|gap loi|bao loi|khong thanh cong|khong dat|chua dat|bi chan|timeout|timed out|failed|fails|failure|errored|error|crashed|crash|aborted|broken|rollback|reverted)\b/iu;
+
+const CONDITIONAL_MARKER_RE =
+  /\b(?:nếu|neu|khi|trừ\s+khi|tru\s+khi|miễn\s+là|mien\s+la|chỉ\s+khi|chi\s+khi|trong\s+trường\s+hợp|trong\s+truong\s+hop|if|when|unless|provided(?:\s+that)?|only\s+if|in\s+case)\b/iu;
+
+export function normalizeClaimLiteral(s: string): string {
+  return s
+    .normalize('NFC')
+    .toLocaleLowerCase('vi')
+    .replace(/["'“”‘’]/gu, "'")
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/[.;,:!?]$/u, '')
+    .trim();
+}
+
+function locateRawContiguousSlice(
+  quote: string,
+  claimText: string,
+): string | null {
+  const cleanedClaim = claimText
+    .normalize('NFC')
+    .trim()
+    .replace(/[.;,:!?]$/u, '')
+    .trim();
+  if (!cleanedClaim) return null;
+  const escapeRe = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const patternParts = cleanedClaim
+    .split(/\s+/gu)
+    .filter(Boolean)
+    .map((tok) => escapeRe(tok).replace(/["'“”‘’]/gu, '["\'“”‘’]'));
+  if (!patternParts.length) return null;
+  const regex = new RegExp(patternParts.join('\\s+'), 'giu');
+  const matches = [...quote.normalize('NFC').matchAll(regex)];
+  if (matches.length !== 1) return null;
+  return matches[0][0];
+}
+
+/**
+ * D10a (F15 / G2): Deterministic parser check accepting a claim as FULL only
+ * when it is a unique, clause-bounded contiguous literal substring of its cited
+ * quote and drops no negation, uncertainty, governing condition, or adverse outcome.
+ */
+export function isContiguousGroundedClaimSubstring(
+  source: string,
+  quote: string,
+  claimText: string,
+  taskTitle: string,
+): boolean {
+  const nq = normalizeClaimLiteral(quote);
+  const nc = normalizeClaimLiteral(claimText);
+  if (!nc || !nq) return false;
+
+  // C1: Must appear in normalized quote strictly once as a contiguous sequence.
+  const idx = nq.indexOf(nc);
+  if (idx < 0 || nq.indexOf(nc, idx + 1) >= 0) return false;
+
+  // Token boundary guard: never slice inside a word or identifier.
+  if (
+    idx > 0 &&
+    /[\p{L}\p{N}_]/u.test(nq[idx - 1]) &&
+    /[\p{L}\p{N}_]/u.test(nc[0])
+  )
+    return false;
+  const endIdx = idx + nc.length;
+  if (
+    endIdx < nq.length &&
+    /[\p{L}\p{N}_]/u.test(nc[nc.length - 1]) &&
+    /[\p{L}\p{N}_]/u.test(nq[endIdx])
+  )
+    return false;
+
+  // C5: Minimum 3 meaningful content tokens (per polarity words() stopword filter).
+  if (words(claimText).size < 3) return false;
+
+  const before = nq.slice(0, idx);
+  const after = nq.slice(endIdx);
+
+  // C2: Both ends must sit on strict clause boundaries.
+  const validLeft =
+    before.trim().length === 0 ||
+    /(?:[,;:.!?]|(?:^|\s)(?:và|nhưng|còn|rồi|and|but|while))\s*$/u.test(before);
+  const validRight =
+    after.trim().length === 0 ||
+    /^\s*(?:[,;:.!?]|(?:và|nhưng|còn|rồi|and|but|while)(?:\s|$))/u.test(after);
+  if (!validLeft || !validRight) return false;
+
+  // C3: Enclosing sentence/clause must not hold dropped condition, negation,
+  // uncertainty, or contrastive/adverse outcome qualifying this claim.
+  const sameSentenceBefore = before.split(/[;.!?\r\n]/u).at(-1) ?? '';
+  const sameSentenceAfter = after.split(/[;.!?\r\n]/u)[0] ?? '';
+
+  // Governing prefix condition (unless isolated inside an earlier coordinate clause before `, và` / `, and`).
+  if (
+    CONDITIONAL_MARKER_RE.test(sameSentenceBefore) &&
+    !/,\s*(?:và|còn|rồi|and|while)\s*$/iu.test(sameSentenceBefore)
+  ) {
+    return false;
+  }
+  // Trailing conditional suffix qualifying the claim (e.g. "API trả 200 nếu bật cờ X").
+  if (
+    /^\s*,?\s*(?:nếu|neu|khi|trừ\s+khi|tru\s+khi|miễn\s+là|mien\s+la|chỉ\s+khi|chi\s+khi|trong\s+trường\s+hợp|trong\s+truong\s+hop|if|when|unless|provided(?:\s+that)?|only\s+if|in\s+case)\b/iu.test(
+      sameSentenceAfter,
+    )
+  ) {
+    return false;
+  }
+  // Concessive prefix ("Mặc dù...", "Although...") cannot have its main contrast stripped or vice versa.
+  if (
+    /^\s*(?:mặc\s+dù|mac\s+du|dù|du|tuy(?:\s+nhiên)?|although|though|even\s+though|despite)\b/iu.test(
+      sameSentenceBefore,
+    )
+  ) {
+    return false;
+  }
+  // Trailing contrastive conjunction ("nhưng...", "but...", "yet...", "however...") qualifies the preceding clause.
+  if (
+    /^\s*,?\s*(?:nhưng|nhung|tuy\s+nhiên|tuy\s+nhien|song|dù|du|mặc\s+dù|mac\s+du|but|yet|however|although|though)\b/iu.test(
+      sameSentenceAfter,
+    )
+  ) {
+    return false;
+  }
+  // Adjacent adverse outcome in the same sentence without an independent coordinate conjunction (", thất bại", ", failed").
+  if (
+    !hasNegation(claimText) &&
+    !ADVERSE_OUTCOME_RE.test(fold(claimText)) &&
+    sameSentenceAfter.trim().length > 0 &&
+    !/^\s*,?\s*(?:và|còn|rồi|and|while)\b/iu.test(sameSentenceAfter) &&
+    (ADVERSE_OUTCOME_RE.test(fold(sameSentenceAfter)) ||
+      hasExplicitUncertainty(sameSentenceAfter))
+  ) {
+    return false;
+  }
+
+  // Locate raw slice inside quote for C4 & C6 source-level negation/polarity checks.
+  const rawSlice = locateRawContiguousSlice(quote, claimText);
+  if (!rawSlice || !source.includes(rawSlice)) return false;
+
+  // C4: Must not start after a governing source negator.
+  if (
+    !hasNegation(claimText) &&
+    (dropsSourceNegation(source, quote) ||
+      dropsSourceNegation(source, rawSlice))
+  ) {
+    return false;
+  }
+
+  // C6: Unconditional polarity conflict veto across all verbs/nouns on both quote and slice.
+  if (
+    !hasNegation(claimText) &&
+    (coveragePolarityConflict(claimText, source, quote, taskTitle) ||
+      coveragePolarityConflict(claimText, source, rawSlice, taskTitle))
+  ) {
+    return false;
+  }
+
+  return true;
 }

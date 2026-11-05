@@ -424,12 +424,14 @@ export function parseAgentResult(
       ? null
       : str(suggestion.suggestedTitle, LIMITS.title);
   const changeSummary = strings(suggestion.changeSummary, 8);
-  if (changeSummary.length === 0)
-    fail('A suggestion needs a short change summary.');
   let replacementText: string | null = null;
   if (prepared.input.operation === 'title') {
     if (suggestion.replacementText !== null || suggestedTitle === null)
       fail('Title operation must only propose a title.');
+    if (changeSummary.length === 0)
+      fail(
+        'REWRITE_EMPTY_CHANGE_SUMMARY: Title operation needs a short change summary.',
+      );
   } else {
     replacementText = restoreText(
       str(suggestion.replacementText, 60_000),
@@ -443,6 +445,27 @@ export function parseAgentResult(
       replacementText.length;
     if (resultingLength > LIMITS.body)
       fail('Replacement would exceed the draft body budget.');
+    if (changeSummary.length === 0) {
+      const exactNorm = (s: string) =>
+        s.replace(/\r\n/g, '\n').normalize('NFC');
+      const originalTarget =
+        prepared.input.scope === 'selection' && prepared.input.selection
+          ? prepared.input.draft.body.slice(
+              prepared.input.selection.start,
+              prepared.input.selection.end,
+            )
+          : prepared.input.draft.body;
+      const bodyIdentical =
+        exactNorm(replacementText) === exactNorm(originalTarget);
+      const titleUnchanged =
+        suggestedTitle === null ||
+        exactNorm(suggestedTitle) === exactNorm(prepared.input.draft.title);
+      if (!bodyIdentical || !titleUnchanged) {
+        fail(
+          'REWRITE_EMPTY_CHANGE_SUMMARY: A modified suggestion needs a short change summary.',
+        );
+      }
+    }
   }
   if (prepared.input.scope === 'selection' && suggestedTitle !== null)
     fail('Selection cannot change the title.');

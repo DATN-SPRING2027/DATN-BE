@@ -1,0 +1,34 @@
+name: Work Note feedback database
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/worknote-feedback-db.yml'
+      - 'scripts/migrations/*work-note-feedback*'
+      - 'src/services/capture/infrastructure/mongodb/mongodb.schemas.ts'
+      - 'src/services/capture/infrastructure/persistence.ts'
+      - 'package*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worknote-feedback-db-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  migration:
+    name: DB / Feedback TTL safety and idempotency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: node --test scripts/migrations/work-note-feedback-ttl.mongodb.test.mjs

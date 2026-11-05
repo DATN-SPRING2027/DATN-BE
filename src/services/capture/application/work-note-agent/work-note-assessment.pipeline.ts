@@ -231,10 +231,17 @@ export function buildAssessmentSources(params: {
         : {}),
     };
   };
-  const historicalSources = buildHistoricalAssessmentSources(
+  const builtHistorical = buildHistoricalAssessmentSources(
     params.historicalContext,
-  ).map((s) =>
-    makeSource(s.id, 'HISTORY', s.label, s.text, s.version, s.history),
+  );
+  const overrideHistorical =
+    builtHistorical.length > 0
+      ? []
+      : (params.sourceOverrides ?? [])
+          .filter((s) => s.kind === 'HISTORY')
+          .slice(0, MAX_HISTORICAL_ASSESSMENT_SOURCES);
+  const historicalSources = [...builtHistorical, ...overrideHistorical].map(
+    (s) => makeSource(s.id, 'HISTORY', s.label, s.text, s.version, s.history),
   );
   return [
     makeSource('task.title', 'TASK', 'Task title', t.title, v),
@@ -656,6 +663,7 @@ export function finalizeAssessmentTurn(params: {
     promptTokens?: number | null;
     completionTokens?: number | null;
     httpAttempts?: number;
+    validatedConfig?: boolean;
   };
 }): AssessmentView {
   const v = assembleAssessment(params.input, params.modelResult, {
@@ -688,6 +696,9 @@ export function finalizeAssessmentTurn(params: {
           : {}),
         ...(params.provenance.httpAttempts !== undefined
           ? { httpAttempts: params.provenance.httpAttempts }
+          : {}),
+        ...(params.provenance.validatedConfig !== undefined
+          ? { validatedConfig: params.provenance.validatedConfig }
           : {}),
       },
     ].slice(-40);

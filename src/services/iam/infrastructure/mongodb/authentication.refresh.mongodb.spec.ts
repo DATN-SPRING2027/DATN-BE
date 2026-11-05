@@ -34,8 +34,23 @@ integration('refresh session rotation on MongoDB replica set', () => {
         createCollectionSchema(definition),
       );
       await model.createIndexes();
+      const usersDefinition = IAM_PERSISTENCE.collections.find(
+        (item) => item.name === 'users',
+      );
+      if (!usersDefinition) throw new Error('Users schema missing');
+      await db.createCollection('users');
+      connection.model(
+        'continuum_iam_users',
+        createCollectionSchema(usersDefinition),
+      );
       const repository = new AuthenticationRepository(connection);
       const userId = new Types.ObjectId();
+      await db.collection('users').insertOne({
+        _id: userId,
+        email: 'refresh-integration@example.test',
+        status: 'ACTIVE',
+        mutationFence: 0,
+      });
       const organizationId = new Types.ObjectId();
       const now = new Date();
       const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -90,6 +105,9 @@ integration('refresh session rotation on MongoDB replica set', () => {
       ).resolves.toEqual({ outcome: 'REPLAYED' });
       expect(await model.countDocuments({ userId, isRevoked: false })).toBe(0);
       expect(
+        (await db.collection('users').findOne({ _id: userId }))?.mutationFence,
+      ).toBe(1);
+      expect(
         await model.countDocuments({ userId: otherUserId, isRevoked: false }),
       ).toBe(1);
       expect(await model.countDocuments({ tokenHash: 'never-issued' })).toBe(0);
@@ -112,6 +130,8 @@ integration('refresh session rotation on MongoDB replica set', () => {
       ).resolves.toEqual({
         outcome: 'ACTIVE',
         userId: String(userId),
+        sessionId: platformSession?.sessionId,
+        userFence: 0,
         context: 'PLATFORM',
         expiresAt,
       });

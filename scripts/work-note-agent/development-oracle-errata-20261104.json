@@ -1,0 +1,21 @@
+{
+  "status": "DEVELOPMENT_POLICY_CORRECTION_NOT_MODEL_IMPROVEMENT",
+  "errata": [
+    {
+      "caseId": "dev26-l1-compound-multianswer-b",
+      "turn": 2,
+      "changed": {
+        "question": {
+          "before": "required",
+          "after": "none"
+        }
+      },
+      "reason": "Pre-existing COMPLETION policy and clarificationLedger mayAskAgain=false forbid repeating the answered need after the author states it is not tested. Adequacy remains insufficient. No holdout label changed.",
+      "authoritySources": [
+        "work-note-assessment.prompt.ts: COMPLETION and NEED CODE & QUESTION CHECK",
+        "work-note-assessment.state.ts: canAskCandidate / gapMatchesId"
+      ],
+      "sourceCorpusSha256": "93fbf2f3b84cf35413d57e6de979cc086e7945d64124b280d7860728c5a9597b"
+    }
+  ]
+}

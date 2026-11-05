@@ -1,3 +1,10 @@
+import { AssessmentHttpJournal } from './assessment-http-journal';
+import {
+  DevelopmentResponseCache,
+  type ResponseCacheRead,
+} from './assessment-response-cache';
+import { evaluationArtifactHash } from './assessment-artifact';
+import { createCredentialRoutedFetch } from './assessment-credential-routing';
 import { AssessmentPhaseBudget } from './assessment-phase-budget';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -46,8 +53,15 @@ import {
 } from '../../src/services/capture/application/work-note-agent/work-note-assessment-editor';
 import {
   loadAssessmentCorpus,
+  loadDevV26AssessmentCorpus,
+  loadDevV27AssessmentCorpus,
+  loadDevV28AssessmentCorpus,
+  loadDevV30AssessmentCorpus,
+  loadRelease60V7Corpus,
+  loadHistoryAssessmentCorpus,
   loadRegression80Corpus,
   loadRelease60Corpus,
+  loadRelease60V6Corpus,
   gradeAssessment,
   makeAssessmentWorksheet,
   type AssessmentEvaluationRow,
@@ -192,7 +206,17 @@ export class AssessmentAttemptBudget {
 
 export type AssessmentRunOptions = {
   live: boolean;
-  corpus: 'v4' | 'regression80' | 'release60';
+  corpus:
+    | 'v4'
+    | 'regression80'
+    | 'release60'
+    | 'release60-v6'
+    | 'history-v1'
+    | 'dev-v26'
+    | 'dev-v27'
+    | 'dev-v28'
+    | 'dev-v30'
+    | 'release60-v7';
   batch: 'pilot' | 'full' | 'release';
   split: 'development' | 'validation' | 'holdout' | 'all';
   architecture: AssessmentArchitecture;
@@ -203,13 +227,20 @@ export type AssessmentRunOptions = {
   maxTotalTokens: number;
   timeoutMs: number;
   phaseId?: string;
+  journalScope?: string;
   caseIds?: string;
   maxTurns?: number;
   editorLimit?: number;
   disableInterpreterCache?: boolean;
   interCallDelayMs?: number;
   noFailFast?: boolean;
+  cacheOnly?: boolean;
+  stopOnTransportError?: boolean;
 };
+
+export function isValidAssessmentPhaseId(phaseId: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/u.test(phaseId);
+}
 
 export function parseAssessmentRunOptions(
   args: readonly string[],
@@ -237,6 +268,7 @@ export function parseAssessmentRunOptions(
     '--max-total-tokens': 'maxTotalTokens',
     '--timeout-ms': 'timeoutMs',
     '--phase-id': 'phaseId',
+    '--journal-scope': 'journalScope',
     '--cases': 'caseIds',
     '--max-turns': 'maxTurns',
     '--editor-limit': 'editorLimit',
@@ -259,6 +291,15 @@ export function parseAssessmentRunOptions(
       o.noFailFast = true;
       continue;
     }
+    if (args[i] === '--cache-only') {
+      o.cacheOnly = true;
+      o.live = true;
+      continue;
+    }
+    if (args[i] === '--stop-on-transport-error') {
+      o.stopOnTransportError = true;
+      continue;
+    }
     const field = names[args[i]],
       value = args[++i];
     if (!field || !value || value.startsWith('--'))
@@ -278,10 +319,28 @@ export function parseAssessmentRunOptions(
         : value,
     });
   }
+  if (o.phaseId !== undefined && !isValidAssessmentPhaseId(o.phaseId))
+    throw Error('ASSESSMENT_PHASE_ID_INVALID');
+  if (
+    o.journalScope !== undefined &&
+    !/^[a-zA-Z0-9_-]{1,50}$/u.test(o.journalScope)
+  )
+    throw Error('ASSESSMENT_JOURNAL_SCOPE_INVALID');
   const attemptCeiling =
     o.batch === 'pilot' ? 29 : o.batch === 'full' ? 176 : 280;
   if (
-    !['v4', 'regression80', 'release60'].includes(o.corpus) ||
+    ![
+      'v4',
+      'regression80',
+      'release60',
+      'release60-v6',
+      'history-v1',
+      'dev-v26',
+      'dev-v27',
+      'dev-v28',
+      'dev-v30',
+      'release60-v7',
+    ].includes(o.corpus) ||
     !['pilot', 'full', 'release'].includes(o.batch) ||
     !['development', 'validation', 'holdout', 'all'].includes(o.split) ||
     !['combined', 'split'].includes(o.architecture) ||
@@ -317,8 +376,6 @@ export function parseAssessmentRunOptions(
     (o.model !== undefined && !/^[\w.-]+\/[\w.:-]+$/.test(o.model))
   )
     throw Error('ASSESSMENT_ARGUMENT_LIMIT');
-  if (o.phaseId !== undefined && !/^[a-z0-9][a-z0-9-]{0,79}$/.test(o.phaseId))
-    throw Error('ASSESSMENT_PHASE_ID_INVALID');
   if (o.live && !o.model) throw Error('ASSESSMENT_MODEL_REQUIRED');
   return o;
 }
@@ -327,10 +384,14 @@ type Dependencies = {
   readCorpus?: () => AssessmentCorpus;
   readCredentials?: () => Promise<{
     apiKey: string;
+    secondaryApiKey?: string;
+    tertiaryApiKey?: string;
     formattingRecovery?: boolean;
   }>;
   fetcher?: typeof fetch;
   writeReport?: boolean;
+  developmentCacheDirectory?: string;
+  initialCredentialAlias?: 'primary' | 'secondary' | 'tertiary';
 };
 
 const fingerprint = (value: unknown) =>
@@ -367,11 +428,25 @@ export async function runAssessmentEvaluation(
 ) {
   const options = parseAssessmentRunOptions(args),
     defaultCorpusLoader =
-      options.corpus === 'release60'
-        ? loadRelease60Corpus
-        : options.corpus === 'regression80'
-          ? loadRegression80Corpus
-          : loadAssessmentCorpus,
+      options.corpus === 'dev-v30'
+        ? loadDevV30AssessmentCorpus
+        : options.corpus === 'dev-v28'
+          ? loadDevV28AssessmentCorpus
+          : options.corpus === 'dev-v27'
+            ? loadDevV27AssessmentCorpus
+            : options.corpus === 'release60-v7'
+              ? loadRelease60V7Corpus
+              : options.corpus === 'release60'
+                ? loadRelease60Corpus
+                : options.corpus === 'release60-v6'
+                  ? loadRelease60V6Corpus
+                  : options.corpus === 'history-v1'
+                    ? loadHistoryAssessmentCorpus
+                    : options.corpus === 'dev-v26'
+                      ? loadDevV26AssessmentCorpus
+                      : options.corpus === 'regression80'
+                        ? loadRegression80Corpus
+                        : loadAssessmentCorpus,
     corpus = (dependencies.readCorpus ?? defaultCorpusLoader)();
   const eligible = corpus.scenarios.filter((c) =>
     options.batch === 'pilot'
@@ -428,7 +503,11 @@ export async function runAssessmentEvaluation(
           answers: [],
         });
   const base = {
-    mode: options.live ? 'live' : 'dry-run',
+    mode: options.cacheOnly
+      ? 'offline-replay'
+      : options.live
+        ? 'live'
+        : 'dry-run',
     classification: 'synthetic-only',
     architecture: options.architecture,
     corpusVersion: corpus.version,
@@ -436,7 +515,7 @@ export async function runAssessmentEvaluation(
     ceiling,
     semanticAcceptance: 'NOT_ESTABLISHED',
     limits: {
-      maxHttpAttempts: options.maxAttempts,
+      maxHttpAttempts: options.cacheOnly ? 0 : options.maxAttempts,
       maxOutputTokensPerCall: options.maxTokens,
       maxAccountedTokenReservation: options.maxTotalTokens,
     },
@@ -445,7 +524,13 @@ export async function runAssessmentEvaluation(
     promptTemplateHash: fingerprint(firstMessages.slice(0, -1)),
   };
   if (!options.live) return { ...base, rows: [] as AssessmentEvaluationRow[] };
-  if (!dependencies.fetcher && !options.phaseId)
+  const cacheEligible =
+    options.corpus.startsWith('dev-') &&
+    options.split === 'development' &&
+    options.batch !== 'release';
+  if (options.cacheOnly && !cacheEligible)
+    throw Error('DEVELOPMENT_CACHE_ONLY_REQUIRES_DEVELOPMENT_CORPUS');
+  if (!options.cacheOnly && !dependencies.fetcher && !options.phaseId)
     throw Error('ASSESSMENT_PHASE_ID_REQUIRED');
   const phaseCeiling =
     options.maxPhaseAttempts ??
@@ -454,17 +539,18 @@ export async function runAssessmentEvaluation(
       : options.batch === 'full'
         ? 176
         : options.maxAttempts);
-  const phase = options.phaseId
-    ? new AssessmentPhaseBudget(
-        resolve(
-          process.cwd(),
-          '.worknote-agent-evals',
-          options.phaseId + '.budget.json',
-        ),
-        phaseCeiling,
-        options.maxTotalTokens,
-      )
-    : undefined;
+  const phase =
+    options.phaseId && !options.cacheOnly
+      ? new AssessmentPhaseBudget(
+          resolve(
+            process.cwd(),
+            '.worknote-agent-evals',
+            options.phaseId + '.budget.json',
+          ),
+          phaseCeiling,
+          options.maxTotalTokens,
+        )
+      : undefined;
   const readCredentials =
     dependencies.readCredentials ??
     (async () => {
@@ -473,10 +559,21 @@ export async function runAssessmentEvaluation(
       );
       return {
         apiKey: env.XKIRO_API_KEY,
+        secondaryApiKey: env.XKIRO_API_KEY2,
+        tertiaryApiKey: env.XKIRO_API_KEY3,
         formattingRecovery: env.WORKNOTE_AGENT_FORMATTING_RECOVERY === 'true',
       };
     });
-  const credentials = await readCredentials();
+  const credentials = options.cacheOnly
+    ? {
+        apiKey: 'offline-replay',
+        secondaryApiKey: undefined,
+        tertiaryApiKey: undefined,
+        formattingRecovery: false,
+      }
+    : await readCredentials();
+  if (options.batch === 'release' && credentials.formattingRecovery)
+    throw Error('RELEASE_FORMAT_RECOVERY_DISABLED');
   if (!credentials.apiKey?.trim())
     throw Error('ASSESSMENT_CREDENTIALS_UNAVAILABLE');
   const budget = new AssessmentAttemptBudget(
@@ -485,6 +582,95 @@ export async function runAssessmentEvaluation(
     dependencies.fetcher,
     phase,
   );
+  const redact = (value: string) =>
+    [
+      credentials.apiKey,
+      credentials.secondaryApiKey,
+      credentials.tertiaryApiKey,
+    ]
+      .filter((key): key is string => Boolean(key))
+      .flatMap((key) => [key, key.trim()])
+      .filter(Boolean)
+      .reduce((safe, key) => safe.split(key).join('[REDACTED]'), value);
+  const credentialRouting = createCredentialRoutedFetch(
+    credentials.apiKey,
+    credentials.secondaryApiKey,
+    budget.fetch,
+    credentials.tertiaryApiKey,
+    dependencies.initialCredentialAlias,
+  );
+  const artifactHash = evaluationArtifactHash();
+  const responseCache =
+    cacheEligible &&
+    (options.cacheOnly ||
+      !dependencies.fetcher ||
+      dependencies.developmentCacheDirectory)
+      ? new DevelopmentResponseCache(
+          dependencies.developmentCacheDirectory ??
+            resolve(
+              process.cwd(),
+              '.worknote-agent-evals/development-response-cache',
+            ),
+          { artifactHash, phaseId: options.phaseId ?? 'offline-replay' },
+          options.cacheOnly,
+        )
+      : undefined;
+  const journalIdentity = fingerprint({
+    artifactHash,
+    corpusHash: base.corpusHash,
+    architecture: options.architecture,
+    model: options.model,
+    maxTokens: options.maxTokens,
+    timeoutMs: options.timeoutMs,
+    formattingRecovery: credentials.formattingRecovery === true,
+  });
+  const journal =
+    !dependencies.fetcher && options.phaseId && !options.cacheOnly
+      ? new AssessmentHttpJournal(
+          resolve(
+            process.cwd(),
+            '.worknote-agent-evals',
+            `${options.phaseId}.${options.journalScope ?? 'full'}.${journalIdentity.slice(0, 16)}.http-journal.json`,
+          ),
+          journalIdentity,
+        )
+      : undefined;
+  let operation = 'initial',
+    ordinal = 0,
+    slot = '';
+  let responseOrigins: ResponseCacheRead[] = [];
+  let transportDenialCode: string | undefined;
+  let transportPolicy = { timeoutMs: options.timeoutMs, retries: 0 };
+  const cachedFetch: typeof fetch = (url, init) =>
+    responseCache
+      ? responseCache.call(
+          url,
+          init,
+          transportPolicy,
+          credentialRouting.fetch,
+          redact,
+        )
+      : credentialRouting.fetch(url, init);
+  const transport: typeof fetch = async (url, init) => {
+    try {
+      const response = journal
+        ? await journal.call(slot, url, init, cachedFetch, redact)
+        : await cachedFetch(url, init);
+      responseOrigins.push(
+        journal?.lastReadKind === 'PHASE_REPLAY'
+          ? { kind: 'PHASE_JOURNAL_REPLAY' }
+          : (responseCache?.lastRead ?? { kind: 'LIVE_HTTP' }),
+      );
+      return response;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /^(?:RESPONSE_CACHE|HTTP_JOURNAL)_[A-Z_]+$/u.test(error.message)
+      )
+        transportDenialCode = error.message;
+      throw error;
+    }
+  };
   const client = new WorkNoteXkiroClient(
     {
       apiKey: credentials.apiKey,
@@ -493,7 +679,7 @@ export async function runAssessmentEvaluation(
       maxTokens: options.maxTokens,
       timeoutMs: options.timeoutMs,
     },
-    budget.fetch,
+    transport,
   );
   const editorClient = new WorkNoteXkiroClient(
     {
@@ -501,12 +687,20 @@ export async function runAssessmentEvaluation(
       model: options.model!,
       ...ASSESSMENT_EDITOR_PROVIDER_POLICY,
     },
-    budget.fetch,
+    transport,
   );
   const completeMessage = async (
     messages: Parameters<typeof client.complete>[0],
     role: 'analysis' | 'interpreter' | 'assessor' | 'editor',
   ) => {
+    slot = `${operation}:${role}:${ordinal++}`;
+    transportPolicy = {
+      timeoutMs:
+        role === 'editor'
+          ? ASSESSMENT_EDITOR_PROVIDER_POLICY.timeoutMs
+          : options.timeoutMs,
+      retries: 0,
+    };
     if (options.interCallDelayMs && budget.snapshot().actualHttpAttempts > 0) {
       await delay(options.interCallDelayMs);
     }
@@ -567,6 +761,10 @@ export async function runAssessmentEvaluation(
 
     for (let i = 0; i < turnLimit; i++) {
       const turn = c.turns[i];
+      operation = `${c.id}:turn-${i + 1}`;
+      responseOrigins = [];
+      transportDenialCode = undefined;
+      ordinal = 0;
       const started = Date.now();
       let rawSyntheticResponse: string | undefined;
       let requestTemplateHash: string | undefined;
@@ -658,9 +856,7 @@ export async function runAssessmentEvaluation(
           onStageProgress: (stage) => {
             requestTemplateHash = stage.requestTemplateHash;
             if (stage.rawResponse !== undefined) {
-              const sanitized = stage.rawResponse
-                .split(credentials.apiKey)
-                .join('[REDACTED]');
+              const sanitized = redact(stage.rawResponse);
               stageRawResponses.push(sanitized);
               rawSyntheticResponse =
                 options.architecture === 'split'
@@ -699,6 +895,7 @@ export async function runAssessmentEvaluation(
           turn: i + 1,
           role: 'analysis',
           rawSyntheticResponse,
+          responseOrigins: [...responseOrigins],
           requestTemplateHash,
           formattingRecovery: executed.provenance.formattingRecovery,
           runtimeState: {
@@ -723,7 +920,8 @@ export async function runAssessmentEvaluation(
           break;
         }
       } catch (e) {
-        const errorCode = budget.denialCode ?? safeCode(e);
+        const errorCode =
+          budget.denialCode ?? transportDenialCode ?? safeCode(e);
         if (
           turn.expected.boundaryError &&
           errorCode === 'CONTEXT_UNAVAILABLE'
@@ -746,6 +944,7 @@ export async function runAssessmentEvaluation(
           role: 'analysis',
           errorCode,
           elapsedMs: Date.now() - started,
+          responseOrigins: [...responseOrigins],
           requestTemplateHash,
           ...(rawSyntheticResponse ? { rawSyntheticResponse } : {}),
           sources: structuredClone(input.sources),
@@ -754,6 +953,9 @@ export async function runAssessmentEvaluation(
         consecutiveErrors++;
         if (
           /BUDGET/.test(errorCode) ||
+          errorCode === 'XKIRO_HTTP_ERROR_429' ||
+          (options.stopOnTransportError &&
+            /^XKIRO_(?:HTTP_ERROR|NETWORK_ERROR|TIMEOUT)/u.test(errorCode)) ||
           consecutiveErrors >= 3 ||
           (!options.noFailFast && c.critical)
         )
@@ -770,6 +972,10 @@ export async function runAssessmentEvaluation(
       editorRuns < maxEditorRuns &&
       isEligibleForAutomatedEditorEvaluation(activeAssessment)
     ) {
+      operation = `${c.id}:editor`;
+      responseOrigins = [];
+      transportDenialCode = undefined;
+      ordinal = 0;
       editorRuns++;
       let rawEditorResponse: string | undefined;
       const editorStarted = Date.now();
@@ -782,9 +988,7 @@ export async function runAssessmentEvaluation(
           modelName: options.model!,
           complete: completeMessage,
           onRawResponse: (raw) => {
-            rawEditorResponse = raw
-              .split(credentials.apiKey)
-              .join('[REDACTED]');
+            rawEditorResponse = redact(raw);
           },
         });
         rows.push({
@@ -792,7 +996,11 @@ export async function runAssessmentEvaluation(
           turn: turnLimit,
           role: 'editor',
           elapsedMs: Date.now() - editorStarted,
+          ...(rawEditorResponse
+            ? { rawSyntheticResponse: rawEditorResponse }
+            : {}),
           editorOutput: executedEditor.result,
+          responseOrigins: [...responseOrigins],
           editorValidation: {
             runtimeProposalAccepted: true,
             formattingRecovery: executedEditor.formattingRecovery,
@@ -802,7 +1010,7 @@ export async function runAssessmentEvaluation(
         });
         consecutiveErrors = 0;
       } catch (e) {
-        const code = budget.denialCode ?? safeCode(e);
+        const code = budget.denialCode ?? transportDenialCode ?? safeCode(e);
         rows.push({
           caseId: c.id,
           turn: turnLimit,
@@ -818,6 +1026,9 @@ export async function runAssessmentEvaluation(
         consecutiveErrors++;
         if (
           /BUDGET/.test(code) ||
+          code === 'XKIRO_HTTP_ERROR_429' ||
+          (options.stopOnTransportError &&
+            /^XKIRO_(?:HTTP_ERROR|NETWORK_ERROR|TIMEOUT)/u.test(code)) ||
           consecutiveErrors >= 3 ||
           (!options.noFailFast && c.critical)
         )
@@ -828,6 +1039,9 @@ export async function runAssessmentEvaluation(
   const report = {
     ...base,
     model: options.model,
+    artifactHash,
+    journalIdentity,
+    journalScope: options.journalScope ?? 'full',
     promptVersion: activePromptVersion,
     createdAt: new Date().toISOString(),
     promptTemplateSelection: 'PER_PURPOSE_MAX4_EXAMPLES',
@@ -836,6 +1050,15 @@ export async function runAssessmentEvaluation(
     phaseId: options.phaseId ?? null,
     ...(phase ? { phaseBudget: phase.snapshot() } : {}),
     rows,
+    credentialRouting: credentialRouting.snapshot(),
+    developmentResponseCache: responseCache?.snapshot() ?? {
+      mode: 'DISABLED_FOR_THIS_CORPUS',
+    },
+    executionEvidence: options.cacheOnly
+      ? 'OFFLINE_REPLAY_NO_HTTP'
+      : rows.some((r) => r.responseOrigins?.some((o) => o.kind !== 'LIVE_HTTP'))
+        ? 'CONTAINS_REUSED_RESPONSES'
+        : 'LIVE_HTTP_ONLY',
     manualReview: 'required',
     runtimeCoverage:
       'SHARED_REQUEST_PARSER_STATE_AND_PROPOSAL_GUARDS_NOT_IAM_API_E2E',
@@ -858,9 +1081,7 @@ export async function runAssessmentEvaluation(
     await mkdir(directory, { recursive: true });
     const filename = `assessment-v4-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
     const sanitize = (value: unknown) =>
-      JSON.stringify(value, null, 2)
-        .split(credentials.apiKey)
-        .join('[REDACTED]') + '\n';
+      redact(JSON.stringify(value, null, 2)) + '\n';
     await writeFile(resolve(directory, `${filename}.json`), sanitize(report), {
       flag: 'wx',
     });
@@ -870,6 +1091,7 @@ export async function runAssessmentEvaluation(
       { flag: 'wx' },
     );
   }
+  journal?.close();
   return report;
 }
 

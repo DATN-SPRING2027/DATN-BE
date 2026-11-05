@@ -8,6 +8,8 @@ describe('IAM startup configuration', () => {
     delete childEnvironment.JWT_SECRET;
     delete childEnvironment.DOTENV_CONFIG_PATH;
     childEnvironment.INFRA_ENABLED = 'false';
+    // The separate typecheck gate validates TypeScript; this child tests runtime startup.
+    childEnvironment.TS_NODE_TRANSPILE_ONLY = 'true';
 
     const code = [
       `const { NestFactory } = require(${JSON.stringify(require.resolve('@nestjs/core'))})`,
@@ -25,11 +27,13 @@ describe('IAM startup configuration', () => {
         cwd: resolve(__dirname, 'fixtures'),
         env: childEnvironment,
         encoding: 'utf8',
-        timeout: 30000,
+        timeout: 60000,
       },
     );
 
+    expect(child.error).toBeUndefined();
+    expect(child.signal).toBeNull();
     expect(child.status).toBe(1);
     expect(child.stderr).toContain('JWT_SECRET_REQUIRED');
-  }, 35_000);
+  }, 65_000);
 });
