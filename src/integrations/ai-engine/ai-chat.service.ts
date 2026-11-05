@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ForbiddenException,
   HttpException,
   Inject,
   Injectable,
@@ -8,12 +9,16 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
+import {
+  AuthenticationApplicationService,
+  type AuthenticatedIdentity,
+} from '../../services/iam/application/authentication/authentication.application.service';
 import {
   PLATFORM_ADMINISTRATION_REPOSITORY,
   type PlatformAdministrationRepository,
 } from '../../services/iam/application/platform/platform-administration.repository';
 import { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
+import type { ProjectRecord } from '../../services/iam/application/projects/project.repository';
 import { ProjectService } from '../../services/iam/application/projects/project.service';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import type { AiEngineClient } from './ai-engine.port';
@@ -45,6 +50,8 @@ import {
 } from './ai-chat.types';
 
 const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
+export const AI_CHAT_ALL_PROJECTS_ID = 'all';
+const MAX_ALL_PROJECTS_COUNT = 256;
 
 type SagLoginResponse = Readonly<{ access_token?: unknown }>;
 type SagAgentResponse = Readonly<{ id?: unknown }>;
@@ -100,6 +107,87 @@ export class AiChatService {
     this.sessionCache.set(key, entry);
   }
 
+  private isAllProjectsScope(projectId: string): boolean {
+    return projectId.trim().toLowerCase() === AI_CHAT_ALL_PROJECTS_ID;
+  }
+
+  private assertOrganizationManagerForAllProjects(
+    actor: AuthenticatedIdentity,
+    headers: AiChatRequestHeaders,
+  ): void {
+    const requestedOrgId = headers.organizationId?.trim();
+    if (requestedOrgId && requestedOrgId !== actor.organizationId) {
+      throw new ForbiddenException({
+        code: 'AI_CHAT_ALL_PROJECTS_FORBIDDEN',
+        message: 'Organization scope does not match the authenticated user.',
+      });
+    }
+    if (!Array.isArray(actor.roles) || !actor.roles.includes('ADMIN')) {
+      throw new ForbiddenException({
+        code: 'AI_CHAT_ALL_PROJECTS_FORBIDDEN',
+        message:
+          'Only Organization Managers can access AI Chat across all projects.',
+      });
+    }
+  }
+
+  private async listAllActiveOrganizationProjects(
+    actor: AuthenticatedIdentity,
+  ): Promise<ProjectRecord[]> {
+    const pageSize = 100;
+    const firstPage = await this.projects.list(actor, {
+      page: 1,
+      pageSize,
+      status: 'ACTIVE',
+    });
+    const collected: ProjectRecord[] = [...firstPage.data];
+    const totalPages = Math.min(
+      firstPage.pagination.totalPages ?? 1,
+      Math.ceil(MAX_ALL_PROJECTS_COUNT / pageSize),
+    );
+    for (let page = 2; page <= totalPages; page += 1) {
+      if (collected.length >= MAX_ALL_PROJECTS_COUNT) break;
+      const next = await this.projects.list(actor, {
+        page,
+        pageSize,
+        status: 'ACTIVE',
+      });
+      collected.push(...next.data);
+    }
+    const dedupedById = new Map<string, ProjectRecord>();
+    for (const proj of collected) {
+      if (proj.status === 'ACTIVE' && OBJECT_ID_PATTERN.test(proj.id)) {
+        dedupedById.set(proj.id, proj);
+      }
+      if (dedupedById.size >= MAX_ALL_PROJECTS_COUNT) break;
+    }
+    return [...dedupedById.values()];
+  }
+
+  async resolveAllProjectsManagerContext(
+    headers: AiChatRequestHeaders,
+  ): Promise<{
+    actorId: string;
+    organizationId: string;
+    projects: ReadonlyArray<{ id: string; code: string; name: string }>;
+  }> {
+    const actor = await this.auth.getCurrentIdentity(
+      headers.authorization,
+      headers.cookie,
+    );
+    this.assertOrganizationManagerForAllProjects(actor, headers);
+    const activeProjects = await this.listAllActiveOrganizationProjects(actor);
+    return {
+      actorId: actor.id,
+      organizationId: actor.organizationId,
+      projects: activeProjects.map((project) => ({
+        id: project.id,
+        code: project.code,
+        name: project.name,
+      })),
+    };
+  }
+
   private async resolveSagSession(
     headers: AiChatRequestHeaders,
     projectId: string,
@@ -113,16 +201,42 @@ export class AiChatService {
       headers.authorization,
       headers.cookie,
     );
-    const project = await this.projects.get(actor, projectId);
-    if (options?.requireActiveProject && project.status !== 'ACTIVE') {
-      throw new NotFoundException({
-        code: 'PROJECT_NOT_FOUND',
-        message: 'Project not found.',
-      });
+    const isAllProjects = this.isAllProjectsScope(projectId);
+    let resolvedOrganizationId: string;
+    let resolvedProjectId: string;
+    let allowedProjectIds: string[] | undefined;
+
+    if (isAllProjects) {
+      this.assertOrganizationManagerForAllProjects(actor, headers);
+      const activeProjects =
+        await this.listAllActiveOrganizationProjects(actor);
+      if (activeProjects.length === 0) {
+        throw new NotFoundException({
+          code: 'PROJECT_NOT_FOUND',
+          message: 'Project not found.',
+        });
+      }
+      resolvedOrganizationId = actor.organizationId;
+      resolvedProjectId = AI_CHAT_ALL_PROJECTS_ID;
+      allowedProjectIds = activeProjects.map((project) => project.id).sort();
+    } else {
+      const project = await this.projects.get(actor, projectId);
+      if (options?.requireActiveProject && project.status !== 'ACTIVE') {
+        throw new NotFoundException({
+          code: 'PROJECT_NOT_FOUND',
+          message: 'Project not found.',
+        });
+      }
+      resolvedOrganizationId = project.organizationId;
+      resolvedProjectId = project.id;
     }
+
     const sanitizedName = sanitizeContinuumActorHeaderName(actor.name);
     const displayName = sanitizeContinuumActorDisplayName(actor.name);
-    const cacheKey = `${actor.id}:${project.organizationId}:${project.id}:${displayName}`;
+    const cacheScopePart = allowedProjectIds
+      ? `${AI_CHAT_ALL_PROJECTS_ID}:${allowedProjectIds.join(',')}`
+      : resolvedProjectId;
+    const cacheKey = `${actor.id}:${resolvedOrganizationId}:${cacheScopePart}:${displayName}`;
 
     const cached = this.sessionCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -143,10 +257,12 @@ export class AiChatService {
           headers: {
             'X-Continuum-User-Id': actor.id,
             'X-Continuum-Name': sanitizedName,
-            'X-Continuum-Organization-Id': project.organizationId,
-            'X-Continuum-Project-Id': project.id,
+            'X-Continuum-Organization-Id': resolvedOrganizationId,
+            'X-Continuum-Project-Id': resolvedProjectId,
           },
-          body: { displayName },
+          body: allowedProjectIds
+            ? { displayName, allowed_project_ids: allowedProjectIds }
+            : { displayName },
         });
 
         const token = loginResult.body?.access_token;
@@ -648,6 +764,29 @@ export class AiChatService {
       headers.authorization,
       headers.cookie,
     );
+    if (this.isAllProjectsScope(projectId)) {
+      this.assertOrganizationManagerForAllProjects(actor, headers);
+      const activeProjects =
+        await this.listAllActiveOrganizationProjects(actor);
+      if (activeProjects.length === 0) {
+        throw new NotFoundException({
+          code: 'AI_CHAT_SHARE_NOT_FOUND',
+          message: 'Shared answer was not found.',
+        });
+      }
+      const allowedProjectIds = activeProjects.map((p) => p.id).sort();
+      return {
+        normalizedProjectId: AI_CHAT_ALL_PROJECTS_ID,
+        bffHeaders: {
+          'X-Continuum-User-Id': actor.id,
+          'X-Continuum-Organization-Id': actor.organizationId,
+          'X-Continuum-Tenant-Id': actor.organizationId,
+          'X-Continuum-Project-Id': AI_CHAT_ALL_PROJECTS_ID,
+          'X-Continuum-Security-Partition': AI_CHAT_ALL_PROJECTS_ID,
+          'X-Continuum-Allowed-Project-Ids': allowedProjectIds.join(','),
+        },
+      };
+    }
     if (!OBJECT_ID_PATTERN.test(projectId)) {
       throw new NotFoundException({
         code: 'AI_CHAT_SHARE_NOT_FOUND',
@@ -846,6 +985,29 @@ export class AiChatService {
       headers.authorization,
       headers.cookie,
     );
+    if (this.isAllProjectsScope(projectId)) {
+      this.assertOrganizationManagerForAllProjects(actor, headers);
+      const activeProjects =
+        await this.listAllActiveOrganizationProjects(actor);
+      if (activeProjects.length === 0) {
+        throw new NotFoundException({
+          code: 'PROJECT_NOT_FOUND',
+          message: 'Project not found.',
+        });
+      }
+      const allowedProjectIds = activeProjects.map((p) => p.id).sort();
+      return {
+        projectId: AI_CHAT_ALL_PROJECTS_ID,
+        bffHeaders: {
+          'X-Continuum-User-Id': actor.id,
+          'X-Continuum-Organization-Id': actor.organizationId,
+          'X-Continuum-Tenant-Id': actor.organizationId,
+          'X-Continuum-Project-Id': AI_CHAT_ALL_PROJECTS_ID,
+          'X-Continuum-Security-Partition': AI_CHAT_ALL_PROJECTS_ID,
+          'X-Continuum-Allowed-Project-Ids': allowedProjectIds.join(','),
+        },
+      };
+    }
     const project = await this.projects.get(actor, projectId);
     if (project.status !== 'ACTIVE') {
       throw new NotFoundException({

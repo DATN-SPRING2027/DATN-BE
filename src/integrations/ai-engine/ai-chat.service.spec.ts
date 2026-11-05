@@ -1557,4 +1557,104 @@ describe('AiChatService', () => {
       parsed.components?.schemas?.Message?.properties?.isInherited,
     ).toBeDefined();
   });
+
+  it('allows Organization Manager (ADMIN role) to use all-projects scope ("all") while rejecting Leader and Member with 403 Forbidden', async () => {
+    const projA = {
+      id: '507f1f77bcf86cd799439033',
+      organizationId: actor.organizationId,
+      name: 'Continuum Core',
+      code: 'CORE',
+      status: 'ACTIVE' as const,
+    };
+    const projB = {
+      id: '507f1f77bcf86cd799439044',
+      organizationId: actor.organizationId,
+      name: 'Continuum Mobile',
+      code: 'MOB',
+      status: 'ACTIVE' as const,
+    };
+    const getCurrentIdentity = jest.fn();
+    const listProjects = jest.fn().mockResolvedValue({
+      data: [projB, projA],
+      pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 },
+    });
+    const requestMock = jest.fn();
+    const service = new AiChatService(
+      { getCurrentIdentity } as unknown as AuthenticationApplicationService,
+      { get: jest.fn(), list: listProjects } as unknown as ProjectService,
+      { request: requestMock, requestStream: jest.fn() },
+    );
+
+    // 1. Member is forbidden from using "all"
+    getCurrentIdentity.mockResolvedValueOnce({
+      ...actor,
+      roles: ['MEMBER'],
+    });
+    await expect(
+      service.listThreads({ authorization: 'Bearer member' }, 'all', {
+        limit: 20,
+        offset: 0,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // 2. Team Leader is forbidden from using "all"
+    getCurrentIdentity.mockResolvedValueOnce({
+      ...actor,
+      roles: ['TEAM_LEADER'],
+    });
+    await expect(
+      service.createThread({ authorization: 'Bearer leader' }, 'all', {
+        title: 'Leader attempt',
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // 3. Organization Manager (ADMIN) succeeds with sorted allowed_project_ids
+    getCurrentIdentity.mockResolvedValueOnce({
+      ...actor,
+      roles: ['ADMIN'],
+    });
+    requestMock
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { access_token: 'all.jwt.token' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { id: 'agent_default_1' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: [
+          {
+            id: 't_all_1',
+            title: 'Tổng hợp toàn bộ dự án',
+            created_at: '2026-11-05T10:00:00Z',
+            updated_at: '2026-11-05T10:00:00Z',
+          },
+        ],
+      });
+
+    const threads = await service.listThreads(
+      { authorization: 'Bearer manager' },
+      'all',
+      { limit: 20, offset: 0 },
+    );
+    expect(threads).toHaveLength(1);
+    expect(requestMock).toHaveBeenNthCalledWith(1, {
+      path: '/api/v1/auth/continuum-login',
+      method: 'POST',
+      headers: {
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Name': 'Nguyen Van Thang Duc',
+        'X-Continuum-Organization-Id': actor.organizationId,
+        'X-Continuum-Project-Id': 'all',
+      },
+      body: {
+        displayName: 'Nguyễn Văn Thắng Đức',
+        allowed_project_ids: [projA.id, projB.id],
+      },
+    });
+  });
 });

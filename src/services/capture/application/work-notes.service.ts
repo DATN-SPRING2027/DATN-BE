@@ -1400,6 +1400,391 @@ export class WorkNotesService {
     };
   }
 
+  async listAiChatAllProjectsSources(
+    scope: Readonly<{
+      actorId: string;
+      organizationId: string;
+      projects: ReadonlyArray<{ id: string; code: string; name: string }>;
+    }>,
+    page: number,
+    pageSize: number,
+  ): Promise<AiChatProjectDocumentSourcesResponse> {
+    if (scope.projects.length === 0) {
+      return {
+        data: [],
+        pagination: this.pagination(page, pageSize, 0),
+        summary: {
+          totalCount: 0,
+          readyCount: 0,
+          verificationStatus: 'VERIFIED',
+          verifiedAt: new Date().toISOString(),
+        },
+      };
+    }
+
+    const organizationObjectId = objectId(scope.organizationId);
+    const projectById = new Map(scope.projects.map((p) => [p.id, p]));
+    const projectObjectIds = scope.projects.map((p) => objectId(p.id));
+    const filter = {
+      organizationId: organizationObjectId,
+      projectId: { $in: projectObjectIds },
+    };
+    const documentsCollection = this.database().collection('project_documents');
+    const [pageRows, totalCount, allRows] = await Promise.all([
+      documentsCollection
+        .find(filter)
+        .sort({ updatedAt: -1, _id: -1 })
+        .skip((page - 1) * pageSize)
+        .limit(pageSize)
+        .toArray(),
+      documentsCollection.countDocuments(filter),
+      documentsCollection
+        .find(filter, {
+          projection: {
+            _id: 1,
+            projectId: 1,
+            status: 1,
+            currentVersionNumber: 1,
+            latestApprovedVersionNumber: 1,
+            knowledgeSync: 1,
+          },
+        })
+        .toArray(),
+    ]);
+
+    type AllProjectsReadinessCandidate = {
+      documentId: string;
+      documentObjectId: Types.ObjectId;
+      projectId: string;
+      approvedVersion: number;
+      currentVersion: number;
+      storedSync: unknown;
+    };
+    const candidateByDocumentId = new Map<
+      string,
+      AllProjectsReadinessCandidate
+    >();
+    const candidates: AllProjectsReadinessCandidate[] = allRows.flatMap(
+      (row) => {
+        const value = row as unknown as Record<string, unknown>;
+        const status = text(value.status).toUpperCase();
+        const currentVersion = positiveInteger(value.currentVersionNumber);
+        const latestApproved = positiveInteger(
+          value.latestApprovedVersionNumber,
+        );
+        const approvedVersion =
+          status === 'ARCHIVED'
+            ? null
+            : (latestApproved ??
+              (status === 'APPROVED' ? currentVersion : null));
+        if (!approvedVersion || !(value._id instanceof Types.ObjectId)) {
+          return [];
+        }
+        const candidate: AllProjectsReadinessCandidate = {
+          documentId: value._id.toHexString(),
+          documentObjectId: value._id,
+          projectId: idText(value.projectId),
+          approvedVersion,
+          currentVersion: currentVersion ?? approvedVersion,
+          storedSync: value.knowledgeSync,
+        };
+        candidateByDocumentId.set(candidate.documentId, candidate);
+        return [candidate];
+      },
+    );
+
+    const versionCollection = this.database().collection(
+      'project_document_versions',
+    );
+    const approvedVersionByKey = new Map<string, Record<string, unknown>>();
+    for (
+      let offset = 0;
+      offset < candidates.length;
+      offset += PROJECT_SOURCE_READINESS_BATCH_SIZE
+    ) {
+      const batch = candidates.slice(
+        offset,
+        offset + PROJECT_SOURCE_READINESS_BATCH_SIZE,
+      );
+      const rows = await versionCollection
+        .find({
+          organizationId: organizationObjectId,
+          projectId: { $in: projectObjectIds },
+          $or: batch.map((candidate) => ({
+            documentId: candidate.documentObjectId,
+            versionNumber: candidate.approvedVersion,
+          })),
+        })
+        .project({
+          documentId: 1,
+          versionNumber: 1,
+          knowledgeSync: 1,
+          file: 1,
+        })
+        .toArray();
+      for (const row of rows) {
+        const value = row as unknown as Record<string, unknown>;
+        approvedVersionByKey.set(
+          `${idText(value.documentId)}:${Number(value.versionNumber)}`,
+          value,
+        );
+      }
+    }
+
+    const readinessByDocumentId = new Map<
+      string,
+      AiChatProjectDocumentReadinessStatus
+    >();
+    const candidatesByProject = new Map<
+      string,
+      Array<
+        AllProjectsReadinessCandidate & {
+          sagDocumentId: string;
+          sagVersionNo: number;
+        }
+      >
+    >();
+    let verificationAvailable = true;
+    let verifiedAt: string | null = new Date().toISOString();
+
+    for (const candidate of candidates) {
+      const approvedVersionRow = approvedVersionByKey.get(
+        `${candidate.documentId}:${candidate.approvedVersion}`,
+      );
+      const versionSync =
+        approvedVersionRow?.knowledgeSync &&
+        typeof approvedVersionRow.knowledgeSync === 'object'
+          ? (approvedVersionRow.knowledgeSync as Record<string, unknown>)
+          : undefined;
+      const documentSync =
+        candidate.storedSync && typeof candidate.storedSync === 'object'
+          ? (candidate.storedSync as Record<string, unknown>)
+          : undefined;
+      const matchingDocumentSync =
+        positiveInteger(documentSync?.version) === candidate.approvedVersion
+          ? documentSync
+          : undefined;
+      const sync = { ...matchingDocumentSync, ...versionSync };
+      const sagDocumentId =
+        typeof sync.sagDocumentId === 'string' ? sync.sagDocumentId.trim() : '';
+      const sagVersionNo = positiveInteger(sync.sagVersionNo);
+
+      if (sagDocumentId && sagVersionNo) {
+        const list = candidatesByProject.get(candidate.projectId) ?? [];
+        list.push({
+          ...candidate,
+          sagDocumentId,
+          sagVersionNo,
+        });
+        candidatesByProject.set(candidate.projectId, list);
+        continue;
+      }
+
+      const syncStatus =
+        `${text(sync.status)} ${text(sync.searchStatus)}`.toUpperCase();
+      const storedReady =
+        sync.searchReady === true ||
+        /\b(READY|SEARCH_READY)\b/.test(syncStatus);
+      if (storedReady) {
+        verificationAvailable = false;
+        readinessByDocumentId.set(candidate.documentId, 'UNVERIFIED');
+      } else if (/\b(REVOKED)\b/.test(syncStatus)) {
+        readinessByDocumentId.set(candidate.documentId, 'REVOKED');
+      } else if (/\b(FAILED|INDEX_FAILED)\b/.test(syncStatus)) {
+        readinessByDocumentId.set(candidate.documentId, 'FAILED');
+      } else if (
+        /\b(PENDING|PROCESSING|RUNNING|QUEUED|INDEXING)\b/.test(syncStatus)
+      ) {
+        readinessByDocumentId.set(candidate.documentId, 'PROCESSING');
+      } else {
+        readinessByDocumentId.set(candidate.documentId, 'NOT_INDEXED');
+      }
+    }
+
+    if (
+      candidatesByProject.size > 0 &&
+      typeof this.sagTransport?.getProjectDocumentReadinessBatch !== 'function'
+    ) {
+      verificationAvailable = false;
+      for (const projectBatch of candidatesByProject.values()) {
+        for (const candidate of projectBatch) {
+          readinessByDocumentId.set(candidate.documentId, 'UNVERIFIED');
+        }
+      }
+    } else if (this.sagTransport?.getProjectDocumentReadinessBatch) {
+      for (const [projId, projectCandidates] of candidatesByProject.entries()) {
+        for (
+          let offset = 0;
+          offset < projectCandidates.length;
+          offset += PROJECT_SOURCE_READINESS_BATCH_SIZE
+        ) {
+          const batch = projectCandidates.slice(
+            offset,
+            offset + PROJECT_SOURCE_READINESS_BATCH_SIZE,
+          );
+          try {
+            const receipt =
+              await this.sagTransport.getProjectDocumentReadinessBatch({
+                organizationId: scope.organizationId,
+                projectId: projId,
+                actorUserId: scope.actorId,
+                documents: batch.map((candidate) => ({
+                  documentId: candidate.sagDocumentId,
+                  versionNo: candidate.sagVersionNo,
+                })),
+              });
+            verifiedAt = receipt.verifiedAt;
+            const liveByKey = new Map(
+              receipt.items.map((item) => [
+                `${item.documentId}:${item.versionNo}`,
+                item,
+              ]),
+            );
+            for (const candidate of batch) {
+              const live = liveByKey.get(
+                `${candidate.sagDocumentId}:${candidate.sagVersionNo}`,
+              );
+              if (!live) {
+                verificationAvailable = false;
+                verifiedAt = null;
+                readinessByDocumentId.set(candidate.documentId, 'UNVERIFIED');
+                continue;
+              }
+              let readiness: AiChatProjectDocumentReadinessStatus =
+                'NOT_INDEXED';
+              const liveStatus =
+                `${live.status} ${live.searchStatus} ${live.documentStatus ?? ''}`.toUpperCase();
+              if (live.found && live.searchReady && live.chunkCount > 0) {
+                readiness = 'READY';
+              } else if (/\b(REVOKED)\b/.test(liveStatus)) {
+                readiness = 'REVOKED';
+              } else if (/\b(FAILED|INDEX_FAILED)\b/.test(liveStatus)) {
+                readiness = 'FAILED';
+              } else if (
+                /\b(PENDING|PROCESSING|RUNNING|QUEUED|INDEXING)\b/.test(
+                  liveStatus,
+                )
+              ) {
+                readiness = 'PROCESSING';
+              }
+              readinessByDocumentId.set(candidate.documentId, readiness);
+            }
+          } catch {
+            verificationAvailable = false;
+            verifiedAt = null;
+            for (const candidate of batch) {
+              readinessByDocumentId.set(candidate.documentId, 'UNVERIFIED');
+            }
+          }
+        }
+      }
+    }
+
+    const pageVersionQueries = pageRows.flatMap((row) => {
+      const value = row as unknown as Record<string, unknown>;
+      if (!(value._id instanceof Types.ObjectId)) return [];
+      const currentVersion = positiveInteger(value.currentVersionNumber);
+      const approvedVersion = candidateByDocumentId.get(
+        value._id.toHexString(),
+      )?.approvedVersion;
+      const versions = new Set(
+        [currentVersion, approvedVersion].filter(
+          (version): version is number =>
+            version !== null && version !== undefined,
+        ),
+      );
+      return [...versions].map((versionNumber) => ({
+        documentId: value._id as Types.ObjectId,
+        versionNumber,
+      }));
+    });
+    const pageVersions = pageVersionQueries.length
+      ? await versionCollection
+          .find({
+            organizationId: organizationObjectId,
+            projectId: { $in: projectObjectIds },
+            $or: pageVersionQueries,
+          })
+          .project({ documentId: 1, versionNumber: 1, file: 1 })
+          .toArray()
+      : [];
+    const pageVersionByKey = new Map<string, Record<string, unknown>>();
+    for (const row of pageVersions) {
+      const value = row as unknown as Record<string, unknown>;
+      pageVersionByKey.set(
+        `${idText(value.documentId)}:${Number(value.versionNumber)}`,
+        value,
+      );
+    }
+
+    const items: AiChatProjectDocumentSourceRecord[] = pageRows.map((row) => {
+      const value = row as unknown as Record<string, unknown>;
+      const documentId = idText(value._id);
+      const docProjectId = idText(value.projectId);
+      const projectMeta = projectById.get(docProjectId);
+      const approvalStatus = text(value.status).toUpperCase() as DocumentStatus;
+      const currentVersion = positiveInteger(value.currentVersionNumber) ?? 1;
+      const approvedVersion =
+        approvalStatus === 'ARCHIVED'
+          ? null
+          : (candidateByDocumentId.get(documentId)?.approvedVersion ?? null);
+      const approvedVersionRow = approvedVersion
+        ? pageVersionByKey.get(`${documentId}:${approvedVersion}`)
+        : undefined;
+      const currentVersionRow = pageVersionByKey.get(
+        `${documentId}:${currentVersion}`,
+      );
+      const approvedFile = approvedVersionRow?.file;
+      const currentFile = currentVersionRow?.file;
+      const fileName =
+        approvedFile && typeof approvedFile === 'object'
+          ? text((approvedFile as Record<string, unknown>).name).trim()
+          : currentFile && typeof currentFile === 'object'
+            ? text((currentFile as Record<string, unknown>).name).trim()
+            : '';
+      const readinessStatus: AiChatProjectDocumentReadinessStatus =
+        approvalStatus === 'ARCHIVED'
+          ? 'ARCHIVED'
+          : approvedVersion === null
+            ? 'NOT_APPROVED'
+            : (readinessByDocumentId.get(documentId) ?? 'NOT_INDEXED');
+      const source: AiChatProjectDocumentSourceRecord = {
+        documentId,
+        projectId: projectMeta?.id ?? docProjectId,
+        ...(projectMeta?.code ? { projectCode: projectMeta.code } : {}),
+        ...(projectMeta?.name ? { projectName: projectMeta.name } : {}),
+        title: text(value.title).slice(0, 500),
+        type: text(
+          value.documentType,
+        ) as AiChatProjectDocumentSourceRecord['type'],
+        approvalStatus,
+        currentVersion,
+        approvedVersion,
+        readinessStatus,
+        updatedAt: iso(value.updatedAt) ?? new Date(0).toISOString(),
+      };
+      return fileName
+        ? { ...source, fileName: fileName.slice(0, 512) }
+        : source;
+    });
+
+    return {
+      data: items,
+      pagination: this.pagination(page, pageSize, totalCount),
+      summary: {
+        totalCount,
+        readyCount: verificationAvailable
+          ? candidates.filter(
+              (candidate) =>
+                readinessByDocumentId.get(candidate.documentId) === 'READY',
+            ).length
+          : null,
+        verificationStatus: verificationAvailable ? 'VERIFIED' : 'UNAVAILABLE',
+        verifiedAt: verificationAvailable ? verifiedAt : null,
+      },
+    };
+  }
+
   async createDocument(
     headers: CaptureRequestHeaders,
     projectId: string,

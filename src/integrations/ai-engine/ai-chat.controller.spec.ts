@@ -20,7 +20,9 @@ describe('AiChatController', () => {
     const openRegenerateStreamMock = jest.fn();
     const getMindMapMock = jest.fn();
     const generateMindMapMock = jest.fn();
+    const resolveAllProjectsManagerContextMock = jest.fn();
     const listAiChatProjectSourcesMock = jest.fn();
+    const listAiChatAllProjectsSourcesMock = jest.fn();
     const service = {
       listThreads: jest.fn(),
       createThread: createThreadMock,
@@ -38,9 +40,11 @@ describe('AiChatController', () => {
       openRegenerateStream: openRegenerateStreamMock,
       getMindMap: getMindMapMock,
       generateMindMap: generateMindMapMock,
+      resolveAllProjectsManagerContext: resolveAllProjectsManagerContextMock,
     } as unknown as AiChatService;
     const workNotes = {
       listAiChatProjectSources: listAiChatProjectSourcesMock,
+      listAiChatAllProjectsSources: listAiChatAllProjectsSourcesMock,
     } as unknown as WorkNotesService;
     const controller = new AiChatController(service, workNotes);
     return {
@@ -57,7 +61,9 @@ describe('AiChatController', () => {
       openRegenerateStreamMock,
       getMindMapMock,
       generateMindMapMock,
+      resolveAllProjectsManagerContextMock,
       listAiChatProjectSourcesMock,
+      listAiChatAllProjectsSourcesMock,
     };
   }
 
@@ -209,6 +215,42 @@ describe('AiChatController', () => {
       2,
       10,
     );
+  });
+
+  it('routes all-projects document-sources ("all") through Manager RBAC context resolution', async () => {
+    const {
+      controller,
+      resolveAllProjectsManagerContextMock,
+      listAiChatAllProjectsSourcesMock,
+      listAiChatProjectSourcesMock,
+    } = setup();
+    const req = makeReq({ authorization: 'Bearer manager' });
+    const { res } = makeRes();
+    const managerScope = {
+      actorId: 'u1',
+      organizationId: 'org1',
+      projects: [{ id: 'p1', code: 'P1', name: 'Project 1' }],
+    };
+    resolveAllProjectsManagerContextMock.mockResolvedValueOnce(managerScope);
+    listAiChatAllProjectsSourcesMock.mockResolvedValueOnce({
+      data: [],
+      pagination: { page: 1, pageSize: 25, totalItems: 0, totalPages: 0 },
+      summary: {
+        totalCount: 0,
+        readyCount: 0,
+        verificationStatus: 'VERIFIED',
+        verifiedAt: '2026-11-05T00:00:00.000Z',
+      },
+    });
+
+    await controller.listDocumentSources(req, res, 'all', {});
+    expect(resolveAllProjectsManagerContextMock).toHaveBeenCalledTimes(1);
+    expect(listAiChatAllProjectsSourcesMock).toHaveBeenCalledWith(
+      managerScope,
+      1,
+      25,
+    );
+    expect(listAiChatProjectSourcesMock).not.toHaveBeenCalled();
   });
 
   it('rejects unsupported query parameters for Project document sources', async () => {
