@@ -5,10 +5,67 @@ export const DATABASE = 'continuum_capture';
 export const COLLECTION = 'work_note_assessment_feedback';
 export const TTL_SECONDS = 15_552_000; // 180 days (180 * 24 * 3600)
 export const TTL_INDEX_NAME = 'assessment_feedback_retention_180d';
-export const COMPOUND_INDEX_NAME = 'assessment_feedback_version_purpose_category';
+export const COMPOUND_INDEX_NAME =
+  'assessment_feedback_version_purpose_category';
 
-const validDate = (value) =>
-  value instanceof Date && Number.isFinite(value.getTime());
+const TTL_KEY = { recordedAt: 1 };
+const COMPOUND_KEY = {
+  promptVersion: 1,
+  purpose: 1,
+  category: 1,
+  recordedAt: -1,
+};
+
+const isSameKey = (actual, expected) => {
+  const actualEntries = Object.entries(actual ?? {});
+  const expectedEntries = Object.entries(expected);
+  return (
+    actualEntries.length === expectedEntries.length &&
+    expectedEntries.every(
+      ([key, value], idx) =>
+        actualEntries[idx]?.[0] === key && actualEntries[idx]?.[1] === value,
+    )
+  );
+};
+
+const hasStandardIndexOptions = (
+  index,
+  { expectedExpireAfterSeconds } = {},
+) => {
+  if (index.partialFilterExpression !== undefined) return false;
+  if (index.sparse === true) return false;
+  if (index.unique === true) return false;
+  if (index.hidden === true) return false;
+  if (index.collation !== undefined) return false;
+  if (index.wildcardProjection !== undefined) return false;
+  if (expectedExpireAfterSeconds !== undefined) {
+    return index.expireAfterSeconds === expectedExpireAfterSeconds;
+  }
+  return index.expireAfterSeconds === undefined;
+};
+
+const isValidTtlIndex = (i) =>
+  i.name === TTL_INDEX_NAME &&
+  isSameKey(i.key, TTL_KEY) &&
+  hasStandardIndexOptions(i, { expectedExpireAfterSeconds: TTL_SECONDS });
+
+const isValidCompoundIndex = (i) =>
+  i.name === COMPOUND_INDEX_NAME &&
+  isSameKey(i.key, COMPOUND_KEY) &&
+  hasStandardIndexOptions(i);
+
+const isIncompatibleIndex = (i) => {
+  if (!i || i.name === '_id_') return false;
+  const touchesTtl =
+    i.name === TTL_INDEX_NAME ||
+    isSameKey(i.key, TTL_KEY) ||
+    i.expireAfterSeconds !== undefined;
+  if (touchesTtl && !isValidTtlIndex(i)) return true;
+  const touchesCompound =
+    i.name === COMPOUND_INDEX_NAME || isSameKey(i.key, COMPOUND_KEY);
+  if (touchesCompound && !isValidCompoundIndex(i)) return true;
+  return false;
+};
 
 async function readIndexes(db, name) {
   try {
@@ -24,29 +81,20 @@ export async function feedbackReadiness(db) {
     throw Error('Only continuum_capture is allowed');
 
   const indexes = await readIndexes(db, COLLECTION);
-  const ttlReady = indexes.some(
-    (i) =>
-      i.name === TTL_INDEX_NAME &&
-      i.expireAfterSeconds === TTL_SECONDS &&
-      JSON.stringify(i.key) === JSON.stringify({ recordedAt: 1 }),
-  );
-  const compoundReady = indexes.some(
-    (i) =>
-      i.name === COMPOUND_INDEX_NAME &&
-      JSON.stringify(i.key) ===
-        JSON.stringify({
-          promptVersion: 1,
-          purpose: 1,
-          category: 1,
-          recordedAt: -1,
-        }),
-  );
+  const incompatibleIndexes = indexes
+    .filter(isIncompatibleIndex)
+    .map((i) => i.name);
+  const ttlReady =
+    incompatibleIndexes.length === 0 && indexes.some(isValidTtlIndex);
+  const compoundReady =
+    incompatibleIndexes.length === 0 && indexes.some(isValidCompoundIndex);
 
   return {
     collection: COLLECTION,
     ttlReady,
     compoundReady,
-    allReady: ttlReady && compoundReady,
+    allReady: ttlReady && compoundReady && incompatibleIndexes.length === 0,
+    incompatibleIndexes,
     indexesCount: indexes.length,
   };
 }
@@ -65,12 +113,22 @@ export async function migrateWorkNoteFeedbackTtl(
   const cutoff = new Date(Date.now() - TTL_SECONDS * 1000);
   const metadata = {
     totalRecords: await collection.countDocuments({}),
-    invalidRecordedAt: await collection.countDocuments({ recordedAt: { $not: { $type: 'date' } } }),
-    eligibleForExpiry: await collection.countDocuments({ recordedAt: { $type: 'date', $lt: cutoff } }),
+    invalidRecordedAt: await collection.countDocuments({
+      recordedAt: { $not: { $type: 'date' } },
+    }),
+    eligibleForExpiry: await collection.countDocuments({
+      recordedAt: { $type: 'date', $lt: cutoff },
+    }),
     expiryCutoff: cutoff.toISOString(),
   };
-  if (apply && metadata.invalidRecordedAt > 0) throw Error('FEEDBACK_TTL_INVALID_RECORDED_AT_REQUIRES_REMEDIATION');
-  if (apply && metadata.eligibleForExpiry > 0 && !acknowledgeExistingExpiry) throw Error('FEEDBACK_TTL_EXISTING_EXPIRY_REQUIRES_ACKNOWLEDGEMENT');
+  if (apply && before.incompatibleIndexes.length > 0)
+    throw Error(
+      `FEEDBACK_TTL_INCOMPATIBLE_INDEX_EXISTS: ${before.incompatibleIndexes.join(', ')}`,
+    );
+  if (apply && metadata.invalidRecordedAt > 0)
+    throw Error('FEEDBACK_TTL_INVALID_RECORDED_AT_REQUIRES_REMEDIATION');
+  if (apply && metadata.eligibleForExpiry > 0 && !acknowledgeExistingExpiry)
+    throw Error('FEEDBACK_TTL_EXISTING_EXPIRY_REQUIRES_ACKNOWLEDGEMENT');
 
   // Check if collection exists or create if needed
   const collections = await db
@@ -147,7 +205,9 @@ export async function runFeedbackTtlMigration(
   },
 ) {
   if (
-    args.some((a) => !['--inspect', '--apply', '--ack-existing-expiry'].includes(a)) ||
+    args.some(
+      (a) => !['--inspect', '--apply', '--ack-existing-expiry'].includes(a),
+    ) ||
     new Set(args).size !== args.length
   )
     throw Error('Unknown or duplicate argument');
@@ -158,14 +218,17 @@ export async function runFeedbackTtlMigration(
       networkCalls: 0,
       database: DATABASE,
       collection: COLLECTION,
-      retention: 'TTL requires valid recordedAt and explicit target inspection; creating an index can expire old records',
+      retention:
+        'TTL requires valid recordedAt and explicit target inspection; creating an index can expire old records',
     };
 
-  const actions = args.filter(a => a === '--inspect' || a === '--apply');
-  if (actions.length !== 1 || (args.includes('--ack-existing-expiry') && !args.includes('--apply')) || env.NODE_ENV === 'production')
-    throw Error(
-      'Choose inspect or apply in a non-production local environment',
-    );
+  const actions = args.filter((a) => a === '--inspect' || a === '--apply');
+  if (
+    actions.length !== 1 ||
+    (args.includes('--ack-existing-expiry') && !args.includes('--apply')) ||
+    env.NODE_ENV === 'production'
+  )
+    throw Error('Choose inspect or apply in a non-production local environment');
 
   const uri = env.WORKNOTE_MIGRATION_URI;
   if (!uri) throw Error('Explicit WORKNOTE_MIGRATION_URI required');
@@ -201,4 +264,3 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
       );
       process.exitCode = 1;
     });
-

@@ -29,7 +29,9 @@ test('default feedback TTL migration rejects non-loopback and production environ
   await assert.rejects(
     runFeedbackTtlMigration(
       ['--apply'],
-      { WORKNOTE_MIGRATION_URI: 'mongodb://remote-host:27017/continuum_capture' },
+      {
+        WORKNOTE_MIGRATION_URI: 'mongodb://remote-host:27017/continuum_capture',
+      },
       connect,
     ),
     /loopback/i,
@@ -58,7 +60,7 @@ test('default feedback TTL migration rejects non-loopback and production environ
 });
 
 test(
-  'feedback TTL migration creates 180d TTL index and compound index idempotently',
+  'feedback TTL migration creates 180d TTL index and compound index idempotently and enforces pre-apply expiry acknowledgement',
   { timeout: 120000 },
   async () => {
     const repl = await MongoMemoryReplSet.create({
@@ -69,16 +71,46 @@ test(
 
     try {
       await client.connect();
+      // Disable background TTL monitor in the counting fixture so expired documents
+      // are never swept before deterministic assertions complete.
+      await client
+        .db('admin')
+        .command({ setParameter: 1, ttlMonitorEnabled: false });
       const db = client.db(DATABASE);
 
       // 1. Initial inspect on empty db: indexes not ready
-      const initialInspect = await migrateWorkNoteFeedbackTtl(client, { apply: false });
+      const initialInspect = await migrateWorkNoteFeedbackTtl(client, {
+        apply: false,
+      });
       assert.equal(initialInspect.before.ttlReady, false);
       assert.equal(initialInspect.before.compoundReady, false);
       assert.equal(initialInspect.ttlCreated, false);
 
-      // 2. Apply migration: creates collection and both indexes
-      const applyResult = await migrateWorkNoteFeedbackTtl(client, { apply: true });
+      // 2. Pre-apply expired record blocks first-time TTL index creation until acknowledged
+      const old = {
+        recordedAt: new Date(Date.now() - (TTL_SECONDS + 86400) * 1000),
+      };
+      await db.collection(COLLECTION).insertOne(old);
+      const preApplyInspect = await migrateWorkNoteFeedbackTtl(client, {
+        apply: false,
+      });
+      assert.equal(preApplyInspect.metadata.eligibleForExpiry, 1);
+      assert.equal(preApplyInspect.before.ttlReady, false);
+
+      await assert.rejects(
+        migrateWorkNoteFeedbackTtl(client, { apply: true }),
+        /FEEDBACK_TTL_EXISTING_EXPIRY_REQUIRES_ACKNOWLEDGEMENT/,
+      );
+      // Verify TTL index was NOT created when acknowledgement was missing
+      const afterBlockedApply = await feedbackReadiness(db);
+      assert.equal(afterBlockedApply.ttlReady, false);
+      assert.equal(afterBlockedApply.compoundReady, false);
+
+      // 3. Apply migration with explicit acknowledgement: creates both indexes
+      const applyResult = await migrateWorkNoteFeedbackTtl(client, {
+        apply: true,
+        acknowledgeExistingExpiry: true,
+      });
       assert.equal(applyResult.ttlCreated, true);
       assert.equal(applyResult.compoundCreated, true);
       assert.equal(applyResult.after.ttlReady, true);
@@ -91,6 +123,7 @@ test(
       assert.ok(ttlIdx, 'TTL index must exist');
       assert.equal(ttlIdx.expireAfterSeconds, TTL_SECONDS);
       assert.deepEqual(ttlIdx.key, { recordedAt: 1 });
+      assert.equal(ttlIdx.partialFilterExpression, undefined);
 
       const compoundIdx = indexes.find((i) => i.name === COMPOUND_INDEX_NAME);
       assert.ok(compoundIdx, 'Compound index must exist');
@@ -101,26 +134,34 @@ test(
         recordedAt: -1,
       });
 
-      // 3. Second apply: idempotent, no redundant creations
-      const secondApply = await migrateWorkNoteFeedbackTtl(client, { apply: true });
+      // 4. Second apply: idempotent, no redundant creations
+      const secondApply = await migrateWorkNoteFeedbackTtl(client, {
+        apply: true,
+        acknowledgeExistingExpiry: true,
+      });
       assert.equal(secondApply.ttlCreated, false);
       assert.equal(secondApply.compoundCreated, false);
       assert.equal(secondApply.before.allReady, true);
       assert.equal(secondApply.after.allReady, true);
 
-      // A newly inspected target with old feedback requires explicit data-impact acknowledgement.
-      const old = { recordedAt: new Date(Date.now() - (TTL_SECONDS + 86400) * 1000) };
-      await db.collection(COLLECTION).insertOne(old);
-      const expiryInspect = await migrateWorkNoteFeedbackTtl(client);
-      assert.equal(expiryInspect.metadata.eligibleForExpiry, 1);
-      await assert.rejects(migrateWorkNoteFeedbackTtl(client, { apply: true }), /EXISTING_EXPIRY_REQUIRES_ACKNOWLEDGEMENT/);
-      await migrateWorkNoteFeedbackTtl(client, { apply: true, acknowledgeExistingExpiry: true });
+      // 5. Invalid recordedAt blocks apply
       await db.collection(COLLECTION).insertOne({ recordedAt: 'not-a-date' });
-      assert.equal((await migrateWorkNoteFeedbackTtl(client)).metadata.invalidRecordedAt, 1);
-      await assert.rejects(migrateWorkNoteFeedbackTtl(client, { apply: true, acknowledgeExistingExpiry: true }), /INVALID_RECORDED_AT/);
+      assert.equal(
+        (await migrateWorkNoteFeedbackTtl(client)).metadata.invalidRecordedAt,
+        1,
+      );
+      await assert.rejects(
+        migrateWorkNoteFeedbackTtl(client, {
+          apply: true,
+          acknowledgeExistingExpiry: true,
+        }),
+        /INVALID_RECORDED_AT/,
+      );
 
-      // 4. Inspect again: reports ready
-      const finalInspect = await migrateWorkNoteFeedbackTtl(client, { apply: false });
+      // 6. Inspect again: reports index readiness accurately
+      const finalInspect = await migrateWorkNoteFeedbackTtl(client, {
+        apply: false,
+      });
       assert.equal(finalInspect.before.allReady, true);
     } finally {
       await client.close();
@@ -129,3 +170,84 @@ test(
   },
 );
 
+test(
+  'feedback TTL migration rejects incompatible partial, unique, or sparse TTL/compound indexes without dropping them',
+  { timeout: 120000 },
+  async () => {
+    const repl = await MongoMemoryReplSet.create({
+      binary: { version: '7.0.24' },
+      replSet: { count: 1 },
+    });
+    const client = new mongoose.mongo.MongoClient(repl.getUri());
+
+    try {
+      await client.connect();
+      const db = client.db(DATABASE);
+      const col = db.collection(COLLECTION);
+
+      // Case A: Partial TTL index (e.g. partialFilterExpression: { purpose: 'QA' })
+      await col.createIndex(
+        { recordedAt: 1 },
+        {
+          name: TTL_INDEX_NAME,
+          expireAfterSeconds: TTL_SECONDS,
+          partialFilterExpression: { purpose: 'QA' },
+        },
+      );
+
+      const readinessA = await feedbackReadiness(db);
+      assert.equal(readinessA.ttlReady, false);
+      assert.equal(readinessA.allReady, false);
+      assert.deepEqual(readinessA.incompatibleIndexes, [TTL_INDEX_NAME]);
+
+      await assert.rejects(
+        migrateWorkNoteFeedbackTtl(client, { apply: true }),
+        /FEEDBACK_TTL_INCOMPATIBLE_INDEX_EXISTS/,
+      );
+
+      // Verify existing index was NOT dropped or altered
+      const indexesAfterA = await col.indexes();
+      const preservedPartialTtl = indexesAfterA.find(
+        (i) => i.name === TTL_INDEX_NAME,
+      );
+      assert.deepEqual(preservedPartialTtl?.partialFilterExpression, {
+        purpose: 'QA',
+      });
+
+      // Clean up Case A and test Case B: Unique/partial compound index
+      await col.dropIndexes();
+      await col.createIndex(
+        { recordedAt: 1 },
+        {
+          name: TTL_INDEX_NAME,
+          expireAfterSeconds: TTL_SECONDS,
+        },
+      );
+      await col.createIndex(
+        {
+          promptVersion: 1,
+          purpose: 1,
+          category: 1,
+          recordedAt: -1,
+        },
+        {
+          name: COMPOUND_INDEX_NAME,
+          unique: true,
+        },
+      );
+
+      const readinessB = await feedbackReadiness(db);
+      assert.equal(readinessB.compoundReady, false);
+      assert.equal(readinessB.allReady, false);
+      assert.deepEqual(readinessB.incompatibleIndexes, [COMPOUND_INDEX_NAME]);
+
+      await assert.rejects(
+        migrateWorkNoteFeedbackTtl(client, { apply: true }),
+        /FEEDBACK_TTL_INCOMPATIBLE_INDEX_EXISTS/,
+      );
+    } finally {
+      await client.close();
+      await repl.stop();
+    }
+  },
+);
