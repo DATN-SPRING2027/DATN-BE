@@ -6,6 +6,7 @@ import {
   ASSESSMENT_PROMPT_VERSION,
 } from './work-note-assessment.protocol';
 import {
+  PURPOSE_RUBRIC_TABLE,
   classifyGapNeedCode,
   extractGapNeedCode,
   isAssessmentNeedCode,
@@ -297,6 +298,78 @@ export function assembleAssessment(
         )
       : out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
         !out.gaps.some((g) => g.impact === 'BLOCKING'));
+  const isNonBlockingRemainingScopeGap = (
+    g: Pick<
+      AssessmentModelOutput['gaps'][number],
+      'kind' | 'owner' | 'target' | 'sourceRefs' | 'needCode'
+    >,
+  ) => {
+    const need = resolveNeed(g, out.purpose);
+    if (
+      out.purpose === 'PROGRESS' &&
+      (need === 'scope.completed_part' || g.needCode === 'scope.completed_part')
+    ) {
+      const hasSupportedProgress = out.coverage.some(
+        (cov) => cov.status === 'SUPPORTED',
+      );
+      if (
+        out.taskContextStatus === 'CLEAR' &&
+        hasSupportedProgress &&
+        out.coverage.some((cov) => cov.status === 'NOT_REPORTED') &&
+        !out.coverage.some((cov) => cov.status === 'CONTRADICTORY') &&
+        g.needCode === 'scope.completed_part'
+      ) {
+        return true;
+      }
+      if (
+        out.noteAdequacy !== 'ENOUGH_FOR_PURPOSE' ||
+        out.nextQuestion !== null
+      )
+        return false;
+      return g.sourceRefs.some(
+        (r) =>
+          /(?:chưa\s+(?:thể|cấp|bắt\s+đầu|sửa|làm|triển\s+khai|thực\s+hiện|cập\s+nhật|cấu\s+hình|kiểm\s+thử|test|chạy)|đang\s+(?:chờ|bị\s+chặn|vướng))/iu.test(
+            r.quote,
+          ) &&
+          (hasSupportedProgress ||
+            /(?:^|\s)(?:vì|do|chờ|thiếu\s+quyền|chưa\s+có\s+quyền)(?=\s|$|[.,;:])/iu.test(
+              r.quote,
+            )),
+      );
+    }
+    if (
+      out.purpose === 'QA' &&
+      need === 'test_result.behavior' &&
+      out.taskContextStatus === 'CLEAR' &&
+      out.nextQuestion === null &&
+      input.answers.length === 0
+    ) {
+      return (
+        out.coverage.some(
+          (cov) => cov.status === 'SUPPORTED' || cov.status === 'PARTIAL',
+        ) &&
+        !out.coverage.some((cov) => cov.status === 'CONTRADICTORY') &&
+        g.sourceRefs.some((r) =>
+          /chưa\s+(?:chạy|kiểm\s+thử|test)/iu.test(r.quote),
+        )
+      );
+    }
+    if (out.noteAdequacy !== 'ENOUGH_FOR_PURPOSE' || out.nextQuestion !== null)
+      return false;
+    if (out.purpose === 'HANDOVER' && need === 'handover.next_steps') {
+      return (
+        out.coverage.some(
+          (cov) => cov.status === 'SUPPORTED' || cov.status === 'PARTIAL',
+        ) &&
+        g.sourceRefs.some((r) =>
+          /(?:chưa\s+(?:thực\s+hiện|triển\s+khai|làm|chạy|bật|nâng\s+cấp)|ca\s+sau|người\s+nhận|tiếp\s+tục|bàn\s+giao)/iu.test(
+            r.quote,
+          ),
+        )
+      );
+    }
+    return false;
+  };
   const materializeGap = (
     g: Omit<AssessmentGap, 'id' | 'status'> & { needCode?: string },
     deterministicOptional = false,
@@ -355,11 +428,26 @@ export function assembleAssessment(
                 : priorGap?.status === 'skipped' && !correctionGrounded
                   ? 'skipped'
                   : 'open';
+    const allowed =
+      out.purpose === 'AUTO'
+        ? undefined
+        : PURPOSE_RUBRIC_TABLE[out.purpose]?.allowedBlockingNeeds;
+    const isReset = Boolean(prior && prior.purpose !== out.purpose);
+    const blockedProgressScope = isNonBlockingRemainingScopeGap(g);
+    const disallowedByRubric =
+      (allowed && !allowed.includes(currentNeed)) || blockedProgressScope;
+    const impact: 'BLOCKING' | 'OPTIONAL' =
+      g.impact === 'BLOCKING' &&
+      (blockedProgressScope ||
+        (disallowedByRubric &&
+          (isReset || out.noteAdequacy === 'ENOUGH_FOR_PURPOSE')))
+        ? 'OPTIONAL'
+        : g.impact;
     return {
       id,
       kind: g.kind,
       target: g.target,
-      impact: g.impact,
+      impact,
       owner: g.owner,
       status,
       sourceRefs: g.sourceRefs,
@@ -654,25 +742,55 @@ export function assembleAssessment(
   const unresolved = gaps.some(
     (g) => g.impact === 'BLOCKING' && g.status !== 'answered',
   );
-  const rawHasBlocking = out.gaps.some((g) => g.impact === 'BLOCKING');
+  const allowedBlockingNeeds =
+    out.purpose === 'AUTO'
+      ? undefined
+      : PURPOSE_RUBRIC_TABLE[out.purpose]?.allowedBlockingNeeds;
+  const isAllowedBlockingGap = (g: AssessmentModelOutput['gaps'][number]) =>
+    !isNonBlockingRemainingScopeGap(g) &&
+    g.impact === 'BLOCKING' &&
+    (!allowedBlockingNeeds ||
+      allowedBlockingNeeds.includes(resolveNeed(g, out.purpose)));
+  const rawHasBlocking = out.gaps.some(isAllowedBlockingGap);
   const rawInconsistentEnough =
     out.noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
     (rawHasBlocking || out.nextQuestion !== null);
   let noteAdequacy = out.noteAdequacy;
   const nonHistoricalClaims = claims.filter(
-    (c) => c.originKind !== 'HISTORICAL_REPORT',
+    (c) =>
+      c.originKind !== 'HISTORICAL_REPORT' &&
+      !(
+        completeCorrection &&
+        c.originKind === 'AUTHOR_REPORT' &&
+        c.sourceRefs.every((r) => r.sourceId.startsWith('note.'))
+      ),
   );
   const fullyGrounded =
     claims.some(
       (c) => c.originKind === 'AUTHOR_REPORT' && c.supportRelation === 'FULL',
     ) && nonHistoricalClaims.every((c) => c.supportRelation === 'FULL');
+  if (
+    !prior &&
+    input.answers.length === 0 &&
+    out.taskContextStatus === 'CLEAR' &&
+    out.noteAdequacy === 'NEEDS_AUTHOR_INPUT' &&
+    out.gaps.length > 0 &&
+    out.gaps.every(isNonBlockingRemainingScopeGap) &&
+    fullyGrounded &&
+    !unresolved
+  ) {
+    noteAdequacy = 'ENOUGH_FOR_PURPOSE';
+  }
   if (rawInconsistentEnough) {
     // Plan v3 §5: inconsistent model output falls back to UNDETERMINED with
     // manual editing rather than fabricating adequacy or asking a contradictory question.
     noteAdequacy = 'UNDETERMINED';
   } else if (
     noteAdequacy === 'ENOUGH_FOR_PURPOSE' &&
-    (!fullyGrounded || unresolved)
+    (!fullyGrounded ||
+      unresolved ||
+      (['DECISION', 'COMPLETION'].includes(out.purpose) &&
+        coverage.some((c) => c.status === 'CONTRADICTORY')))
   ) {
     noteAdequacy = 'UNDETERMINED';
   }

@@ -1,0 +1,1196 @@
+{
+  "version": "task-note-assessment-dev/2026-11-03.v26",
+  "classification": "synthetic-only",
+  "splitPolicy": "Plan v4 D4 synthetic development-only slice (10 scenarios across L1-L5 mechanisms) authored with fresh domains before v26 prompt edits.",
+  "scenarios": [
+    {
+      "id": "dev26-l1-compound-multianswer-a",
+      "family": "dev26-l1-compound-multianswer",
+      "category": "multi-turn-compound-grounding",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Tách hàng đợi đồng bộ tồn kho kho lạnh sang stream riêng",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Chuyển luồng đồng bộ tồn kho kho lạnh sang stream NATS riêng và xác nhận độ trễ tiêu thụ dưới 400ms.",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Tách consumer tồn kho kho lạnh sang stream NATS cold-stock-v2.",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.1",
+          "kind": "TASK",
+          "label": "Checklist step 2",
+          "text": "Đo độ trễ tiêu thụ thực tế dưới 400ms trên cụm staging.",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Tách hàng đợi đồng bộ tồn kho kho lạnh sang stream riêng",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã tách consumer sang stream cold-stock-v2 nhưng chưa đo độ trễ tiêu thụ.",
+          "version": "dev26-01a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT",
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "400ms|độ trễ|tiêu thụ|staging|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "action": "answer",
+          "answer": "Đã chạy tải thử 5.000 bản tin trên cụm staging, và độ trễ p95 ghi nhận ổn định ở mức 180ms.",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 2,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Ask for latency measurement on turn 1, then accept compound answer on turn 2 with grounded claims."
+        ],
+        "prohibited": [
+          "Do not demote turn 2 to UNDETERMINED due to compound clause or wrong sourceId."
+        ],
+        "questionUtility": "Verifies <400ms consumer latency criterion."
+      }
+    },
+    {
+      "id": "dev26-l1-compound-multianswer-b",
+      "family": "dev26-l1-compound-multianswer",
+      "category": "multi-turn-compound-grounding",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Tách hàng đợi đồng bộ tồn kho kho lạnh sang stream riêng",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Chuyển luồng đồng bộ tồn kho kho lạnh sang stream NATS riêng và xác nhận độ trễ tiêu thụ dưới 400ms.",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Tách consumer tồn kho kho lạnh sang stream NATS cold-stock-v2.",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.1",
+          "kind": "TASK",
+          "label": "Checklist step 2",
+          "text": "Đo độ trễ tiêu thụ thực tế dưới 400ms trên cụm staging.",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Tách hàng đợi đồng bộ tồn kho kho lạnh sang stream riêng",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã tách consumer sang stream cold-stock-v2 trên nhánh tích hợp.",
+          "version": "dev26-01b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT",
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "400ms|độ trễ|tiêu thụ|staging|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "action": "answer",
+          "answer": "Đã bật exporter Prometheus cho consumer cold-stock-v2, nhưng chưa chạy tải thử để lấy số p95.",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT",
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "400ms|p95|độ trễ|tải thử|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Keep asking for actual <400ms measurement when turn 2 explicitly says load test has not run."
+        ],
+        "prohibited": [
+          "Do not mark ENOUGH_FOR_PURPOSE without latency result."
+        ],
+        "questionUtility": "Collects missing latency verification."
+      }
+    },
+    {
+      "id": "dev26-l2-reset-purpose-a",
+      "family": "dev26-l2-reset-purpose",
+      "category": "reset-purpose-rubric-filter",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Bổ sung bộ lọc chữ ký HMAC cho cổng nhận biên lai vận đơn",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Xác thực chữ ký HMAC-SHA256 cho biên lai vận đơn đến và kiểm thử từ chối chữ ký sai bằng mã 401.",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Viết middleware kiểm tra header X-Waybill-Signature.",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.1",
+          "kind": "TASK",
+          "label": "Checklist step 2",
+          "text": "Chạy kiểm thử chữ ký sai trả HTTP 401.",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Bổ sung bộ lọc chữ ký HMAC cho cổng nhận biên lai vận đơn",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đang viết middleware X-Waybill-Signature cho cổng nhận biên lai; phần kiểm thử mã 401 sẽ làm ở ca chiều.",
+          "version": "dev26-02a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT",
+              "EVIDENCE",
+              "IMPLEMENTATION"
+            ],
+            "questionTopicPatterns": [
+              "401|kiểm thử|hoàn thành|middleware|kết quả"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "action": "reset",
+          "newPurpose": "PROGRESS",
+          "carryAnswered": true,
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Block COMPLETION on turn 1 because 401 test is unfinished, then accept as ENOUGH_FOR_PURPOSE when reset to PROGRESS."
+        ],
+        "prohibited": [
+          "Do not keep test_result.behavior or completion.evidence as BLOCKING under PROGRESS."
+        ],
+        "questionUtility": "Respects purpose reset to PROGRESS."
+      }
+    },
+    {
+      "id": "dev26-l2-reset-purpose-b",
+      "family": "dev26-l2-reset-purpose",
+      "category": "reset-purpose-rubric-filter",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Bổ sung bộ lọc chữ ký HMAC cho cổng nhận biên lai vận đơn",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Xác thực chữ ký HMAC-SHA256 cho biên lai vận đơn đến và kiểm thử từ chối chữ ký sai bằng mã 401.",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Viết middleware kiểm tra header X-Waybill-Signature.",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.1",
+          "kind": "TASK",
+          "label": "Checklist step 2",
+          "text": "Chạy kiểm thử chữ ký sai trả HTTP 401.",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Bổ sung bộ lọc chữ ký HMAC cho cổng nhận biên lai vận đơn",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Hôm nay tiếp tục theo dõi hạng mục chữ ký biên lai.",
+          "version": "dev26-02b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION",
+              "RESULT",
+              "SCOPE",
+              "EVIDENCE"
+            ],
+            "questionTopicPatterns": [
+              "đã làm|tiến độ|middleware|401|hạng mục"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        },
+        {
+          "action": "reset",
+          "newPurpose": "PROGRESS",
+          "carryAnswered": true,
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION",
+              "SCOPE",
+              "RESULT"
+            ],
+            "questionTopicPatterns": [
+              "đã làm|đang làm|vướng|middleware|tiến độ"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Even under PROGRESS, an empty status placeholder with no concrete item done/in-progress/blocked requires clarification."
+        ],
+        "prohibited": [
+          "Do not accept content-free note as ENOUGH_FOR_PURPOSE."
+        ],
+        "questionUtility": "Asks what concrete progress or blocker exists."
+      }
+    },
+    {
+      "id": "dev26-l3-qa-action-only-a",
+      "family": "dev26-l3-qa-action-only",
+      "category": "qa-observed-behavior-required",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": true,
+      "purpose": "QA",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Kiểm thử giới hạn kích thước ảnh tải lên hồ sơ bảo hành (tối đa 5MB)",
+          "version": "dev26-03a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Xác minh API tải ảnh bảo hành từ chối tệp vượt quá 5MB với mã HTTP 413 và chấp nhận tệp hợp lệ.",
+          "version": "dev26-03a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-03a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Chạy kiểm thử tải ảnh > 5MB và ảnh <= 5MB trên môi trường QA.",
+          "version": "dev26-03a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Kiểm thử giới hạn kích thước ảnh tải lên hồ sơ bảo hành (tối đa 5MB)",
+          "version": "dev26-03a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã chạy kịch bản tải tệp ảnh PNG dung lượng 8MB lên endpoint /api/v1/warranty/photos trên môi trường QA.",
+          "version": "dev26-03a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "RESULT",
+              "EVIDENCE"
+            ],
+            "expectedNeedCodes": [
+              "test_result.behavior"
+            ],
+            "questionTopicPatterns": [
+              "kết quả|413|trả về|phản hồi|pass|fail|quan sát"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Require observed QA outcome/HTTP status when note only states the test scenario was executed."
+        ],
+        "prohibited": [
+          "Do not mark QA note ENOUGH_FOR_PURPOSE without any observed test outcome."
+        ],
+        "questionUtility": "Asks what response/behavior was observed for the 8MB upload."
+      }
+    },
+    {
+      "id": "dev26-l3-qa-action-only-b",
+      "family": "dev26-l3-qa-action-only",
+      "category": "qa-observed-behavior-required",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "QA",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Kiểm thử giới hạn kích thước ảnh tải lên hồ sơ bảo hành (tối đa 5MB)",
+          "version": "dev26-03b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Xác minh API tải ảnh bảo hành từ chối tệp vượt quá 5MB với mã HTTP 413 và chấp nhận tệp hợp lệ.",
+          "version": "dev26-03b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-03b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Chạy kiểm thử tải ảnh > 5MB và ảnh <= 5MB trên môi trường QA.",
+          "version": "dev26-03b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Kiểm thử giới hạn kích thước ảnh tải lên hồ sơ bảo hành (tối đa 5MB)",
+          "version": "dev26-03b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã thử tải tệp PNG 8MB lên /api/v1/warranty/photos trên QA: hệ thống trả về HTTP 413 kèm mã lỗi FILE_TOO_LARGE. Kịch bản tệp <= 5MB chưa chạy trong lượt này.",
+          "version": "dev26-03b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Accept QA note reporting concrete HTTP 413 observation without demanding untested <=5MB scenario."
+        ],
+        "prohibited": [
+          "Do not block partial QA note for explicitly untested scenario."
+        ],
+        "questionUtility": "None."
+      }
+    },
+    {
+      "id": "dev26-l4-criteria-violation-a",
+      "family": "dev26-l4-criteria-violation",
+      "category": "contradictory-criteria-violation",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": true,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Cấu hình lưu trữ khóa phiên thanh toán chỉ trong bộ nhớ RAM (cấm ghi xuống đĩa)",
+          "version": "dev26-04a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": " Bắt buộc giữ khóa phiên tạm thời hoàn toàn trong bộ nhớ RAM tmpfs; nghiêm cấm ghi khóa phiên ra tệp trên ổ đĩa bền vững.",
+          "version": "dev26-04a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-04a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Cấu hình store khóa phiên chỉ nằm trên RAM và xác minh không phát sinh tệp trên ổ đĩa.",
+          "version": "dev26-04a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Cấu hình lưu trữ khóa phiên thanh toán chỉ trong bộ nhớ RAM (cấm ghi xuống đĩa)",
+          "version": "dev26-04a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã hoàn tất cấu hình lưu khóa phiên thanh toán vào tệp /var/lib/pay-session/keys.db trên ổ SSD bền vững để dễ khởi động lại.",
+          "version": "dev26-04a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Flag CONTRADICTORY with nextQuestion=null because persisting keys to SSD directly violates the RAM-only prohibition."
+        ],
+        "prohibited": [
+          "Do not emit NEEDS_AUTHOR_INPUT or auto-ask follow-up questions on direct constraint violation."
+        ],
+        "questionUtility": "None — stop questions on contradiction."
+      }
+    },
+    {
+      "id": "dev26-l4-criteria-violation-b",
+      "family": "dev26-l4-criteria-violation",
+      "category": "contradictory-criteria-violation",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Cấu hình lưu trữ khóa phiên thanh toán chỉ trong bộ nhớ RAM (cấm ghi xuống đĩa)",
+          "version": "dev26-04b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Bắt buộc giữ khóa phiên tạm thời hoàn toàn trong bộ nhớ RAM tmpfs; nghiêm cấm ghi khóa phiên ra tệp trên ổ đĩa bền vững.",
+          "version": "dev26-04b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-04b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Cấu hình store khóa phiên chỉ nằm trên RAM và xác minh không phát sinh tệp trên ổ đĩa.",
+          "version": "dev26-04b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Cấu hình lưu trữ khóa phiên thanh toán chỉ trong bộ nhớ RAM (cấm ghi xuống đĩa)",
+          "version": "dev26-04b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã cấu hình store khóa phiên giữ trong bộ nhớ tiến trình kèm mount tmpfs chuẩn RAM và kiểm tra lsof xác nhận không ghi tệp nào ra ổ đĩa bền vững.",
+          "version": "dev26-04b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Accept compliant RAM-only implementation with verification."
+        ],
+        "prohibited": [
+          "Do not raise false contradiction."
+        ],
+        "questionUtility": "None."
+      }
+    },
+    {
+      "id": "dev26-l5-progress-history-conflict-a",
+      "family": "dev26-l5-progress-history-conflict",
+      "category": "progress-history-conflict-blocking",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": true,
+      "purpose": "PROGRESS",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Di chuyển bảng đối soát cước vận chuyển sang phân vùng theo tháng",
+          "version": "dev26-05a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Tạo bảng phân vùng freight_reconcile_p2026 và chuyển job ghi đối soát sang bảng mới.",
+          "version": "dev26-05a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-05a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Chuyển job đối soát sang ghi vào bảng phân vùng freight_reconcile_p2026.",
+          "version": "dev26-05a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Di chuyển bảng đối soát cước vận chuyển sang phân vùng theo tháng",
+          "version": "dev26-05a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đang chạy job đối soát ghi song song vào bảng freight_reconcile_p2026 trên môi trường staging, không gặp lỗi khóa bảng.",
+          "version": "dev26-05a",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "history.fact-dev26-05a",
+          "kind": "HISTORY",
+          "label": "Ghi chú lịch sử (Cùng Task, 2026-11-02): Cập nhật ca sáng đối soát cước",
+          "text": "Đã tắt hẳn job ghi vào bảng freight_reconcile_p2026 trên staging do lỗi deadlock khóa phân vùng.",
+          "version": "2026-11-02:CONFLICT_CURRENT",
+          "loadStatus": "LOADED",
+          "includedInRequest": true,
+          "history": {
+            "factId": "fact-dev26-05a",
+            "noteId": "note-prev-05a",
+            "noteTitle": "Cập nhật ca sáng đối soát cước",
+            "date": "2026-11-02",
+            "relation": "SELF",
+            "factStatus": "CONFLICT_CURRENT",
+            "factKind": "STATUS",
+            "factPolarity": "NEGATIVE",
+            "sourceType": "TASK_NOTE"
+          }
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "HISTORICAL_CONFLICT"
+            ],
+            "expectedNeedCodes": [
+              "history.conflict"
+            ],
+            "questionTopicPatterns": [
+              "staging|tắt|deadlock|freight_reconcile_p2026|mâu thuẫn|ghi chú trước"
+            ],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Treat unresolved SELF CONFLICT_CURRENT on PROGRESS as BLOCKING history.conflict and ask author to clarify."
+        ],
+        "prohibited": [
+          "Do not mark PROGRESS note ENOUGH_FOR_PURPOSE while genuine SELF historical conflict is unresolved."
+        ],
+        "questionUtility": "Resolves conflicting staging status vs previous note."
+      }
+    },
+    {
+      "id": "dev26-l5-progress-history-conflict-b",
+      "family": "dev26-l5-progress-history-conflict",
+      "category": "progress-history-outdated-nonblocking",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "PROGRESS",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "Task title",
+          "text": "Di chuyển bảng đối soát cước vận chuyển sang phân vùng theo tháng",
+          "version": "dev26-05b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "Task description",
+          "text": "Tạo bảng phân vùng freight_reconcile_p2026 và chuyển job ghi đối soát sang bảng mới.",
+          "version": "dev26-05b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "Task status",
+          "text": "IN_PROGRESS",
+          "version": "dev26-05b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.step.0",
+          "kind": "TASK",
+          "label": "Checklist step 1",
+          "text": "Chuyển job đối soát sang ghi vào bảng phân vùng freight_reconcile_p2026.",
+          "version": "dev26-05b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "Note title",
+          "text": "Ghi chú: Di chuyển bảng đối soát cước vận chuyển sang phân vùng theo tháng",
+          "version": "dev26-05b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "Author note",
+          "text": "Đã sửa xong cấu hình khóa chỉ mục và bật lại job ghi đối soát vào freight_reconcile_p2026 trên staging từ đầu ca chiều.",
+          "version": "dev26-05b",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "history.fact-dev26-05b",
+          "kind": "HISTORY",
+          "label": "Ghi chú lịch sử (Cùng Task, 2026-10-15): Ghi chú tuần trước",
+          "text": "Chưa tạo xong bảng freight_reconcile_p2026 trên staging.",
+          "version": "2026-10-15:OUTDATED",
+          "loadStatus": "LOADED",
+          "includedInRequest": true,
+          "history": {
+            "factId": "fact-dev26-05b",
+            "noteId": "note-prev-05b",
+            "noteTitle": "Ghi chú tuần trước",
+            "date": "2026-10-15",
+            "relation": "SELF",
+            "factStatus": "OUTDATED",
+            "factKind": "STATUS",
+            "factPolarity": "NEGATIVE",
+            "sourceType": "TASK_NOTE"
+          }
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [
+              "All tests passed\\.",
+              "Independently verified in production"
+            ],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Keep OUTDATED historical note non-blocking (OPTIONAL) so updated PROGRESS note is ENOUGH_FOR_PURPOSE."
+        ],
+        "prohibited": [
+          "Do not block PROGRESS because of an OUTDATED note from 2 weeks ago."
+        ],
+        "questionUtility": "None."
+      }
+    }
+  ]
+}

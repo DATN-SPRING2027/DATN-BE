@@ -32,3 +32,12 @@
 - Run `npm run check` before handoff.
 - Never commit secrets; update `.env.example` only with safe placeholders.
 - After the initial root commit, use a focused branch and pull request for every change.
+
+## Work Note Agent evaluation checkpoints
+
+- Before starting live evaluation, read the existing `.worknote-agent-evals/assessment-progress.json` or regenerate it with `node -r ts-node/register/transpile-only scripts/work-note-agent/assessment-progress.ts`. Preserve the reports and phase ledgers that back each marker.
+- Use `assessment-run.ts --cache-only` for development replay after local parser/guard/grader changes. It must never access the provider or create a phase budget; a cache miss is unmeasured work, not permission to call a model.
+- Development response reuse requires the same model, exact request content/parameters and transport policy. Preserve original response provenance and distinguish replay from fresh HTTP evidence. Do not resample an unchanged model failure to select a passing answer.
+- Release validation/holdout keeps its independent frozen-manifest rules and does not use the development response cache.
+- During implementation run the affected test group. Run the mandatory `npm run check` once on the stable final source before handoff, and repeat it only when a subsequent change or unresolved failure requires it.
+- Provider/quota failures are checkpoints. Resume only interrupted or unmeasured requests after an external-state change; keep the same approved global phase caps. Do not reset a ledger or repeatedly probe a blocked provider.

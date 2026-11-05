@@ -182,6 +182,7 @@ integration('Platform Operator MongoDB persistence', () => {
         {
           actorUserId: String(actorId),
           action: 'platform.authority.granted',
+          scope: 'PLATFORM',
           targetResource: 'PLATFORM_AUTHORITY',
           targetResourceId: String(actorId),
           metadata: { secret: 'must-not-be-returned' },
@@ -190,6 +191,7 @@ integration('Platform Operator MongoDB persistence', () => {
         {
           actorUserId: String(actorId),
           action: 'platform.authority.revoked',
+          scope: 'PLATFORM',
           targetResource: 'PLATFORM_AUTHORITY',
           targetResourceId: String(actorId),
           metadata: { refreshToken: 'must-not-be-returned' },

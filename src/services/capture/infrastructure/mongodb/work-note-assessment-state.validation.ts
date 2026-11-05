@@ -48,6 +48,7 @@ export function validPrivateAssessmentState(
     'promptTokens',
     'completionTokens',
     'httpAttempts',
+    'validatedConfig',
   ]);
   if (assessment.feedback !== undefined) {
     const categories = [
@@ -77,7 +78,9 @@ export function validPrivateAssessmentState(
       typeof event.reasonCode !== 'string' ||
       event.phase.length > 100 ||
       event.reasonCode.length > 100 ||
-      !Number.isFinite(timestamp(event.at))
+      !Number.isFinite(timestamp(event.at)) ||
+      (event.validatedConfig !== undefined &&
+        typeof event.validatedConfig !== 'boolean')
     )
       return false;
   }

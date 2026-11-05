@@ -31,6 +31,7 @@ integration('User status invariants in continuum_iam', () => {
           'users',
           'organizations',
           'organization_memberships',
+          'roles',
           'role_assignments',
         ].includes(definition.name)
       ) {
@@ -42,6 +43,15 @@ integration('User status invariants in continuum_iam', () => {
     }
     repository = new MongoUserDirectoryRepository(connection);
     const now = new Date();
+    await connection.collection('roles').insertOne({
+      _id: roleId,
+      code: 'ADMIN',
+      name: 'Organization Admin',
+      permissions: ['organization.memberships.manage'],
+      isSystem: true,
+      createdAt: now,
+      updatedAt: now,
+    });
     await connection.collection('organizations').insertMany(
       organizationIds.map((_id, index) => ({
         _id,
@@ -103,6 +113,7 @@ integration('User status invariants in continuum_iam', () => {
     await connection.collection('role_assignments').deleteMany({
       organizationId: { $in: organizationIds },
     });
+    await connection.collection('roles').deleteOne({ _id: roleId });
     await connection.collection('users').deleteMany({ _id: { $in: userIds } });
     await connection.collection('organizations').deleteMany({
       _id: { $in: organizationIds },

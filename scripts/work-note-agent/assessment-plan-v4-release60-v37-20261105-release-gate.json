@@ -1,0 +1,1276 @@
+{
+  "classification": "PLAN_V3_SECTIONS_6_7_FROZEN_RELEASE60_EVALUATION",
+  "createdAt": "2026-11-05T09:49:54.242Z",
+  "phaseId": "plan-v4-release60-v37-20261105",
+  "freezeManifest": {
+    "model": "mistralai/ministral-14b",
+    "architecture": "combined",
+    "promptVersion": "task-note-assessment/2026-11-05.v34",
+    "editorInstructionVersion": "task-note-editor/2026-11-05.v6",
+    "corpusVariant": "v7",
+    "retries": 0,
+    "fileHashes": {
+      "nest-cli.json": "665d3692542e1f2c3fb1b69151485a7c540495dfd592843da7e3558781ba5244",
+      "package-lock.json": "0272ba973defd0a71d68994065317d21602ecf53037d3d37cd54d629c28abbda",
+      "package.json": "2f34bc845602477c27398e96962b18760603d48df214e23729741ecd41da2da3",
+      "scripts/work-note-agent/assessment-arch-pilot.ts": "06c1750f29fc1ae466bffea646ccf29c88131998074d402a92547dadab23af16",
+      "scripts/work-note-agent/assessment-artifact.ts": "09d306afef34d40b01eb6379ccd3987431e860517ebd1543c6ebe9cb30a00b5f",
+      "scripts/work-note-agent/assessment-campaign.ts": "17fe409d7e3213f5d180a9da5adb2e5a6b3b5395dac50380fb9e0c9d3a9574af",
+      "scripts/work-note-agent/assessment-credential-routing.ts": "75fdd742c4d4ab134e93db07853933a9849497821401fff7c98c204cc75a7ba9",
+      "scripts/work-note-agent/assessment-deployment-gate.ts": "9e16395f9cd0c52814e676b4d46105f44592be2b18e7e7500c3c6ba59598328c",
+      "scripts/work-note-agent/assessment-domain-run.ts": "ab58216845b13b4af4ec3e93d9dc4d70267f9ec845f509d9e97af6abb4993ea1",
+      "scripts/work-note-agent/assessment-domains.ts": "6f99be41fb30235b14aec3c21420f79c2b1dec82c00d80ea6e8f431359312029",
+      "scripts/work-note-agent/assessment-evaluation.ts": "0ff1d5a2e03638b29d304e2e4ef6881420549b07e5e925a889ebb67f7fb4d84f",
+      "scripts/work-note-agent/assessment-http-journal.ts": "3c45c6d62cb8fc1a5f31e28a5d2b0ecabf4c468a31fdc26e58595b6cc9072851",
+      "scripts/work-note-agent/assessment-phase-budget.ts": "46fc9d4eae38aeb441ad1315c14573b03f097fb24ef31e11cfbff60b802425bf",
+      "scripts/work-note-agent/assessment-progress.ts": "05b66545ef18f787c69bb136d9edccea8da7602163f456a0f1f344ae1fb383bb",
+      "scripts/work-note-agent/assessment-quality-gate.ts": "cc5ab16ce2fdeef686f597981485cd2346c4f5351e6c0ad616fbc4fda4ab63c6",
+      "scripts/work-note-agent/assessment-release-gate-run.ts": "53aa6bd2ed4077b05e91f3e9ce65eb287625ee847a65298209e15a9d8b235d9e",
+      "scripts/work-note-agent/assessment-release-replay.ts": "61b9ad7f236b14a04dca024699a587d7e44c80d2684e176af48c3edd0ab08bcd",
+      "scripts/work-note-agent/assessment-replay.ts": "6ba2d9144337f9eda48e05e44680b1829dacadf57adacf5777936e78b9465a40",
+      "scripts/work-note-agent/assessment-response-cache.ts": "903475ebf20af4729dea51711027c32ec095a079a17c7f0334e09a079c404221",
+      "scripts/work-note-agent/assessment-run.ts": "838d432ebf3ad0ed948bb333dcf8d38c20d04bf5a7f9a7b4f3dc882c7f925368",
+      "scripts/work-note-agent/cases-assessment-v7-release.json": "7fc8d903b91e39de5f174433d79d48bec2ecbef26ca93ffd6bfa31f834277ff1",
+      "scripts/work-note-agent/evaluation.ts": "cbe68ef0575dd1ead1322f9980ba2feb6543c3edb26ed2b96dc5fa95cb7ee5b2",
+      "scripts/work-note-agent/feedback-report.ts": "9466bcbdb9ed8767707cc91c8b578801a503cf77a6d55c694f4a08aef7ceb044",
+      "scripts/work-note-agent/local-preview.ts": "ea65693f1d7c99c6012cd3af67cdcf532a165b622f2659b8d6dd41c3f0389ad8",
+      "scripts/work-note-agent/review.ts": "2c5858225903a82dcb72d6d1049628f417beb0ab82b5398312f44b342bd3b3a4",
+      "scripts/work-note-agent/run.ts": "220ab3e85398d99ee637e30e862fa98c8eaf0b6db0e703c955244bd59d2263ae",
+      "scripts/work-note-agent/update-prompt-fingerprints.ts": "735fd345fbd47dbd10b982afe01a7767f0866095e6c0acf582b42585cc65b6bd",
+      "src/services/capture/application/work-note-agent/history/clarification-dedup.ts": "1ad6c5262992b7159f69c48e8223b8cfe47a2390fe950af11c34033a360d3010",
+      "src/services/capture/application/work-note-agent/history/history.types.ts": "25ef32c299558edd8bbba23e6ac6cb1d63350a2a346437f289c5af6e90112963",
+      "src/services/capture/application/work-note-agent/history/work-note-history.facts.ts": "2a276903ffb08d69fefb37b2f520ed367eb547c42d34fb1234b2dbba9942a14f",
+      "src/services/capture/application/work-note-agent/history/work-note-history.retriever.ts": "58c6386836595b1c14d2f7b81974473bbcc0c888cddab5c9851db1cfc60e6bfa",
+      "src/services/capture/application/work-note-agent/history/work-note-history.verification.ts": "2994c790807212ce3e1381dce346f59d28253b3e7484e01cd7ce1cb3e7579025",
+      "src/services/capture/application/work-note-agent/prompt-fingerprint.fixtures.ts": "1941b0948ecf7d15c3a996f22dcfa6fc67244f8aa7f8acec0c87e09b39d9d296",
+      "src/services/capture/application/work-note-agent/prompt-fingerprints.json": "63bc14477d22a90dd0b7972e3006eabb7e73dbb8a6bfe6440d1a1150cd3af08f",
+      "src/services/capture/application/work-note-agent/security/agent-input.masking.ts": "187bee3f721314f08bd4276889a6cf2113ad8f325f546d26f93066ba2d84b933",
+      "src/services/capture/application/work-note-agent/security/fixtures/sensitive-corpus.ts": "071cc3b0aa4ab30f50e4359d9a32c79d8139fe84bfbfe8c0d88e14d4caab4337",
+      "src/services/capture/application/work-note-agent/security/llm-security-gateway.ts": "8803bb2c5a01024b59da7aed24d7e49c14cd4c05fab191b0c7347aa2800e9270",
+      "src/services/capture/application/work-note-agent/security/output-security.validator.ts": "eea6ffe29afd415429f2c40179054ef509480f88332e1afd05aa66fdc2811f30",
+      "src/services/capture/application/work-note-agent/security/security.types.ts": "8cf7163f2a0d481e00522783c19a3b4c0d57418deb521631e7a08850e3dd7986",
+      "src/services/capture/application/work-note-agent/security/sensitive-data.detector.ts": "7e83aa7a76eaa4183796cccfb93bcc96feb72adc7230b29c5b312843fe7c23d0",
+      "src/services/capture/application/work-note-agent/security/sensitive-data.masker.ts": "e5f79e57f8a2c8a7ec60c9e9fb5bf0e08fb2e190ead4ff2a67dd382aaafd2245",
+      "src/services/capture/application/work-note-agent/security/sensitive-data.rules.ts": "e9c5a95aee79f9823cc21683dd5fc309432ab38f438e5354cc773f3d44bfbcd3",
+      "src/services/capture/application/work-note-agent/validated-config.guard.ts": "244915b21d3ed56e674611f1eb5a5d0ea4c9f7ff5c2afd80f7c12f96385756cd",
+      "src/services/capture/application/work-note-agent/work-note-agent-drafts.service.ts": "821b90eca8e6d7421f0cecc2954124ccd6db4274521c8a68590a2b4010b22f32",
+      "src/services/capture/application/work-note-agent/work-note-agent-drafts.types.ts": "417f85a60b8e0116ce61a34ed86e00b1e49f7412d5e802a071c9b4cd8eaa1efb",
+      "src/services/capture/application/work-note-agent/work-note-agent-drafts.validation.ts": "e6aed8071fa82e0af7757d8e2126ea395e4cf1e3169334658c757fe4f01255e1",
+      "src/services/capture/application/work-note-agent/work-note-agent.completion.ts": "e13a6492dfcbbf7b22086e1c07cadb88dae754c8b486692b8181bae0b9d852f8",
+      "src/services/capture/application/work-note-agent/work-note-agent.formatting.ts": "5ab8d74dc6707aee1c97829a3557b1d7f35d5b04a6e20caaf1f3a507557fd8af",
+      "src/services/capture/application/work-note-agent/work-note-agent.prompt.ts": "5287f3e7ef01e74ba236dc7b03a9bd6845ca5cde2e5ee95fc57278f35d703952",
+      "src/services/capture/application/work-note-agent/work-note-agent.protection.ts": "5b6d1e196112eedfd233ca9d0f7feba1bd871c22f9cac01274cd3cac99a9a4ff",
+      "src/services/capture/application/work-note-agent/work-note-agent.ts": "4a88fa2669ffb4d60f3138e7233d6d1eecd16759005a7790ea1009d14452b588",
+      "src/services/capture/application/work-note-agent/work-note-agent.types.ts": "06b013d9c6be9d1ffd3fc4e48ea7ebe7afb5eef01eea601d2d8daf3cec98c5e4",
+      "src/services/capture/application/work-note-agent/work-note-assessment-editor.ts": "87adae2205156b729f22e392af7ba20a2247e33984b6c5ee31f49c70ac583f57",
+      "src/services/capture/application/work-note-agent/work-note-assessment-split.ts": "6b8712c09f639bfa7558bfebb777217bfaee6b43c0b055019da3d0efdd003901",
+      "src/services/capture/application/work-note-agent/work-note-assessment.context.ts": "27627244490aba793f01f63798d46a696d22f8396a09fa52a55d13506db4fc24",
+      "src/services/capture/application/work-note-agent/work-note-assessment.grounding.ts": "89810ce0307b59db8ecb3d41a95a5eac3d888bf5ae90d8e27e5e963df5cbdaeb",
+      "src/services/capture/application/work-note-agent/work-note-assessment.pipeline.ts": "ffdbd25db7a08a23448d4aa005a84847e7fab2e421840167dab97dfada643150",
+      "src/services/capture/application/work-note-agent/work-note-assessment.polarity.ts": "b9cbaad153e179d35468b1f0212ea921e17bd0ed7773505b9fc2c425bc7249a0",
+      "src/services/capture/application/work-note-agent/work-note-assessment.prompt.ts": "e8698987b491c0fc63c2692469a51d537253a97198015b339d931c55a896d6f9",
+      "src/services/capture/application/work-note-agent/work-note-assessment.protocol.ts": "f9f321f1e79313b687e57b5c1923ba120c45f4e89f1d10785bb45472a4cd24f3",
+      "src/services/capture/application/work-note-agent/work-note-assessment.rubric.ts": "db6561d11e3e40b1566087c74bddf950e56cbec566e00b89a7ec07fbce2125df",
+      "src/services/capture/application/work-note-agent/work-note-assessment.service.ts": "5c522d04aac62f66727c9cf7bd6268eada76aa603bfe6df3d96048ee8d7001e1",
+      "src/services/capture/application/work-note-agent/work-note-assessment.state.ts": "19a5e50e4f0d4ceafcabc7adeab7380b3d7fe8a457dc6ff7d50604414ee17ce5",
+      "src/services/capture/application/work-note-agent/work-note-assessment.types.ts": "7a879c2a7965f88c153018da6558ae36bff469fd218bd847a7169f099264d07a",
+      "src/services/capture/application/work-note-agent/work-note-assessment.validation.ts": "8ca66bb1eea4d31920c49e3e677f11c81ef933c2293391abfa100b6fdb5ad45a",
+      "src/services/capture/application/work-note-agent/work-note-editor.service.ts": "77220a47565015ed1c4769487a9afbb63b0b892fd6f8c83bb4a43994a0d1d5b6",
+      "src/services/capture/application/work-note-agent/work-note-feedback-telemetry.ts": "1e97329e1f51ed088ec3849df5ad7bb41046bc85df6b88aa280f3ea6e9c92aca",
+      "src/services/capture/infrastructure/ai/work-note-agent.model.ts": "ee5de4f99677abfc9c0fdc0c029c62c8632ef03b532a41e5f62a74a14f0ef37c",
+      "src/services/capture/infrastructure/ai/work-note-xkiro.client.ts": "d23f682dab87eac350993e0a319271812b1da8d7638b26d8b24ef88e0515dc95",
+      "tsconfig.build.json": "d78119a040707ca210c41a7d6fa046ac92d3a8bd0b7c2ca33a9a88328bb2914e",
+      "tsconfig.json": "e842d82e49eb9d08d26f9afd42f47cf56f916d6348ccfec37c11ce4c6642cb1e"
+    },
+    "manifestHash": "a25df24c9bd6f977e627a40af3b954357bed146e461d801aaa326090e5a3d173"
+  },
+  "corpusVersion": "task-note-assessment-release60/2026-11-05.v7",
+  "scenarioCounts": {
+    "total": 60,
+    "validation": 20,
+    "holdout": 40,
+    "analysisTurns": 88,
+    "editorCeiling": 60,
+    "httpCeiling": 148
+  },
+  "phaseBudget": {
+    "version": 1,
+    "maxAttempts": 148,
+    "maxTokens": 3000000,
+    "entries": [
+      {
+        "reserved": 45928,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45928,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45928,
+        "reported": 9669,
+        "settled": true
+      },
+      {
+        "reserved": 10794,
+        "reported": 1620,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": 10519,
+        "settled": true
+      },
+      {
+        "reserved": 44582,
+        "reported": 9616,
+        "settled": true
+      },
+      {
+        "reserved": 49060,
+        "reported": 10531,
+        "settled": true
+      },
+      {
+        "reserved": 41932,
+        "reported": 8563,
+        "settled": true
+      },
+      {
+        "reserved": 10769,
+        "reported": 1685,
+        "settled": true
+      },
+      {
+        "reserved": 48892,
+        "reported": 10555,
+        "settled": true
+      },
+      {
+        "reserved": 45181,
+        "reported": 9893,
+        "settled": true
+      },
+      {
+        "reserved": 11429,
+        "reported": 2197,
+        "settled": true
+      },
+      {
+        "reserved": 48873,
+        "reported": 10552,
+        "settled": true
+      },
+      {
+        "reserved": 46213,
+        "reported": 9838,
+        "settled": true
+      },
+      {
+        "reserved": 11123,
+        "reported": 1749,
+        "settled": true
+      },
+      {
+        "reserved": 48902,
+        "reported": 10589,
+        "settled": true
+      },
+      {
+        "reserved": 29963,
+        "reported": 5670,
+        "settled": true
+      },
+      {
+        "reserved": 10807,
+        "reported": 1743,
+        "settled": true
+      },
+      {
+        "reserved": 48836,
+        "reported": 10595,
+        "settled": true
+      },
+      {
+        "reserved": 54798,
+        "reported": 11748,
+        "settled": true
+      },
+      {
+        "reserved": 48839,
+        "reported": 10725,
+        "settled": true
+      },
+      {
+        "reserved": 49288,
+        "reported": 10679,
+        "settled": true
+      },
+      {
+        "reserved": 50653,
+        "reported": 11119,
+        "settled": true
+      },
+      {
+        "reserved": 10990,
+        "reported": 1671,
+        "settled": true
+      },
+      {
+        "reserved": 49203,
+        "reported": 10750,
+        "settled": true
+      },
+      {
+        "reserved": 54106,
+        "reported": 11695,
+        "settled": true
+      },
+      {
+        "reserved": 10943,
+        "reported": 1629,
+        "settled": true
+      },
+      {
+        "reserved": 41556,
+        "reported": 8468,
+        "settled": true
+      },
+      {
+        "reserved": 42893,
+        "reported": 8687,
+        "settled": true
+      },
+      {
+        "reserved": 48934,
+        "reported": 10542,
+        "settled": true
+      },
+      {
+        "reserved": 53393,
+        "reported": 11588,
+        "settled": true
+      },
+      {
+        "reserved": 10897,
+        "reported": 1601,
+        "settled": true
+      },
+      {
+        "reserved": 49827,
+        "reported": 10979,
+        "settled": true
+      },
+      {
+        "reserved": 51600,
+        "reported": 11335,
+        "settled": true
+      },
+      {
+        "reserved": 45554,
+        "reported": 9636,
+        "settled": true
+      },
+      {
+        "reserved": 10755,
+        "reported": 1628,
+        "settled": true
+      },
+      {
+        "reserved": 49402,
+        "reported": 10909,
+        "settled": true
+      },
+      {
+        "reserved": 51443,
+        "reported": 11296,
+        "settled": true
+      },
+      {
+        "reserved": 45129,
+        "reported": 9460,
+        "settled": true
+      },
+      {
+        "reserved": 10743,
+        "reported": 1615,
+        "settled": true
+      },
+      {
+        "reserved": 45728,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45728,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45728,
+        "reported": 9623,
+        "settled": true
+      },
+      {
+        "reserved": 10843,
+        "reported": 1666,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": 10484,
+        "settled": true
+      },
+      {
+        "reserved": 45614,
+        "reported": 9905,
+        "settled": true
+      },
+      {
+        "reserved": 48707,
+        "reported": 10562,
+        "settled": true
+      },
+      {
+        "reserved": 44693,
+        "reported": 9370,
+        "settled": true
+      },
+      {
+        "reserved": 49219,
+        "reported": 10673,
+        "settled": true
+      },
+      {
+        "reserved": 41935,
+        "reported": 8640,
+        "settled": true
+      },
+      {
+        "reserved": 10969,
+        "reported": 1838,
+        "settled": true
+      },
+      {
+        "reserved": 48801,
+        "reported": 10563,
+        "settled": true
+      },
+      {
+        "reserved": 45285,
+        "reported": 9704,
+        "settled": true
+      },
+      {
+        "reserved": 11571,
+        "reported": 2247,
+        "settled": true
+      },
+      {
+        "reserved": 48794,
+        "reported": 10423,
+        "settled": true
+      },
+      {
+        "reserved": 46520,
+        "reported": 9772,
+        "settled": true
+      },
+      {
+        "reserved": 11269,
+        "reported": 1977,
+        "settled": true
+      },
+      {
+        "reserved": 48919,
+        "reported": 10519,
+        "settled": true
+      },
+      {
+        "reserved": 49251,
+        "reported": 10647,
+        "settled": true
+      },
+      {
+        "reserved": 10981,
+        "reported": 1765,
+        "settled": true
+      },
+      {
+        "reserved": 49102,
+        "reported": 10625,
+        "settled": true
+      },
+      {
+        "reserved": 49642,
+        "reported": 10983,
+        "settled": true
+      },
+      {
+        "reserved": 11157,
+        "reported": 1888,
+        "settled": true
+      },
+      {
+        "reserved": 48958,
+        "reported": 10655,
+        "settled": true
+      },
+      {
+        "reserved": 30000,
+        "reported": 5699,
+        "settled": true
+      },
+      {
+        "reserved": 10631,
+        "reported": 1585,
+        "settled": true
+      },
+      {
+        "reserved": 48944,
+        "reported": 10486,
+        "settled": true
+      },
+      {
+        "reserved": 55690,
+        "reported": 12137,
+        "settled": true
+      },
+      {
+        "reserved": 11317,
+        "reported": 1940,
+        "settled": true
+      },
+      {
+        "reserved": 48985,
+        "reported": 10498,
+        "settled": true
+      },
+      {
+        "reserved": 49408,
+        "reported": 10732,
+        "settled": true
+      },
+      {
+        "reserved": 10991,
+        "reported": 1721,
+        "settled": true
+      },
+      {
+        "reserved": 44725,
+        "reported": 9399,
+        "settled": true
+      },
+      {
+        "reserved": 44993,
+        "reported": 9572,
+        "settled": true
+      },
+      {
+        "reserved": 10631,
+        "reported": 1554,
+        "settled": true
+      },
+      {
+        "reserved": 44623,
+        "reported": 9519,
+        "settled": true
+      },
+      {
+        "reserved": 41581,
+        "reported": 8557,
+        "settled": true
+      },
+      {
+        "reserved": 45549,
+        "reported": 9372,
+        "settled": true
+      },
+      {
+        "reserved": 48990,
+        "reported": 10706,
+        "settled": true
+      },
+      {
+        "reserved": 50586,
+        "reported": 11118,
+        "settled": true
+      },
+      {
+        "reserved": 11002,
+        "reported": 1672,
+        "settled": true
+      },
+      {
+        "reserved": 49072,
+        "reported": 10587,
+        "settled": true
+      },
+      {
+        "reserved": 53362,
+        "reported": 11665,
+        "settled": true
+      },
+      {
+        "reserved": 10838,
+        "reported": 1618,
+        "settled": true
+      },
+      {
+        "reserved": 44626,
+        "reported": 9536,
+        "settled": true
+      },
+      {
+        "reserved": 46625,
+        "reported": 10147,
+        "settled": true
+      },
+      {
+        "reserved": 10949,
+        "reported": 1788,
+        "settled": true
+      },
+      {
+        "reserved": 44428,
+        "reported": 9291,
+        "settled": true
+      },
+      {
+        "reserved": 46018,
+        "reported": 9521,
+        "settled": true
+      },
+      {
+        "reserved": 41578,
+        "reported": 8570,
+        "settled": true
+      },
+      {
+        "reserved": 43444,
+        "reported": 9113,
+        "settled": true
+      },
+      {
+        "reserved": 10796,
+        "reported": 1697,
+        "settled": true
+      },
+      {
+        "reserved": 45380,
+        "reported": 9344,
+        "settled": true
+      },
+      {
+        "reserved": 46734,
+        "reported": 9586,
+        "settled": true
+      },
+      {
+        "reserved": 44269,
+        "reported": 9469,
+        "settled": true
+      },
+      {
+        "reserved": 47343,
+        "reported": 10675,
+        "settled": true
+      },
+      {
+        "reserved": 10990,
+        "reported": 1786,
+        "settled": true
+      },
+      {
+        "reserved": 48923,
+        "reported": 10603,
+        "settled": true
+      },
+      {
+        "reserved": 53223,
+        "reported": 11720,
+        "settled": true
+      },
+      {
+        "reserved": 10877,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": null,
+        "settled": true
+      }
+    ]
+  },
+  "editorSummary": {
+    "attempted": 28,
+    "accepted": 28
+  },
+  "validation20Gate": {
+    "evaluatorVersion": "assessment-quality-gate/2026-11-04.v4",
+    "thresholds": {
+      "acceptedSourceReferenceValidity": 1,
+      "maxCriticalErrors": 0,
+      "adequacyMacroF1": 0.9,
+      "questionPrecision": 0.9,
+      "questionRecall": 0.9,
+      "answerUsageAccuracy": 0.95,
+      "firstPassFormatValidity": 0.98,
+      "editorAcceptance": 0.95
+    },
+    "provisional": false,
+    "remainingCaseCount": 0,
+    "excludedResumableTurns": 0,
+    "editorAcceptance": {
+      "attempted": 10,
+      "accepted": 10,
+      "rate": 1,
+      "pass": true
+    },
+    "rawModelOutput": {
+      "layer": "raw_model_output",
+      "evaluatedTurns": 28,
+      "acceptedSourceReferences": {
+        "valid": 212,
+        "total": 212,
+        "rate": 1,
+        "pass": true
+      },
+      "criticalErrors": {
+        "fabrication": 0,
+        "polarityInversion": 0,
+        "falseSufficient": 0,
+        "total": 0,
+        "pass": true
+      },
+      "adequacy": {
+        "perClass": {
+          "CONTRADICTORY": {
+            "n": 9,
+            "tp": 9,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "INSUFFICIENT": {
+            "n": 9,
+            "tp": 9,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "SUFFICIENT": {
+            "n": 10,
+            "tp": 10,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          }
+        },
+        "evaluatedClasses": [
+          "CONTRADICTORY",
+          "INSUFFICIENT",
+          "SUFFICIENT"
+        ],
+        "lowSampleClasses": [],
+        "lowSampleWarning": false,
+        "macroF1": 1,
+        "pass": true
+      },
+      "questions": {
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "tn": 22,
+        "precision": 1,
+        "recall": 1,
+        "pass": true
+      },
+      "answerUse": {
+        "correct": 8,
+        "total": 8,
+        "rate": 1,
+        "pass": true
+      },
+      "firstPassFormatValidity": {
+        "validFirstPass": 28,
+        "attemptedTurns": 28,
+        "rate": 1,
+        "pass": true
+      },
+      "workflowCompletion": {
+        "successfulTurns": 28,
+        "failedTurns": 0,
+        "observedTurns": 28,
+        "unexpectedTurns": 0,
+        "expectedTurns": 28,
+        "rate": 1,
+        "pass": true
+      },
+      "automatedTechnicalPass": true
+    },
+    "postGuardRuntime": {
+      "layer": "post_guard_runtime",
+      "evaluatedTurns": 28,
+      "acceptedSourceReferences": {
+        "valid": 212,
+        "total": 212,
+        "rate": 1,
+        "pass": true
+      },
+      "criticalErrors": {
+        "fabrication": 0,
+        "polarityInversion": 0,
+        "falseSufficient": 0,
+        "total": 0,
+        "pass": true
+      },
+      "adequacy": {
+        "perClass": {
+          "CONTRADICTORY": {
+            "n": 9,
+            "tp": 9,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "INSUFFICIENT": {
+            "n": 9,
+            "tp": 9,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "SUFFICIENT": {
+            "n": 10,
+            "tp": 10,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          }
+        },
+        "evaluatedClasses": [
+          "CONTRADICTORY",
+          "INSUFFICIENT",
+          "SUFFICIENT"
+        ],
+        "lowSampleClasses": [],
+        "lowSampleWarning": false,
+        "macroF1": 1,
+        "pass": true
+      },
+      "questions": {
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "tn": 22,
+        "precision": 1,
+        "recall": 1,
+        "pass": true
+      },
+      "answerUse": {
+        "correct": 8,
+        "total": 8,
+        "rate": 1,
+        "pass": true
+      },
+      "firstPassFormatValidity": {
+        "validFirstPass": 28,
+        "attemptedTurns": 28,
+        "rate": 1,
+        "pass": true
+      },
+      "workflowCompletion": {
+        "successfulTurns": 28,
+        "failedTurns": 0,
+        "observedTurns": 28,
+        "unexpectedTurns": 0,
+        "expectedTurns": 28,
+        "rate": 1,
+        "pass": true
+      },
+      "automatedTechnicalPass": true
+    },
+    "automatedGatePassed": true,
+    "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+    "releaseStatus": "AWAITING_BLINDED_HUMAN_REVIEW"
+  },
+  "holdout40Gate": {
+    "evaluatorVersion": "assessment-quality-gate/2026-11-04.v4",
+    "thresholds": {
+      "acceptedSourceReferenceValidity": 1,
+      "maxCriticalErrors": 0,
+      "adequacyMacroF1": 0.9,
+      "questionPrecision": 0.9,
+      "questionRecall": 0.9,
+      "answerUsageAccuracy": 0.95,
+      "firstPassFormatValidity": 0.98,
+      "editorAcceptance": 0.95
+    },
+    "provisional": false,
+    "remainingCaseCount": 0,
+    "excludedResumableTurns": 0,
+    "editorAcceptance": {
+      "attempted": 18,
+      "accepted": 18,
+      "rate": 1,
+      "pass": true
+    },
+    "rawModelOutput": {
+      "layer": "raw_model_output",
+      "evaluatedTurns": 60,
+      "acceptedSourceReferences": {
+        "valid": 435,
+        "total": 435,
+        "rate": 1,
+        "pass": true
+      },
+      "criticalErrors": {
+        "fabrication": 0,
+        "polarityInversion": 0,
+        "falseSufficient": 2,
+        "total": 2,
+        "pass": false
+      },
+      "adequacy": {
+        "perClass": {
+          "CONTRADICTORY": {
+            "n": 12,
+            "tp": 12,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "INSUFFICIENT": {
+            "n": 24,
+            "tp": 22,
+            "fp": 4,
+            "fn": 2,
+            "precision": 0.8461538461538461,
+            "recall": 0.9166666666666666,
+            "f1": 0.8799999999999999
+          },
+          "SUFFICIENT": {
+            "n": 24,
+            "tp": 20,
+            "fp": 2,
+            "fn": 4,
+            "precision": 0.9090909090909091,
+            "recall": 0.8333333333333334,
+            "f1": 0.8695652173913043
+          }
+        },
+        "evaluatedClasses": [
+          "CONTRADICTORY",
+          "INSUFFICIENT",
+          "SUFFICIENT"
+        ],
+        "lowSampleClasses": [],
+        "lowSampleWarning": false,
+        "macroF1": 0.9165217391304347,
+        "pass": true
+      },
+      "questions": {
+        "tp": 16,
+        "fp": 3,
+        "fn": 0,
+        "tn": 41,
+        "precision": 0.8421052631578947,
+        "recall": 1,
+        "pass": false
+      },
+      "answerUse": {
+        "correct": 17,
+        "total": 20,
+        "rate": 0.85,
+        "pass": false
+      },
+      "firstPassFormatValidity": {
+        "validFirstPass": 60,
+        "attemptedTurns": 60,
+        "rate": 1,
+        "pass": true
+      },
+      "workflowCompletion": {
+        "successfulTurns": 60,
+        "failedTurns": 0,
+        "observedTurns": 60,
+        "unexpectedTurns": 0,
+        "expectedTurns": 60,
+        "rate": 1,
+        "pass": true
+      },
+      "automatedTechnicalPass": false
+    },
+    "postGuardRuntime": {
+      "layer": "post_guard_runtime",
+      "evaluatedTurns": 60,
+      "acceptedSourceReferences": {
+        "valid": 435,
+        "total": 435,
+        "rate": 1,
+        "pass": true
+      },
+      "criticalErrors": {
+        "fabrication": 0,
+        "polarityInversion": 0,
+        "falseSufficient": 0,
+        "total": 0,
+        "pass": true
+      },
+      "adequacy": {
+        "perClass": {
+          "CONTRADICTORY": {
+            "n": 12,
+            "tp": 12,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "INSUFFICIENT": {
+            "n": 24,
+            "tp": 24,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "SUFFICIENT": {
+            "n": 24,
+            "tp": 24,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          }
+        },
+        "evaluatedClasses": [
+          "CONTRADICTORY",
+          "INSUFFICIENT",
+          "SUFFICIENT"
+        ],
+        "lowSampleClasses": [],
+        "lowSampleWarning": false,
+        "macroF1": 1,
+        "pass": true
+      },
+      "questions": {
+        "tp": 16,
+        "fp": 0,
+        "fn": 0,
+        "tn": 44,
+        "precision": 1,
+        "recall": 1,
+        "pass": true
+      },
+      "answerUse": {
+        "correct": 20,
+        "total": 20,
+        "rate": 1,
+        "pass": true
+      },
+      "firstPassFormatValidity": {
+        "validFirstPass": 60,
+        "attemptedTurns": 60,
+        "rate": 1,
+        "pass": true
+      },
+      "workflowCompletion": {
+        "successfulTurns": 60,
+        "failedTurns": 0,
+        "observedTurns": 60,
+        "unexpectedTurns": 0,
+        "expectedTurns": 60,
+        "rate": 1,
+        "pass": true
+      },
+      "automatedTechnicalPass": true
+    },
+    "automatedGatePassed": true,
+    "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+    "releaseStatus": "AWAITING_BLINDED_HUMAN_REVIEW"
+  },
+  "release60Gate": {
+    "evaluatorVersion": "assessment-quality-gate/2026-11-04.v4",
+    "thresholds": {
+      "acceptedSourceReferenceValidity": 1,
+      "maxCriticalErrors": 0,
+      "adequacyMacroF1": 0.9,
+      "questionPrecision": 0.9,
+      "questionRecall": 0.9,
+      "answerUsageAccuracy": 0.95,
+      "firstPassFormatValidity": 0.98,
+      "editorAcceptance": 0.95
+    },
+    "provisional": false,
+    "remainingCaseCount": 0,
+    "excludedResumableTurns": 0,
+    "editorAcceptance": {
+      "attempted": 28,
+      "accepted": 28,
+      "rate": 1,
+      "pass": true
+    },
+    "rawModelOutput": {
+      "layer": "raw_model_output",
+      "evaluatedTurns": 88,
+      "acceptedSourceReferences": {
+        "valid": 647,
+        "total": 647,
+        "rate": 1,
+        "pass": true
+      },
+      "criticalErrors": {
+        "fabrication": 0,
+        "polarityInversion": 0,
+        "falseSufficient": 2,
+        "total": 2,
+        "pass": false
+      },
+      "adequacy": {
+        "perClass": {
+          "CONTRADICTORY": {
+            "n": 21,
+            "tp": 21,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "INSUFFICIENT": {
+            "n": 33,
+            "tp": 31,
+            "fp": 4,
+            "fn": 2,
+            "precision": 0.8857142857142857,
+            "recall": 0.9393939393939394,
+            "f1": 0.9117647058823529
+          },
+          "SUFFICIENT": {
+            "n": 34,
+            "tp": 30,
+            "fp": 2,
+            "fn": 4,
+            "precision": 0.9375,
+            "recall": 0.8823529411764706,
+            "f1": 0.9090909090909091
+          }
+        },
+        "evaluatedClasses": [
+          "CONTRADICTORY",
+          "INSUFFICIENT",
+          "SUFFICIENT"
+        ],
+        "lowSampleClasses": [],
+        "lowSampleWarning": false,
+        "macroF1": 0.9402852049910874,
+        "pass": true
+      },
+      "questions": {
+        "tp": 22,
+        "fp": 3,
+        "fn": 0,
+        "tn": 63,
+        "precision": 0.88,
+        "recall": 1,
+        "pass": false
+      },
+      "answerUse": {
+        "correct": 25,
+        "total": 28,
+        "rate": 0.8928571428571429,
+        "pass": false
+      },
+      "firstPassFormatValidity": {
+        "validFirstPass": 88,
+        "attemptedTurns": 88,
+        "rate": 1,
+        "pass": true
+      },
+      "workflowCompletion": {
+        "successfulTurns": 88,
+        "failedTurns": 0,
+        "observedTurns": 88,
+        "unexpectedTurns": 0,
+        "expectedTurns": 88,
+        "rate": 1,
+        "pass": true
+      },
+      "automatedTechnicalPass": false
+    },
+    "postGuardRuntime": {
+      "layer": "post_guard_runtime",
+      "evaluatedTurns": 88,
+      "acceptedSourceReferences": {
+        "valid": 647,
+        "total": 647,
+        "rate": 1,
+        "pass": true
+      },
+      "criticalErrors": {
+        "fabrication": 0,
+        "polarityInversion": 0,
+        "falseSufficient": 0,
+        "total": 0,
+        "pass": true
+      },
+      "adequacy": {
+        "perClass": {
+          "CONTRADICTORY": {
+            "n": 21,
+            "tp": 21,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "INSUFFICIENT": {
+            "n": 33,
+            "tp": 33,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          },
+          "SUFFICIENT": {
+            "n": 34,
+            "tp": 34,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1,
+            "recall": 1,
+            "f1": 1
+          }
+        },
+        "evaluatedClasses": [
+          "CONTRADICTORY",
+          "INSUFFICIENT",
+          "SUFFICIENT"
+        ],
+        "lowSampleClasses": [],
+        "lowSampleWarning": false,
+        "macroF1": 1,
+        "pass": true
+      },
+      "questions": {
+        "tp": 22,
+        "fp": 0,
+        "fn": 0,
+        "tn": 66,
+        "precision": 1,
+        "recall": 1,
+        "pass": true
+      },
+      "answerUse": {
+        "correct": 28,
+        "total": 28,
+        "rate": 1,
+        "pass": true
+      },
+      "firstPassFormatValidity": {
+        "validFirstPass": 88,
+        "attemptedTurns": 88,
+        "rate": 1,
+        "pass": true
+      },
+      "workflowCompletion": {
+        "successfulTurns": 88,
+        "failedTurns": 0,
+        "observedTurns": 88,
+        "unexpectedTurns": 0,
+        "expectedTurns": 88,
+        "rate": 1,
+        "pass": true
+      },
+      "automatedTechnicalPass": true
+    },
+    "automatedGatePassed": true,
+    "reviewerSemanticAssessment": "NOT_ESTABLISHED",
+    "releaseStatus": "AWAITING_BLINDED_HUMAN_REVIEW"
+  },
+  "blindedReviewArtifacts": {
+    "worksheetFile": ".worknote-agent-evals/plan-v4-release60-v37-20261105.blinded-worksheet.json",
+    "sealedKeyFile": ".worknote-agent-evals/plan-v4-release60-v37-20261105.sealed-key.json",
+    "transcriptCount": 60,
+    "reviewerSemanticAssessment": "NOT_ESTABLISHED"
+  }
+}

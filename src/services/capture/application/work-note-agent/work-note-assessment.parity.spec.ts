@@ -83,6 +83,13 @@ describe('Plan v3 §2 runtime and evaluator pipeline parity', () => {
     connection = await mongoose
       .createConnection(repl.getUri(), { dbName: 'continuum_capture_parity' })
       .asPromise();
+    for (const c of ['work_note_agent_drafts', 'work_note_agent_operations'])
+      await connection
+        .db!.collection(c)
+        .createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+    await connection
+      .db!.collection('work_note_versions')
+      .createIndex({ workNoteId: 1, versionNumber: 1 }, { unique: true });
   });
 
   afterAll(async () => {
@@ -91,14 +98,12 @@ describe('Plan v3 §2 runtime and evaluator pipeline parity', () => {
   });
 
   beforeEach(async () => {
-    await connection.dropDatabase();
-    for (const c of ['work_note_agent_drafts', 'work_note_agent_operations'])
-      await connection
-        .db!.collection(c)
-        .createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-    await connection
-      .db!.collection('work_note_versions')
-      .createIndex({ workNoteId: 1, versionNumber: 1 }, { unique: true });
+    for (const c of [
+      'work_note_agent_drafts',
+      'work_note_agent_operations',
+      'work_note_versions',
+    ])
+      await connection.db!.collection(c).deleteMany({});
   });
 
   it('produces identical state, gaps, questions, carried-reset answers and Editor proposal decisions across runtime and evaluator', async () => {

@@ -170,6 +170,7 @@ export type AssessmentView = {
     promptTokens?: number | null;
     completionTokens?: number | null;
     httpAttempts?: number;
+    validatedConfig?: boolean;
   }[];
   promptVersion: string;
   model: string;

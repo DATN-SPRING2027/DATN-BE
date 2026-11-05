@@ -1188,7 +1188,7 @@ integration(
           const defaultDenied = await fetch(bffTaskUrl, {
             headers: forgedHeaders,
           });
-          expect(defaultDenied.status).toBe(403);
+          expect(defaultDenied.status).toBe(404);
           expect(currentTask.events).toEqual(['resource', 'project-scope']);
           expect(denySpy).toHaveBeenCalledTimes(1);
           expect(currentTask.scopeProvider.resolve).toHaveBeenCalledWith({
@@ -1196,9 +1196,9 @@ integration(
             projectId,
           });
           expect(currentTask.sink.handle).not.toHaveBeenCalled();
-          expect(JSON.stringify(await defaultDenied.json())).not.toContain(
-            'forged-credential',
-          );
+          const deniedBody: unknown = await defaultDenied.json();
+          expect(deniedBody).toMatchObject({ code: 'TASK_NOT_FOUND' });
+          expect(JSON.stringify(deniedBody)).not.toContain('forged-credential');
 
           currentTask = await startTaskFixture({
             decide: jest.fn((facts: TaskOperationPermissionFacts) => {
@@ -1211,7 +1211,9 @@ integration(
             `${bffTaskUrl}?fixture=invalid-signature`,
             { headers: { cookie: testGatewaySessionCookie } },
           );
-          expect(invalidVerifier.status).toBe(403);
+          expect(invalidVerifier.status).toBe(401);
+          const invalidBody: unknown = await invalidVerifier.json();
+          expect(invalidBody).toMatchObject({ code: 'TASK_UNAUTHENTICATED' });
           expect(currentTask.events).toEqual([]);
           expect(
             currentTask.resourceResolver.resolveProjectId,
@@ -1251,7 +1253,7 @@ integration(
             headers: { cookie: testGatewaySessionCookie },
           });
           expect(replayFirst.status).toBe(200);
-          expect(replaySecond.status).toBe(403);
+          expect(replaySecond.status).toBe(401);
           expect(currentTask.sink.handle).toHaveBeenCalledTimes(1);
           expect(currentTask.events).toEqual([
             'resource',
@@ -1269,7 +1271,7 @@ integration(
             `${bffTaskUrl}?fixture=project-mismatch`,
             { headers: { cookie: testGatewaySessionCookie } },
           );
-          expect(projectMismatch.status).toBe(403);
+          expect(projectMismatch.status).toBe(401);
           expect(currentTask.events).toEqual([]);
           expect(currentTask.sink.handle).not.toHaveBeenCalled();
 
@@ -1285,7 +1287,7 @@ integration(
           const resourceMismatch = await fetch(bffTaskUrl, {
             headers: { cookie: testGatewaySessionCookie },
           });
-          expect(resourceMismatch.status).toBe(403);
+          expect(resourceMismatch.status).toBe(404);
           expect(currentTask.events).toEqual(['resource']);
           expect(currentTask.scopeProvider.resolve).not.toHaveBeenCalled();
           expect(currentTask.sink.handle).not.toHaveBeenCalled();
