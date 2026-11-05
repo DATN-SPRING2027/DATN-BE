@@ -764,5 +764,29 @@ describe('Handover Domain Invariants (A04, A05, A06, A07, A08, A11, A13, A15)', 
         isFollowUpOwner: false,
       }),
     ).toEqual(['READ']);
+
+    // Demoted assignedLeaderId (no longer active project leader) does not retain MANAGE/READ unless canAdministerCoordinator is true
+    expect(
+      resolveHandoverCapabilities({
+        actorUserId: leaderD,
+        isProjectMember: true,
+        isProjectLeader: false,
+        canAdministerCoordinator: false,
+        handover,
+        packageAcceptedByCurrentSuccessor: true,
+        isFollowUpOwner: false,
+      }),
+    ).toEqual([]);
+    expect(
+      resolveHandoverCapabilities({
+        actorUserId: leaderD,
+        isProjectMember: true,
+        isProjectLeader: false,
+        canAdministerCoordinator: true,
+        handover,
+        packageAcceptedByCurrentSuccessor: true,
+        isFollowUpOwner: false,
+      }),
+    ).toEqual(['READ']);
   });
 });
