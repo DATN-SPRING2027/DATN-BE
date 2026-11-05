@@ -6,6 +6,8 @@ import type {
 } from './assessment-evaluation';
 import { ASSESSMENT_PURPOSES } from '../../src/services/capture/application/work-note-agent/work-note-assessment.types';
 
+export const EVALUATOR_VERSION = 'assessment-quality-gate/2026-11-04.v4';
+
 export const QUALITY_GATE_THRESHOLDS = Object.freeze({
   acceptedSourceReferenceValidity: 1.0,
   maxCriticalErrors: 0,
@@ -14,9 +16,25 @@ export const QUALITY_GATE_THRESHOLDS = Object.freeze({
   questionRecall: 0.9,
   answerUsageAccuracy: 0.95,
   firstPassFormatValidity: 0.98,
+  editorAcceptance: 0.95,
 });
 
+export const LOW_SAMPLE_CLASS_THRESHOLD = 8;
+
+export const RESUMABLE_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set([
+  'XKIRO_HTTP_ERROR_401',
+  'XKIRO_HTTP_ERROR_408',
+  'XKIRO_HTTP_ERROR_429',
+  'XKIRO_HTTP_ERROR_500',
+  'XKIRO_HTTP_ERROR_502',
+  'XKIRO_HTTP_ERROR_503',
+  'XKIRO_HTTP_ERROR_504',
+  'XKIRO_NETWORK_ERROR',
+  'XKIRO_TIMEOUT',
+]);
+
 export type ConfusionCounts = {
+  n: number;
   tp: number;
   fp: number;
   fn: number;
@@ -44,6 +62,8 @@ export type LayerGateMetrics = {
   adequacy: {
     perClass: Record<string, ConfusionCounts>;
     evaluatedClasses: string[];
+    lowSampleClasses: string[];
+    lowSampleWarning: boolean;
     macroF1: number;
     pass: boolean;
   };
@@ -68,16 +88,38 @@ export type LayerGateMetrics = {
     rate: number;
     pass: boolean;
   };
+  workflowCompletion: {
+    successfulTurns: number;
+    failedTurns: number;
+    observedTurns: number;
+    unexpectedTurns: number;
+    expectedTurns: number;
+    rate: number;
+    pass: boolean;
+  };
   automatedTechnicalPass: boolean;
 };
 
 export type QualityGateReport = {
+  evaluatorVersion: string;
   thresholds: typeof QUALITY_GATE_THRESHOLDS;
+  provisional: boolean;
+  remainingCaseCount: number;
+  excludedResumableTurns: number;
+  editorAcceptance: {
+    attempted: number;
+    accepted: number;
+    rate: number;
+    pass: boolean;
+  };
   rawModelOutput: LayerGateMetrics;
   postGuardRuntime: LayerGateMetrics;
   automatedGatePassed: boolean;
   reviewerSemanticAssessment: 'NOT_ESTABLISHED';
-  releaseStatus: 'AWAITING_BLINDED_HUMAN_REVIEW' | 'FAILED_AUTOMATED_GATE';
+  releaseStatus:
+    | 'PROVISIONAL_INCOMPLETE_STAGE'
+    | 'AWAITING_BLINDED_HUMAN_REVIEW'
+    | 'FAILED_AUTOMATED_GATE';
 };
 
 export function validateReleaseAssessmentCorpus(
@@ -85,6 +127,9 @@ export function validateReleaseAssessmentCorpus(
   regressionIdsAndFamilies?: {
     ids: ReadonlySet<string>;
     families: ReadonlySet<string>;
+  },
+  options?: {
+    minContradictoryTurns?: number;
   },
 ): AssessmentCorpus {
   if (
@@ -100,6 +145,7 @@ export function validateReleaseAssessmentCorpus(
   const familyCounts = new Map<string, number>();
   const purposesSeen = new Set<string>();
   const actionsSeen = new Set<string>();
+  let contradictoryTurns = 0;
 
   for (const c of corpus.scenarios) {
     if (
@@ -149,6 +195,7 @@ export function validateReleaseAssessmentCorpus(
         adeq.length === 1 && adeq[0] === 'ENOUGH_FOR_PURPOSE';
       const isSingleContradictory =
         adeq.length === 1 && adeq[0] === 'CONTRADICTORY';
+      if (isSingleContradictory) contradictoryTurns++;
       const isDisjointInsufficient =
         adeq.length >= 1 &&
         adeq.length <= 2 &&
@@ -204,6 +251,145 @@ export function validateReleaseAssessmentCorpus(
     }
   }
 
+  if (
+    typeof options?.minContradictoryTurns === 'number' &&
+    contradictoryTurns < options.minContradictoryTurns
+  ) {
+    throw Error(
+      `RELEASE_CORPUS_INSUFFICIENT_CONTRADICTORY:${contradictoryTurns}<${options.minContradictoryTurns}`,
+    );
+  }
+
+  return corpus;
+}
+
+export function validateHistoryAssessmentCorpus(
+  corpus: AssessmentCorpus,
+): AssessmentCorpus {
+  if (
+    corpus.classification !== 'synthetic-only' ||
+    corpus.scenarios.length === 0
+  ) {
+    throw Error('HISTORY_CORPUS_CLASSIFICATION_OR_SIZE_INVALID');
+  }
+  const ids = new Set<string>();
+  const familySplits = new Map<string, string>();
+  for (const c of corpus.scenarios) {
+    if (
+      !c.synthetic ||
+      ids.has(c.id) ||
+      !['development', 'validation', 'holdout'].includes(c.split) ||
+      c.turns.length < 1 ||
+      c.turns.length > 3 ||
+      !c.rubric.accepted.length ||
+      !c.rubric.prohibited.length ||
+      c.turns[0]?.action !== 'assess' ||
+      !ASSESSMENT_PURPOSES.includes(c.purpose)
+    ) {
+      throw Error(`HISTORY_SCENARIO_INVALID:${c.id}`);
+    }
+    if (familySplits.has(c.family) && familySplits.get(c.family) !== c.split) {
+      throw Error(`HISTORY_FAMILY_SPLIT_LEAKAGE:${c.family}`);
+    }
+    familySplits.set(c.family, c.split);
+    ids.add(c.id);
+    const hasHistorySource = c.sources.some(
+      (s) => s.kind === 'HISTORY' && Boolean(s.history),
+    );
+    if (
+      !hasHistorySource ||
+      c.sources.some(
+        (s) =>
+          !['TASK', 'NOTE', 'ANSWER', 'HISTORY'].includes(s.kind) ||
+          typeof s.text !== 'string' ||
+          (s.kind === 'HISTORY' && !s.history),
+      ) ||
+      new Set(c.sources.map((s) => s.id)).size !== c.sources.length
+    ) {
+      throw Error(`HISTORY_SOURCE_INVALID:${c.id}`);
+    }
+    for (const t of c.turns) {
+      const adeq = t.expected.noteAdequacy;
+      const isSingleSufficient =
+        adeq.length === 1 && adeq[0] === 'ENOUGH_FOR_PURPOSE';
+      const isSingleContradictory =
+        adeq.length === 1 && adeq[0] === 'CONTRADICTORY';
+      const isDisjointInsufficient =
+        adeq.length >= 1 &&
+        adeq.length <= 2 &&
+        new Set(adeq).size === adeq.length &&
+        adeq.every(
+          (label) => label === 'NEEDS_AUTHOR_INPUT' || label === 'UNDETERMINED',
+        );
+      if (
+        !t.expected.taskContextStatus.length ||
+        !(
+          isSingleSufficient ||
+          isSingleContradictory ||
+          isDisjointInsufficient
+        ) ||
+        !['required', 'none'].includes(t.expected.question)
+      ) {
+        throw Error(`HISTORY_DISJOINT_LABEL_REQUIRED:${c.id}`);
+      }
+      if (isSingleContradictory && t.expected.question !== 'none') {
+        throw Error(`HISTORY_CONTRADICTORY_MUST_STOP_QUESTIONS:${c.id}`);
+      }
+      for (const pattern of [
+        ...t.expected.questionTopicPatterns,
+        ...t.expected.forbiddenAssertions,
+      ]) {
+        new RegExp(pattern, 'iu');
+      }
+    }
+  }
+  return corpus;
+}
+
+export function validateDevelopmentAssessmentCorpus(
+  corpus: AssessmentCorpus,
+): AssessmentCorpus {
+  if (
+    corpus.classification !== 'synthetic-only' ||
+    corpus.scenarios.length === 0
+  ) {
+    throw Error('DEV_CORPUS_CLASSIFICATION_OR_SIZE_INVALID');
+  }
+  const ids = new Set<string>();
+  for (const c of corpus.scenarios) {
+    if (
+      !c.synthetic ||
+      ids.has(c.id) ||
+      c.split !== 'development' ||
+      c.turns.length < 1 ||
+      c.turns.length > 3 ||
+      !c.rubric.accepted.length ||
+      !c.rubric.prohibited.length ||
+      c.turns[0]?.action !== 'assess' ||
+      !ASSESSMENT_PURPOSES.includes(c.purpose)
+    ) {
+      throw Error(`DEV_SCENARIO_INVALID:${c.id}`);
+    }
+    ids.add(c.id);
+    if (
+      c.sources.some(
+        (s) =>
+          !['TASK', 'NOTE', 'ANSWER', 'HISTORY'].includes(s.kind) ||
+          typeof s.text !== 'string',
+      ) ||
+      new Set(c.sources.map((s) => s.id)).size !== c.sources.length
+    ) {
+      throw Error(`DEV_SOURCE_INVALID:${c.id}`);
+    }
+    for (const t of c.turns) {
+      for (const pattern of [
+        ...t.expected.questionTopicPatterns,
+        ...t.expected.forbiddenAssertions,
+      ]) {
+        new RegExp(pattern, 'iu');
+      }
+    }
+  }
   return corpus;
 }
 
@@ -232,6 +418,58 @@ function computeLayerMetrics(
   const analysisRows = rows.filter((r) => r.role === 'analysis' && !r.skipped);
   const nonBoundaryRows = analysisRows.filter((r) => !r.boundaryDenied);
 
+  // Provider/transport and scripted dependency failures are workflow errors,
+  // not evidence of a malformed model response. Parsed outputs retain the
+  // legacy raw_model_output label; evaluatorVersion makes this explicit.
+  const modelRows = nonBoundaryRows.filter(
+    (r) =>
+      Boolean(r.output || r.rawSyntheticResponse) ||
+      (Boolean(r.errorCode) &&
+        !/^(?:XKIRO_|SCRIPTED_|RESPONSE_CACHE_|HTTP_JOURNAL_|.*BUDGET)/u.test(
+          r.errorCode!,
+        )),
+  );
+  const observed = new Set(nonBoundaryRows.map((r) => `${r.caseId}:${r.turn}`));
+  const expectedKeys = new Set(
+    [...scenariosById.values()].flatMap((scenario) =>
+      scenario.turns.flatMap((turn, index) =>
+        turn.expected.boundaryError ? [] : [`${scenario.id}:${index + 1}`],
+      ),
+    ),
+  );
+  const unexpectedTurns = nonBoundaryRows.filter(
+    (r) => !expectedKeys.has(`${r.caseId}:${r.turn}`),
+  ).length;
+  const successful = new Set(
+    nonBoundaryRows
+      .filter(
+        (r) =>
+          !r.errorCode && r.output && expectedKeys.has(`${r.caseId}:${r.turn}`),
+      )
+      .map((r) => `${r.caseId}:${r.turn}`),
+  );
+  const expectedTurns = [...scenariosById.values()].reduce(
+    (n, scenario) =>
+      n + scenario.turns.filter((t) => !t.expected.boundaryError).length,
+    0,
+  );
+  const workflowCompletion = {
+    successfulTurns: successful.size,
+    failedTurns: nonBoundaryRows.filter((r) =>
+      Boolean(
+        r.errorCode || !r.output || !expectedKeys.has(`${r.caseId}:${r.turn}`),
+      ),
+    ).length,
+    observedTurns: observed.size,
+    unexpectedTurns,
+    expectedTurns,
+    rate: safeRate(successful.size, expectedTurns, 0),
+    pass:
+      expectedTurns > 0 &&
+      unexpectedTurns === 0 &&
+      successful.size === expectedTurns &&
+      nonBoundaryRows.length === expectedTurns,
+  };
   let validFirstPass = 0;
   let validRefs = 0;
   let totalRefs = 0;
@@ -425,14 +663,19 @@ function computeLayerMetrics(
       else if (pair.expected !== cls && pair.predicted === cls) fp++;
       else if (pair.expected === cls && pair.predicted !== cls) fn++;
     }
+    const n = tp + fn;
     const precision = safeRate(tp, tp + fp, 0);
     const recall = safeRate(tp, tp + fn, 0);
     const f1 =
       precision + recall === 0
         ? 0
         : (2 * precision * recall) / (precision + recall);
-    perClass[cls] = { tp, fp, fn, precision, recall, f1 };
+    perClass[cls] = { n, tp, fp, fn, precision, recall, f1 };
   }
+  const lowSampleClasses = classes.filter(
+    (cls) => perClass[cls].n < LOW_SAMPLE_CLASS_THRESHOLD,
+  );
+  const lowSampleWarning = lowSampleClasses.length > 0;
   const macroF1 = classes.length
     ? classes.reduce((sum, cls) => sum + perClass[cls].f1, 0) / classes.length
     : 0;
@@ -442,7 +685,7 @@ function computeLayerMetrics(
   const qPrecision = safeRate(qTp, qTp + qFp, 1);
   const qRecall = safeRate(qTp, qTp + qFn, 1);
   const answerRate = safeRate(answerUseCorrect, answerUseTotal, 1);
-  const formatRate = safeRate(validFirstPass, nonBoundaryRows.length, 1);
+  const formatRate = safeRate(validFirstPass, modelRows.length, 0);
 
   const acceptedSourceReferences = {
     valid: validRefs,
@@ -460,6 +703,8 @@ function computeLayerMetrics(
   const adequacy = {
     perClass,
     evaluatedClasses: classes,
+    lowSampleClasses,
+    lowSampleWarning,
     macroF1,
     pass: macroF1 >= QUALITY_GATE_THRESHOLDS.adequacyMacroF1,
   };
@@ -482,7 +727,7 @@ function computeLayerMetrics(
   };
   const firstPassFormatValidity = {
     validFirstPass,
-    attemptedTurns: nonBoundaryRows.length,
+    attemptedTurns: modelRows.length,
     rate: formatRate,
     pass: formatRate >= QUALITY_GATE_THRESHOLDS.firstPassFormatValidity,
   };
@@ -496,6 +741,7 @@ function computeLayerMetrics(
     questions,
     answerUse,
     firstPassFormatValidity,
+    workflowCompletion,
     automatedTechnicalPass:
       acceptedSourceReferences.pass &&
       criticalErrors.pass &&
@@ -509,28 +755,87 @@ function computeLayerMetrics(
 export function computeAssessmentQualityGate(
   rows: readonly AssessmentEvaluationRow[],
   corpus: AssessmentCorpus,
+  options?: {
+    remainingCaseIds?: readonly string[];
+    resumableErrorCodes?: ReadonlySet<string>;
+    strictRelease?: boolean;
+  },
 ): QualityGateReport {
   const scenariosById = new Map(corpus.scenarios.map((s) => [s.id, s]));
+  const remainingSet = new Set(options?.remainingCaseIds ?? []);
+  const provisional = remainingSet.size > 0;
+  const resumableCodes =
+    options?.resumableErrorCodes ?? RESUMABLE_TRANSPORT_ERROR_CODES;
+
+  let excludedResumableTurns = 0;
+  const effectiveRows = provisional
+    ? rows.filter((row) => {
+        if (row.role !== 'analysis') return true;
+        if (
+          row.skipped === true ||
+          remainingSet.has(row.caseId) ||
+          (typeof row.errorCode === 'string' &&
+            resumableCodes.has(row.errorCode))
+        ) {
+          if (!row.skipped) excludedResumableTurns++;
+          return false;
+        }
+        return true;
+      })
+    : rows;
+
   const rawModelOutput = computeLayerMetrics(
     'raw_model_output',
-    rows,
+    effectiveRows,
     scenariosById,
   );
   const postGuardRuntime = computeLayerMetrics(
     'post_guard_runtime',
-    rows,
+    effectiveRows,
     scenariosById,
   );
-  const automatedGatePassed = postGuardRuntime.automatedTechnicalPass;
+  const editors = effectiveRows.filter(
+    (r) => r.role === 'editor' && !r.skipped,
+  );
+  const acceptedEditors = editors.filter(
+    (r) => !r.errorCode && r.editorValidation?.runtimeProposalAccepted === true,
+  ).length;
+  const editorRate = safeRate(acceptedEditors, editors.length, 0);
+  const editorAcceptance = {
+    attempted: editors.length,
+    accepted: acceptedEditors,
+    rate: editorRate,
+    pass:
+      editors.length > 0 &&
+      editorRate >= QUALITY_GATE_THRESHOLDS.editorAcceptance,
+  };
+  const automatedGatePassed =
+    !provisional &&
+    postGuardRuntime.automatedTechnicalPass &&
+    (!options?.strictRelease ||
+      (editorAcceptance.pass &&
+        postGuardRuntime.workflowCompletion.pass &&
+        ['CONTRADICTORY', 'INSUFFICIENT', 'SUFFICIENT'].every(
+          (c) =>
+            (postGuardRuntime.adequacy.perClass[c]?.n ?? 0) >=
+            LOW_SAMPLE_CLASS_THRESHOLD,
+        )));
   return {
+    evaluatorVersion: EVALUATOR_VERSION,
     thresholds: QUALITY_GATE_THRESHOLDS,
+    provisional,
+    remainingCaseCount: remainingSet.size,
+    excludedResumableTurns,
+    editorAcceptance,
     rawModelOutput,
     postGuardRuntime,
     automatedGatePassed,
     reviewerSemanticAssessment: 'NOT_ESTABLISHED',
-    releaseStatus: automatedGatePassed
-      ? 'AWAITING_BLINDED_HUMAN_REVIEW'
-      : 'FAILED_AUTOMATED_GATE',
+    releaseStatus: provisional
+      ? 'PROVISIONAL_INCOMPLETE_STAGE'
+      : automatedGatePassed
+        ? 'AWAITING_BLINDED_HUMAN_REVIEW'
+        : 'FAILED_AUTOMATED_GATE',
   };
 }
 

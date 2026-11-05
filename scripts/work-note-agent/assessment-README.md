@@ -139,28 +139,30 @@ unresolved semantic worksheets and adversarial source/claim inversions. Live
 mode in these tests always uses injected synthetic mocked HTTP and credentials.
 
 
-## Follow-up prompt-quality phase, explicitly requested by the user
+## Current active configuration (authoritative constants in code)
 
-`assessment-prompt-quality-2026-10-29.json` records a separate follow-up phase
-requested after the initial29-call phase was closed. It does not overwrite the
-initial ledger or reports. The follow-up consumed exactly29 additional HTTP
-attempts /111387 reported tokens. No provider budget remains in either phase.
+Do not rely on hardcoded numbers in prose; always read the exported constants:
+- Combined analysis prompt version: `ASSESSMENT_PROMPT_VERSION` (`work-note-assessment.protocol.ts`), selecting at most 4 purpose-relevant examples per request via `selectAssessmentExamples` from `ASSESSMENT_EXAMPLES`.
+- Split analysis prompt versions: `SPLIT_ASSESSMENT_PROMPT_VERSION`, `TASK_INTERPRETER_PROMPT_VERSION`, `TASK_ASSESSOR_PROMPT_VERSION` (`work-note-assessment-split.ts`).
+- Assessment Editor prompt version: `ASSESSMENT_EDITOR_INSTRUCTION_VERSION` (`work-note-assessment-editor.ts`).
+- Provider policies (`work-note-assessment-editor.ts`):
+  - Analysis (`ASSESSMENT_ANALYSIS_PROVIDER_POLICY`): `maxTokens = 8192`, `timeoutMs = 85000` (85s), `temperature = 0.1`, `jsonMode = true`, `retries = 0`.
+  - Assessment Editor (`ASSESSMENT_EDITOR_PROVIDER_POLICY`): `maxTokens = 4096`, `timeoutMs = 60000` (60s), `temperature = 0.1`, `jsonMode = true`, `retries = 0`.
+- Supported corpora (`--corpus`): `v4`, `regression80`, `release60` (frozen v5 baseline), `release60-v6` (historical v6 release corpus), `history-v1`, and development-only `dev-v26`, `dev-v27`, `dev-v28`, `dev-v30`. The versioned development errata are explicit in `dev-v30`; original corpora stay unchanged. These development corpora cannot substitute for an independent release measurement.
+- `release60-v7` loader/CLI support is prepared, but its required `cases-assessment-v7-release.json` must be authored, reviewed and frozen before use. A missing file is an error; the runner does not fall back to v6. Previously inspected v6 holdout cases are regression evidence rather than an unseen holdout.
+- Offline zero-quota parser/guard replay on saved release60 artifacts:
+  ```powershell
+  npx ts-node --transpile-only scripts/work-note-agent/assessment-release-replay.ts
+  ```
 
-Current analysis is v9 and assessed Editor is v2. Analysis uses five validated
-user/assistant examples and a server-owned purpose policy in each request.
-Targeted corrections include the prior claim/gap text, not just an opaque ID.
-Assessed Editor has a dedicated proposal-only prompt and one example; the
-ambiguous `source.wholeNote:null` field is omitted because `source.text` contains
-the full body. Ordinary grammar/selection/document/report Editor behavior remains.
+## Historical archive: 2026-10-29 follow-up prompt-quality phase
 
-Production and evaluation share the Editor input builder, prepared masked request,
-strict completion/recovery parser, proposal requirement and uncertainty guards.
-Analysis and assessed Editor use shared provider policies:8192/4096 output tokens,
-30s timeout, temperature0.1, JSON object mode and zero retries. The formatting
-recovery flag is read server-side and recorded. Only a missing question options
-array may be added to analysis; no facts, sources, criteria or status are repaired.
-Raw and recovered acceptance must stay separate. Excerpt coverage can be backed
-by a longer fully sourced author statement, with polarity loss still denied.
+`assessment-prompt-quality-2026-10-29.json` records a historical follow-up phase
+requested after the initial 29-call phase was closed. It does not overwrite the
+initial ledger or reports. That historical follow-up consumed 29 HTTP attempts /
+111,387 reported tokens under the then-current v9 analysis / v2 Editor / 30s timeout
+snapshot (superseded by the authoritative code constants listed above). No provider
+budget remains in either historical phase.
 
 Every real live CLI run now needs `--phase-id <operator-authorized-id>`.
 The ignored `.worknote-agent-evals/<phase-id>.budget.json` is protected with an
@@ -176,6 +178,49 @@ or repeated development cases are not an independent full-suite pass rate.
 `promptTemplateHash` covers the system plus all few-shot messages, not only the
 first system message. Reports retain raw synthetic outputs only in ignored local
 artifacts with credential redaction, never console or production telemetry.
+
+## Incremental development: check marks and zero-HTTP replay
+
+Regenerate the case index before scheduling another live run:
+
+```powershell
+node -r ts-node/register/transpile-only scripts/work-note-agent/assessment-progress.ts
+```
+
+It writes `.worknote-agent-evals/assessment-progress.json` and `.md`, with per-model,
+case, turn and role statuses, source/request hashes and source report links.
+Historical PASS is retained with its original artifact; it is not a current
+release certificate. BLOCKED_QUOTA/BLOCKED_PROVIDER and UNMEASURED remain distinct
+from a model correctness failure.
+
+Development corpora automatically cache complete HTTP200 responses by model,
+exact request payload (only opaque `user` is excluded), endpoint, timeout and
+retry policy. Local source artifact changes do not discard the raw response.
+Both good and malformed model outputs are retained, so an unchanged failed case
+is not resampled for a better answer. Changed model/prompt/input/parameters miss
+the cache. Uncertain POST outcomes stay blocked. Report `responseOrigins`,
+`developmentResponseCache` and `executionEvidence` distinguish reused responses.
+
+For local parser/guard/grader verification without credentials or network:
+
+```powershell
+node -r ts-node/register/transpile-only scripts/work-note-agent/assessment-run.ts --cache-only --corpus dev-v30 --batch full --split development --model mistralai/ministral-14b --editor-limit 0 --cases dev27-completion-1
+```
+
+`--cache-only` never creates a phase ledger and never falls back to live HTTP on
+a miss. Cached results are offline replay evidence. Release corpora cannot use
+this mode or the development cache; independent release rules remain enforced.
+Historical completed development journals can be explicitly imported with
+`assessment-progress.ts --import-journal <path> --origin-artifact <sha256>
+--origin-phase <development-phase-id> --development`; source provenance is kept.
+
+Use `--stop-on-transport-error` when a provider is unavailable, so a503/401/etc.
+checkpoints after the first affected logical call. A429 always stops when the
+credential chain is exhausted. Evaluation supports XKIRO_API_KEY, then
+XKIRO_API_KEY2, then XKIRO_API_KEY3 on429 only; unique credentials are tried once
+per chain and every HTTP request goes through the same phase budget. Global or
+shared limits do not rotate credentials. API keys are redacted and never stored
+in the index/cache.
 
 Follow-up measurements: v9 produced14 analysis attempts;13 parsed and all13 matched
 the authored allowed adequacy sets, while full automatic rubric passed only7/14

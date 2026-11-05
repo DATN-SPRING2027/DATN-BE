@@ -11,6 +11,8 @@ describe('IAM runtime environment bootstrap', () => {
       'fixtures/iam-runtime.fixture',
     );
     childEnvironment.INFRA_ENABLED = 'false';
+    // The separate typecheck gate validates TypeScript; this child tests runtime startup.
+    childEnvironment.TS_NODE_TRANSPILE_ONLY = 'true';
 
     const code = [
       "require('reflect-metadata')",
@@ -30,11 +32,13 @@ describe('IAM runtime environment bootstrap', () => {
         cwd: resolve(__dirname, '..'),
         env: childEnvironment,
         encoding: 'utf8',
-        timeout: 30000,
+        timeout: 60000,
       },
     );
 
+    expect(child.error).toBeUndefined();
+    expect(child.signal).toBeNull();
     expect(child.status).toBe(0);
     expect(child.stdout).toBe('mongodb://fixture-host.invalid:27017');
-  });
+  }, 65_000);
 });

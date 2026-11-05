@@ -1,0 +1,641 @@
+{
+  "version": "task-note-editor-nochange/2026-11-03.v1",
+  "classification": "synthetic-only",
+  "splitPolicy": "Plan v4 D4/F17/L6 synthetic Assessment Editor slice: 12 cases (4 development + 4 validation + 4 holdout; 6 already-clean no-change notes + 6 dense numeric/identifier/URL/code notes) verifying D10b empty-changeSummary contract and protected marker preservation.",
+  "cases": [
+    {
+      "id": "ed-nc-001",
+      "category": "editor-clean-nochange",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích PROGRESS; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Tiến độ tách bảng lưu lịch sử đối soát ví",
+          "body": "- Đã tạo bảng `wallet_reconcile_archive` trên môi trường staging.\n- Đang chạy thử job chuyển dữ liệu theo lô 5.000 bản ghi.\n- Chưa bật tự động xóa dữ liệu trên bảng chính."
+        },
+        "task": {
+          "title": "Tách bảng lưu lịch sử đối soát ví điện tử",
+          "description": "Tạo bảng wallet_reconcile_archive và chạy job chuyển dữ liệu theo lô.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Tạo bảng wallet_reconcile_archive và chạy job chuyển dữ liệu theo lô.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`wallet_reconcile_archive`",
+          "5.000",
+          "Chưa"
+        ],
+        "mustNotInclude": [
+          "Đã bật tự động xóa"
+        ],
+        "manualRubric": "Already-clean bulleted PROGRESS note; keeping unchanged (changeSummary=[]) or minor polish with non-empty changeSummary is valid.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-002",
+      "category": "editor-clean-nochange",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích QA; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Kết quả kiểm thử giới hạn tần suất yêu cầu OTP",
+          "body": "- Kịch bản đã chạy: gửi 6 yêu cầu OTP liên tiếp trong 60 giây trên bản staging.\n- Kết quả quan sát: 5 yêu cầu đầu trả HTTP 200, yêu cầu thứ 6 bị chặn với HTTP 429.\n- Phạm vi chưa kiểm thử: chưa kiểm thử luồng mở khóa thủ công từ trang quản trị."
+        },
+        "task": {
+          "title": "Kiểm thử giới hạn tần suất OTP (tối đa 5 lần/60 giây)",
+          "description": "Xác minh yêu cầu thứ 6 trong 60 giây trả HTTP 429.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Xác minh yêu cầu thứ 6 trong 60 giây trả HTTP 429.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "60",
+          "200",
+          "429",
+          "chưa kiểm thử"
+        ],
+        "mustNotInclude": [
+          "đã kiểm thử mở khóa thủ công"
+        ],
+        "manualRubric": "Already well-structured QA note; verify F17 D10b contract and zero marker corruption.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-003",
+      "category": "editor-dense-markers",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích INCIDENT; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Ghi nhận lỗi kết nối cụm Redis phiên đăng nhập",
+          "body": "Lúc 14:05:22Z dịch vụ `auth-session-gw` ghi nhận 128 lỗi `ECONNRESET` tới node `redis-sess-02.internal:6379` (độ trễ vọt từ 1.8ms lên 940ms), tự hồi phục lúc 14:07:10Z; chưa xác định được nguyên nhân từ phía hạ tầng mạng."
+        },
+        "task": {
+          "title": "Điều tra cảnh báo lỗi kết nối Redis phiên đăng nhập",
+          "description": "Thu thập thời điểm, mã lỗi, node ảnh hưởng và trạng thái hồi phục.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Thu thập thời điểm, mã lỗi, node ảnh hưởng và trạng thái hồi phục.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "14:05:22Z",
+          "`auth-session-gw`",
+          "128",
+          "`ECONNRESET`",
+          "`redis-sess-02.internal:6379`",
+          "1.8ms",
+          "940ms",
+          "14:07:10Z",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "**__WN_PROTECTED_",
+          "nguyên nhân do đứt cáp"
+        ],
+        "manualRubric": "Dense timestamps, code spans, host:port, and latencies must survive marker restoration without bold wrapping.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-004",
+      "category": "editor-dense-markers",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích COMPLETION; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Hoàn tất cấu hình kiểm tra sức khỏe dịch vụ xuất vé",
+          "body": "Đã cấu hình probe gọi `https://ticket-worker.stg.local:8443/actuator/health/readiness` mỗi 15s (timeout 2s, ngưỡng lỗi 3 lần) và kiểm tra mã phản hồi HTTP 200 với trường `\"status\":\"UP\"`."
+        },
+        "task": {
+          "title": "Cấu hình readiness probe cho ticket-worker",
+          "description": "Thiết lập readiness probe mỗi 15s timeout 2s và xác minh HTTP 200.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Thiết lập readiness probe mỗi 15s timeout 2s và xác minh HTTP 200.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "https://ticket-worker.stg.local:8443/actuator/health/readiness",
+          "15s",
+          "2s",
+          "200"
+        ],
+        "mustNotInclude": [
+          "**__WN_PROTECTED_"
+        ],
+        "manualRubric": "Preserve URL, 15s, 2s, 3 threshold, HTTP 200, and inline JSON snippet.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-005",
+      "category": "editor-clean-nochange",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích HANDOVER; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Bàn giao ca chiều - Đồng bộ danh mục chi nhánh",
+          "body": "- Đã hoàn thành: chạy xong script chuẩn hóa 630 mã chi nhánh trên staging.\n- Còn tồn đọng: chưa bật cờ `BRANCH_SYNC_V2` trên cụm canary.\n- Việc ca sau cần làm: đối chiếu bảng tổng hợp với nhóm Kế toán rồi bật `BRANCH_SYNC_V2`."
+        },
+        "task": {
+          "title": "Chuẩn hóa và bật đồng bộ danh mục chi nhánh v2",
+          "description": "Chuẩn hóa 630 mã chi nhánh và bật cờ BRANCH_SYNC_V2.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Chuẩn hóa 630 mã chi nhánh và bật cờ BRANCH_SYNC_V2.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "630",
+          "`BRANCH_SYNC_V2`",
+          "chưa bật"
+        ],
+        "mustNotInclude": [
+          "đã bật cờ"
+        ],
+        "manualRubric": "Clean 3-bullet HANDOVER note; must preserve `BRANCH_SYNC_V2` and 630 without empty-summary mismatch.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-006",
+      "category": "editor-clean-nochange",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích DECISION; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Quyết định chọn định dạng nén bản ghi kiểm toán",
+          "body": "- Phương án chọn: sử dụng nén `zstd` mức 3 cho tệp lưu trữ kiểm toán theo ngày.\n- Lý do: tốc độ giải nén nhanh hơn 2,4 lần so với `gzip` mức 6 trên tập mẫu 10GB.\n- Hệ quả và giới hạn: cần nâng thư viện đọc trên dịch vụ tra cứu nội bộ; chưa áp dụng cho các tệp lịch sử trước tháng 11."
+        },
+        "task": {
+          "title": "Chốt thuật toán nén cho kho lưu trữ kiểm toán",
+          "description": "Đánh giá và chốt thuật toán nén kèm lý do và phạm vi áp dụng.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Đánh giá và chốt thuật toán nén kèm lý do và phạm vi áp dụng.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`zstd`",
+          "2,4",
+          "`gzip`",
+          "10GB",
+          "chưa áp dụng"
+        ],
+        "mustNotInclude": [
+          "đã nén lại toàn bộ tệp cũ"
+        ],
+        "manualRubric": "Clean DECISION note with exact compression ratios and explicit non-retroactive boundary.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-007",
+      "category": "editor-dense-markers",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích QA; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Kiểm thử từ chối gói tin webhook sai chữ ký thời gian",
+          "body": "Đã chạy bộ kiểm thử `pnpm --filter @corp/webhook-gw test:sig` trên commit `7c91e4b2`: trường hợp độ lệch timestamp 305s trả HTTP 401 (`ERR_TS_SKEW`), độ lệch 120s trả HTTP 202; kịch bản replay song song chưa chạy."
+        },
+        "task": {
+          "title": "Kiểm thử chống replay timestamp quá 300s trên webhook-gw",
+          "description": "Xác minh lệch >300s bị từ chối HTTP 401 và <=300s hợp lệ.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Xác minh lệch >300s bị từ chối HTTP 401 và <=300s hợp lệ.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`pnpm --filter @corp/webhook-gw test:sig`",
+          "`7c91e4b2`",
+          "305s",
+          "401",
+          "`ERR_TS_SKEW`",
+          "120s",
+          "202",
+          "chưa chạy"
+        ],
+        "mustNotInclude": [
+          "**__WN_PROTECTED_"
+        ],
+        "manualRubric": "Dense CLI command, commit hash, durations, status codes, and error code must remain untouched.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-008",
+      "category": "editor-dense-markers",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích PROGRESS; assessment=NEEDS_AUTHOR_INPUT. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Cập nhật giới hạn bộ nhớ trình xuất báo cáo kho",
+          "body": "Đã nâng `resources.limits.memory` từ `1536Mi` lên `2560Mi` trong tệp `deploy/k8s/stock-exporter.yaml` và áp lên namespace `logistics-stg`; chưa chạy lô xuất 200.000 dòng để đo đỉnh RSS."
+        },
+        "task": {
+          "title": "Xử lý lỗi OOMKilled trên stock-exporter khi xuất 200.000 dòng",
+          "description": "Tăng giới hạn RAM và xác minh xuất 200.000 dòng không bị OOMKilled.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Tăng giới hạn RAM và xác minh xuất 200.000 dòng không bị OOMKilled.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`resources.limits.memory`",
+          "`1536Mi`",
+          "`2560Mi`",
+          "`deploy/k8s/stock-exporter.yaml`",
+          "`logistics-stg`",
+          "200.000",
+          "chưa chạy"
+        ],
+        "mustNotInclude": [
+          "**__WN_PROTECTED_",
+          "đã hết OOMKilled"
+        ],
+        "manualRubric": "Preserve all 5 backticked K8s identifiers/quantities and 200.000 without bold-wrapping markers.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-009",
+      "category": "editor-clean-nochange",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích COMPLETION; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Hoàn tất khóa truy cập công khai cho kho mẫu biểu nội bộ",
+          "body": "- Đã bật chính sách chặn truy cập ẩn danh trên bucket `corp-internal-templates`.\n- Đã kiểm thử gọi GET không kèm chữ ký trả về HTTP 403 đúng yêu cầu.\n- Đã kiểm thử luồng tải qua presigned URL từ cổng nội bộ vẫn trả về HTTP 200."
+        },
+        "task": {
+          "title": "Chặn truy cập công khai bucket corp-internal-templates",
+          "description": "Bật chặn anonymous access, xác minh GET không chữ ký trả 403 và presigned URL trả 200.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Bật chặn anonymous access, xác minh GET không chữ ký trả 403 và presigned URL trả 200.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`corp-internal-templates`",
+          "403",
+          "200"
+        ],
+        "mustNotInclude": [
+          "trả về HTTP 200 khi không kèm chữ ký"
+        ],
+        "manualRubric": "Clean 3-bullet COMPLETION note; verify D10b changeSummary consistency and exact marker fidelity.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-010",
+      "category": "editor-clean-nochange",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích INCIDENT; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Sự cố chậm phản hồi API tra cứu bảo hiểm y tế",
+          "body": "- Hiện tượng: độ trễ p95 của endpoint `/api/v2/insurance/verify` tăng lên 4,2 giây trong khoảng 10:15–10:32.\n- Phạm vi ảnh hưởng: khoảng 9% yêu cầu tra cứu tại quầy tiếp nhận bị timeout.\n- Xử lý tạm thời: đã chuyển sang cổng kết nối dự phòng giúp độ trễ về lại 380ms; nguyên nhân phía cổng đối tác chưa được xác nhận."
+        },
+        "task": {
+          "title": "Xử lý cảnh báo độ trễ cao API tra cứu bảo hiểm",
+          "description": "Ghi nhận hiện tượng, phạm vi ảnh hưởng, biện pháp giảm thiểu và trạng thái nguyên nhân.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Ghi nhận hiện tượng, phạm vi ảnh hưởng, biện pháp giảm thiểu và trạng thái nguyên nhân.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`/api/v2/insurance/verify`",
+          "4,2",
+          "9%",
+          "380ms",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã xác nhận nguyên nhân do đối tác bảo trì"
+        ],
+        "manualRubric": "Clean INCIDENT summary; ensure zero hallucination and valid changeSummary contract.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-011",
+      "category": "editor-dense-markers",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích HANDOVER; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Bàn giao di chuyển chỉ mục tìm kiếm đơn hàng sang phân cụm mới",
+          "body": "Đã reindex 14.500.000 tài liệu sang chỉ mục `orders_search_2026_v4` tại `https://es-cluster-b.internal:9200` (tốc độ 3.800 docs/s, sai lệch đếm 0); alias đọc `orders_search_live` chưa chuyển sang chỉ mục mới. Ca tới chạy `scripts/flip-alias.sh orders_search_2026_v4` sau giờ khóa sổ 23:30."
+        },
+        "task": {
+          "title": "Reindex và chuyển alias orders_search_live sang cụm mới",
+          "description": "Reindex sang orders_search_2026_v4 và chuyển alias orders_search_live.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Reindex sang orders_search_2026_v4 và chuyển alias orders_search_live.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "14.500.000",
+          "`orders_search_2026_v4`",
+          "https://es-cluster-b.internal:9200",
+          "3.800",
+          "`orders_search_live`",
+          "chưa chuyển",
+          "`scripts/flip-alias.sh orders_search_2026_v4`",
+          "23:30"
+        ],
+        "mustNotInclude": [
+          "**__WN_PROTECTED_",
+          "đã chuyển alias"
+        ],
+        "manualRubric": "High-density numbers, URLs, index names, and shell command must not suffer marker bold-wrapping (L6) or F17 violation.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "ed-nc-012",
+      "category": "editor-dense-markers",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "TASK_NOTE",
+      "input": {
+        "workflow": "TASK_NOTE",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "task-note-editor/2026-10-29.v4. Biên tập source.text cho mục đích QA; assessment=ENOUGH_FOR_PURPOSE. Dùng SUGGESTION_READY với replacementText là toàn bộ note. Giữ nguyên dữ kiện, phủ định và điều chưa rõ của tác giả; không tự nâng thành hoàn thành Task. Nếu có [Đính chính của tác giả], cập nhật chi tiết bị ghi nhầm theo lời đính chính của tác giả; không tự tạo thời điểm hoặc quyết định sự thật.",
+        "draft": {
+          "revision": 1,
+          "title": "Kiểm thử làm tròn thuế GTGT 8% trên hóa đơn chiết khấu nhiều tầng",
+          "body": "Đã kiểm thử đơn mẫu mã `INV-QA-8841` (tổng trước thuế 1.234.567 VND, chiết khấu 12,5%, thuế 8%): API `POST /v1/invoices/preview` trả tiền thuế 86.420 VND khớp bảng đối chiếu kế toán; trường hợp hoàn trả một phần (`PARTIAL_CREDIT_NOTE`) chưa kiểm thử."
+        },
+        "task": {
+          "title": "Kiểm thử công thức làm tròn thuế GTGT 8% sau chiết khấu",
+          "description": "Đối chiếu tiền thuế API preview với bảng chuẩn kế toán.",
+          "status": "IN_PROGRESS",
+          "steps": [
+            {
+              "text": "Đối chiếu tiền thuế API preview với bảng chuẩn kế toán.",
+              "done": false
+            }
+          ]
+        },
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`INV-QA-8841`",
+          "1.234.567",
+          "12,5%",
+          "8%",
+          "`POST /v1/invoices/preview`",
+          "86.420",
+          "`PARTIAL_CREDIT_NOTE`",
+          "chưa kiểm thử"
+        ],
+        "mustNotInclude": [
+          "**__WN_PROTECTED_"
+        ],
+        "manualRubric": "Preserve currency amounts, percentages, invoice ID, HTTP route, and untested partial credit note scope.",
+        "acceptedBehaviors": [
+          "Returns SUGGESTION_READY preserving every protected fragment/number/identifier/URL and negation; allows changeSummary=[] if and only if replacementText equals source.text."
+        ],
+        "prohibitedBehaviors": [
+          "Decodes or wraps __WN_PROTECTED_...__ markers in **...**, drops negations, or returns empty changeSummary when text changed."
+        ],
+        "critical": true
+      }
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import {
   percentile,
 } from '../../../../../scripts/work-note-agent/evaluation';
 import { prepareAgentRequest } from './work-note-agent';
+import { prepareAssessmentEditorRequest } from './work-note-assessment-editor';
 
 describe('Bundled WorkNote evaluation corpus and grader', () => {
   it('loads 60 new v0.3.2 cases with behavior rubrics and separate 30/10/20 splits', () => {
@@ -98,5 +99,26 @@ describe('Bundled WorkNote evaluation corpus and grader', () => {
     ).toMatchObject({ boundaryAccepted: true, automatedPass: false });
     expect(percentile([2, 10, 5], 0.95)).toBe(10);
     expect(percentile([], 0.5)).toBeNull();
+  });
+
+  it('loads Plan v4 workflows-v1 (PROJECT_DOCUMENT & WORK_REPORT) and editor-nochange-v1 corpora cleanly', () => {
+    const workflows = loadCorpus('workflows-v1');
+    expect(workflows.cases).toHaveLength(32);
+    expect(
+      workflows.cases.filter((c) => c.workflow === 'PROJECT_DOCUMENT'),
+    ).toHaveLength(16);
+    expect(
+      workflows.cases.filter((c) => c.workflow === 'WORK_REPORT'),
+    ).toHaveLength(16);
+    for (const c of workflows.cases) {
+      prepareAgentRequest(c.input);
+    }
+
+    const editorNochange = loadCorpus('editor-nochange-v1');
+    expect(editorNochange.cases).toHaveLength(12);
+    for (const c of editorNochange.cases) {
+      prepareAgentRequest(c.input);
+      prepareAssessmentEditorRequest(c.input);
+    }
   });
 });

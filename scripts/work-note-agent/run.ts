@@ -6,6 +6,10 @@ import { parse as parseEnv } from 'dotenv';
 import { recoverEmptyContainers } from '../../src/services/capture/application/work-note-agent/work-note-agent.formatting';
 import { prepareAgentRequest } from '../../src/services/capture/application/work-note-agent/work-note-agent';
 import {
+  ASSESSMENT_EDITOR_INSTRUCTION_VERSION,
+  prepareAssessmentEditorRequest,
+} from '../../src/services/capture/application/work-note-agent/work-note-assessment-editor';
+import {
   FEW_SHOTS,
   OPERATION_POLICY,
   PROMPT_VERSION,
@@ -22,6 +26,7 @@ import {
   percentile,
   type CaseGrade,
   type EvalSplit,
+  type RewriteCorpusName,
 } from './evaluation';
 
 type Options = {
@@ -37,7 +42,8 @@ type Options = {
   reasoning?: string;
   includeOutput: boolean;
   caseIds?: string[];
-  corpus: 'baseline' | 'v2' | 'v3';
+  corpus: RewriteCorpusName;
+  mode: 'editor' | 'assessment';
   recoverEmptyContainers: boolean;
 };
 export function parseOptions(args: readonly string[]): Options {
@@ -52,6 +58,7 @@ export function parseOptions(args: readonly string[]): Options {
     timeoutMs: 30_000,
     includeOutput: false,
     corpus: 'baseline',
+    mode: 'editor',
     recoverEmptyContainers: false,
   };
   const fields: Record<string, keyof Options> = {
@@ -66,6 +73,7 @@ export function parseOptions(args: readonly string[]): Options {
     '--reasoning': 'reasoning',
     '--case-ids': 'caseIds',
     '--corpus': 'corpus',
+    '--mode': 'mode',
   };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -106,7 +114,10 @@ export function parseOptions(args: readonly string[]): Options {
     else Object.assign(options, { [key]: value });
   }
   if (
-    !['baseline', 'v2', 'v3'].includes(options.corpus) ||
+    !['baseline', 'v2', 'v3', 'workflows-v1', 'editor-nochange-v1'].includes(
+      options.corpus,
+    ) ||
+    !['editor', 'assessment'].includes(options.mode) ||
     !['development', 'validation', 'holdout', 'all'].includes(options.split) ||
     !Number.isSafeInteger(options.limit) ||
     options.limit < 1 ||
@@ -136,6 +147,7 @@ export function parseOptions(args: readonly string[]): Options {
 type Row = {
   caseId: string;
   category: string;
+  workflow?: 'TASK_NOTE' | 'PROJECT_DOCUMENT' | 'WORK_REPORT';
   split: EvalSplit;
   repeat: number;
   errorCode?: string;
@@ -152,7 +164,7 @@ type Row = {
     output?: CaseGrade['result'];
   };
 };
-function summarize(rows: readonly Row[]) {
+export function summarize(rows: readonly Row[]) {
   const completed = rows.filter((r) => r.grade);
   const latency = rows.flatMap((r) =>
     r.completion ? [r.completion.elapsedMs] : [],
@@ -169,6 +181,50 @@ function summarize(rows: readonly Row[]) {
           planned: subset.length,
           completed: subset.filter((r) => r.grade).length,
           automatedPass: subset.filter((r) => r.grade?.automatedPass).length,
+        },
+      ];
+    }),
+  );
+  const workflows = [
+    ...new Set(
+      rows.map(
+        (r) => r.workflow ?? r.grade?.diagnostics?.workflow ?? 'TASK_NOTE',
+      ),
+    ),
+  ];
+  const byWorkflow = Object.fromEntries(
+    workflows.map((wf) => {
+      const subset = rows.filter(
+        (r) =>
+          (r.workflow ?? r.grade?.diagnostics?.workflow ?? 'TASK_NOTE') === wf,
+      );
+      const done = subset.filter((r) => r.grade);
+      return [
+        wf,
+        {
+          planned: subset.length,
+          completed: done.length,
+          boundaryAccepted: done.filter((r) => r.grade!.boundaryAccepted)
+            .length,
+          automatedPass: done.filter((r) => r.grade!.automatedPass).length,
+          clarificationFP: done.filter(
+            (r) => r.grade?.diagnostics?.clarificationFP,
+          ).length,
+          clarificationFN: done.filter(
+            (r) => r.grade?.diagnostics?.clarificationFN,
+          ).length,
+          polarityFailures: done.filter(
+            (r) => r.grade?.diagnostics?.polarityFailure,
+          ).length,
+          markerFailures: done.filter(
+            (r) => r.grade?.diagnostics?.markerFailure,
+          ).length,
+          emptyChangeSummaryAccepted: done.filter(
+            (r) => r.grade?.diagnostics?.emptyChangeSummaryAccepted,
+          ).length,
+          emptyChangeSummaryRejected: done.filter(
+            (r) => r.grade?.diagnostics?.emptyChangeSummaryRejected,
+          ).length,
         },
       ];
     }),
@@ -226,6 +282,7 @@ function summarize(rows: readonly Row[]) {
     manualReview: 'required',
     semanticAcceptance: 'NOT_ESTABLISHED',
     groups,
+    byWorkflow,
   };
 }
 
@@ -264,19 +321,31 @@ export async function run(args: readonly string[]): Promise<number> {
       'Planned calls exceed --max-calls; set an explicit evaluation budget.',
     );
   const prepared = new Map(
-    selected.map((c) => [c.id, prepareAgentRequest(c.input)]),
+    selected.map((c) => [
+      c.id,
+      options.mode === 'assessment'
+        ? prepareAssessmentEditorRequest(c.input)
+        : prepareAgentRequest(c.input),
+    ]),
   );
+  const activePromptVersion =
+    options.mode === 'assessment'
+      ? ASSESSMENT_EDITOR_INSTRUCTION_VERSION
+      : PROMPT_VERSION;
   if (!options.live) {
     console.log(
       JSON.stringify(
         {
           mode: 'dry-run',
           networkCalls: 0,
-          promptVersion: PROMPT_VERSION,
+          promptVersion: activePromptVersion,
           corpusVersion: corpus.version,
           cases: selected.length,
           plannedCalls: jobs.length,
           split: options.split,
+          workflows: [
+            ...new Set(selected.map((c) => c.workflow ?? c.input.workflow)),
+          ],
           categories: [...new Set(selected.map((c) => c.category))],
         },
         null,
@@ -349,6 +418,7 @@ export async function run(args: readonly string[]): Promise<number> {
       const row: Row = {
         caseId: testCase.id,
         category: testCase.category,
+        workflow: testCase.workflow ?? testCase.input.workflow,
         split: testCase.split,
         repeat,
       };
@@ -428,7 +498,7 @@ export async function run(args: readonly string[]): Promise<number> {
     classification: 'synthetic-only',
     runId,
     createdAt: new Date().toISOString(),
-    promptVersion: PROMPT_VERSION,
+    promptVersion: activePromptVersion,
     corpusVersion: corpus.version,
     promptTemplateHash,
     corpusHash,

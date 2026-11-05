@@ -127,6 +127,7 @@ class PreviewAssessmentModel extends WorkNoteAgentModel {
         completionTokens: 0,
         httpAttempts: 0,
         durationMs: 0,
+        validatedConfig: true,
       },
     });
   }

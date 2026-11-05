@@ -4,6 +4,9 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": ["**/*.cjs"]
+    "assets": [
+      "**/*.cjs",
+      "services/capture/application/work-note-agent/*.json"
+    ]
   }
 }
