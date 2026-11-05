@@ -320,7 +320,7 @@ export class HandoverWorkflowService {
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<HandoverListDto>> {
     const actor = await this.resolveActor(projectId, headers, false);
-    if (!actor.isProjectMember) {
+    if (!actor.isProjectMember && !actor.canAdministerCoordinator) {
       throw new ForbiddenException({
         code: 'HANDOVER_FORBIDDEN',
         message: 'Active project membership is required to read handovers.',
@@ -338,7 +338,7 @@ export class HandoverWorkflowService {
       projectId: projObj,
     };
 
-    if (!actor.isProjectLeader) {
+    if (!actor.isProjectLeader && !actor.canAdministerCoordinator) {
       const ownedFollowUps = await this.repository.followUps
         .find({
           schemaVersion: 2,
@@ -590,6 +590,7 @@ export class HandoverWorkflowService {
     handover: StoredHandoverDoc;
     revision: StoredRevisionDoc;
     isCurrent: boolean;
+    isFollowUpOwner?: boolean;
   }): Promise<{
     projection: RevisionProjectionDto;
     requiredPendingCount: number;
@@ -654,6 +655,16 @@ export class HandoverWorkflowService {
       allItemDeps.push(...collectItemDependencyRefs(item));
     }
 
+    const viewerLower = input.viewer.userId.toLowerCase();
+    const hasContentReadAccess =
+      input.viewer.isProjectMember &&
+      (input.viewer.isProjectLeader ||
+        (input.handover.successorUserId !== null &&
+          input.handover.successorUserId.toLowerCase() === viewerLower) ||
+        input.handover.departingUserId.toLowerCase() === viewerLower ||
+        Boolean(input.isFollowUpOwner) ||
+        followUps.some((f) => f.ownerUserId.toLowerCase() === viewerLower));
+
     const viewerCtx: HandoverSourceViewer = {
       organizationId: input.viewer.organizationId,
       projectId: input.viewer.projectId,
@@ -693,7 +704,9 @@ export class HandoverWorkflowService {
       successorSourceMap,
       liveTaskStateMap,
     ] = await Promise.all([
-      this.sourcesService.evaluateSourceRefsMap(viewerCtx, allItemDeps),
+      hasContentReadAccess
+        ? this.sourcesService.evaluateSourceRefsMap(viewerCtx, allItemDeps)
+        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
       this.sourcesService.evaluateSourceRefsMap(leaderCtx, allItemDeps),
       input.handover.successorUserId && successorMemberActive
         ? this.sourcesService.evaluateSourceRefsMap(
@@ -722,6 +735,12 @@ export class HandoverWorkflowService {
 
     const projectedItems = input.revision.items.map((item) => {
       const itemHex = item.itemId.toHexString();
+      if (!hasContentReadAccess) {
+        return {
+          itemId: itemHex,
+          access: 'UNAVAILABLE' as const,
+        };
+      }
       const bindingState = resolveItemBindingState({
         revisionId: input.revision._id.toHexString(),
         successorUserId: input.handover.successorUserId,
@@ -785,6 +804,25 @@ export class HandoverWorkflowService {
       handoverId: handover._id,
       ownerUserId: actor.userId,
     });
+    const isFollowUpOwner = ownedFollowUpCount > 0;
+
+    const initialCapabilities = resolveHandoverCapabilities({
+      actorUserId: actor.userId,
+      isProjectMember: actor.isProjectMember,
+      isProjectLeader: actor.isProjectLeader,
+      canAdministerCoordinator: actor.canAdministerCoordinator,
+      handover,
+      packageAcceptedByCurrentSuccessor: false,
+      isFollowUpOwner,
+    });
+
+    if (!initialCapabilities.includes('READ')) {
+      throw new NotFoundException({
+        code: 'HANDOVER_NOT_FOUND',
+        message: 'Handover not found.',
+        details: {},
+      });
+    }
 
     let publishedRevision: RevisionProjectionDto | null = null;
     let requiredPendingCount = 0;
@@ -806,6 +844,7 @@ export class HandoverWorkflowService {
           handover,
           revision: revDoc,
           isCurrent: true,
+          isFollowUpOwner,
         });
         publishedRevision = built.projection;
         requiredPendingCount = built.requiredPendingCount;
@@ -818,18 +857,11 @@ export class HandoverWorkflowService {
       actorUserId: actor.userId,
       isProjectMember: actor.isProjectMember,
       isProjectLeader: actor.isProjectLeader,
+      canAdministerCoordinator: actor.canAdministerCoordinator,
       handover,
       packageAcceptedByCurrentSuccessor: packageAccepted,
-      isFollowUpOwner: ownedFollowUpCount > 0,
+      isFollowUpOwner,
     });
-
-    if (!capabilities.includes('READ')) {
-      throw new NotFoundException({
-        code: 'HANDOVER_NOT_FOUND',
-        message: 'Handover not found.',
-        details: {},
-      });
-    }
 
     return {
       body: {
@@ -858,13 +890,14 @@ export class HandoverWorkflowService {
       handoverId: handover._id,
       ownerUserId: actor.userId,
     });
+    const isFollowUpOwner = ownedFollowUpCount > 0;
     const caps = resolveHandoverCapabilities({
       actorUserId: actor.userId,
       isProjectMember: actor.isProjectMember,
       isProjectLeader: actor.isProjectLeader,
       handover,
       packageAcceptedByCurrentSuccessor: false,
-      isFollowUpOwner: ownedFollowUpCount > 0,
+      isFollowUpOwner,
     });
     if (!caps.includes('READ')) {
       throw new NotFoundException({
@@ -896,6 +929,7 @@ export class HandoverWorkflowService {
       handover,
       revision: revDoc,
       isCurrent,
+      isFollowUpOwner,
     });
 
     return {

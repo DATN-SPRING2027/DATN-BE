@@ -713,12 +713,13 @@ export function resolveHandoverCapabilities(input: {
   actorUserId: string;
   isProjectMember: boolean;
   isProjectLeader: boolean;
+  canAdministerCoordinator?: boolean;
   handover: StoredHandoverDoc;
   packageAcceptedByCurrentSuccessor: boolean;
   isFollowUpOwner: boolean;
 }): HandoverCapability[] {
   if (!input.isProjectMember) {
-    return [];
+    return input.canAdministerCoordinator ? ['READ'] : [];
   }
   const actorLower = input.actorUserId.toLowerCase();
   const isAssignedCoordinator =
@@ -735,7 +736,8 @@ export function resolveHandoverCapabilities(input: {
     isScopedLeader ||
     isCurrentSuccessor ||
     isDepartingMember ||
-    input.isFollowUpOwner;
+    input.isFollowUpOwner ||
+    Boolean(input.canAdministerCoordinator);
 
   if (!canRead) {
     return [];
