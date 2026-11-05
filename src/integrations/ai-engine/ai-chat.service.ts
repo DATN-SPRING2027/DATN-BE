@@ -135,31 +135,41 @@ export class AiChatService {
     actor: AuthenticatedIdentity,
   ): Promise<ProjectRecord[]> {
     const pageSize = 100;
+    const dedupedById = new Map<string, ProjectRecord>();
+    const collectActive = (items: readonly ProjectRecord[]) => {
+      for (const proj of items) {
+        if (proj.status === 'ACTIVE' && OBJECT_ID_PATTERN.test(proj.id)) {
+          dedupedById.set(proj.id, proj);
+          if (dedupedById.size > MAX_ALL_PROJECTS_COUNT) {
+            return;
+          }
+        }
+      }
+    };
+
     const firstPage = await this.projects.list(actor, {
       page: 1,
       pageSize,
       status: 'ACTIVE',
     });
-    const collected: ProjectRecord[] = [...firstPage.data];
-    const totalPages = Math.min(
-      firstPage.pagination.totalPages ?? 1,
-      Math.ceil(MAX_ALL_PROJECTS_COUNT / pageSize),
-    );
+    collectActive(firstPage.data);
+
+    const totalPages = Math.min(firstPage.pagination.totalPages ?? 1, 10);
     for (let page = 2; page <= totalPages; page += 1) {
-      if (collected.length >= MAX_ALL_PROJECTS_COUNT) break;
+      if (dedupedById.size > MAX_ALL_PROJECTS_COUNT) break;
       const next = await this.projects.list(actor, {
         page,
         pageSize,
         status: 'ACTIVE',
       });
-      collected.push(...next.data);
+      collectActive(next.data);
     }
-    const dedupedById = new Map<string, ProjectRecord>();
-    for (const proj of collected) {
-      if (proj.status === 'ACTIVE' && OBJECT_ID_PATTERN.test(proj.id)) {
-        dedupedById.set(proj.id, proj);
-      }
-      if (dedupedById.size >= MAX_ALL_PROJECTS_COUNT) break;
+
+    if (dedupedById.size > MAX_ALL_PROJECTS_COUNT) {
+      throw new BadRequestException({
+        code: 'AI_CHAT_ALL_PROJECTS_LIMIT_EXCEEDED',
+        message: `All-projects scope supports at most ${MAX_ALL_PROJECTS_COUNT} active projects. Please select a specific project.`,
+      });
     }
     return [...dedupedById.values()];
   }
