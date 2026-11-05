@@ -15,19 +15,29 @@
             "name": "cursor",
             "in": "query",
             "required": false,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "limit",
             "in": "query",
             "required": false,
-            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
           },
           {
             "name": "unreadOnly",
             "in": "query",
             "required": false,
-            "schema": { "type": "boolean", "default": false }
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -35,11 +45,18 @@
             "description": "Paginated notification list and unread count",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/NotificationListResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationListResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/UnauthorizedError" }
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/OrganizationContextForbiddenError"
+          }
         }
       }
     },
@@ -56,13 +73,21 @@
                   "type": "object",
                   "required": ["count"],
                   "properties": {
-                    "count": { "type": "integer", "minimum": 0 }
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
                   }
                 }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/UnauthorizedError" }
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/OrganizationContextForbiddenError"
+          }
         }
       }
     },
@@ -75,7 +100,9 @@
             "name": "id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -83,13 +110,21 @@
             "description": "Updated notification item",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/NotificationItem" }
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationItem"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/UnauthorizedError" },
-          "403": { "$ref": "#/components/responses/CsrfForbiddenError" },
-          "404": { "$ref": "#/components/responses/NotFoundError" }
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/CsrfForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          }
         }
       }
     },
@@ -106,15 +141,25 @@
                   "type": "object",
                   "required": ["updatedCount", "readAt"],
                   "properties": {
-                    "updatedCount": { "type": "integer", "minimum": 0 },
-                    "readAt": { "type": "string", "format": "date-time" }
+                    "updatedCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "readAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
                   }
                 }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/UnauthorizedError" },
-          "403": { "$ref": "#/components/responses/CsrfForbiddenError" }
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/CsrfForbiddenError"
+          }
         }
       }
     },
@@ -127,7 +172,9 @@
             "name": "id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -135,12 +182,21 @@
             "description": "Target availability and deep-link metadata",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/NotificationResolveResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationResolveResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/UnauthorizedError" },
-          "404": { "$ref": "#/components/responses/NotFoundError" }
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "403": {
+            "$ref": "#/components/responses/OrganizationContextForbiddenError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          }
         }
       }
     }
@@ -175,27 +231,39 @@
       "NotificationTargetKind": {
         "type": "string",
         "description": "WORK_NOTE currently resolves only to a confirmed Task Note with a mandatory Task association. Project Documents and Periodic Work Reports are Project-level resources, not WORK_NOTE targets.",
-        "enum": [
-          "ORGANIZATION",
-          "PROJECT",
-          "TASK",
-          "WORK_NOTE",
-          "CHAT"
-        ]
+        "enum": ["ORGANIZATION", "PROJECT", "TASK", "WORK_NOTE", "CHAT"]
       },
       "NotificationTarget": {
         "type": "object",
         "required": ["kind", "url"],
         "properties": {
-          "reportId": { "type": ["string", "null"] },
-          "kind": { "$ref": "#/components/schemas/NotificationTargetKind" },
-          "url": { "type": "string" },
-          "organizationId": { "type": ["string", "null"] },
-          "projectId": { "type": ["string", "null"] },
-          "taskId": { "type": ["string", "null"] },
-          "noteId": { "type": ["string", "null"] },
-          "conversationId": { "type": ["string", "null"] },
-          "messageId": { "type": ["string", "null"] }
+          "reportId": {
+            "type": ["string", "null"]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NotificationTargetKind"
+          },
+          "url": {
+            "type": "string"
+          },
+          "organizationId": {
+            "type": ["string", "null"]
+          },
+          "projectId": {
+            "type": ["string", "null"]
+          },
+          "taskId": {
+            "type": ["string", "null"]
+          },
+          "noteId": {
+            "type": ["string", "null"]
+          },
+          "conversationId": {
+            "type": ["string", "null"]
+          },
+          "messageId": {
+            "type": ["string", "null"]
+          }
         }
       },
       "NotificationItem": {
@@ -217,25 +285,57 @@
           "createdAt"
         ],
         "properties": {
-          "id": { "type": "string" },
-          "recipientId": { "type": "string" },
-          "actorId": { "type": ["string", "null"] },
-          "organizationId": { "type": ["string", "null"] },
-          "projectId": { "type": ["string", "null"] },
-          "taskId": { "type": ["string", "null"] },
-          "noteId": { "type": ["string", "null"] },
-          "conversationId": { "type": ["string", "null"] },
-          "type": { "$ref": "#/components/schemas/NotificationMvpType" },
-          "title": { "type": "string" },
-          "message": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
+          "recipientId": {
+            "type": "string"
+          },
+          "actorId": {
+            "type": ["string", "null"]
+          },
+          "organizationId": {
+            "type": ["string", "null"]
+          },
+          "projectId": {
+            "type": ["string", "null"]
+          },
+          "taskId": {
+            "type": ["string", "null"]
+          },
+          "noteId": {
+            "type": ["string", "null"]
+          },
+          "conversationId": {
+            "type": ["string", "null"]
+          },
+          "type": {
+            "$ref": "#/components/schemas/NotificationMvpType"
+          },
+          "title": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
           "target": {
             "oneOf": [
-              { "$ref": "#/components/schemas/NotificationTarget" },
-              { "type": "null" }
+              {
+                "$ref": "#/components/schemas/NotificationTarget"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
-          "readAt": { "type": ["string", "null"], "format": "date-time" },
-          "createdAt": { "type": "string", "format": "date-time" }
+          "readAt": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "NotificationListResponse": {
@@ -244,26 +344,41 @@
         "properties": {
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/NotificationItem" }
+            "items": {
+              "$ref": "#/components/schemas/NotificationItem"
+            }
           },
-          "nextCursor": { "type": ["string", "null"] },
-          "unreadCount": { "type": "integer", "minimum": 0 }
+          "nextCursor": {
+            "type": ["string", "null"]
+          },
+          "unreadCount": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
       "NotificationResolveResponse": {
         "type": "object",
         "required": ["available", "reason", "target"],
         "properties": {
-          "available": { "type": "boolean" },
+          "available": {
+            "type": "boolean"
+          },
           "reason": {
             "type": "string",
             "enum": ["OK", "DELETED", "FORBIDDEN"]
           },
-          "message": { "type": "string" },
+          "message": {
+            "type": "string"
+          },
           "target": {
             "oneOf": [
-              { "$ref": "#/components/schemas/NotificationTarget" },
-              { "type": "null" }
+              {
+                "$ref": "#/components/schemas/NotificationTarget"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -274,7 +389,10 @@
         "description": "Missing or invalid session credentials"
       },
       "CsrfForbiddenError": {
-        "description": "Missing or mismatched CSRF token on cookie-authenticated mutation"
+        "description": "Missing or mismatched CSRF token on cookie-authenticated mutation, or active organization context is required (rejected in ACCOUNT context)"
+      },
+      "OrganizationContextForbiddenError": {
+        "description": "Active organization context is required (rejected in ACCOUNT context)"
       },
       "NotFoundError": {
         "description": "Notification not found or does not belong to authenticated recipient"
