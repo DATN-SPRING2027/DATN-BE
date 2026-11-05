@@ -65,11 +65,15 @@ export interface RelatedTaskRef {
   relation: 'PARENT' | 'CHILD' | 'LINKED';
 }
 
+export type TaskNoteReviewStatus =
+  'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
+
 export type TaskNoteSortOrder = 'recent' | 'oldest';
 
 export interface ProjectTaskNotesQueryOptions {
   taskId?: string;
   authorId?: string;
+  reviewStatus?: TaskNoteReviewStatus;
   search?: string;
   sort?: TaskNoteSortOrder;
 }
@@ -79,6 +83,7 @@ export interface TaskNoteInput {
   accomplishments: string;
   approach: string;
   reason: string;
+  autoApprove?: boolean;
 }
 
 export interface TaskNoteAiChatCitationInput {
@@ -128,6 +133,7 @@ export interface ProjectDocumentFileRecord {
   name: string;
   contentType: string;
   size: number;
+  sha256?: string;
 }
 
 export interface DocumentStorageReferenceRecord {
@@ -146,6 +152,55 @@ export interface DeleteProjectDocumentResult {
   sagRevoked: boolean;
   r2DeletedKeys: number;
   r2RetainedSharedKeys: number;
+}
+
+export interface PurgeArtifactResult {
+  entityId: string;
+  status: string;
+  sagRevoked: boolean;
+  r2DeletedKeys: number;
+  r2RetainedSharedKeys: number;
+}
+
+export type BulkTaskNoteGovernanceAction =
+  | 'APPROVE'
+  | 'REQUEST_CHANGES'
+  | 'REJECT'
+  | 'SYNC'
+  | 'PAUSE'
+  | 'RESUME'
+  | 'REPROCESS'
+  | 'REVOKE'
+  | 'PURGE_ARTIFACT'
+  | 'DELETE';
+
+export type BulkWorkReportGovernanceAction =
+  | 'APPROVE'
+  | 'REQUEST_CHANGES'
+  | 'REJECT'
+  | 'SYNC'
+  | 'PAUSE'
+  | 'RESUME'
+  | 'REPROCESS'
+  | 'REVOKE'
+  | 'PURGE_ARTIFACT'
+  | 'REOPEN';
+
+export interface BulkGovernanceActionInput<TAction extends string = string> {
+  ids: string[];
+  action: TAction;
+  comment?: string;
+  reopen?: boolean;
+}
+
+export interface BulkGovernanceResult {
+  action: string;
+  requestedCount: number;
+  succeededIds: string[];
+  failed: Array<{
+    id: string;
+    message: string;
+  }>;
 }
 
 export interface DocumentUploadIntentInput {
@@ -209,6 +264,8 @@ export interface WorkNotesPermissions {
   canSubmit: boolean;
   canReview: boolean;
   canConfigure: boolean;
+  canControlKnowledge?: boolean;
+  canPurgeArtifact?: boolean;
 }
 
 export interface TaskNoteRecord extends TaskNoteInput {
@@ -225,6 +282,16 @@ export interface TaskNoteRecord extends TaskNoteInput {
   authorName: string;
   type: 'TASK_NOTE';
   status: 'CONFIRMED';
+  reviewStatus?: TaskNoteReviewStatus;
+  submittedAt?: string;
+  reviewedBy?: string;
+  reviewerName?: string;
+  reviewedAt?: string;
+  reviewComment?: string;
+  reviewHistory?: DocumentVersionRecord['reviewHistory'];
+  file?: ProjectDocumentFileRecord;
+  storageReference?: DocumentStorageReferenceRecord;
+  knowledgeSync?: DocumentKnowledgeStatusRecord;
   createdAt: string;
   updatedAt: string;
   permissions: WorkNotesPermissions;
@@ -420,11 +487,14 @@ export interface WorkReportRecord extends WorkReportInput {
   dueAt: string;
   status: WorkReportStatus;
   file?: ProjectDocumentFileRecord;
+  storageReference?: DocumentStorageReferenceRecord;
+  knowledgeSync?: DocumentKnowledgeStatusRecord;
   documentIds?: string[];
   createdAt: string;
   updatedAt: string;
   submittedAt?: string;
   reviewedBy?: string;
+  reviewerName?: string;
   reviewedAt?: string;
   reviewComment?: string;
   reviewHistory: DocumentVersionRecord['reviewHistory'];
@@ -501,6 +571,15 @@ export interface WorkReportRosterEntry {
   dueAt: string;
   submittedAt?: string;
   reviewedAt?: string;
+  knowledgeSync?: Pick<
+    DocumentKnowledgeStatusRecord,
+    | 'status'
+    | 'searchStatus'
+    | 'searchReady'
+    | 'knowledgeReady'
+    | 'progress'
+    | 'currentStage'
+  >;
 }
 
 export interface WorkReportsPageRecord extends WorkNotesPage<WorkReportRecord> {

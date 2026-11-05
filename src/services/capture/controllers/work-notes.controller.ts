@@ -23,8 +23,11 @@ import {
   validCsrfPair,
 } from '../../iam/application/authentication/authentication.application.service';
 import type {
+  BulkTaskNoteGovernanceAction,
+  BulkWorkReportGovernanceAction,
   DocumentKnowledgeControlAction,
   DocumentStatus,
+  TaskNoteReviewStatus,
   WorkReportStatus,
 } from '../application/work-notes.types';
 import { WorkNotesService } from '../application/work-notes.service';
@@ -57,6 +60,84 @@ const workReportStatuses: readonly WorkReportStatus[] = [
   'REJECTED',
   'OVERDUE',
 ];
+const taskNoteReviewStatuses: readonly TaskNoteReviewStatus[] = [
+  'PENDING_REVIEW',
+  'APPROVED',
+  'CHANGES_REQUESTED',
+  'REJECTED',
+];
+const bulkTaskNoteActions: readonly BulkTaskNoteGovernanceAction[] = [
+  'APPROVE',
+  'REQUEST_CHANGES',
+  'REJECT',
+  'SYNC',
+  'PAUSE',
+  'RESUME',
+  'REPROCESS',
+  'REVOKE',
+  'PURGE_ARTIFACT',
+  'DELETE',
+];
+const bulkWorkReportActions: readonly BulkWorkReportGovernanceAction[] = [
+  'APPROVE',
+  'REQUEST_CHANGES',
+  'REJECT',
+  'SYNC',
+  'PAUSE',
+  'RESUME',
+  'REPROCESS',
+  'REVOKE',
+  'PURGE_ARTIFACT',
+  'REOPEN',
+];
+
+function validateBulkGovernancePayload<TAction extends string>(
+  body: unknown,
+  acceptedActions: readonly TAction[],
+): {
+  ids: string[];
+  action: TAction;
+  comment?: string;
+  reopen?: boolean;
+} {
+  const payload = record(body);
+  if (
+    Object.keys(payload).some(
+      (key) => !['ids', 'action', 'comment', 'reopen'].includes(key),
+    )
+  ) {
+    invalid();
+  }
+  const action = optionalStatus<TAction>(payload.action, acceptedActions);
+  if (!action) invalid();
+  if (
+    !Array.isArray(payload.ids) ||
+    payload.ids.length === 0 ||
+    payload.ids.length > 50 ||
+    payload.ids.some((id) => typeof id !== 'string' || !id.trim())
+  ) {
+    invalid();
+  }
+  if (payload.reopen !== undefined && typeof payload.reopen !== 'boolean') {
+    invalid();
+  }
+  let comment: string | undefined;
+  if (payload.comment !== undefined) {
+    if (typeof payload.comment !== 'string' || payload.comment.length > 2000) {
+      invalid();
+    }
+    comment = payload.comment.trim() || undefined;
+  }
+  if ((action === 'REQUEST_CHANGES' || action === 'REJECT') && !comment) {
+    invalid();
+  }
+  return {
+    ids: (payload.ids as string[]).map((id) => id.trim()),
+    action,
+    ...(comment ? { comment } : {}),
+    ...(payload.reopen !== undefined ? { reopen: payload.reopen } : {}),
+  };
+}
 
 function invalid(): never {
   throw new UnprocessableEntityException({
@@ -346,6 +427,7 @@ export class WorkNotesController {
       'pageSize',
       'taskId',
       'authorId',
+      'reviewStatus',
       'search',
       'sort',
     ]);
@@ -357,6 +439,10 @@ export class WorkNotesController {
         !/^[a-f\d]{24}$/i.test(rawQuery.authorId))
     )
       invalid();
+    const reviewStatus = optionalStatus(
+      rawQuery.reviewStatus,
+      taskNoteReviewStatuses,
+    );
     if (
       rawQuery.search !== undefined &&
       (typeof rawQuery.search !== 'string' || rawQuery.search.length > 200)
@@ -370,6 +456,7 @@ export class WorkNotesController {
       invalid();
     const hasExtendedFilters =
       rawQuery.authorId !== undefined ||
+      reviewStatus !== undefined ||
       rawQuery.search !== undefined ||
       rawQuery.sort !== undefined;
     return this.service.listProjectTaskNotes(
@@ -385,12 +472,27 @@ export class WorkNotesController {
             ...(rawQuery.authorId !== undefined
               ? { authorId: rawQuery.authorId }
               : {}),
+            ...(reviewStatus !== undefined ? { reviewStatus } : {}),
             ...(rawQuery.search !== undefined
               ? { search: rawQuery.search }
               : {}),
             ...(rawQuery.sort !== undefined ? { sort: rawQuery.sort } : {}),
           }
         : rawQuery.taskId,
+    );
+  }
+
+  @Post('work-notes/bulk-action')
+  @HttpCode(HttpStatus.OK)
+  bulkTaskNoteAction(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.bulkTaskNoteAction(
+      this.mutationHeaders(request),
+      projectId,
+      validateBulkGovernancePayload(body, bulkTaskNoteActions),
     );
   }
 
@@ -404,6 +506,243 @@ export class WorkNotesController {
       this.requestHeaders(request),
       projectId,
       noteId,
+    );
+  }
+
+  @Delete('work-notes/:noteId')
+  @HttpCode(HttpStatus.OK)
+  deleteProjectTaskNote(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+  ) {
+    return this.service.deleteProjectTaskNote(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+    );
+  }
+
+  @Delete('work-notes/:noteId/file')
+  @HttpCode(HttpStatus.OK)
+  purgeTaskNoteFile(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
+    @Body() body?: unknown,
+  ) {
+    assertQueryKeys(rawQuery, ['reopen']);
+    if (
+      rawQuery.reopen !== undefined &&
+      rawQuery.reopen !== 'true' &&
+      rawQuery.reopen !== 'false'
+    ) {
+      invalid();
+    }
+    const payload =
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? (body as Record<string, unknown>)
+        : {};
+    const reopen = rawQuery.reopen === 'true' || payload.reopen === true;
+    const comment =
+      typeof payload.comment === 'string' && payload.comment.trim()
+        ? payload.comment.trim().slice(0, 2000)
+        : undefined;
+    return this.service.purgeTaskNoteArtifact(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+      {
+        ...(reopen ? { reopen: true } : {}),
+        ...(comment ? { comment } : {}),
+      },
+    );
+  }
+
+  @Post('work-notes/:noteId/approve')
+  @HttpCode(HttpStatus.OK)
+  approveTaskNote(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.reviewTaskNote(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+      'APPROVED',
+      validateReviewInput(body, false),
+    );
+  }
+
+  @Post('work-notes/:noteId/request-changes')
+  @HttpCode(HttpStatus.OK)
+  requestTaskNoteChanges(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.reviewTaskNote(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+      'CHANGES_REQUESTED',
+      validateReviewInput(body, true),
+    );
+  }
+
+  @Post('work-notes/:noteId/reject')
+  @HttpCode(HttpStatus.OK)
+  rejectTaskNote(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.reviewTaskNote(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+      'REJECTED',
+      validateReviewInput(body, true),
+    );
+  }
+
+  @Get('work-notes/:noteId/file')
+  async downloadTaskNoteFile(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
+  ) {
+    assertQueryKeys(rawQuery, ['proxy', 'format']);
+    if (
+      rawQuery.proxy !== undefined &&
+      rawQuery.proxy !== 'true' &&
+      rawQuery.proxy !== 'false'
+    ) {
+      invalid();
+    }
+    if (rawQuery.format !== undefined && rawQuery.format !== 'url') {
+      invalid();
+    }
+    const headers = this.requestHeaders(request);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+
+    if (rawQuery.format === 'url') {
+      return this.service.resolveTaskNoteFileDownloadUrl(
+        headers,
+        projectId,
+        noteId,
+      );
+    }
+
+    if (
+      rawQuery.proxy !== 'true' &&
+      typeof this.service.resolveTaskNoteFileDownloadUrl === 'function'
+    ) {
+      const direct = await this.service.resolveTaskNoteFileDownloadUrl(
+        headers,
+        projectId,
+        noteId,
+      );
+      if (direct.mode === 'DIRECT_GET' && direct.downloadUrl) {
+        response.setHeader('Location', direct.downloadUrl);
+        response.status(HttpStatus.FOUND);
+        return;
+      }
+    }
+
+    const file = await this.service.downloadTaskNoteFile(
+      headers,
+      projectId,
+      noteId,
+    );
+    response.setHeader('Content-Type', file.contentType);
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    );
+    return new StreamableFile(file.bytes);
+  }
+
+  @Get('work-notes/:noteId/knowledge-status')
+  getTaskNoteKnowledgeStatus(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+  ) {
+    return this.service.getTaskNoteKnowledgeStatus(
+      this.requestHeaders(request),
+      projectId,
+      noteId,
+    );
+  }
+
+  @Get('work-notes/:noteId/knowledge-chunks')
+  getTaskNoteKnowledgeChunks(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
+  ) {
+    assertQueryKeys(rawQuery, ['limit', 'offset']);
+    const limit =
+      rawQuery.limit === undefined
+        ? 50
+        : positiveInteger(rawQuery.limit, 50, 200);
+    const offset =
+      rawQuery.offset === undefined
+        ? 0
+        : rawQuery.offset === '0' || rawQuery.offset === 0
+          ? 0
+          : positiveInteger(rawQuery.offset, 0, 100000);
+    return this.service.getTaskNoteKnowledgeChunks(
+      this.requestHeaders(request),
+      projectId,
+      noteId,
+      { limit, offset },
+    );
+  }
+
+  @Post('work-notes/:noteId/knowledge-sync')
+  @HttpCode(HttpStatus.OK)
+  syncTaskNoteToSag(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+  ) {
+    return this.service.syncTaskNoteToSag(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+    );
+  }
+
+  @Post('work-notes/:noteId/knowledge-control')
+  @HttpCode(HttpStatus.OK)
+  controlTaskNoteKnowledge(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('noteId') noteId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = record(body);
+    const action = optionalStatus<DocumentKnowledgeControlAction>(
+      payload.action,
+      ['PAUSE', 'RESUME', 'REPROCESS', 'REVOKE'],
+    );
+    if (!action) invalid();
+    return this.service.controlTaskNoteKnowledge(
+      this.mutationHeaders(request),
+      projectId,
+      noteId,
+      action,
     );
   }
 
@@ -787,6 +1126,57 @@ export class WorkNotesController {
         );
   }
 
+  @Post('work-reports/bulk-action')
+  @HttpCode(HttpStatus.OK)
+  bulkWorkReportAction(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.bulkWorkReportAction(
+      this.mutationHeaders(request),
+      projectId,
+      validateBulkGovernancePayload(body, bulkWorkReportActions),
+    );
+  }
+
+  @Delete('work-reports/:reportId/file')
+  @HttpCode(HttpStatus.OK)
+  purgeWorkReportFile(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
+    @Body() body?: unknown,
+  ) {
+    assertQueryKeys(rawQuery, ['reopen']);
+    if (
+      rawQuery.reopen !== undefined &&
+      rawQuery.reopen !== 'true' &&
+      rawQuery.reopen !== 'false'
+    ) {
+      invalid();
+    }
+    const payload =
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? (body as Record<string, unknown>)
+        : {};
+    const reopen = rawQuery.reopen === 'true' || payload.reopen === true;
+    const comment =
+      typeof payload.comment === 'string' && payload.comment.trim()
+        ? payload.comment.trim().slice(0, 2000)
+        : undefined;
+    return this.service.purgeWorkReportArtifact(
+      this.mutationHeaders(request),
+      projectId,
+      reportId,
+      {
+        ...(reopen ? { reopen: true } : {}),
+        ...(comment ? { comment } : {}),
+      },
+    );
+  }
+
   @Put('work-reports/:reportId/file')
   async uploadWorkReportFile(
     @Req() request: Request,
@@ -833,20 +1223,133 @@ export class WorkNotesController {
     @Res({ passthrough: true }) response: Response,
     @Param('projectId') projectId: string,
     @Param('reportId') reportId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
   ) {
+    assertQueryKeys(rawQuery, ['proxy', 'format']);
+    if (
+      rawQuery.proxy !== undefined &&
+      rawQuery.proxy !== 'true' &&
+      rawQuery.proxy !== 'false'
+    ) {
+      invalid();
+    }
+    if (rawQuery.format !== undefined && rawQuery.format !== 'url') {
+      invalid();
+    }
+    const headers = this.requestHeaders(request);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+
+    if (rawQuery.format === 'url') {
+      return this.service.resolveWorkReportFileDownloadUrl(
+        headers,
+        projectId,
+        reportId,
+      );
+    }
+
+    if (
+      rawQuery.proxy !== 'true' &&
+      typeof this.service.resolveWorkReportFileDownloadUrl === 'function'
+    ) {
+      const direct = await this.service.resolveWorkReportFileDownloadUrl(
+        headers,
+        projectId,
+        reportId,
+      );
+      if (direct.mode === 'DIRECT_GET' && direct.downloadUrl) {
+        response.setHeader('Location', direct.downloadUrl);
+        response.status(HttpStatus.FOUND);
+        return;
+      }
+    }
+
     const file = await this.service.downloadWorkReportFile(
-      this.requestHeaders(request),
+      headers,
       projectId,
       reportId,
     );
-    response.setHeader('Cache-Control', 'private, no-store');
-    response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Type', file.contentType);
     response.setHeader(
       'Content-Disposition',
       `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
     );
     return new StreamableFile(file.bytes);
+  }
+
+  @Get('work-reports/:reportId/knowledge-status')
+  getWorkReportKnowledgeStatus(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+  ) {
+    return this.service.getWorkReportKnowledgeStatus(
+      this.requestHeaders(request),
+      projectId,
+      reportId,
+    );
+  }
+
+  @Get('work-reports/:reportId/knowledge-chunks')
+  getWorkReportKnowledgeChunks(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+    @Query() rawQuery: Record<string, unknown> = {},
+  ) {
+    assertQueryKeys(rawQuery, ['limit', 'offset']);
+    const limit =
+      rawQuery.limit === undefined
+        ? 50
+        : positiveInteger(rawQuery.limit, 50, 200);
+    const offset =
+      rawQuery.offset === undefined
+        ? 0
+        : rawQuery.offset === '0' || rawQuery.offset === 0
+          ? 0
+          : positiveInteger(rawQuery.offset, 0, 100000);
+    return this.service.getWorkReportKnowledgeChunks(
+      this.requestHeaders(request),
+      projectId,
+      reportId,
+      { limit, offset },
+    );
+  }
+
+  @Post('work-reports/:reportId/knowledge-sync')
+  @HttpCode(HttpStatus.OK)
+  syncWorkReportToSag(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+  ) {
+    return this.service.syncWorkReportToSag(
+      this.mutationHeaders(request),
+      projectId,
+      reportId,
+    );
+  }
+
+  @Post('work-reports/:reportId/knowledge-control')
+  @HttpCode(HttpStatus.OK)
+  controlWorkReportKnowledge(
+    @Req() request: Request,
+    @Param('projectId') projectId: string,
+    @Param('reportId') reportId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = record(body);
+    const action = optionalStatus<DocumentKnowledgeControlAction>(
+      payload.action,
+      ['PAUSE', 'RESUME', 'REPROCESS', 'REVOKE'],
+    );
+    if (!action) invalid();
+    return this.service.controlWorkReportKnowledge(
+      this.mutationHeaders(request),
+      projectId,
+      reportId,
+      action,
+    );
   }
 
   @Get('work-reports/:reportId')
@@ -883,12 +1386,34 @@ export class WorkNotesController {
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Param('reportId') reportId: string,
+    @Body() body?: unknown,
   ) {
-    return this.service.submitWorkReport(
-      this.mutationHeaders(request),
-      projectId,
-      reportId,
-    );
+    let autoApprove: boolean | undefined;
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const payload = body as Record<string, unknown>;
+      if (Object.keys(payload).some((key) => key !== 'autoApprove')) {
+        invalid();
+      }
+      if (
+        payload.autoApprove !== undefined &&
+        typeof payload.autoApprove !== 'boolean'
+      ) {
+        invalid();
+      }
+      autoApprove = payload.autoApprove;
+    }
+    return autoApprove !== undefined
+      ? this.service.submitWorkReport(
+          this.mutationHeaders(request),
+          projectId,
+          reportId,
+          { autoApprove },
+        )
+      : this.service.submitWorkReport(
+          this.mutationHeaders(request),
+          projectId,
+          reportId,
+        );
   }
 
   @Post('work-reports/:reportId/approve')

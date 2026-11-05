@@ -44,12 +44,20 @@ import {
   getFrequencyDays,
   type WorkReportFrequency,
 } from './work-notes.domain';
+import {
+  buildTaskNoteMarkdownArtifact,
+  buildWorkReportMarkdownArtifact,
+} from './markdown-artifact.builder';
 import { WorkNotesAuthorizationService } from './work-notes-authorization.service';
 import {
   ProjectReportRosterService,
   type ReportingProjectMembers,
 } from '../../iam/application/projects/project-report-roster.service';
 import type {
+  BulkGovernanceActionInput,
+  BulkGovernanceResult,
+  BulkTaskNoteGovernanceAction,
+  BulkWorkReportGovernanceAction,
   CaptureRequestHeaders,
   AiChatProjectDocumentReadinessStatus,
   AiChatProjectDocumentSourceRecord,
@@ -71,12 +79,14 @@ import type {
   ProjectDocumentRecord,
   ProjectDocumentSummaryRecord,
   ProjectTaskNotesQueryOptions,
+  PurgeArtifactResult,
   ReviewInput,
   TaskNoteInput,
   TaskNoteAiChatCitation,
   TaskNoteAiChatSessionCitation,
   TaskNoteAiChatSource,
   TaskNoteRecord,
+  TaskNoteReviewStatus,
   WorkNotesActor,
   WorkNotesPage,
   WorkNotesPermissions,
@@ -118,6 +128,83 @@ const record = (value: Document | null): MongoRecord | null =>
   value as unknown as MongoRecord | null;
 const text = (value: unknown): string =>
   typeof value === 'string' ? value : '';
+const isKnowledgeSettledStatus = (status: unknown): boolean => {
+  const normalized =
+    typeof status === 'string' ? status.trim().toUpperCase() : '';
+  return (
+    normalized === 'DATA_READY' ||
+    normalized === 'KNOWLEDGE_READY' ||
+    normalized === 'READY'
+  );
+};
+const normalizeKnowledgeSyncForVersion = (
+  rawSync: unknown,
+  currentVersionNumber: number,
+): DocumentKnowledgeStatusRecord | undefined => {
+  if (!rawSync || typeof rawSync !== 'object' || Array.isArray(rawSync)) {
+    return undefined;
+  }
+  const sync = rawSync as DocumentKnowledgeStatusRecord;
+  if (
+    typeof sync.version === 'number' &&
+    Number.isFinite(sync.version) &&
+    Number(sync.version) !== currentVersionNumber
+  ) {
+    return undefined;
+  }
+  if (!sync.knowledgeReady && isKnowledgeSettledStatus(sync.knowledgeStatus)) {
+    return { ...sync, knowledgeReady: true };
+  }
+  return sync;
+};
+const shouldRefreshLiveKnowledgeSync = (
+  sync: DocumentKnowledgeStatusRecord | undefined,
+  hasLiveStatusTransport: boolean,
+): boolean => {
+  if (!sync) return true;
+  const normalized = (sync.status || '').toUpperCase();
+  const normalizedStage = (sync.currentStage || '').toUpperCase();
+  const normalizedDocStatus = (sync.documentStatus || '').toUpperCase();
+  const normalizedKnowledgeStatus = (sync.knowledgeStatus || '').toUpperCase();
+  if (['FAILED', 'REVOKED', 'NOT_SYNCED'].includes(normalized)) {
+    return false;
+  }
+  if (
+    normalized === 'PAUSED' ||
+    (normalizedStage === 'PAUSED' && normalizedDocStatus === 'PAUSED')
+  ) {
+    return false;
+  }
+  const isSettledKnowledge = Boolean(
+    sync.knowledgeReady || isKnowledgeSettledStatus(normalizedKnowledgeStatus),
+  );
+  const isKnowledgeInFlight =
+    !isSettledKnowledge &&
+    ['PROCESSING', 'EXTRACTING', 'RUNNING', 'QUEUED', 'PENDING'].includes(
+      normalizedKnowledgeStatus,
+    );
+  const isDocInFlight = [
+    'PENDING',
+    'LOADING',
+    'EXTRACTING',
+    'PAUSING',
+  ].includes(normalizedDocStatus);
+  const isStagePaused = ['PAUSING', 'PAUSED'].includes(normalizedStage);
+  const isTerminalReady =
+    !isKnowledgeInFlight &&
+    !isDocInFlight &&
+    !isStagePaused &&
+    (isSettledKnowledge ||
+      (sync.searchReady &&
+        (normalized === 'READY' ||
+          normalized === 'SEARCH_READY' ||
+          normalizedStage === 'COMPLETE' ||
+          normalizedDocStatus === 'READY' ||
+          normalizedDocStatus === 'INDEXED'))) &&
+    sync.progress >= 100;
+  if (isTerminalReady) return false;
+  return hasLiveStatusTransport || !sync.status;
+};
 const serializeAiChatSource = (value: unknown): TaskNoteAiChatSource | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
@@ -543,8 +630,13 @@ export class WorkNotesService {
         .toArray(),
       collection.countDocuments(filter),
     ]);
+    const records = await this.refreshTaskNotesLiveKnowledge(
+      actor,
+      projectId,
+      rows.map((row) => this.taskNoteRecord(row, actor)),
+    );
     return {
-      data: rows.map((row) => this.taskNoteRecord(row, actor)),
+      data: records,
       pagination: this.pagination(page, pageSize, totalItems),
     };
   }
@@ -560,7 +652,7 @@ export class WorkNotesService {
       typeof taskIdOrOptions === 'string'
         ? { taskId: taskIdOrOptions }
         : (taskIdOrOptions ?? {});
-    const { taskId, authorId, search, sort = 'recent' } = options;
+    const { taskId, authorId, reviewStatus, search, sort = 'recent' } = options;
     const actor = taskId
       ? await this.authorization.resolveTask(headers, projectId, taskId)
       : await this.authorization.resolveProject(headers, projectId);
@@ -569,6 +661,29 @@ export class WorkNotesService {
     const escapedSearch = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const searchRegex =
       escapedSearch.length > 0 ? new RegExp(escapedSearch, 'i') : undefined;
+    const andConditions: Record<string, unknown>[] = [];
+    if (reviewStatus === 'PENDING_REVIEW') {
+      andConditions.push({
+        $or: [
+          { 'provenance.review.status': 'PENDING_REVIEW' },
+          { 'provenance.review.status': { $exists: false } },
+        ],
+      });
+    } else if (reviewStatus) {
+      andConditions.push({ 'provenance.review.status': reviewStatus });
+    }
+    if (searchRegex) {
+      andConditions.push({
+        $or: [
+          { title: searchRegex },
+          { authorName: searchRegex },
+          { whatDone: searchRegex },
+          { contentMarkdown: searchRegex },
+          { howSolved: searchRegex },
+          { whyThisWay: searchRegex },
+        ],
+      });
+    }
     const filter: Record<string, unknown> = {
       organizationId: objectId(actor.organizationId),
       projectId: objectId(projectId),
@@ -578,18 +693,11 @@ export class WorkNotesService {
       ...(authorId && validId(authorId)
         ? { authorUserId: objectId(authorId) }
         : {}),
-      ...(searchRegex
-        ? {
-            $or: [
-              { title: searchRegex },
-              { authorName: searchRegex },
-              { whatDone: searchRegex },
-              { contentMarkdown: searchRegex },
-              { howSolved: searchRegex },
-              { whyThisWay: searchRegex },
-            ],
-          }
-        : {}),
+      ...(andConditions.length === 1
+        ? andConditions[0]
+        : andConditions.length > 1
+          ? { $and: andConditions }
+          : {}),
     };
     const sortSpec: Record<string, 1 | -1> =
       sort === 'oldest' ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 };
@@ -604,8 +712,13 @@ export class WorkNotesService {
           .toArray(),
         collection.countDocuments(filter),
       ]);
+      const records = await this.refreshTaskNotesLiveKnowledge(
+        actor,
+        projectId,
+        rows.map((row) => this.taskNoteRecord(row, actor)),
+      );
       return {
-        data: rows.map((row) => this.taskNoteRecord(row, actor)),
+        data: records,
         pagination: this.pagination(page, pageSize, totalItems),
       };
     }
@@ -650,12 +763,23 @@ export class WorkNotesService {
       (page - 1) * pageSize,
       page * pageSize,
     );
+    const mappedPage = pagedRows.map((row) => {
+      const rowTaskId = idText((row as Record<string, unknown>).taskId);
+      const taskActor = resolvedTaskActors.get(rowTaskId) ?? actor;
+      return this.taskNoteRecord(row, taskActor);
+    });
+    const refreshedPage = await this.refreshTaskNotesLiveKnowledge(
+      actor,
+      projectId,
+      mappedPage,
+    );
+    const withStorageRefs = await this.attachTaskNoteStorageReferences(
+      actor.organizationId,
+      pagedRows,
+      refreshedPage,
+    );
     return {
-      data: pagedRows.map((row) => {
-        const rowTaskId = idText((row as Record<string, unknown>).taskId);
-        const taskActor = resolvedTaskActors.get(rowTaskId) ?? actor;
-        return this.taskNoteRecord(row, taskActor);
-      }),
+      data: withStorageRefs,
       pagination: this.pagination(page, pageSize, totalItems),
     };
   }
@@ -683,7 +807,26 @@ export class WorkNotesService {
         status: 'CONFIRMED',
       });
     if (!row) throw this.taskNoteNotFound();
-    return this.taskNoteRecord(row, actor);
+    const mapped = this.taskNoteRecord(row, actor);
+    const hasLiveTransport =
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function';
+    if (
+      mapped.reviewStatus === 'APPROVED' &&
+      shouldRefreshLiveKnowledgeSync(mapped.knowledgeSync, hasLiveTransport)
+    ) {
+      const refreshed = await this.resolveTaskNoteKnowledgeStatusForRow(
+        actor,
+        projectId,
+        row,
+      ).catch(() => mapped.knowledgeSync);
+      if (refreshed) mapped.knowledgeSync = refreshed;
+    }
+    const [withStorageRef] = await this.attachTaskNoteStorageReferences(
+      actor.organizationId,
+      [row],
+      [mapped],
+    );
+    return withStorageRef ?? mapped;
   }
 
   async getProjectTaskNote(
@@ -709,7 +852,26 @@ export class WorkNotesService {
       projectId,
       taskId,
     );
-    return this.taskNoteRecord(row, taskActor);
+    const mapped = this.taskNoteRecord(row, taskActor);
+    const hasLiveTransport =
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function';
+    if (
+      mapped.reviewStatus === 'APPROVED' &&
+      shouldRefreshLiveKnowledgeSync(mapped.knowledgeSync, hasLiveTransport)
+    ) {
+      const refreshed = await this.resolveTaskNoteKnowledgeStatusForRow(
+        taskActor,
+        projectId,
+        row,
+      ).catch(() => mapped.knowledgeSync);
+      if (refreshed) mapped.knowledgeSync = refreshed;
+    }
+    const [withStorageRef] = await this.attachTaskNoteStorageReferences(
+      taskActor.organizationId,
+      [row],
+      [mapped],
+    );
+    return withStorageRef ?? mapped;
   }
 
   async createTaskNote(
@@ -724,39 +886,128 @@ export class WorkNotesService {
       taskId,
     );
     const id = new Types.ObjectId();
+    const noteId = String(id);
     const now = new Date();
+    const nowIso = now.toISOString();
+    const bodyCharCount =
+      input.accomplishments.trim().length +
+      input.approach.trim().length +
+      input.reason.trim().length;
+    const shouldAutoApprove =
+      Boolean(actor.canReview) &&
+      input.autoApprove !== false &&
+      bodyCharCount >= 30;
+    const reviewStatus: TaskNoteReviewStatus = shouldAutoApprove
+      ? 'APPROVED'
+      : 'PENDING_REVIEW';
+    const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+      ? 'MANAGER'
+      : 'LEADER';
+    const queuedSync: DocumentKnowledgeStatusRecord | undefined =
+      shouldAutoApprove
+        ? {
+            documentId: noteId,
+            version: 1,
+            status: 'QUEUED_OUTBOX',
+            searchStatus: 'PENDING',
+            knowledgeStatus: 'NOT_STARTED',
+            searchReady: false,
+            knowledgeReady: false,
+            currentStage: 'OUTBOX_QUEUE',
+            progress: 5,
+            syncedAt: nowIso,
+          }
+        : undefined;
+    const provenance: Record<string, unknown> = {
+      review: shouldAutoApprove
+        ? {
+            status: 'APPROVED',
+            submittedAt: nowIso,
+            reviewedBy: actor.userId,
+            reviewerName: actor.userName,
+            reviewedAt: nowIso,
+            history: [
+              {
+                action: 'APPROVED',
+                reviewerId: actor.userId,
+                reviewerRole,
+                at: nowIso,
+              },
+            ],
+          }
+        : {
+            status: 'PENDING_REVIEW',
+            submittedAt: nowIso,
+            history: [],
+          },
+      ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
+    };
+    let insertedRow: Document | null = null;
     await this.transaction(async (db, session) => {
-      await db.collection('work_notes').insertOne(
-        {
-          _id: id,
-          organizationId: objectId(actor.organizationId),
-          projectId: objectId(projectId),
-          taskId: objectId(taskId),
-          type: 'TASK_NOTE',
-          authorUserId: objectId(actor.userId),
-          authorName: actor.userName,
-          title: input.title,
-          whatDone: input.accomplishments,
-          howSolved: input.approach,
-          whyThisWay: input.reason,
-          status: 'CONFIRMED',
-          authorConfirmedAt: now,
-          createdAt: now,
-          updatedAt: now,
-        },
-        { session },
-      );
+      const doc: Document = {
+        _id: id,
+        organizationId: objectId(actor.organizationId),
+        projectId: objectId(projectId),
+        taskId: objectId(taskId),
+        type: 'TASK_NOTE',
+        authorUserId: objectId(actor.userId),
+        authorName: actor.userName,
+        ...(actor.taskKey ? { taskKey: actor.taskKey } : {}),
+        title: input.title,
+        whatDone: input.accomplishments,
+        howSolved: input.approach,
+        whyThisWay: input.reason,
+        currentVersionNumber: 1,
+        status: 'CONFIRMED',
+        authorConfirmedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        provenance,
+      };
+      await db.collection('work_notes').insertOne(doc, { session });
+      insertedRow = doc;
+      if (shouldAutoApprove && this.outbox) {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            payload: {
+              sourceType: 'WORK_NOTE',
+              sourceId: noteId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: 1,
+              approvedAt: nowIso,
+            },
+          },
+          session,
+        );
+      }
       await this.auditEvent(
         actor,
         'TASK_NOTE_CREATED',
         'WORK_NOTE',
-        String(id),
-        undefined,
+        noteId,
+        { version: 1, reviewStatus },
         session,
       );
     });
+    await this.afterTaskNoteSaved({
+      headers,
+      actor,
+      projectId,
+      taskId,
+      noteId,
+      title: input.title,
+      version: 1,
+      reviewStatus,
+    });
+    if (insertedRow) {
+      return this.taskNoteRecord(insertedRow, actor);
+    }
     return {
-      id: String(id),
+      id: noteId,
       projectId,
       taskId,
       ...(actor.taskKey ? { taskKey: actor.taskKey } : {}),
@@ -765,10 +1016,16 @@ export class WorkNotesService {
       authorName: actor.userName,
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
+      reviewStatus,
+      submittedAt: nowIso,
+      ...(shouldAutoApprove
+        ? { reviewedBy: actor.userId, reviewedAt: nowIso }
+        : {}),
+      ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
       ...input,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      permissions: this.taskNotePermissions(actor, actor.userId),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      permissions: this.taskNotePermissions(actor, actor.userId, reviewStatus),
     };
   }
 
@@ -786,6 +1043,18 @@ export class WorkNotesService {
     );
     if (!validId(noteId)) throw this.taskNoteNotFound();
     let updatedRow: Document | null = null;
+    let nextVersion = 1;
+    const bodyCharCount =
+      input.accomplishments.trim().length +
+      input.approach.trim().length +
+      input.reason.trim().length;
+    const shouldAutoApprove =
+      Boolean(actor.canReview) &&
+      input.autoApprove !== false &&
+      bodyCharCount >= 30;
+    const reviewStatus: TaskNoteReviewStatus = shouldAutoApprove
+      ? 'APPROVED'
+      : 'PENDING_REVIEW';
     await this.transaction(async (db, session) => {
       const existing = await db.collection('work_notes').findOne(
         {
@@ -805,6 +1074,69 @@ export class WorkNotesService {
           code: 'NOTE_EDITOR_UPGRADE_REQUIRED',
           message: 'Use the freeform editor to update this note.',
         });
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const prevVersion = Math.max(
+        1,
+        Number(existing.currentVersionNumber ?? 1),
+      );
+      nextVersion = prevVersion + 1;
+      const rawProv =
+        existing.provenance &&
+        typeof existing.provenance === 'object' &&
+        !Array.isArray(existing.provenance)
+          ? (existing.provenance as Record<string, unknown>)
+          : {};
+      const prevReview =
+        rawProv.review && typeof rawProv.review === 'object'
+          ? (rawProv.review as { status?: string; history?: unknown })
+          : undefined;
+      const prevHistory = pickReviewHistory(prevReview?.history);
+      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+        ? 'MANAGER'
+        : 'LEADER';
+      const nextProv: Record<string, unknown> = {
+        ...rawProv,
+        review: shouldAutoApprove
+          ? {
+              status: 'APPROVED',
+              submittedAt: nowIso,
+              reviewedBy: actor.userId,
+              reviewedAt: nowIso,
+              history: [
+                ...prevHistory,
+                {
+                  action: 'APPROVED',
+                  reviewerId: actor.userId,
+                  reviewerRole,
+                  at: nowIso,
+                },
+              ],
+            }
+          : {
+              status: 'PENDING_REVIEW',
+              submittedAt: nowIso,
+              history: prevHistory,
+            },
+      };
+      delete nextProv.mdFile;
+      if (shouldAutoApprove) {
+        nextProv.knowledgeSync = {
+          documentId: noteId,
+          version: nextVersion,
+          status: 'QUEUED_OUTBOX',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_QUEUE',
+          progress: 5,
+          syncedAt: nowIso,
+        };
+      } else {
+        delete nextProv.knowledgeSync;
+      }
+
       updatedRow = await db.collection('work_notes').findOneAndUpdate(
         {
           _id: objectId(noteId),
@@ -821,23 +1153,137 @@ export class WorkNotesService {
             whatDone: input.accomplishments,
             howSolved: input.approach,
             whyThisWay: input.reason,
-            updatedAt: new Date(),
+            currentVersionNumber: nextVersion,
+            provenance: nextProv,
+            updatedAt: now,
           },
         },
         { returnDocument: 'after', session },
       );
       if (!updatedRow) throw this.taskNoteNotFound();
+      if (shouldAutoApprove && this.outbox) {
+        if (prevReview?.status === 'APPROVED') {
+          await this.appendOutbox(
+            {
+              eventName: 'KNOWLEDGE_SOURCE_REPLACED',
+              aggregateType: 'WORK_NOTE',
+              aggregateId: noteId,
+              payload: {
+                sourceType: 'WORK_NOTE',
+                sourceId: noteId,
+                organizationId: actor.organizationId,
+                projectId,
+                previousVersion: prevVersion,
+                version: nextVersion,
+              },
+            },
+            session,
+          );
+        }
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            payload: {
+              sourceType: 'WORK_NOTE',
+              sourceId: noteId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: nextVersion,
+              approvedAt: nowIso,
+            },
+          },
+          session,
+        );
+      }
       await this.auditEvent(
         actor,
         'TASK_NOTE_UPDATED',
         'WORK_NOTE',
         noteId,
-        undefined,
+        { version: nextVersion, reviewStatus },
         session,
       );
     });
     if (!updatedRow) throw this.taskNoteNotFound();
+    await this.afterTaskNoteSaved({
+      headers,
+      actor,
+      projectId,
+      taskId,
+      noteId,
+      title: input.title,
+      version: nextVersion,
+      reviewStatus,
+    });
     return this.taskNoteRecord(updatedRow, actor);
+  }
+
+  async afterTaskNoteSaved(params: {
+    headers: CaptureRequestHeaders;
+    actor: WorkNotesActor;
+    projectId: string;
+    taskId: string;
+    noteId: string;
+    title: string;
+    version: number;
+    reviewStatus: TaskNoteReviewStatus;
+  }): Promise<void> {
+    const {
+      headers,
+      actor,
+      projectId,
+      taskId,
+      noteId,
+      title,
+      version,
+      reviewStatus,
+    } = params;
+    if (reviewStatus === 'APPROVED') {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        noteId,
+        'KNOWLEDGE_SOURCE_APPROVED',
+        version,
+        headers.requestId,
+      );
+      return;
+    }
+
+    if (this.notifications) {
+      try {
+        const recipients = (
+          await this.resolveProjectLeaderRecipientIds(
+            actor.organizationId,
+            projectId,
+          )
+        ).filter((uid) => uid.toLowerCase() !== actor.userId.toLowerCase());
+        if (recipients.length > 0) {
+          const authorLabel = actor.userName || 'A team member';
+          await this.notifications.emitSafe({
+            type: 'WORK_NOTE_MENTION',
+            actorId: actor.userId,
+            recipients,
+            title: 'Task Note awaiting review',
+            message: `${authorLabel} submitted Task Note "${title.slice(0, 80)}" (v${version}) for approval.`,
+            organizationId: actor.organizationId,
+            projectId,
+            target: {
+              kind: 'WORK_NOTE',
+              url: `/projects/${projectId}/work-notes`,
+              organizationId: actor.organizationId,
+              projectId,
+              taskId,
+              noteId,
+            },
+            eventKey: `task-note-submitted:${noteId}:v${version}:${Date.now()}`,
+          });
+        }
+      } catch {
+        // Non-blocking notification
+      }
+    }
   }
 
   async deleteTaskNote(
@@ -852,7 +1298,29 @@ export class WorkNotesService {
       taskId,
     );
     if (!validId(noteId)) throw this.taskNoteNotFound();
+    let existingProv: Record<string, unknown> | undefined;
+    let revokedVersion = 1;
     await this.transaction(async (db, session) => {
+      const existing = await db.collection('work_notes').findOne(
+        {
+          _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          taskId: objectId(taskId),
+          type: 'TASK_NOTE',
+          status: 'CONFIRMED',
+          ...(actor.canReview ? {} : { authorUserId: objectId(actor.userId) }),
+        },
+        { session },
+      );
+      if (!existing) throw this.taskNoteNotFound();
+      revokedVersion = Math.max(1, Number(existing.currentVersionNumber ?? 1));
+      existingProv =
+        existing.provenance &&
+        typeof existing.provenance === 'object' &&
+        !Array.isArray(existing.provenance)
+          ? (existing.provenance as Record<string, unknown>)
+          : undefined;
       const result = await db.collection('work_notes').updateOne(
         {
           _id: objectId(noteId),
@@ -867,14 +1335,1036 @@ export class WorkNotesService {
         { session },
       );
       if (result.modifiedCount !== 1) throw this.taskNoteNotFound();
+      const reviewObj = existingProv?.review as { status?: string } | undefined;
+      const syncObj = existingProv?.knowledgeSync as
+        { sagDocumentId?: string } | undefined;
+      if (
+        this.outbox &&
+        (reviewObj?.status === 'APPROVED' || Boolean(syncObj?.sagDocumentId))
+      ) {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            payload: {
+              sourceType: 'WORK_NOTE',
+              sourceId: noteId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: revokedVersion,
+              reason: 'ARCHIVED',
+            },
+          },
+          session,
+        );
+      }
       await this.auditEvent(
         actor,
         'TASK_NOTE_ARCHIVED',
         'WORK_NOTE',
         noteId,
-        undefined,
+        { version: revokedVersion },
         session,
       );
+    });
+
+    const reviewObj = existingProv?.review as { status?: string } | undefined;
+    const syncObj = existingProv?.knowledgeSync as
+      { sagDocumentId?: string } | undefined;
+    if (reviewObj?.status === 'APPROVED' || Boolean(syncObj?.sagDocumentId)) {
+      if (typeof this.sagTransport?.revokeProjectDocument === 'function') {
+        await this.sagTransport
+          .revokeProjectDocument({
+            organizationId: actor.organizationId,
+            projectId,
+            documentId: noteId,
+            version: revokedVersion,
+            logicalSourceId: `continuum:work_note:${noteId}`,
+            actorUserId: actor.userId,
+            reason: 'TASK_NOTE_ARCHIVED',
+          })
+          .catch(() => undefined);
+      }
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        noteId,
+        'KNOWLEDGE_SOURCE_REVOKED',
+        revokedVersion,
+        headers.requestId,
+      );
+    }
+
+    const mdFileKey = (existingProv?.mdFile as { key?: string } | undefined)
+      ?.key;
+    if (mdFileKey && this.documentStorage) {
+      const stillReferenced = await this.isStorageKeyStillReferenced(
+        actor.organizationId,
+        mdFileKey,
+        { excludeWorkNoteId: noteId },
+      );
+      if (!stillReferenced) {
+        await this.documentStorage.delete(mdFileKey).catch(() => undefined);
+      }
+    }
+  }
+
+  async deleteProjectTaskNote(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<PurgeArtifactResult> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const authorId = String(row.authorUserId);
+    const isOwner = authorId.toLowerCase() === actor.userId.toLowerCase();
+    if (!isOwner && !actor.canReview) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only the author or a Project reviewer can delete this Task Note.',
+      });
+    }
+    const taskId = idText(row.taskId);
+    const revokedVersion = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const existingProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : undefined;
+    const reviewObj = existingProv?.review as { status?: string } | undefined;
+    const syncObj = existingProv?.knowledgeSync as
+      { sagDocumentId?: string; status?: string } | undefined;
+    const shouldRevokeSag =
+      reviewObj?.status === 'APPROVED' ||
+      Boolean(syncObj?.sagDocumentId) ||
+      (Boolean(syncObj?.status) && syncObj?.status !== 'REVOKED');
+
+    await this.transaction(async (db, session) => {
+      const result = await db.collection('work_notes').updateOne(
+        {
+          _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          ...(validId(taskId) ? { taskId: objectId(taskId) } : {}),
+          type: 'TASK_NOTE',
+          status: 'CONFIRMED',
+        },
+        { $set: { status: 'ARCHIVED', updatedAt: new Date() } },
+        { session },
+      );
+      if (result.modifiedCount !== 1) throw this.taskNoteNotFound();
+      if (this.outbox && shouldRevokeSag) {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            payload: {
+              sourceType: 'WORK_NOTE',
+              sourceId: noteId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: revokedVersion,
+              reason: 'ARCHIVED',
+            },
+          },
+          session,
+        );
+      }
+      await this.auditEvent(
+        actor,
+        'TASK_NOTE_ARCHIVED',
+        'WORK_NOTE',
+        noteId,
+        { version: revokedVersion },
+        session,
+      );
+    });
+
+    let sagRevoked = false;
+    if (shouldRevokeSag) {
+      if (typeof this.sagTransport?.revokeProjectDocument === 'function') {
+        await this.sagTransport
+          .revokeProjectDocument({
+            organizationId: actor.organizationId,
+            projectId,
+            documentId: noteId,
+            version: revokedVersion,
+            logicalSourceId: `continuum:work_note:${noteId}`,
+            actorUserId: actor.userId,
+            reason: 'TASK_NOTE_ARCHIVED',
+          })
+          .then(() => {
+            sagRevoked = true;
+          })
+          .catch(() => undefined);
+      } else {
+        sagRevoked = true;
+      }
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        noteId,
+        'KNOWLEDGE_SOURCE_REVOKED',
+        revokedVersion,
+        headers.requestId,
+      );
+    }
+
+    let r2DeletedKeys = 0;
+    let r2RetainedSharedKeys = 0;
+    const mdFileKey = (existingProv?.mdFile as { key?: string } | undefined)
+      ?.key;
+    if (mdFileKey) {
+      const stillReferenced = await this.isStorageKeyStillReferenced(
+        actor.organizationId,
+        mdFileKey,
+        { excludeWorkNoteId: noteId },
+      );
+      if (stillReferenced) {
+        r2RetainedSharedKeys = 1;
+      } else if (this.documentStorage) {
+        await this.documentStorage.delete(mdFileKey).catch(() => undefined);
+        r2DeletedKeys = 1;
+      }
+    }
+
+    return {
+      entityId: noteId,
+      status: 'ARCHIVED',
+      sagRevoked,
+      r2DeletedKeys,
+      r2RetainedSharedKeys,
+    };
+  }
+
+  async purgeTaskNoteArtifact(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+    options?: { reopen?: boolean; comment?: string },
+  ): Promise<PurgeArtifactResult> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const authorId = String(row.authorUserId);
+    const isOwner = authorId.toLowerCase() === actor.userId.toLowerCase();
+    if (!isOwner && !actor.canReview) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only the author or a Project reviewer can manage Task Note storage artifacts.',
+      });
+    }
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const existingReview =
+      rawProv.review && typeof rawProv.review === 'object'
+        ? (rawProv.review as Record<string, unknown>)
+        : {};
+    const existingSync = normalizeKnowledgeSyncForVersion(
+      rawProv.knowledgeSync,
+      versionNumber,
+    );
+    const mdFileKey = (rawProv.mdFile as { key?: string } | undefined)?.key;
+    const shouldRevokeSag =
+      existingReview.status === 'APPROVED' ||
+      Boolean(existingSync?.sagDocumentId) ||
+      (Boolean(existingSync?.status) && existingSync?.status !== 'REVOKED');
+
+    let sagRevoked = false;
+    if (shouldRevokeSag) {
+      if (typeof this.sagTransport?.revokeProjectDocument === 'function') {
+        await this.sagTransport
+          .revokeProjectDocument({
+            organizationId: actor.organizationId,
+            projectId,
+            documentId: noteId,
+            version: versionNumber,
+            logicalSourceId: `continuum:work_note:${noteId}`,
+            actorUserId: actor.userId,
+            reason: 'ARTIFACT_PURGED',
+          })
+          .then(() => {
+            sagRevoked = true;
+          })
+          .catch(() => undefined);
+      } else {
+        sagRevoked = true;
+      }
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const shouldReopen = Boolean(options?.reopen && actor.canReview);
+    const nextStatus = shouldReopen
+      ? 'CHANGES_REQUESTED'
+      : text(existingReview.status) || 'APPROVED';
+    const comment = options?.comment?.trim() || undefined;
+    const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+      ? 'MANAGER'
+      : 'LEADER';
+    const history = pickReviewHistory(existingReview.history);
+    const nextReview = shouldReopen
+      ? {
+          ...existingReview,
+          status: 'CHANGES_REQUESTED',
+          reviewedBy: actor.userId,
+          reviewerName: actor.userName,
+          reviewedAt: nowIso,
+          ...(comment ? { comment } : {}),
+          history: [
+            ...history,
+            {
+              action: 'CHANGES_REQUESTED' as const,
+              reviewerId: actor.userId,
+              reviewerRole,
+              ...(comment ? { comment } : {}),
+              at: nowIso,
+            },
+          ],
+        }
+      : existingReview;
+
+    const revokedSync: DocumentKnowledgeStatusRecord = {
+      ...(existingSync ?? {}),
+      documentId: noteId,
+      version: versionNumber,
+      status: 'REVOKED',
+      searchStatus: 'REVOKED',
+      knowledgeStatus: 'REVOKED',
+      searchReady: false,
+      knowledgeReady: false,
+      currentStage: 'REVOKED',
+      progress: 0,
+      syncedAt: nowIso,
+    };
+
+    const nextProv: Record<string, unknown> = {
+      ...rawProv,
+      review: nextReview,
+    };
+    delete nextProv.mdFile;
+    if (shouldReopen) {
+      delete nextProv.knowledgeSync;
+    } else {
+      nextProv.knowledgeSync = revokedSync;
+    }
+
+    await this.transaction(async (db, session) => {
+      await db.collection('work_notes').updateOne(
+        {
+          _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          status: 'CONFIRMED',
+        },
+        {
+          $set: {
+            provenance: nextProv,
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      try {
+        await db.collection('work_note_versions').updateOne(
+          {
+            workNoteId: objectId(noteId),
+            versionNumber,
+          },
+          {
+            $set: {
+              'provenance.review': nextReview,
+              ...(shouldReopen
+                ? {}
+                : { 'provenance.knowledgeSync': revokedSync }),
+            },
+            $unset: {
+              'provenance.mdFile': '',
+              ...(shouldReopen ? { 'provenance.knowledgeSync': '' } : {}),
+            },
+          },
+          { session },
+        );
+      } catch {
+        // Optional version collection in isolated unit tests
+      }
+      if (this.outbox && shouldRevokeSag) {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            payload: {
+              sourceType: 'WORK_NOTE',
+              sourceId: noteId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: versionNumber,
+              reason: shouldReopen ? 'REOPENED' : 'ARTIFACT_PURGED',
+            },
+          },
+          session,
+        );
+      }
+      await this.auditEvent(
+        actor,
+        'TASK_NOTE_ARTIFACT_PURGED',
+        'WORK_NOTE',
+        noteId,
+        {
+          version: versionNumber,
+          reopened: shouldReopen,
+          hadStorageKey: Boolean(mdFileKey),
+        },
+        session,
+      );
+    });
+
+    if (shouldRevokeSag) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        noteId,
+        'KNOWLEDGE_SOURCE_REVOKED',
+        versionNumber,
+        headers.requestId,
+      );
+    }
+
+    let r2DeletedKeys = 0;
+    let r2RetainedSharedKeys = 0;
+    if (mdFileKey) {
+      const stillReferenced = await this.isStorageKeyStillReferenced(
+        actor.organizationId,
+        mdFileKey,
+        { excludeWorkNoteId: noteId },
+      );
+      if (stillReferenced) {
+        r2RetainedSharedKeys = 1;
+      } else if (this.documentStorage) {
+        await this.documentStorage.delete(mdFileKey).catch(() => undefined);
+        r2DeletedKeys = 1;
+      }
+    }
+
+    return {
+      entityId: noteId,
+      status: nextStatus,
+      sagRevoked,
+      r2DeletedKeys,
+      r2RetainedSharedKeys,
+    };
+  }
+
+  async bulkTaskNoteAction(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    input: BulkGovernanceActionInput<BulkTaskNoteGovernanceAction>,
+  ): Promise<BulkGovernanceResult> {
+    const uniqueIds = Array.from(
+      new Set(input.ids.map((id) => id.trim()).filter(Boolean)),
+    ).slice(0, 50);
+    const succeededIds: string[] = [];
+    const failed: Array<{ id: string; message: string }> = [];
+
+    for (const id of uniqueIds) {
+      try {
+        switch (input.action) {
+          case 'APPROVE':
+            await this.reviewTaskNote(headers, projectId, id, 'APPROVED', {
+              comment: input.comment,
+            });
+            break;
+          case 'REQUEST_CHANGES':
+            await this.reviewTaskNote(
+              headers,
+              projectId,
+              id,
+              'CHANGES_REQUESTED',
+              { comment: input.comment },
+            );
+            break;
+          case 'REJECT':
+            await this.reviewTaskNote(headers, projectId, id, 'REJECTED', {
+              comment: input.comment,
+            });
+            break;
+          case 'SYNC':
+            await this.syncTaskNoteToSag(headers, projectId, id);
+            break;
+          case 'PAUSE':
+          case 'RESUME':
+          case 'REPROCESS':
+          case 'REVOKE':
+            await this.controlTaskNoteKnowledge(
+              headers,
+              projectId,
+              id,
+              input.action,
+            );
+            break;
+          case 'PURGE_ARTIFACT':
+            await this.purgeTaskNoteArtifact(headers, projectId, id, {
+              reopen: input.reopen,
+              comment: input.comment,
+            });
+            break;
+          case 'DELETE':
+            await this.deleteProjectTaskNote(headers, projectId, id);
+            break;
+          default:
+            throw new BadRequestException({ code: 'INVALID_BULK_ACTION' });
+        }
+        succeededIds.push(id);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Operation failed.';
+        failed.push({ id, message });
+      }
+    }
+
+    return {
+      action: input.action,
+      requestedCount: uniqueIds.length,
+      succeededIds,
+      failed,
+    };
+  }
+
+  async reviewTaskNote(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+    action: 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
+    input: ReviewInput,
+  ): Promise<TaskNoteRecord> {
+    const projectActor = await this.authorization.resolveProject(
+      headers,
+      projectId,
+    );
+    if (!projectActor.canReview) throw this.reviewPermissionDenied();
+    if (!validId(noteId)) throw this.taskNoteNotFound();
+
+    const initialRow = await this.database()
+      .collection('work_notes')
+      .findOne({
+        _id: objectId(noteId),
+        organizationId: objectId(projectActor.organizationId),
+        projectId: objectId(projectId),
+        type: 'TASK_NOTE',
+        status: 'CONFIRMED',
+      });
+    const taskId = initialRow ? idText(initialRow.taskId) : '';
+    if (!initialRow || !validId(taskId)) throw this.taskNoteNotFound();
+    const actor = await this.authorization.resolveTask(
+      headers,
+      projectId,
+      taskId,
+    );
+    if (!actor.canReview) throw this.reviewPermissionDenied();
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const comment = input.comment?.trim() || undefined;
+    let sourceVersion = 1;
+    let authorId = '';
+    let noteTitle = '';
+
+    await this.transaction(async (db, session) => {
+      const notes = db.collection('work_notes');
+      const current = record(
+        await notes.findOne(
+          {
+            _id: objectId(noteId),
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            type: 'TASK_NOTE',
+            status: 'CONFIRMED',
+          },
+          { session },
+        ),
+      );
+      if (!current) throw this.taskNoteNotFound();
+      authorId = String(current.authorUserId);
+      noteTitle = text(current.title);
+      if (!actor.canReview) {
+        throw this.reviewPermissionDenied();
+      }
+
+      sourceVersion = Math.max(1, Number(current.currentVersionNumber ?? 1));
+      const rawProv =
+        current.provenance &&
+        typeof current.provenance === 'object' &&
+        !Array.isArray(current.provenance)
+          ? (current.provenance as Record<string, unknown>)
+          : {};
+      const existingReview =
+        rawProv.review && typeof rawProv.review === 'object'
+          ? (rawProv.review as {
+              status?: string;
+              submittedAt?: string;
+              history?: unknown;
+            })
+          : undefined;
+      const currentReviewStatus: TaskNoteReviewStatus =
+        existingReview?.status === 'APPROVED' ||
+        existingReview?.status === 'CHANGES_REQUESTED' ||
+        existingReview?.status === 'REJECTED' ||
+        existingReview?.status === 'PENDING_REVIEW'
+          ? existingReview.status
+          : 'PENDING_REVIEW';
+      if (currentReviewStatus !== 'PENDING_REVIEW') {
+        throw conflict('Only a Task Note awaiting review can be reviewed.');
+      }
+
+      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+        ? 'MANAGER'
+        : 'LEADER';
+      const history = pickReviewHistory(existingReview?.history);
+      const nextReview = {
+        status: action,
+        submittedAt:
+          existingReview?.submittedAt ?? iso(current.createdAt) ?? nowIso,
+        reviewedBy: actor.userId,
+        reviewerName: actor.userName,
+        reviewedAt: nowIso,
+        ...(comment ? { comment } : {}),
+        history: [
+          ...history,
+          {
+            action,
+            reviewerId: actor.userId,
+            reviewerRole,
+            ...(comment ? { comment } : {}),
+            at: nowIso,
+          },
+        ],
+      };
+
+      const queuedSync: DocumentKnowledgeStatusRecord | undefined =
+        action === 'APPROVED'
+          ? {
+              documentId: noteId,
+              version: sourceVersion,
+              status: 'QUEUED_OUTBOX',
+              searchStatus: 'PENDING',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: false,
+              knowledgeReady: false,
+              currentStage: 'OUTBOX_QUEUE',
+              progress: 5,
+              syncedAt: nowIso,
+            }
+          : undefined;
+
+      const nextProv: Record<string, unknown> = {
+        ...rawProv,
+        review: nextReview,
+        ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
+      };
+      if (action !== 'APPROVED') {
+        delete nextProv.mdFile;
+        delete nextProv.knowledgeSync;
+      }
+
+      const updated = await notes.updateOne(
+        {
+          _id: objectId(noteId),
+          status: 'CONFIRMED',
+          $or: [
+            { 'provenance.review.status': 'PENDING_REVIEW' },
+            { 'provenance.review.status': { $exists: false } },
+          ],
+        },
+        {
+          $set: {
+            provenance: nextProv,
+            updatedAt: now,
+          },
+        },
+        { session },
+      );
+      if (updated.modifiedCount !== 1) {
+        throw conflict('The Task Note was already reviewed by another user.');
+      }
+
+      try {
+        await db.collection('work_note_versions').updateOne(
+          {
+            workNoteId: objectId(noteId),
+            versionNumber: sourceVersion,
+          },
+          {
+            $set: {
+              'provenance.review': nextReview,
+              ...(queuedSync ? { 'provenance.knowledgeSync': queuedSync } : {}),
+            },
+          },
+          { session },
+        );
+      } catch {
+        // Optional version collection in isolated unit tests
+      }
+
+      if (action === 'APPROVED') {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            aggregateType: 'WORK_NOTE',
+            aggregateId: noteId,
+            payload: {
+              sourceType: 'WORK_NOTE',
+              sourceId: noteId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: sourceVersion,
+              approvedAt: nowIso,
+            },
+          },
+          session,
+        );
+      }
+
+      const auditAction =
+        action === 'APPROVED'
+          ? 'TASK_NOTE_APPROVED'
+          : action === 'CHANGES_REQUESTED'
+            ? 'TASK_NOTE_CHANGES_REQUESTED'
+            : 'TASK_NOTE_REJECTED';
+      await this.auditEvent(
+        actor,
+        auditAction,
+        'WORK_NOTE',
+        noteId,
+        {
+          authorId,
+          version: sourceVersion,
+          ...(comment ? { comment } : {}),
+        },
+        session,
+      );
+    });
+
+    if (action === 'APPROVED') {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        noteId,
+        'KNOWLEDGE_SOURCE_APPROVED',
+        sourceVersion,
+        headers.requestId,
+      );
+    }
+
+    if (
+      this.notifications &&
+      authorId &&
+      authorId.toLowerCase() !== actor.userId.toLowerCase()
+    ) {
+      await this.notifications
+        .emitSafe({
+          type: 'WORK_NOTE_MENTION',
+          actorId: actor.userId,
+          recipients: [authorId],
+          title:
+            action === 'APPROVED'
+              ? 'Task Note approved & queued for SAG'
+              : action === 'CHANGES_REQUESTED'
+                ? 'Changes requested on Task Note'
+                : 'Task Note rejected',
+          message: comment
+            ? `Reviewer feedback on "${noteTitle.slice(0, 60)}": ${comment}`
+            : `Your Task Note "${noteTitle.slice(0, 60)}" was ${action.replace('_', ' ').toLowerCase()}.`,
+          organizationId: actor.organizationId,
+          projectId,
+          target: {
+            kind: 'WORK_NOTE',
+            url: `/projects/${projectId}/work-notes`,
+            organizationId: actor.organizationId,
+            projectId,
+            taskId,
+            noteId,
+          },
+          eventKey: `task-note-review:${noteId}:${action}:${now.getTime()}`,
+        })
+        .catch(() => undefined);
+    }
+
+    return this.getProjectTaskNote(headers, projectId, noteId);
+  }
+
+  async resolveTaskNoteFileDownloadUrl(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<DocumentDownloadUrlResponse> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const file = await this.ensureApprovedTaskNoteMarkdownStored(actor, row);
+    return this.buildDownloadUrlResponse(file);
+  }
+
+  async downloadTaskNoteFile(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const file = await this.ensureApprovedTaskNoteMarkdownStored(actor, row);
+    if (file.bytes) {
+      return {
+        bytes: file.bytes,
+        name: file.name,
+        contentType: file.contentType,
+      };
+    }
+    if (!this.documentStorage || !file.key) {
+      throw new ServiceUnavailableException(
+        'Project Document storage is unavailable.',
+      );
+    }
+    return {
+      bytes: await this.documentStorage.get(file.key),
+      name: file.name,
+      contentType: file.contentType,
+    };
+  }
+
+  async getTaskNoteKnowledgeStatus(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    return this.resolveTaskNoteKnowledgeStatusForRow(actor, projectId, row);
+  }
+
+  async getTaskNoteKnowledgeChunks(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+    options?: { limit?: number; offset?: number },
+  ): Promise<DocumentKnowledgeChunksResponse> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    return this.resolveEntityKnowledgeChunks({
+      actor,
+      projectId,
+      aggregateType: 'WORK_NOTE',
+      entityId: noteId,
+      versionNumber,
+      rawProvenance: rawProv,
+      options,
+    });
+  }
+
+  async syncTaskNoteToSag(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const reviewStatus = (rawProv.review as { status?: string } | undefined)
+      ?.status;
+
+    if (reviewStatus !== 'APPROVED') {
+      if (!actor.canReview) {
+        throw new ForbiddenException({
+          code: 'LEADER_APPROVAL_REQUIRED',
+          message:
+            'Only an approved Task Note can be synchronized to SAG. Submit it for Leader/Manager approval first.',
+        });
+      }
+      const authorId = String(row.authorUserId);
+      if (authorId.toLowerCase() !== actor.userId.toLowerCase()) {
+        await this.reviewTaskNote(headers, projectId, noteId, 'APPROVED', {});
+      } else {
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+          ? 'MANAGER'
+          : 'LEADER';
+        const existingReview =
+          rawProv.review && typeof rawProv.review === 'object'
+            ? (rawProv.review as { submittedAt?: string; history?: unknown })
+            : undefined;
+        const autoReview = {
+          status: 'APPROVED' as const,
+          submittedAt:
+            existingReview?.submittedAt ?? iso(row.createdAt) ?? nowIso,
+          reviewedBy: actor.userId,
+          reviewedAt: nowIso,
+          history: [
+            ...pickReviewHistory(existingReview?.history),
+            {
+              action: 'APPROVED' as const,
+              reviewerId: actor.userId,
+              reviewerRole,
+              at: nowIso,
+            },
+          ],
+        };
+        await this.database()
+          .collection('work_notes')
+          .updateOne(
+            { _id: objectId(noteId) },
+            {
+              $set: {
+                'provenance.review': autoReview,
+                updatedAt: now,
+              },
+            },
+          );
+        await this.auditEvent(
+          actor,
+          'TASK_NOTE_AUTO_APPROVED',
+          'WORK_NOTE',
+          noteId,
+          {
+            version: versionNumber,
+          },
+        );
+      }
+      const reloaded = await this.loadAuthorizedTaskNoteRow(
+        headers,
+        projectId,
+        noteId,
+      );
+      return this.syncApprovedArtifactToSag({
+        actor: reloaded.actor,
+        projectId,
+        aggregateType: 'WORK_NOTE',
+        logicalPrefix: 'work_note',
+        entityId: noteId,
+        versionNumber: Math.max(
+          1,
+          Number(reloaded.row.currentVersionNumber ?? 1),
+        ),
+        rawProvenance:
+          reloaded.row.provenance &&
+          typeof reloaded.row.provenance === 'object' &&
+          !Array.isArray(reloaded.row.provenance)
+            ? (reloaded.row.provenance as Record<string, unknown>)
+            : {},
+        ensureStoredFile: () =>
+          this.ensureApprovedTaskNoteMarkdownStored(
+            reloaded.actor,
+            reloaded.row,
+          ),
+        persistSync: (syncRecord) =>
+          this.persistTaskNoteKnowledgeSyncRecord(
+            noteId,
+            versionNumber,
+            syncRecord,
+          ),
+        auditAction: 'TASK_NOTE_KNOWLEDGE_SYNCED',
+      });
+    }
+
+    return this.syncApprovedArtifactToSag({
+      actor,
+      projectId,
+      aggregateType: 'WORK_NOTE',
+      logicalPrefix: 'work_note',
+      entityId: noteId,
+      versionNumber,
+      rawProvenance: rawProv,
+      ensureStoredFile: () =>
+        this.ensureApprovedTaskNoteMarkdownStored(actor, row),
+      persistSync: (syncRecord) =>
+        this.persistTaskNoteKnowledgeSyncRecord(
+          noteId,
+          versionNumber,
+          syncRecord,
+        ),
+      auditAction: 'TASK_NOTE_KNOWLEDGE_SYNCED',
+    });
+  }
+
+  async controlTaskNoteKnowledge(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+    action: DocumentKnowledgeControlAction,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const { actor, row } = await this.loadAuthorizedTaskNoteRow(
+      headers,
+      projectId,
+      noteId,
+    );
+    const authorId = String(row.authorUserId);
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    return this.controlEntityKnowledge({
+      actor,
+      projectId,
+      aggregateType: 'WORK_NOTE',
+      logicalPrefix: 'work_note',
+      entityId: noteId,
+      versionNumber,
+      canControl: authorId === actor.userId || actor.canReview,
+      rawProvenance: rawProv,
+      action,
+      ensureStoredFile: () =>
+        this.ensureApprovedTaskNoteMarkdownStored(actor, row),
+      persistSync: (syncRecord) =>
+        this.persistTaskNoteKnowledgeSyncRecord(
+          noteId,
+          versionNumber,
+          syncRecord,
+        ),
+      resyncFn: () => this.syncTaskNoteToSag(headers, projectId, noteId),
+      getStatusFn: () =>
+        this.getTaskNoteKnowledgeStatus(headers, projectId, noteId),
+      auditPrefix: 'TASK_NOTE',
     });
   }
 
@@ -1008,15 +2498,39 @@ export class WorkNotesService {
         const normalized = (sync.status || '').toUpperCase();
         const normalizedStage = (sync.currentStage || '').toUpperCase();
         const normalizedDocStatus = (sync.documentStatus || '').toUpperCase();
-        if (['FAILED', 'REVOKED'].includes(normalized)) return false;
+        const normalizedKnowledgeStatus = (
+          sync.knowledgeStatus || ''
+        ).toUpperCase();
+        if (['FAILED', 'REVOKED', 'NOT_SYNCED'].includes(normalized)) {
+          return false;
+        }
         if (
           normalized === 'PAUSED' ||
           (normalizedStage === 'PAUSED' && normalizedDocStatus === 'PAUSED')
         ) {
           return false;
         }
+        const isSettledKnowledge = Boolean(
+          sync.knowledgeReady ||
+          isKnowledgeSettledStatus(normalizedKnowledgeStatus),
+        );
+        const isKnowledgeInFlight =
+          !isSettledKnowledge &&
+          ['PROCESSING', 'EXTRACTING', 'RUNNING', 'QUEUED', 'PENDING'].includes(
+            normalizedKnowledgeStatus,
+          );
+        const isDocInFlight = [
+          'PENDING',
+          'LOADING',
+          'EXTRACTING',
+          'PAUSING',
+        ].includes(normalizedDocStatus);
+        const isStagePaused = ['PAUSING', 'PAUSED'].includes(normalizedStage);
         const isTerminalReady =
-          (sync.knowledgeReady ||
+          !isKnowledgeInFlight &&
+          !isDocInFlight &&
+          !isStagePaused &&
+          (isSettledKnowledge ||
             (sync.searchReady &&
               (normalized === 'READY' ||
                 normalized === 'SEARCH_READY' ||
@@ -1030,7 +2544,12 @@ export class WorkNotesService {
             'function' || !sync.status
         );
       })
-      .slice(0, 10);
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.knowledgeSync)) -
+          Number(Boolean(left.knowledgeSync)),
+      )
+      .slice(0, 25);
 
     if (candidatesForLiveSync.length > 0) {
       const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
@@ -1930,12 +3449,28 @@ export class WorkNotesService {
     const existingKey = (
       existingWithSameHash?.file as { key?: string } | undefined
     )?.key;
-    const reusedExistingKey = Boolean(existingKey);
+    let existingStoredValid = Boolean(existingKey);
+    if (
+      existingKey &&
+      typeof this.documentStorage.inspectStoredPrefix === 'function'
+    ) {
+      const inspected = await this.documentStorage
+        .inspectStoredPrefix(existingKey, 64)
+        .catch(() => null);
+      existingStoredValid = Boolean(
+        inspected && inspected.size === bytes.length,
+      );
+    }
+    const reusedExistingKey = Boolean(existingKey && existingStoredValid);
     const key =
       existingKey ||
       `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
     if (!reusedExistingKey) {
-      await this.documentStorage.put(key, bytes, resolvedContentType);
+      await this.documentStorage
+        .put(key, bytes, resolvedContentType)
+        .catch((err: { code?: string }) => {
+          if (err?.code !== 'EEXIST') throw err;
+        });
     }
     try {
       await this.transaction(async (db, session) => {
@@ -2063,11 +3598,7 @@ export class WorkNotesService {
     });
     if (!draftVersion) throw documentNotFound();
 
-    if (
-      !this.documentStorage ||
-      typeof this.documentStorage.isDirectCloudEnabled !== 'function' ||
-      !this.documentStorage.isDirectCloudEnabled()
-    ) {
+    if (!this.documentStorage) {
       return {
         mode: 'LEGACY_PROXY',
         canonicalContentType: rule.canonicalContentType,
@@ -2130,6 +3661,16 @@ export class WorkNotesService {
           canonicalContentType: rule.canonicalContentType,
         };
       }
+    }
+
+    if (
+      typeof this.documentStorage.isDirectCloudEnabled !== 'function' ||
+      !this.documentStorage.isDirectCloudEnabled()
+    ) {
+      return {
+        mode: 'LEGACY_PROXY',
+        canonicalContentType: rule.canonicalContentType,
+      };
     }
 
     const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
@@ -2830,6 +4371,24 @@ export class WorkNotesService {
       if (!version)
         throw conflict('The submitted Document version is unavailable.');
       const history = pickReviewHistory(version.reviewHistory);
+      const versionFileSha = (version.file as { sha256?: string } | undefined)
+        ?.sha256;
+      const queuedSync: DocumentKnowledgeStatusRecord | undefined =
+        action === 'APPROVED'
+          ? {
+              documentId,
+              version: sourceVersion,
+              ...(versionFileSha ? { fileHash: versionFileSha } : {}),
+              status: 'QUEUED_OUTBOX',
+              searchStatus: 'PENDING',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: false,
+              knowledgeReady: false,
+              currentStage: 'OUTBOX_QUEUE',
+              progress: 5,
+              syncedAt: now.toISOString(),
+            }
+          : undefined;
       const update = await db.collection('project_document_versions').updateOne(
         { _id: version._id, status: 'PENDING_REVIEW' },
         {
@@ -2838,6 +4397,7 @@ export class WorkNotesService {
             reviewedByUserId: objectId(actor.userId),
             reviewedAt: now,
             ...(input.comment ? { reviewComment: input.comment } : {}),
+            ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
             reviewHistory: [
               ...history,
               {
@@ -2864,7 +4424,10 @@ export class WorkNotesService {
           $set: {
             status: action,
             ...(action === 'APPROVED'
-              ? { latestApprovedVersionNumber: sourceVersion }
+              ? {
+                  latestApprovedVersionNumber: sourceVersion,
+                  ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
+                }
               : {}),
             updatedAt: now,
           },
@@ -3331,8 +4894,11 @@ export class WorkNotesService {
       | undefined;
 
     const existingSync =
-      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
-      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+      normalizeKnowledgeSyncForVersion(
+        versionDoc.knowledgeSync,
+        versionNumber,
+      ) ??
+      normalizeKnowledgeSyncForVersion(document.knowledgeSync, versionNumber);
     const needsFreshIdempotencyKey = Boolean(
       existingSync &&
       ['REVOKED', 'FAILED', 'INDEX_FAILED'].some(
@@ -3457,11 +5023,24 @@ export class WorkNotesService {
     const syncedAt = new Date().toISOString();
     const searchStatus = receipt.searchStatus ?? 'PENDING';
     const knowledgeStatus = receipt.knowledgeStatus ?? 'NOT_STARTED';
-    const searchReady = Boolean(
-      receipt.searchReady || searchStatus === 'SEARCH_READY',
+    const sameActiveSagVersion = Boolean(
+      existingSync &&
+      existingSync.sagDocumentId === receipt.documentId &&
+      existingSync.sagVersionNo === receipt.versionNo &&
+      !needsFreshIdempotencyKey,
     );
-    const knowledgeReady =
-      knowledgeStatus === 'KNOWLEDGE_READY' || knowledgeStatus === 'READY';
+    const existingProgress = sameActiveSagVersion
+      ? Number(existingSync?.progress ?? 0)
+      : 0;
+    const searchReady = Boolean(
+      receipt.searchReady ||
+      searchStatus === 'SEARCH_READY' ||
+      (sameActiveSagVersion && existingSync?.searchReady === true),
+    );
+    const knowledgeReady = Boolean(
+      isKnowledgeSettledStatus(knowledgeStatus) ||
+      (sameActiveSagVersion && existingSync?.knowledgeReady === true),
+    );
 
     const syncRecord: DocumentKnowledgeStatusRecord = {
       documentId,
@@ -3471,14 +5050,22 @@ export class WorkNotesService {
       sagVersionNo: receipt.versionNo,
       ...(receipt.runId ? { runId: receipt.runId } : {}),
       fileHash: receipt.fileHash ?? fileHash,
-      status: receipt.status,
-      searchStatus,
+      status: searchReady ? 'SEARCH_READY' : receipt.status,
+      searchStatus: searchReady ? 'SEARCH_READY' : searchStatus,
       knowledgeStatus,
       searchReady,
       knowledgeReady,
       isDuplicate: Boolean(receipt.isDuplicate),
-      currentStage: receipt.isDuplicate ? 'DUPLICATE' : 'RECEIVE',
-      progress: searchReady ? 100 : 0,
+      currentStage: searchReady
+        ? 'COMPLETE'
+        : sameActiveSagVersion &&
+            existingProgress > 10 &&
+            existingSync?.currentStage
+          ? existingSync.currentStage
+          : receipt.isDuplicate
+            ? 'DUPLICATE'
+            : 'RECEIVE',
+      progress: searchReady ? 100 : Math.max(0, existingProgress),
       syncedAt,
     };
 
@@ -3549,8 +5136,11 @@ export class WorkNotesService {
     if (!versionDoc) throw documentNotFound();
 
     const storedSync =
-      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
-      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+      normalizeKnowledgeSyncForVersion(
+        versionDoc.knowledgeSync,
+        versionNumber,
+      ) ??
+      normalizeKnowledgeSyncForVersion(document.knowledgeSync, versionNumber);
     const fileSha256 = (versionDoc.file as { sha256?: string } | undefined)
       ?.sha256;
 
@@ -3577,7 +5167,10 @@ export class WorkNotesService {
           searchStatus: live.searchStatus,
           knowledgeStatus: live.knowledgeStatus,
           searchReady: live.searchReady,
-          knowledgeReady: live.knowledgeReady,
+          knowledgeReady: Boolean(
+            live.knowledgeReady ||
+            isKnowledgeSettledStatus(live.knowledgeStatus),
+          ),
           currentStage: live.currentStage ?? storedSync.currentStage ?? null,
           progress:
             typeof live.progress === 'number'
@@ -3625,7 +5218,13 @@ export class WorkNotesService {
       }
     }
 
-    if (storedSync) {
+    const isPreReceiptPlaceholder = Boolean(
+      storedSync &&
+      !storedSync.sagDocumentId &&
+      (storedSync.status === 'QUEUED_OUTBOX' || storedSync.status === 'QUEUED'),
+    );
+
+    if (storedSync && !isPreReceiptPlaceholder) {
       return storedSync;
     }
 
@@ -3633,6 +5232,7 @@ export class WorkNotesService {
       aggregateType: 'PROJECT_DOCUMENT',
       aggregateId: documentId,
       eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+      'payload.version': versionNumber,
       status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
     });
 
@@ -3668,9 +5268,10 @@ export class WorkNotesService {
               ? deliveryReceipt.knowledgeStatus
               : 'NOT_STARTED',
           searchReady: Boolean(deliveryReceipt.searchReady ?? true),
-          knowledgeReady:
-            deliveryReceipt.knowledgeStatus === 'KNOWLEDGE_READY' ||
-            deliveryReceipt.knowledgeStatus === 'READY',
+          knowledgeReady: Boolean(
+            deliveryReceipt.knowledgeReady ||
+            isKnowledgeSettledStatus(deliveryReceipt.knowledgeStatus),
+          ),
           progress: 100,
           ...(fileSha256 ? { fileHash: fileSha256 } : {}),
         };
@@ -3693,7 +5294,10 @@ export class WorkNotesService {
               searchStatus: live.searchStatus,
               knowledgeStatus: live.knowledgeStatus,
               searchReady: live.searchReady,
-              knowledgeReady: live.knowledgeReady,
+              knowledgeReady: Boolean(
+                live.knowledgeReady ||
+                isKnowledgeSettledStatus(live.knowledgeStatus),
+              ),
               currentStage: live.currentStage ?? null,
               progress:
                 typeof live.progress === 'number'
@@ -3740,21 +5344,23 @@ export class WorkNotesService {
         return recovered;
       }
       if (pendingOutbox.status === 'PENDING') {
-        return {
-          documentId,
-          version: versionNumber,
-          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
-          status: 'QUEUED_OUTBOX',
-          searchStatus: 'PENDING',
-          knowledgeStatus: 'NOT_STARTED',
-          searchReady: false,
-          knowledgeReady: false,
-          currentStage: 'OUTBOX_QUEUE',
-          progress: 5,
-        };
+        return (
+          storedSync ?? {
+            documentId,
+            version: versionNumber,
+            ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+            status: 'QUEUED_OUTBOX',
+            searchStatus: 'PENDING',
+            knowledgeStatus: 'NOT_STARTED',
+            searchReady: false,
+            knowledgeReady: false,
+            currentStage: 'OUTBOX_QUEUE',
+            progress: 5,
+          }
+        );
       }
       if (pendingOutbox.status === 'FAILED') {
-        return {
+        const failedSync: DocumentKnowledgeStatusRecord = {
           documentId,
           version: versionNumber,
           ...(fileSha256 ? { fileHash: fileSha256 } : {}),
@@ -3772,7 +5378,21 @@ export class WorkNotesService {
             ),
           },
         };
+        await db
+          .collection('project_document_versions')
+          .updateOne(
+            { _id: versionDoc._id },
+            { $set: { knowledgeSync: failedSync } },
+          );
+        await db
+          .collection('project_documents')
+          .updateOne({ _id: id }, { $set: { knowledgeSync: failedSync } });
+        return failedSync;
       }
+    }
+
+    if (storedSync) {
+      return storedSync;
     }
 
     return {
@@ -3821,8 +5441,11 @@ export class WorkNotesService {
     let sagDocumentId: string | undefined;
     let sagVersionNo: number | undefined;
     const storedSync =
-      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
-      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+      normalizeKnowledgeSyncForVersion(
+        versionDoc.knowledgeSync,
+        versionNumber,
+      ) ??
+      normalizeKnowledgeSyncForVersion(document.knowledgeSync, versionNumber);
 
     if (storedSync?.status === 'REVOKED') {
       return {
@@ -3849,6 +5472,7 @@ export class WorkNotesService {
         aggregateType: 'PROJECT_DOCUMENT',
         aggregateId: documentId,
         eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        'payload.version': versionNumber,
         status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
       });
       const deliveryReceipt = (
@@ -3958,8 +5582,11 @@ export class WorkNotesService {
     if (!versionDoc) throw documentNotFound();
 
     const storedSync =
-      (versionDoc.knowledgeSync as DocumentKnowledgeStatusRecord | undefined) ??
-      (document.knowledgeSync as DocumentKnowledgeStatusRecord | undefined);
+      normalizeKnowledgeSyncForVersion(
+        versionDoc.knowledgeSync,
+        versionNumber,
+      ) ??
+      normalizeKnowledgeSyncForVersion(document.knowledgeSync, versionNumber);
     const logicalSourceId = `continuum:project_document:${documentId}`;
 
     if (action === 'REVOKE') {
@@ -4946,37 +6573,83 @@ export class WorkNotesService {
     return this.getWorkReport(headers, projectId, reportId);
   }
 
+  async resolveWorkReportFileDownloadUrl(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+  ): Promise<DocumentDownloadUrlResponse> {
+    const { actor, row } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
+    );
+    const existingFile = row.file as
+      { key?: string; name?: string; contentType?: string } | undefined;
+    if (existingFile?.key && existingFile.name && existingFile.contentType) {
+      return this.buildDownloadUrlResponse({
+        key: existingFile.key,
+        name: existingFile.name,
+        contentType: existingFile.contentType,
+      });
+    }
+    if (text(row.status) === 'APPROVED') {
+      const file = await this.ensureApprovedWorkReportMarkdownStored(
+        actor,
+        row,
+      );
+      return this.buildDownloadUrlResponse(file);
+    }
+    throw reportNotFound();
+  }
+
   async downloadWorkReportFile(
     headers: CaptureRequestHeaders,
     projectId: string,
     reportId: string,
   ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
-    const actor = await this.authorization.resolveProject(headers, projectId);
-    if (!validId(reportId)) throw reportNotFound();
-    const report = record(
-      await this.database()
-        .collection('work_reports')
-        .findOne({
-          _id: objectId(reportId),
-          organizationId: objectId(actor.organizationId),
-          projectId: objectId(projectId),
-        }),
+    const { actor, row: report } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
     );
-    if (!report || !this.canViewWorkReportRow(actor, report)) {
-      throw reportNotFound();
-    }
     const file = report.file as
       { key?: string; name?: string; contentType?: string } | undefined;
-    if (!file?.key || !file.name || !file.contentType) throw reportNotFound();
-    if (!this.documentStorage)
-      throw new ServiceUnavailableException(
-        'Project Document storage is unavailable.',
+    if (file?.key && file.name && file.contentType) {
+      if (!this.documentStorage) {
+        throw new ServiceUnavailableException(
+          'Project Document storage is unavailable.',
+        );
+      }
+      return {
+        bytes: await this.documentStorage.get(file.key),
+        name: file.name,
+        contentType: file.contentType,
+      };
+    }
+    if (text(report.status) === 'APPROVED') {
+      const generated = await this.ensureApprovedWorkReportMarkdownStored(
+        actor,
+        report,
       );
-    return {
-      bytes: await this.documentStorage.get(file.key),
-      name: file.name,
-      contentType: file.contentType,
-    };
+      if (generated.bytes) {
+        return {
+          bytes: generated.bytes,
+          name: generated.name,
+          contentType: generated.contentType,
+        };
+      }
+      if (!this.documentStorage || !generated.key) {
+        throw new ServiceUnavailableException(
+          'Project Document storage is unavailable.',
+        );
+      }
+      return {
+        bytes: await this.documentStorage.get(generated.key),
+        name: generated.name,
+        contentType: generated.contentType,
+      };
+    }
+    throw reportNotFound();
   }
 
   async getWorkReport(
@@ -5026,7 +6699,31 @@ export class WorkNotesService {
           : Promise.resolve(undefined),
       this.resolveHasActiveLeaders(actor, headers),
     ]);
-    return this.workReportRecord(row, actor, memberName, hasActiveLeaders);
+    const mapped = this.workReportRecord(
+      row,
+      actor,
+      memberName,
+      hasActiveLeaders,
+    );
+    const hasLiveTransport =
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function';
+    if (
+      mapped.status === 'APPROVED' &&
+      shouldRefreshLiveKnowledgeSync(mapped.knowledgeSync, hasLiveTransport)
+    ) {
+      const refreshed = await this.resolveWorkReportKnowledgeStatusForRow(
+        actor,
+        projectId,
+        row,
+      ).catch(() => mapped.knowledgeSync);
+      if (refreshed) mapped.knowledgeSync = refreshed;
+    }
+    const [withStorageRef] = await this.attachWorkReportStorageReferences(
+      actor.organizationId,
+      [row],
+      [mapped],
+    );
+    return withStorageRef ?? mapped;
   }
 
   async updateWorkReportDraft(
@@ -5044,11 +6741,17 @@ export class WorkNotesService {
     headers: CaptureRequestHeaders,
     projectId: string,
     reportId: string,
+    options?: { autoApprove?: boolean },
   ): Promise<WorkReportRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(reportId)) throw reportNotFound();
     const id = objectId(reportId);
     const now = new Date();
+    let shouldAutoApprove = Boolean(
+      options?.autoApprove &&
+      (actor.canReview || isActorLeader(actor) || isActorManager(actor)),
+    );
+    let reportVersion = 1;
     const { submittedScope } = await this.transaction(async (db, session) => {
       const reports = db.collection('work_reports');
       const current = record(
@@ -5079,7 +6782,44 @@ export class WorkNotesService {
             ? 'Complete title and content before submitting.'
             : 'Complete the three required report fields before submitting.',
         );
+      const reportBodyCharCount =
+        current.contentSchemaVersion === 2
+          ? text(current.contentMarkdown).trim().length
+          : text(current.accomplishments).trim().length +
+            text(current.approach).trim().length +
+            text(current.reason).trim().length;
+      if (reportBodyCharCount < 30) {
+        shouldAutoApprove = false;
+      }
       const currentMemberId = String(current.memberUserId);
+      reportVersion = Math.max(1, Number(current.currentVersionNumber ?? 1));
+      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+        ? 'MANAGER'
+        : 'LEADER';
+      const rawProv =
+        current.provenance &&
+        typeof current.provenance === 'object' &&
+        !Array.isArray(current.provenance)
+          ? (current.provenance as Record<string, unknown>)
+          : {};
+      const nextProv: Record<string, unknown> = shouldAutoApprove
+        ? {
+            ...rawProv,
+            knowledgeSync: {
+              documentId: reportId,
+              version: reportVersion,
+              status: 'QUEUED_OUTBOX',
+              searchStatus: 'PENDING',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: false,
+              knowledgeReady: false,
+              currentStage: 'OUTBOX_QUEUE',
+              progress: 5,
+              syncedAt: now.toISOString(),
+            } satisfies DocumentKnowledgeStatusRecord,
+          }
+        : rawProv;
+      const history = pickReviewHistory(current.reviewHistory);
       const updated = await reports.updateOne(
         {
           _id: id,
@@ -5089,7 +6829,26 @@ export class WorkNotesService {
           status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
         },
         {
-          $set: { status: 'PENDING_REVIEW', submittedAt: now, updatedAt: now },
+          $set: shouldAutoApprove
+            ? {
+                status: 'APPROVED',
+                submittedAt: now,
+                reviewedByUserId: objectId(actor.userId),
+                reviewedByName: actor.userName,
+                reviewedAt: now,
+                reviewHistory: [
+                  ...history,
+                  {
+                    action: 'APPROVED',
+                    reviewerId: actor.userId,
+                    reviewerRole,
+                    at: now,
+                  },
+                ],
+                provenance: nextProv,
+                updatedAt: now,
+              }
+            : { status: 'PENDING_REVIEW', submittedAt: now, updatedAt: now },
         },
         { session },
       );
@@ -5109,19 +6868,64 @@ export class WorkNotesService {
         },
         session,
       );
+      if (shouldAutoApprove) {
+        await this.appendOutbox(
+          {
+            eventName: 'WORK_REPORT_APPROVED',
+            aggregateType: 'WORK_REPORT',
+            aggregateId: reportId,
+            payload: {
+              organizationId: actor.organizationId,
+              projectId,
+              memberId: currentMemberId,
+              scope: currentScope,
+              reviewerRole,
+            },
+          },
+          session,
+        );
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            aggregateType: 'WORK_REPORT',
+            aggregateId: reportId,
+            payload: {
+              sourceType: 'PERIODIC_REPORT',
+              sourceId: reportId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: reportVersion,
+              approvedAt: now.toISOString(),
+            },
+          },
+          session,
+        );
+      }
       await this.auditEvent(
         actor,
-        'REPORT_SUBMITTED',
+        shouldAutoApprove ? 'REPORT_APPROVED' : 'REPORT_SUBMITTED',
         'WORK_REPORT',
         reportId,
         {
           memberId: currentMemberId,
           scope: currentScope,
+          ...(shouldAutoApprove ? { autoApproved: true } : {}),
         },
         session,
       );
       return { memberId: currentMemberId, submittedScope: currentScope };
     });
+
+    if (shouldAutoApprove) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        reportId,
+        'KNOWLEDGE_SOURCE_APPROVED',
+        reportVersion,
+        headers.requestId,
+      );
+      return this.getWorkReport(headers, projectId, reportId);
+    }
 
     if (this.notifications) {
       try {
@@ -5182,6 +6986,7 @@ export class WorkNotesService {
     const hasActiveLeaders = await this.resolveHasActiveLeaders(actor, headers);
     const id = objectId(reportId);
     const now = new Date();
+    let reportVersion = 1;
     const { memberId, reviewedScope } = await this.transaction(
       async (db, session) => {
         const reports = db.collection('work_reports');
@@ -5214,6 +7019,31 @@ export class WorkNotesService {
           : isActorLeader(actor)
             ? 'LEADER'
             : 'MANAGER';
+        reportVersion = Math.max(1, Number(current.currentVersionNumber ?? 1));
+        const rawProv =
+          current.provenance &&
+          typeof current.provenance === 'object' &&
+          !Array.isArray(current.provenance)
+            ? (current.provenance as Record<string, unknown>)
+            : {};
+        const nextProv: Record<string, unknown> = { ...rawProv };
+        if (action === 'APPROVED') {
+          nextProv.knowledgeSync = {
+            documentId: reportId,
+            version: reportVersion,
+            status: 'QUEUED_OUTBOX',
+            searchStatus: 'PENDING',
+            knowledgeStatus: 'NOT_STARTED',
+            searchReady: false,
+            knowledgeReady: false,
+            currentStage: 'OUTBOX_QUEUE',
+            progress: 5,
+            syncedAt: now.toISOString(),
+          } satisfies DocumentKnowledgeStatusRecord;
+        } else {
+          delete nextProv.knowledgeSync;
+          delete nextProv.fileSha256;
+        }
         const history = pickReviewHistory(current.reviewHistory);
         const updated = await reports.updateOne(
           { _id: id, status: 'PENDING_REVIEW' },
@@ -5221,6 +7051,7 @@ export class WorkNotesService {
             $set: {
               status: action,
               reviewedByUserId: objectId(actor.userId),
+              reviewedByName: actor.userName,
               reviewedAt: now,
               ...(input.comment ? { reviewComment: input.comment } : {}),
               reviewHistory: [
@@ -5233,6 +7064,10 @@ export class WorkNotesService {
                   at: now,
                 },
               ],
+              ...(Object.keys(nextProv).length > 0 ||
+              current.provenance !== undefined
+                ? { provenance: nextProv }
+                : {}),
               updatedAt: now,
             },
           },
@@ -5273,7 +7108,7 @@ export class WorkNotesService {
                 sourceId: reportId,
                 organizationId: actor.organizationId,
                 projectId,
-                version: Number(current.currentVersionNumber ?? 1),
+                version: reportVersion,
                 approvedAt: now.toISOString(),
               },
             },
@@ -5301,6 +7136,15 @@ export class WorkNotesService {
         return { memberId: currentMemberId, reviewedScope: currentScope };
       },
     );
+    if (action === 'APPROVED') {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        reportId,
+        'KNOWLEDGE_SOURCE_APPROVED',
+        reportVersion,
+        headers.requestId,
+      );
+    }
     if (this.notifications && memberId) {
       const notificationType =
         action === 'APPROVED'
@@ -5339,6 +7183,464 @@ export class WorkNotesService {
       });
     }
     return this.getWorkReport(headers, projectId, reportId);
+  }
+
+  async getWorkReportKnowledgeStatus(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const { actor, row } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
+    );
+    return this.resolveWorkReportKnowledgeStatusForRow(actor, projectId, row);
+  }
+
+  async getWorkReportKnowledgeChunks(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+    options?: { limit?: number; offset?: number },
+  ): Promise<DocumentKnowledgeChunksResponse> {
+    const { actor, row } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
+    );
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    return this.resolveEntityKnowledgeChunks({
+      actor,
+      projectId,
+      aggregateType: 'WORK_REPORT',
+      entityId: reportId,
+      versionNumber,
+      rawProvenance: rawProv,
+      options,
+    });
+  }
+
+  async syncWorkReportToSag(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const { actor, row } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
+    );
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    if (text(row.status) !== 'APPROVED') {
+      if (!actor.canReview && !isActorLeader(actor) && !isActorManager(actor)) {
+        throw new ForbiddenException({
+          code: 'LEADER_APPROVAL_REQUIRED',
+          message:
+            'Only an approved Work Report can be synchronized to SAG. Approve the report first.',
+        });
+      }
+      const now = new Date();
+      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
+        ? 'MANAGER'
+        : 'LEADER';
+      const history = pickReviewHistory(row.reviewHistory);
+      await this.database()
+        .collection('work_reports')
+        .updateOne(
+          { _id: objectId(reportId) },
+          {
+            $set: {
+              status: 'APPROVED',
+              reviewedByUserId: objectId(actor.userId),
+              reviewedByName: actor.userName,
+              reviewedAt: now,
+              reviewHistory: [
+                ...history,
+                {
+                  action: 'APPROVED',
+                  reviewerId: actor.userId,
+                  reviewerRole,
+                  at: now,
+                },
+              ],
+              updatedAt: now,
+            },
+          },
+        );
+      row.status = 'APPROVED';
+      row.reviewedByUserId = objectId(actor.userId);
+      row.reviewedByName = actor.userName;
+      row.reviewedAt = now;
+      await this.auditEvent(
+        actor,
+        'WORK_REPORT_AUTO_APPROVED',
+        'WORK_REPORT',
+        reportId,
+        { version: versionNumber },
+      );
+    }
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    return this.syncApprovedArtifactToSag({
+      actor,
+      projectId,
+      aggregateType: 'WORK_REPORT',
+      logicalPrefix: 'work_report',
+      entityId: reportId,
+      versionNumber,
+      rawProvenance: rawProv,
+      ensureStoredFile: () =>
+        this.ensureApprovedWorkReportMarkdownStored(actor, row),
+      persistSync: (syncRecord) =>
+        this.persistWorkReportKnowledgeSyncRecord(
+          reportId,
+          versionNumber,
+          syncRecord,
+        ),
+      auditAction: 'WORK_REPORT_KNOWLEDGE_SYNCED',
+    });
+  }
+
+  async controlWorkReportKnowledge(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+    action: DocumentKnowledgeControlAction,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const { actor, row } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
+    );
+    const memberId = String(row.memberUserId);
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    return this.controlEntityKnowledge({
+      actor,
+      projectId,
+      aggregateType: 'WORK_REPORT',
+      logicalPrefix: 'work_report',
+      entityId: reportId,
+      versionNumber,
+      canControl:
+        memberId.toLowerCase() === actor.userId.toLowerCase() ||
+        actor.canReview ||
+        isActorManager(actor),
+      rawProvenance: rawProv,
+      action,
+      ensureStoredFile: () =>
+        this.ensureApprovedWorkReportMarkdownStored(actor, row),
+      persistSync: (syncRecord) =>
+        this.persistWorkReportKnowledgeSyncRecord(
+          reportId,
+          versionNumber,
+          syncRecord,
+        ),
+      resyncFn: () => this.syncWorkReportToSag(headers, projectId, reportId),
+      getStatusFn: () =>
+        this.getWorkReportKnowledgeStatus(headers, projectId, reportId),
+      auditPrefix: 'WORK_REPORT',
+    });
+  }
+
+  async purgeWorkReportArtifact(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+    options?: { reopen?: boolean; comment?: string },
+  ): Promise<PurgeArtifactResult> {
+    const { actor, row } = await this.loadAuthorizedWorkReportRow(
+      headers,
+      projectId,
+      reportId,
+    );
+    const hasActiveLeaders = await this.resolveHasActiveLeaders(actor, headers);
+    const memberId = String(row.memberUserId);
+    const isOwner = memberId.toLowerCase() === actor.userId.toLowerCase();
+    const isLeaderReport = text(row.reportScope) === 'LEADER';
+    const canManageScope = isLeaderReport
+      ? this.canManageLeaderTier(actor)
+      : this.canManageMemberTier(actor, hasActiveLeaders);
+    const currentStatus = text(row.status) as WorkReportStatus;
+
+    if (!canManageScope && !(isOwner && currentStatus !== 'APPROVED')) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only a Project reviewer or the draft owner can remove Work Report storage artifacts.',
+      });
+    }
+
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const existingSync = normalizeKnowledgeSyncForVersion(
+      rawProv.knowledgeSync,
+      versionNumber,
+    );
+    const fileKey = (row.file as { key?: string } | undefined)?.key;
+    const shouldRevokeSag =
+      currentStatus === 'APPROVED' ||
+      Boolean(existingSync?.sagDocumentId) ||
+      (Boolean(existingSync?.status) && existingSync?.status !== 'REVOKED');
+
+    let sagRevoked = false;
+    if (shouldRevokeSag) {
+      if (typeof this.sagTransport?.revokeProjectDocument === 'function') {
+        await this.sagTransport
+          .revokeProjectDocument({
+            organizationId: actor.organizationId,
+            projectId,
+            documentId: reportId,
+            version: versionNumber,
+            logicalSourceId: `continuum:work_report:${reportId}`,
+            actorUserId: actor.userId,
+            reason: options?.reopen
+              ? 'WORK_REPORT_REOPENED'
+              : 'ARTIFACT_PURGED',
+          })
+          .then(() => {
+            sagRevoked = true;
+          })
+          .catch(() => undefined);
+      } else {
+        sagRevoked = true;
+      }
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const shouldReopen = Boolean(options?.reopen && canManageScope);
+    const nextStatus: WorkReportStatus = shouldReopen
+      ? 'CHANGES_REQUESTED'
+      : currentStatus;
+    const comment = options?.comment?.trim() || undefined;
+    const reviewerRole: 'MANAGER' | 'LEADER' = isLeaderReport
+      ? 'MANAGER'
+      : isActorLeader(actor)
+        ? 'LEADER'
+        : 'MANAGER';
+    const history = pickReviewHistory(row.reviewHistory);
+    const nextProv: Record<string, unknown> = { ...rawProv };
+    delete nextProv.fileSha256;
+    if (shouldReopen) {
+      delete nextProv.knowledgeSync;
+    } else if (shouldRevokeSag) {
+      nextProv.knowledgeSync = {
+        ...(existingSync ?? {}),
+        documentId: reportId,
+        version: versionNumber,
+        status: 'REVOKED',
+        searchStatus: 'REVOKED',
+        knowledgeStatus: 'REVOKED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'REVOKED',
+        progress: 0,
+        syncedAt: nowIso,
+      } satisfies DocumentKnowledgeStatusRecord;
+    }
+
+    await this.transaction(async (db, session) => {
+      await db.collection('work_reports').updateOne(
+        {
+          _id: objectId(reportId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        {
+          $set: {
+            ...(shouldReopen
+              ? {
+                  status: 'CHANGES_REQUESTED',
+                  reviewedByUserId: objectId(actor.userId),
+                  reviewedByName: actor.userName,
+                  reviewedAt: now,
+                  ...(comment ? { reviewComment: comment } : {}),
+                  reviewHistory: [
+                    ...history,
+                    {
+                      action: 'CHANGES_REQUESTED',
+                      reviewerId: actor.userId,
+                      reviewerRole,
+                      ...(comment ? { comment } : {}),
+                      at: now,
+                    },
+                  ],
+                }
+              : {}),
+            provenance: nextProv,
+            updatedAt: now,
+          },
+          $unset: { file: '' },
+        },
+        { session },
+      );
+
+      if (this.outbox && shouldRevokeSag) {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+            aggregateType: 'WORK_REPORT',
+            aggregateId: reportId,
+            payload: {
+              sourceType: 'PERIODIC_REPORT',
+              sourceId: reportId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: versionNumber,
+              reason: shouldReopen ? 'REOPENED' : 'ARTIFACT_PURGED',
+            },
+          },
+          session,
+        );
+      }
+
+      await this.auditEvent(
+        actor,
+        'WORK_REPORT_ARTIFACT_PURGED',
+        'WORK_REPORT',
+        reportId,
+        {
+          version: versionNumber,
+          reopened: shouldReopen,
+          hadStorageKey: Boolean(fileKey),
+        },
+        session,
+      );
+    });
+
+    if (shouldRevokeSag) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        reportId,
+        'KNOWLEDGE_SOURCE_REVOKED',
+        versionNumber,
+        headers.requestId,
+      );
+    }
+
+    let r2DeletedKeys = 0;
+    let r2RetainedSharedKeys = 0;
+    if (fileKey) {
+      const stillReferenced = await this.isStorageKeyStillReferenced(
+        actor.organizationId,
+        fileKey,
+        { excludeWorkReportId: reportId },
+      );
+      if (stillReferenced) {
+        r2RetainedSharedKeys = 1;
+      } else if (this.documentStorage) {
+        await this.documentStorage.delete(fileKey).catch(() => undefined);
+        r2DeletedKeys = 1;
+      }
+    }
+
+    return {
+      entityId: reportId,
+      status: nextStatus,
+      sagRevoked,
+      r2DeletedKeys,
+      r2RetainedSharedKeys,
+    };
+  }
+
+  async bulkWorkReportAction(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    input: BulkGovernanceActionInput<BulkWorkReportGovernanceAction>,
+  ): Promise<BulkGovernanceResult> {
+    const uniqueIds = Array.from(
+      new Set(input.ids.map((id) => id.trim()).filter(Boolean)),
+    ).slice(0, 50);
+    const succeededIds: string[] = [];
+    const failed: Array<{ id: string; message: string }> = [];
+
+    for (const id of uniqueIds) {
+      try {
+        switch (input.action) {
+          case 'APPROVE':
+            await this.reviewWorkReport(headers, projectId, id, 'APPROVED', {
+              comment: input.comment,
+            });
+            break;
+          case 'REQUEST_CHANGES':
+            await this.reviewWorkReport(
+              headers,
+              projectId,
+              id,
+              'CHANGES_REQUESTED',
+              { comment: input.comment },
+            );
+            break;
+          case 'REJECT':
+            await this.reviewWorkReport(headers, projectId, id, 'REJECTED', {
+              comment: input.comment,
+            });
+            break;
+          case 'SYNC':
+            await this.syncWorkReportToSag(headers, projectId, id);
+            break;
+          case 'PAUSE':
+          case 'RESUME':
+          case 'REPROCESS':
+          case 'REVOKE':
+            await this.controlWorkReportKnowledge(
+              headers,
+              projectId,
+              id,
+              input.action,
+            );
+            break;
+          case 'PURGE_ARTIFACT':
+            await this.purgeWorkReportArtifact(headers, projectId, id, {
+              reopen: input.reopen,
+              comment: input.comment,
+            });
+            break;
+          case 'REOPEN':
+            await this.purgeWorkReportArtifact(headers, projectId, id, {
+              reopen: true,
+              comment: input.comment,
+            });
+            break;
+          default:
+            throw new BadRequestException({ code: 'INVALID_BULK_ACTION' });
+        }
+        succeededIds.push(id);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Operation failed.';
+        failed.push({ id, message });
+      }
+    }
+
+    return {
+      action: input.action,
+      requestedCount: uniqueIds.length,
+      succeededIds,
+      failed,
+    };
   }
 
   async sweepOverdueReports(
@@ -5857,18 +8159,73 @@ export class WorkNotesService {
       currentReportByUserId.set(String(item.memberUserId).toLowerCase(), item);
     }
 
+    const mappedData = rows.map((row) => {
+      const authorId = String(row.memberUserId).toLowerCase();
+      const authorName = allDirectoryPeople.find(
+        (person) => person.userId.toLowerCase() === authorId,
+      )?.fullName;
+      return this.workReportRecord(row, actor, authorName, hasActiveLeaders);
+    });
+    const refreshedData = await this.refreshWorkReportsLiveKnowledge(
+      actor,
+      actor.projectId,
+      mappedData,
+    );
+    const enrichedData = await this.attachWorkReportStorageReferences(
+      actor.organizationId,
+      rows,
+      refreshedData,
+    );
+    const refreshedSyncByReportId = new Map<
+      string,
+      DocumentKnowledgeStatusRecord
+    >();
+    for (const item of enrichedData) {
+      if (item.knowledgeSync) {
+        refreshedSyncByReportId.set(item.id, item.knowledgeSync);
+      }
+    }
+
     const roster: WorkReportRosterEntry[] = rosterPeople.map((person) => {
       const currentReport = currentReportByUserId.get(
         person.userId.toLowerCase(),
       );
+      const reportStatus = currentReport
+        ? (text(currentReport.status) as WorkReportStatus)
+        : 'NOT_STARTED';
+      const reportIdStr = currentReport ? String(currentReport._id) : undefined;
+      let compactSync: WorkReportRosterEntry['knowledgeSync'] | undefined;
+      if (currentReport && reportStatus === 'APPROVED' && reportIdStr) {
+        const currentVer = Math.max(
+          1,
+          Number(currentReport.currentVersionNumber ?? 1),
+        );
+        const rawProv =
+          currentReport.provenance &&
+          typeof currentReport.provenance === 'object' &&
+          !Array.isArray(currentReport.provenance)
+            ? (currentReport.provenance as Record<string, unknown>)
+            : undefined;
+        const fullSync =
+          refreshedSyncByReportId.get(reportIdStr) ??
+          normalizeKnowledgeSyncForVersion(rawProv?.knowledgeSync, currentVer);
+        if (fullSync) {
+          compactSync = {
+            status: fullSync.status,
+            searchStatus: fullSync.searchStatus,
+            searchReady: fullSync.searchReady,
+            knowledgeReady: fullSync.knowledgeReady,
+            progress: fullSync.progress,
+            currentStage: fullSync.currentStage ?? null,
+          };
+        }
+      }
       return {
         userId: person.userId,
         fullName: person.fullName,
         joinedAt: person.joinedAt,
-        ...(currentReport ? { reportId: String(currentReport._id) } : {}),
-        status: currentReport
-          ? (text(currentReport.status) as WorkReportStatus)
-          : 'NOT_STARTED',
+        ...(reportIdStr ? { reportId: reportIdStr } : {}),
+        status: reportStatus,
         dueAt: iso(currentReport?.dueAt) ?? currentPeriod.dueAt,
         ...(iso(currentReport?.submittedAt)
           ? { submittedAt: iso(currentReport?.submittedAt) }
@@ -5876,17 +8233,12 @@ export class WorkNotesService {
         ...(iso(currentReport?.reviewedAt)
           ? { reviewedAt: iso(currentReport?.reviewedAt) }
           : {}),
+        ...(compactSync ? { knowledgeSync: compactSync } : {}),
       };
     });
 
     return {
-      data: rows.map((row) => {
-        const authorId = String(row.memberUserId).toLowerCase();
-        const authorName = allDirectoryPeople.find(
-          (person) => person.userId.toLowerCase() === authorId,
-        )?.fullName;
-        return this.workReportRecord(row, actor, authorName, hasActiveLeaders);
-      }),
+      data: enrichedData,
       pagination: this.pagination(page, pageSize, totalItems),
       scope,
       summary,
@@ -6422,15 +8774,48 @@ export class WorkNotesService {
           }
         : {}),
       ...(value.file && typeof value.file === 'object'
-        ? {
-            file: {
-              name: text((value.file as Record<string, unknown>).name),
-              contentType: text(
-                (value.file as Record<string, unknown>).contentType,
-              ),
-              size: Number((value.file as Record<string, unknown>).size),
-            },
-          }
+        ? (() => {
+            const rawProv =
+              value.provenance &&
+              typeof value.provenance === 'object' &&
+              !Array.isArray(value.provenance)
+                ? (value.provenance as Record<string, unknown>)
+                : undefined;
+            const fileSha256 =
+              typeof rawProv?.fileSha256 === 'string' &&
+              rawProv.fileSha256.length > 0
+                ? rawProv.fileSha256
+                : undefined;
+            return {
+              file: {
+                name: text((value.file as Record<string, unknown>).name),
+                contentType: text(
+                  (value.file as Record<string, unknown>).contentType,
+                ),
+                size: Number((value.file as Record<string, unknown>).size),
+                ...(fileSha256 ? { sha256: fileSha256 } : {}),
+              },
+            };
+          })()
+        : {}),
+      ...(status === 'APPROVED'
+        ? (() => {
+            const rawProv =
+              value.provenance &&
+              typeof value.provenance === 'object' &&
+              !Array.isArray(value.provenance)
+                ? (value.provenance as Record<string, unknown>)
+                : undefined;
+            const reportVersion = Math.max(
+              1,
+              Number(value.currentVersionNumber ?? 1),
+            );
+            const normalizedSync = normalizeKnowledgeSyncForVersion(
+              rawProv?.knowledgeSync,
+              reportVersion,
+            );
+            return normalizedSync ? { knowledgeSync: normalizedSync } : {};
+          })()
         : {}),
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
@@ -6438,7 +8823,16 @@ export class WorkNotesService {
         ? { submittedAt: iso(value.submittedAt) }
         : {}),
       ...(value.reviewedByUserId
-        ? { reviewedBy: idText(value.reviewedByUserId) }
+        ? {
+            reviewedBy: idText(value.reviewedByUserId),
+            ...(typeof value.reviewedByName === 'string' &&
+            value.reviewedByName.trim()
+              ? { reviewerName: value.reviewedByName.trim() }
+              : idText(value.reviewedByUserId).toLowerCase() ===
+                    actor.userId.toLowerCase() && actor.userName
+                ? { reviewerName: actor.userName }
+                : {}),
+          }
         : {}),
       ...(iso(value.reviewedAt) ? { reviewedAt: iso(value.reviewedAt) } : {}),
       ...(typeof value.reviewComment === 'string'
@@ -6457,6 +8851,11 @@ export class WorkNotesService {
           ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'].includes(status),
         canReview: canReviewReport,
         canConfigure: canConfigureReport,
+        canControlKnowledge:
+          status === 'APPROVED'
+            ? canManageScope || isOwner
+            : Boolean(canManageScope || actor.canReview),
+        canPurgeArtifact: canManageScope || (isOwner && status !== 'APPROVED'),
       },
     };
   }
@@ -6586,6 +8985,64 @@ export class WorkNotesService {
         : undefined;
     const aiChatSource = serializeAiChatSource(provenance?.aiChatSource);
     const authorId = String(value.authorUserId);
+    const reviewObj =
+      provenance?.review &&
+      typeof provenance.review === 'object' &&
+      !Array.isArray(provenance.review)
+        ? (provenance.review as Record<string, unknown>)
+        : undefined;
+    const rawReviewStatus = reviewObj?.status;
+    const reviewStatus: TaskNoteReviewStatus =
+      rawReviewStatus === 'APPROVED' ||
+      rawReviewStatus === 'CHANGES_REQUESTED' ||
+      rawReviewStatus === 'REJECTED' ||
+      rawReviewStatus === 'PENDING_REVIEW'
+        ? rawReviewStatus
+        : 'PENDING_REVIEW';
+    const versionNumber = Math.max(1, Number(value.currentVersionNumber ?? 1));
+    const createdAtIso = iso(value.createdAt) ?? '';
+    const submittedAt = text(reviewObj?.submittedAt) || createdAtIso;
+    const reviewedBy = text(reviewObj?.reviewedBy) || undefined;
+    const reviewerName =
+      text(reviewObj?.reviewerName) ||
+      (reviewedBy &&
+      reviewedBy.toLowerCase() === actor.userId.toLowerCase() &&
+      actor.userName
+        ? actor.userName
+        : undefined);
+    const reviewedAt = text(reviewObj?.reviewedAt) || undefined;
+    const reviewComment =
+      typeof reviewObj?.comment === 'string' ? reviewObj.comment : undefined;
+    const reviewHistory = pickReviewHistory(reviewObj?.history);
+    const rawMdFile =
+      provenance?.mdFile &&
+      typeof provenance.mdFile === 'object' &&
+      !Array.isArray(provenance.mdFile)
+        ? (provenance.mdFile as Record<string, unknown>)
+        : undefined;
+    const mdFile =
+      reviewStatus === 'APPROVED' &&
+      rawMdFile &&
+      typeof rawMdFile.name === 'string' &&
+      (rawMdFile.version === undefined ||
+        Number(rawMdFile.version) === versionNumber)
+        ? {
+            name: text(rawMdFile.name),
+            contentType: text(rawMdFile.contentType) || 'text/markdown',
+            size: Number(rawMdFile.size ?? 0),
+            ...(typeof rawMdFile.sha256 === 'string' && rawMdFile.sha256
+              ? { sha256: rawMdFile.sha256 }
+              : {}),
+          }
+        : undefined;
+    const knowledgeSync =
+      reviewStatus === 'APPROVED'
+        ? normalizeKnowledgeSyncForVersion(
+            provenance?.knowledgeSync,
+            versionNumber,
+          )
+        : undefined;
+
     return {
       id: String(value._id),
       projectId: String(value.projectId),
@@ -6598,21 +9055,30 @@ export class WorkNotesService {
         (authorId === actor.userId ? actor.userName : authorId),
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
+      reviewStatus,
+      ...(submittedAt ? { submittedAt } : {}),
+      ...(reviewedBy ? { reviewedBy } : {}),
+      ...(reviewerName ? { reviewerName } : {}),
+      ...(reviewedAt ? { reviewedAt } : {}),
+      ...(reviewComment !== undefined ? { reviewComment } : {}),
+      ...(reviewHistory.length > 0 ? { reviewHistory } : {}),
+      ...(mdFile ? { file: mdFile } : {}),
+      ...(knowledgeSync ? { knowledgeSync } : {}),
       title: text(value.title),
       ...(typeof value.contentMarkdown === 'string'
         ? {
             contentMarkdown: value.contentMarkdown,
             contentSchemaVersion: 2 as const,
-            currentVersionNumber: Number(value.currentVersionNumber ?? 1),
+            currentVersionNumber: versionNumber,
           }
         : {}),
       ...(aiChatSource ? { aiChatSource } : {}),
       accomplishments: text(value.whatDone),
       approach: text(value.howSolved),
       reason: text(value.whyThisWay),
-      createdAt: iso(value.createdAt) ?? '',
+      createdAt: createdAtIso,
       updatedAt: iso(value.updatedAt) ?? '',
-      permissions: this.taskNotePermissions(actor, authorId),
+      permissions: this.taskNotePermissions(actor, authorId, reviewStatus),
     };
   }
 
@@ -6623,6 +9089,11 @@ export class WorkNotesService {
     const value = row as unknown as Record<string, unknown>;
     const createdBy = String(value.createdByUserId);
     const status = text(value.status) as DocumentStatus;
+    const currentVersionNumber = Number(value.currentVersionNumber);
+    const normalizedKnowledgeSync = normalizeKnowledgeSyncForVersion(
+      value.knowledgeSync,
+      currentVersionNumber,
+    );
     return {
       id: String(value._id),
       projectId: String(value.projectId),
@@ -6631,15 +9102,13 @@ export class WorkNotesService {
         ? { description: value.description }
         : {}),
       type: text(value.documentType) as ProjectDocumentRecord['type'],
-      version: Number(value.currentVersionNumber),
+      version: currentVersionNumber,
       status,
       createdBy,
       createdAt: iso(value.createdAt) ?? '',
       updatedAt: iso(value.updatedAt) ?? '',
-      ...(value.knowledgeSync && typeof value.knowledgeSync === 'object'
-        ? {
-            knowledgeSync: value.knowledgeSync as DocumentKnowledgeStatusRecord,
-          }
+      ...(normalizedKnowledgeSync
+        ? { knowledgeSync: normalizedKnowledgeSync }
         : {}),
       permissions: {
         ...this.permissions(actor, createdBy, status),
@@ -6850,6 +9319,64 @@ export class WorkNotesService {
       // Fall back to local document ownership if projection query fails on stubbed collections.
     }
 
+    try {
+      const notesCol = this.database().collection('work_notes');
+      if (typeof notesCol.find === 'function') {
+        const cursor = notesCol.find({
+          organizationId: objectId(organizationId),
+          status: 'CONFIRMED',
+          'provenance.mdFile.key': { $in: uniqueKeys },
+        });
+        const rows =
+          cursor && typeof cursor.toArray === 'function'
+            ? await cursor.toArray()
+            : [];
+        for (const row of rows) {
+          const raw = row as unknown as Record<string, unknown>;
+          const rawProv =
+            raw.provenance && typeof raw.provenance === 'object'
+              ? (raw.provenance as { mdFile?: { key?: unknown } })
+              : undefined;
+          const key =
+            typeof rawProv?.mdFile?.key === 'string'
+              ? rawProv.mdFile.key.trim()
+              : '';
+          const noteId = idText(raw._id);
+          if (key && noteId && uniqueKeySet.has(key)) {
+            distinctDocsByKey.get(key)?.add(noteId);
+          }
+        }
+      }
+    } catch {
+      // Optional collection in isolated unit tests
+    }
+
+    try {
+      const reportsCol = this.database().collection('work_reports');
+      if (typeof reportsCol.find === 'function') {
+        const cursor = reportsCol.find({
+          organizationId: objectId(organizationId),
+          'file.key': { $in: uniqueKeys },
+        });
+        const rows =
+          cursor && typeof cursor.toArray === 'function'
+            ? await cursor.toArray()
+            : [];
+        for (const row of rows) {
+          const raw = row as unknown as Record<string, unknown>;
+          const rawFile = raw.file as { key?: unknown } | undefined;
+          const key =
+            typeof rawFile?.key === 'string' ? rawFile.key.trim() : '';
+          const reportId = idText(raw._id);
+          if (key && reportId && uniqueKeySet.has(key)) {
+            distinctDocsByKey.get(key)?.add(reportId);
+          }
+        }
+      }
+    } catch {
+      // Optional collection in isolated unit tests
+    }
+
     const provider: 'CLOUDFLARE_R2' | 'LOCAL' =
       typeof this.documentStorage?.isDirectCloudEnabled === 'function' &&
       this.documentStorage.isDirectCloudEnabled()
@@ -6898,6 +9425,101 @@ export class WorkNotesService {
     }
 
     return result;
+  }
+
+  private async attachTaskNoteStorageReferences(
+    organizationId: string,
+    rawRows: Array<Record<string, unknown>>,
+    mapped: TaskNoteRecord[],
+  ): Promise<TaskNoteRecord[]> {
+    const keyEntries: Array<{
+      documentId: string;
+      keys: string[];
+      currentSha256?: string;
+    }> = [];
+    const rawById = new Map<string, Record<string, unknown>>();
+    for (const row of rawRows) {
+      if (row && typeof row === 'object' && row._id) {
+        rawById.set(idText(row._id), row);
+      }
+    }
+    for (const item of mapped) {
+      if (item.reviewStatus !== 'APPROVED' || !item.file) continue;
+      const raw = rawById.get(item.id);
+      const rawProv =
+        raw?.provenance && typeof raw.provenance === 'object'
+          ? (raw.provenance as {
+              mdFile?: { key?: unknown; sha256?: unknown };
+            })
+          : undefined;
+      const key =
+        typeof rawProv?.mdFile?.key === 'string'
+          ? rawProv.mdFile.key.trim()
+          : '';
+      if (!key) continue;
+      const currentSha256 =
+        typeof rawProv?.mdFile?.sha256 === 'string' &&
+        rawProv.mdFile.sha256.trim()
+          ? rawProv.mdFile.sha256.trim()
+          : item.file.sha256;
+      keyEntries.push({
+        documentId: item.id,
+        keys: [key],
+        ...(currentSha256 ? { currentSha256 } : {}),
+      });
+    }
+    if (keyEntries.length === 0) return mapped;
+    const refs = await this.resolveStorageReferencesByDocument(
+      organizationId,
+      keyEntries,
+    );
+    return mapped.map((item) => {
+      const storageReference = refs.get(item.id);
+      return storageReference ? { ...item, storageReference } : item;
+    });
+  }
+
+  private async attachWorkReportStorageReferences(
+    organizationId: string,
+    rawRows: Array<Record<string, unknown>>,
+    mapped: WorkReportRecord[],
+  ): Promise<WorkReportRecord[]> {
+    const keyEntries: Array<{
+      documentId: string;
+      keys: string[];
+      currentSha256?: string;
+    }> = [];
+    const rawById = new Map<string, Record<string, unknown>>();
+    for (const row of rawRows) {
+      if (row && typeof row === 'object' && row._id) {
+        rawById.set(idText(row._id), row);
+      }
+    }
+    for (const item of mapped) {
+      if (!item.file) continue;
+      const raw = rawById.get(item.id);
+      const rawFile =
+        raw?.file && typeof raw.file === 'object'
+          ? (raw.file as { key?: unknown })
+          : undefined;
+      const key = typeof rawFile?.key === 'string' ? rawFile.key.trim() : '';
+      if (!key) continue;
+      const currentSha256 = item.file.sha256;
+      keyEntries.push({
+        documentId: item.id,
+        keys: [key],
+        ...(currentSha256 ? { currentSha256 } : {}),
+      });
+    }
+    if (keyEntries.length === 0) return mapped;
+    const refs = await this.resolveStorageReferencesByDocument(
+      organizationId,
+      keyEntries,
+    );
+    return mapped.map((item) => {
+      const storageReference = refs.get(item.id);
+      return storageReference ? { ...item, storageReference } : item;
+    });
   }
 
   private buildDocumentActivityHistory(
@@ -7210,15 +9832,20 @@ export class WorkNotesService {
   private taskNotePermissions(
     actor: WorkNotesActor,
     authorId: string,
+    reviewStatus: TaskNoteReviewStatus = 'PENDING_REVIEW',
   ): WorkNotesPermissions {
-    const canManage = actor.userId === authorId || actor.canReview;
+    const isOwner = actor.userId.toLowerCase() === authorId.toLowerCase();
+    const canManage = isOwner || actor.canReview;
     return {
       canCreate: true,
       canEdit: canManage,
       canDelete: canManage,
       canSubmit: false,
-      canReview: false,
+      canReview: Boolean(actor.canReview && reviewStatus === 'PENDING_REVIEW'),
       canConfigure: false,
+      canControlKnowledge:
+        reviewStatus === 'APPROVED' ? canManage : Boolean(actor.canReview),
+      canPurgeArtifact: canManage,
     };
   }
 
@@ -7446,6 +10073,18 @@ export class WorkNotesService {
     const id = objectId(documentId);
     const now = new Date();
     await this.transaction(async (db, session) => {
+      const queuedSync: DocumentKnowledgeStatusRecord = {
+        documentId,
+        version: versionNumber,
+        status: 'QUEUED',
+        searchStatus: 'PENDING',
+        knowledgeStatus: 'NOT_STARTED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'QUEUED',
+        progress: 0,
+        syncedAt: now.toISOString(),
+      };
       await db.collection('project_document_versions').updateOne(
         {
           documentId: id,
@@ -7459,6 +10098,7 @@ export class WorkNotesService {
             reviewedByUserId: objectId(actor.userId),
             reviewedAt: now,
             updatedAt: now,
+            knowledgeSync: queuedSync,
           },
         },
         { session },
@@ -7475,18 +10115,7 @@ export class WorkNotesService {
             latestApprovedVersionNumber: versionNumber,
             updatedByUserId: objectId(actor.userId),
             updatedAt: now,
-            knowledgeSync: {
-              documentId,
-              version: versionNumber,
-              status: 'QUEUED',
-              searchStatus: 'PENDING',
-              knowledgeStatus: 'NOT_STARTED',
-              searchReady: false,
-              knowledgeReady: false,
-              currentStage: 'QUEUED',
-              progress: 0,
-              syncedAt: now.toISOString(),
-            },
+            knowledgeSync: queuedSync,
           },
         },
         { session },
@@ -7524,5 +10153,1465 @@ export class WorkNotesService {
       versionNumber,
       headers.requestId,
     );
+  }
+
+  private async loadAuthorizedTaskNoteRow(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    noteId: string,
+  ): Promise<{ actor: WorkNotesActor; row: Record<string, unknown> }> {
+    const projectActor = await this.authorization.resolveProject(
+      headers,
+      projectId,
+    );
+    if (!validId(noteId)) throw this.taskNoteNotFound();
+    const raw = await this.database()
+      .collection('work_notes')
+      .findOne({
+        _id: objectId(noteId),
+        organizationId: objectId(projectActor.organizationId),
+        projectId: objectId(projectId),
+        type: 'TASK_NOTE',
+        status: 'CONFIRMED',
+      });
+    const row = record(raw);
+    const taskId = row ? idText(row.taskId) : '';
+    if (!row || !validId(taskId)) throw this.taskNoteNotFound();
+    const actor = await this.authorization.resolveTask(
+      headers,
+      projectId,
+      taskId,
+    );
+    return { actor, row };
+  }
+
+  private async loadAuthorizedWorkReportRow(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    reportId: string,
+  ): Promise<{ actor: WorkNotesActor; row: Record<string, unknown> }> {
+    const actor = await this.authorization.resolveProject(headers, projectId);
+    if (!validId(reportId)) throw reportNotFound();
+    const row = record(
+      await this.database()
+        .collection('work_reports')
+        .findOne({
+          _id: objectId(reportId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        }),
+    );
+    if (!row || !this.canViewWorkReportRow(actor, row)) {
+      throw reportNotFound();
+    }
+    return { actor, row };
+  }
+
+  private async ensureApprovedTaskNoteMarkdownStored(
+    actor: WorkNotesActor,
+    row: Record<string, unknown>,
+  ): Promise<{
+    key?: string;
+    name: string;
+    contentType: string;
+    size: number;
+    sha256: string;
+    bytes?: Buffer;
+  }> {
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const reviewStatus = (rawProv.review as { status?: string } | undefined)
+      ?.status;
+    if (reviewStatus !== 'APPROVED') {
+      throw this.taskNoteNotFound();
+    }
+    const noteId = String(row._id);
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const existingMd =
+      rawProv.mdFile && typeof rawProv.mdFile === 'object'
+        ? (rawProv.mdFile as {
+            key?: string;
+            name?: string;
+            contentType?: string;
+            size?: number;
+            sha256?: string;
+            version?: number;
+          })
+        : undefined;
+    if (
+      existingMd?.key &&
+      existingMd.name &&
+      existingMd.contentType &&
+      existingMd.sha256 &&
+      (existingMd.version === undefined ||
+        Number(existingMd.version) === versionNumber)
+    ) {
+      return {
+        key: existingMd.key,
+        name: existingMd.name,
+        contentType: existingMd.contentType,
+        size: Number(existingMd.size ?? 0),
+        sha256: existingMd.sha256,
+      };
+    }
+
+    const authorId = String(row.authorUserId);
+    const reviewObj =
+      rawProv.review && typeof rawProv.review === 'object'
+        ? (rawProv.review as { reviewedAt?: string })
+        : undefined;
+    const artifact = buildTaskNoteMarkdownArtifact({
+      noteId,
+      taskId: idText(row.taskId),
+      taskKey: actor.taskKey,
+      taskTitle: actor.taskTitle,
+      authorId,
+      authorName:
+        text(row.authorName) ||
+        (authorId === actor.userId ? actor.userName : authorId),
+      title: text(row.title),
+      contentMarkdown:
+        typeof row.contentMarkdown === 'string'
+          ? row.contentMarkdown
+          : undefined,
+      accomplishments: text(row.whatDone),
+      approach: text(row.howSolved),
+      reason: text(row.whyThisWay),
+      version: versionNumber,
+      approvedAt: reviewObj?.reviewedAt ?? iso(row.updatedAt),
+    });
+
+    if (!this.documentStorage) {
+      return {
+        name: artifact.fileName,
+        contentType: artifact.contentType,
+        size: artifact.size,
+        sha256: artifact.sha256,
+        bytes: artifact.bytes,
+      };
+    }
+
+    const projectIdStr = String(row.projectId);
+    const reusedKey = await this.findExistingStorageKeyBySha256(
+      actor.organizationId,
+      projectIdStr,
+      artifact.sha256,
+    );
+    const key =
+      reusedKey ??
+      `work-notes/${actor.organizationId}/${projectIdStr}/${noteId}/v${versionNumber}-${artifact.sha256.slice(0, 12)}.md`;
+    if (!reusedKey) {
+      await this.documentStorage
+        .put(key, artifact.bytes, artifact.contentType)
+        .catch((err: { code?: string }) => {
+          if (err?.code !== 'EEXIST') throw err;
+        });
+    }
+
+    const mdFileRecord = {
+      key,
+      name: artifact.fileName,
+      contentType: artifact.contentType,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      version: versionNumber,
+    };
+    const db = this.database();
+    await db
+      .collection('work_notes')
+      .updateOne(
+        { _id: objectId(noteId) },
+        { $set: { 'provenance.mdFile': mdFileRecord } },
+      );
+    try {
+      await db
+        .collection('work_note_versions')
+        .updateOne(
+          { workNoteId: objectId(noteId), versionNumber },
+          { $set: { 'provenance.mdFile': mdFileRecord } },
+        );
+    } catch {
+      // Optional version collection in isolated unit tests
+    }
+
+    return {
+      key,
+      name: artifact.fileName,
+      contentType: artifact.contentType,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      bytes: artifact.bytes,
+    };
+  }
+
+  private async ensureApprovedWorkReportMarkdownStored(
+    actor: WorkNotesActor,
+    row: Record<string, unknown>,
+  ): Promise<{
+    key?: string;
+    name: string;
+    contentType: string;
+    size: number;
+    sha256: string;
+    bytes?: Buffer;
+  }> {
+    if (text(row.status) !== 'APPROVED') {
+      throw reportNotFound();
+    }
+    const reportId = String(row._id);
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const existingFile =
+      row.file && typeof row.file === 'object'
+        ? (row.file as {
+            key?: string;
+            name?: string;
+            contentType?: string;
+            size?: number;
+          })
+        : undefined;
+    if (existingFile?.key && existingFile.name && existingFile.contentType) {
+      const storedSha =
+        typeof rawProv.fileSha256 === 'string' && rawProv.fileSha256
+          ? rawProv.fileSha256
+          : undefined;
+      if (storedSha) {
+        return {
+          key: existingFile.key,
+          name: existingFile.name,
+          contentType: existingFile.contentType,
+          size: Number(existingFile.size ?? 0),
+          sha256: storedSha,
+        };
+      }
+      if (!this.documentStorage) {
+        throw new ServiceUnavailableException(
+          'Project Document storage is unavailable.',
+        );
+      }
+      const bytes = await this.documentStorage.get(existingFile.key);
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      return {
+        key: existingFile.key,
+        name: existingFile.name,
+        contentType: existingFile.contentType,
+        size: bytes.length,
+        sha256,
+        bytes,
+      };
+    }
+
+    const artifact = buildWorkReportMarkdownArtifact({
+      reportId,
+      memberId: String(row.memberUserId),
+      reportScope: text(row.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER',
+      frequency: text(row.frequency) || 'WEEKLY',
+      periodStart: iso(row.periodStart) ?? '',
+      periodEnd: iso(row.periodEnd) ?? '',
+      title: typeof row.title === 'string' ? row.title : undefined,
+      contentMarkdown:
+        typeof row.contentMarkdown === 'string'
+          ? row.contentMarkdown
+          : undefined,
+      accomplishments: text(row.accomplishments),
+      approach: text(row.approach),
+      reason: text(row.reason),
+      blockers: text(row.blockers),
+      nextSteps: text(row.nextSteps),
+      version: versionNumber,
+      approvedAt: iso(row.reviewedAt) ?? iso(row.updatedAt),
+    });
+
+    if (!this.documentStorage) {
+      return {
+        name: artifact.fileName,
+        contentType: artifact.contentType,
+        size: artifact.size,
+        sha256: artifact.sha256,
+        bytes: artifact.bytes,
+      };
+    }
+
+    const projectIdStr = String(row.projectId);
+    const reusedKey = await this.findExistingStorageKeyBySha256(
+      actor.organizationId,
+      projectIdStr,
+      artifact.sha256,
+    );
+    const key =
+      reusedKey ??
+      `work-reports/${actor.organizationId}/${projectIdStr}/${reportId}/v${versionNumber}-${artifact.sha256.slice(0, 12)}.md`;
+    if (!reusedKey) {
+      await this.documentStorage
+        .put(key, artifact.bytes, artifact.contentType)
+        .catch((err: { code?: string }) => {
+          if (err?.code !== 'EEXIST') throw err;
+        });
+    }
+
+    await this.database()
+      .collection('work_reports')
+      .updateOne(
+        { _id: objectId(reportId) },
+        {
+          $set: {
+            file: {
+              key,
+              name: artifact.fileName,
+              contentType: artifact.contentType,
+              size: artifact.size,
+            },
+            'provenance.fileSha256': artifact.sha256,
+          },
+        },
+      );
+
+    return {
+      key,
+      name: artifact.fileName,
+      contentType: artifact.contentType,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      bytes: artifact.bytes,
+    };
+  }
+
+  private async findExistingStorageKeyBySha256(
+    organizationId: string,
+    projectId: string,
+    sha256: string,
+  ): Promise<string | null> {
+    const db = this.database();
+    const orgOid = objectId(organizationId);
+    const projOid = objectId(projectId);
+    try {
+      const existingDocVer = await db
+        .collection('project_document_versions')
+        .findOne(
+          {
+            organizationId: orgOid,
+            projectId: projOid,
+            'file.sha256': sha256,
+          },
+          { projection: { 'file.key': 1 } },
+        );
+      const docKey = (existingDocVer?.file as { key?: string } | undefined)
+        ?.key;
+      if (docKey) return docKey;
+    } catch {
+      // Optional collection in isolated unit tests
+    }
+    try {
+      const existingNote = await db.collection('work_notes').findOne(
+        {
+          organizationId: orgOid,
+          projectId: projOid,
+          status: 'CONFIRMED',
+          'provenance.mdFile.sha256': sha256,
+        },
+        { projection: { 'provenance.mdFile.key': 1 } },
+      );
+      const noteKey = (
+        existingNote?.provenance as { mdFile?: { key?: string } } | undefined
+      )?.mdFile?.key;
+      if (noteKey) return noteKey;
+    } catch {
+      // Optional collection in isolated unit tests
+    }
+    try {
+      const existingReport = await db.collection('work_reports').findOne(
+        {
+          organizationId: orgOid,
+          projectId: projOid,
+          'provenance.fileSha256': sha256,
+        },
+        { projection: { 'file.key': 1 } },
+      );
+      const reportKey = (existingReport?.file as { key?: string } | undefined)
+        ?.key;
+      if (reportKey) return reportKey;
+    } catch {
+      // Optional collection in isolated unit tests
+    }
+    return null;
+  }
+
+  private async isStorageKeyStillReferenced(
+    organizationId: string,
+    key: string,
+    exclude?: {
+      excludeWorkNoteId?: string;
+      excludeWorkReportId?: string;
+    },
+  ): Promise<boolean> {
+    const db = this.database();
+    const orgOid = objectId(organizationId);
+    try {
+      const docMatch = await db
+        .collection('project_document_versions')
+        .findOne(
+          { organizationId: orgOid, 'file.key': key },
+          { projection: { _id: 1 } },
+        );
+      if (docMatch) return true;
+    } catch {
+      // Optional collection
+    }
+    try {
+      const noteMatch = await db.collection('work_notes').findOne(
+        {
+          organizationId: orgOid,
+          status: 'CONFIRMED',
+          'provenance.mdFile.key': key,
+          ...(exclude?.excludeWorkNoteId && validId(exclude.excludeWorkNoteId)
+            ? { _id: { $ne: objectId(exclude.excludeWorkNoteId) } }
+            : {}),
+        },
+        { projection: { _id: 1 } },
+      );
+      if (noteMatch) return true;
+    } catch {
+      // Optional collection
+    }
+    try {
+      const reportMatch = await db.collection('work_reports').findOne(
+        {
+          organizationId: orgOid,
+          'file.key': key,
+          ...(exclude?.excludeWorkReportId &&
+          validId(exclude.excludeWorkReportId)
+            ? { _id: { $ne: objectId(exclude.excludeWorkReportId) } }
+            : {}),
+        },
+        { projection: { _id: 1 } },
+      );
+      if (reportMatch) return true;
+    } catch {
+      // Optional collection
+    }
+    return false;
+  }
+
+  private async buildDownloadUrlResponse(file: {
+    key?: string;
+    name: string;
+    contentType: string;
+  }): Promise<DocumentDownloadUrlResponse> {
+    if (
+      file.key &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+    ) {
+      const expiresInSeconds = Math.max(
+        30,
+        Math.min(
+          3600,
+          Number(
+            this.config?.get<number>('R2_PRESIGNED_DOWNLOAD_TTL_SECONDS') ??
+              120,
+          ) || 120,
+        ),
+      );
+      const downloadUrl = await this.documentStorage.createDirectDownloadUrl(
+        file.key,
+        expiresInSeconds,
+        {
+          fileName: file.name,
+          contentType: file.contentType,
+          disposition: 'attachment',
+        },
+      );
+      return {
+        mode: 'DIRECT_GET',
+        downloadUrl,
+        fileName: file.name,
+        contentType: file.contentType,
+        expiresInSeconds,
+      };
+    }
+    return {
+      mode: 'LEGACY_PROXY',
+      fileName: file.name,
+      contentType: file.contentType,
+    };
+  }
+
+  private async persistTaskNoteKnowledgeSyncRecord(
+    noteId: string,
+    versionNumber: number,
+    syncRecord: DocumentKnowledgeStatusRecord,
+  ): Promise<void> {
+    const db = this.database();
+    await db
+      .collection('work_notes')
+      .updateOne(
+        { _id: objectId(noteId) },
+        { $set: { 'provenance.knowledgeSync': syncRecord } },
+      );
+    try {
+      await db
+        .collection('work_note_versions')
+        .updateOne(
+          { workNoteId: objectId(noteId), versionNumber },
+          { $set: { 'provenance.knowledgeSync': syncRecord } },
+        );
+    } catch {
+      // Optional version collection in isolated unit tests
+    }
+  }
+
+  private async persistWorkReportKnowledgeSyncRecord(
+    reportId: string,
+    _versionNumber: number,
+    syncRecord: DocumentKnowledgeStatusRecord,
+  ): Promise<void> {
+    await this.database()
+      .collection('work_reports')
+      .updateOne(
+        { _id: objectId(reportId) },
+        { $set: { 'provenance.knowledgeSync': syncRecord } },
+      );
+  }
+
+  private async resolveTaskNoteKnowledgeStatusForRow(
+    actor: WorkNotesActor,
+    projectId: string,
+    row: Record<string, unknown>,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const noteId = String(row._id);
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const fileSha256 = (rawProv.mdFile as { sha256?: string } | undefined)
+      ?.sha256;
+    return this.resolveEntityKnowledgeStatus({
+      actor,
+      projectId,
+      aggregateType: 'WORK_NOTE',
+      entityId: noteId,
+      versionNumber,
+      rawProvenance: rawProv,
+      fileSha256,
+      persistSync: (syncRecord) =>
+        this.persistTaskNoteKnowledgeSyncRecord(
+          noteId,
+          versionNumber,
+          syncRecord,
+        ),
+    });
+  }
+
+  private async resolveWorkReportKnowledgeStatusForRow(
+    actor: WorkNotesActor,
+    projectId: string,
+    row: Record<string, unknown>,
+  ): Promise<DocumentKnowledgeStatusRecord> {
+    const reportId = String(row._id);
+    const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const rawProv =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : {};
+    const fileSha256 =
+      typeof rawProv.fileSha256 === 'string' && rawProv.fileSha256
+        ? rawProv.fileSha256
+        : undefined;
+    return this.resolveEntityKnowledgeStatus({
+      actor,
+      projectId,
+      aggregateType: 'WORK_REPORT',
+      entityId: reportId,
+      versionNumber,
+      rawProvenance: rawProv,
+      fileSha256,
+      persistSync: (syncRecord) =>
+        this.persistWorkReportKnowledgeSyncRecord(
+          reportId,
+          versionNumber,
+          syncRecord,
+        ),
+    });
+  }
+
+  private async refreshTaskNotesLiveKnowledge(
+    actor: WorkNotesActor,
+    projectId: string,
+    items: TaskNoteRecord[],
+  ): Promise<TaskNoteRecord[]> {
+    const hasLiveTransport =
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function';
+    const candidates = items.filter(
+      (item) =>
+        item.reviewStatus === 'APPROVED' &&
+        shouldRefreshLiveKnowledgeSync(item.knowledgeSync, hasLiveTransport),
+    );
+    if (candidates.length === 0) return items;
+    const db = this.database();
+    const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
+    await Promise.all(
+      candidates.slice(0, 12).map(async (item) => {
+        try {
+          const row = record(
+            await db.collection('work_notes').findOne({
+              _id: objectId(item.id),
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+            }),
+          );
+          if (!row) return;
+          const live = await this.resolveTaskNoteKnowledgeStatusForRow(
+            actor,
+            projectId,
+            row,
+          );
+          refreshedById.set(item.id, live);
+        } catch {
+          // Best-effort live polling refresh
+        }
+      }),
+    );
+    if (refreshedById.size === 0) return items;
+    return items.map((item) => {
+      const live = refreshedById.get(item.id);
+      return live ? { ...item, knowledgeSync: live } : item;
+    });
+  }
+
+  private async refreshWorkReportsLiveKnowledge(
+    actor: WorkNotesActor,
+    projectId: string,
+    items: WorkReportRecord[],
+  ): Promise<WorkReportRecord[]> {
+    const hasLiveTransport =
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function';
+    const candidates = items.filter(
+      (item) =>
+        item.status === 'APPROVED' &&
+        shouldRefreshLiveKnowledgeSync(item.knowledgeSync, hasLiveTransport),
+    );
+    if (candidates.length === 0) return items;
+    const db = this.database();
+    const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
+    await Promise.all(
+      candidates.slice(0, 12).map(async (item) => {
+        try {
+          const row = record(
+            await db.collection('work_reports').findOne({
+              _id: objectId(item.id),
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+            }),
+          );
+          if (!row) return;
+          const live = await this.resolveWorkReportKnowledgeStatusForRow(
+            actor,
+            projectId,
+            row,
+          );
+          refreshedById.set(item.id, live);
+        } catch {
+          // Best-effort live polling refresh
+        }
+      }),
+    );
+    if (refreshedById.size === 0) return items;
+    return items.map((item) => {
+      const live = refreshedById.get(item.id);
+      return live ? { ...item, knowledgeSync: live } : item;
+    });
+  }
+
+  private async resolveEntityKnowledgeStatus(params: {
+    actor: WorkNotesActor;
+    projectId: string;
+    aggregateType: 'WORK_NOTE' | 'WORK_REPORT';
+    entityId: string;
+    versionNumber: number;
+    rawProvenance: Record<string, unknown>;
+    fileSha256?: string;
+    persistSync: (syncRecord: DocumentKnowledgeStatusRecord) => Promise<void>;
+  }): Promise<DocumentKnowledgeStatusRecord> {
+    const {
+      actor,
+      projectId,
+      aggregateType,
+      entityId,
+      versionNumber,
+      rawProvenance,
+      fileSha256,
+      persistSync,
+    } = params;
+    const storedSync = normalizeKnowledgeSyncForVersion(
+      rawProvenance.knowledgeSync,
+      versionNumber,
+    );
+
+    if (
+      storedSync?.sagDocumentId &&
+      storedSync.sagVersionNo &&
+      typeof this.sagTransport?.getProjectDocumentVersionStatus === 'function'
+    ) {
+      try {
+        const live = await this.sagTransport.getProjectDocumentVersionStatus({
+          organizationId: actor.organizationId,
+          projectId,
+          sagDocumentId: storedSync.sagDocumentId,
+          versionNo: storedSync.sagVersionNo,
+          actorUserId: actor.userId,
+        });
+        const merged: DocumentKnowledgeStatusRecord = {
+          ...storedSync,
+          documentId: entityId,
+          version: versionNumber,
+          sagDocumentId: live.documentId,
+          sagVersionNo: live.versionNo,
+          status: live.status,
+          searchStatus: live.searchStatus,
+          knowledgeStatus: live.knowledgeStatus,
+          searchReady: live.searchReady,
+          knowledgeReady: Boolean(
+            live.knowledgeReady ||
+            isKnowledgeSettledStatus(live.knowledgeStatus),
+          ),
+          currentStage: live.currentStage ?? storedSync.currentStage ?? null,
+          progress:
+            typeof live.progress === 'number'
+              ? live.progress
+              : live.searchReady
+                ? 100
+                : (storedSync.progress ?? 10),
+          ...(live.documentStatus !== undefined
+            ? { documentStatus: live.documentStatus }
+            : {}),
+          ...(live.parserProvider !== undefined
+            ? { parserProvider: live.parserProvider }
+            : {}),
+          ...(live.parserStatus !== undefined
+            ? { parserStatus: live.parserStatus }
+            : {}),
+          ...(typeof live.chunkCount === 'number'
+            ? { chunkCount: live.chunkCount }
+            : {}),
+          ...(typeof live.eventCount === 'number'
+            ? { eventCount: live.eventCount }
+            : {}),
+          ...(typeof live.tokenUsage === 'number'
+            ? { tokenUsage: live.tokenUsage }
+            : {}),
+          ...(live.stageProgress !== undefined
+            ? { stageProgress: live.stageProgress }
+            : {}),
+          error: live.error ?? null,
+        };
+        if (JSON.stringify(merged) !== JSON.stringify(storedSync)) {
+          await persistSync(merged);
+        }
+        return merged;
+      } catch {
+        return storedSync;
+      }
+    }
+
+    const isPreReceiptPlaceholder = Boolean(
+      storedSync &&
+      !storedSync.sagDocumentId &&
+      (storedSync.status === 'QUEUED_OUTBOX' || storedSync.status === 'QUEUED'),
+    );
+    if (storedSync && !isPreReceiptPlaceholder) {
+      return storedSync;
+    }
+
+    const pendingOutbox = await this.database()
+      .collection('outbox_events')
+      .findOne({
+        aggregateType,
+        aggregateId: entityId,
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        'payload.version': versionNumber,
+        status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
+      });
+
+    if (pendingOutbox) {
+      const deliveryReceipt = (
+        pendingOutbox.payload as
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
+      )?.delivery?.receipt;
+      if (
+        deliveryReceipt &&
+        typeof deliveryReceipt.documentId === 'string' &&
+        typeof deliveryReceipt.versionNo === 'number'
+      ) {
+        let recovered: DocumentKnowledgeStatusRecord = {
+          documentId: entityId,
+          version: versionNumber,
+          sagDocumentId: deliveryReceipt.documentId,
+          sagVersionId:
+            typeof deliveryReceipt.versionId === 'string'
+              ? deliveryReceipt.versionId
+              : undefined,
+          sagVersionNo: deliveryReceipt.versionNo,
+          status:
+            typeof deliveryReceipt.status === 'string'
+              ? deliveryReceipt.status
+              : 'SEARCH_READY',
+          searchStatus:
+            typeof deliveryReceipt.searchStatus === 'string'
+              ? deliveryReceipt.searchStatus
+              : 'SEARCH_READY',
+          knowledgeStatus:
+            typeof deliveryReceipt.knowledgeStatus === 'string'
+              ? deliveryReceipt.knowledgeStatus
+              : 'NOT_STARTED',
+          searchReady: Boolean(deliveryReceipt.searchReady ?? true),
+          knowledgeReady: Boolean(
+            deliveryReceipt.knowledgeReady ||
+            isKnowledgeSettledStatus(deliveryReceipt.knowledgeStatus),
+          ),
+          progress: 100,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+        };
+        if (
+          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
+          'function'
+        ) {
+          try {
+            const live =
+              await this.sagTransport.getProjectDocumentVersionStatus({
+                organizationId: actor.organizationId,
+                projectId,
+                sagDocumentId: deliveryReceipt.documentId,
+                versionNo: deliveryReceipt.versionNo,
+                actorUserId: actor.userId,
+              });
+            recovered = {
+              ...recovered,
+              status: live.status,
+              searchStatus: live.searchStatus,
+              knowledgeStatus: live.knowledgeStatus,
+              searchReady: live.searchReady,
+              knowledgeReady: Boolean(
+                live.knowledgeReady ||
+                isKnowledgeSettledStatus(live.knowledgeStatus),
+              ),
+              currentStage: live.currentStage ?? null,
+              progress:
+                typeof live.progress === 'number'
+                  ? live.progress
+                  : live.searchReady
+                    ? 100
+                    : 15,
+              ...(live.documentStatus !== undefined
+                ? { documentStatus: live.documentStatus }
+                : {}),
+              ...(live.parserProvider !== undefined
+                ? { parserProvider: live.parserProvider }
+                : {}),
+              ...(live.parserStatus !== undefined
+                ? { parserStatus: live.parserStatus }
+                : {}),
+              ...(typeof live.chunkCount === 'number'
+                ? { chunkCount: live.chunkCount }
+                : {}),
+              ...(typeof live.eventCount === 'number'
+                ? { eventCount: live.eventCount }
+                : {}),
+              ...(typeof live.tokenUsage === 'number'
+                ? { tokenUsage: live.tokenUsage }
+                : {}),
+              ...(live.stageProgress !== undefined
+                ? { stageProgress: live.stageProgress }
+                : {}),
+              error: live.error ?? null,
+            };
+          } catch {
+            // Fall back to recovered outbox receipt
+          }
+        }
+        await persistSync(recovered);
+        return recovered;
+      }
+      if (pendingOutbox.status === 'PENDING') {
+        return (
+          storedSync ?? {
+            documentId: entityId,
+            version: versionNumber,
+            ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+            status: 'QUEUED_OUTBOX',
+            searchStatus: 'PENDING',
+            knowledgeStatus: 'NOT_STARTED',
+            searchReady: false,
+            knowledgeReady: false,
+            currentStage: 'OUTBOX_QUEUE',
+            progress: 5,
+          }
+        );
+      }
+      if (pendingOutbox.status === 'FAILED') {
+        const failedSync: DocumentKnowledgeStatusRecord = {
+          documentId: entityId,
+          version: versionNumber,
+          ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+          status: 'FAILED',
+          searchStatus: 'FAILED',
+          knowledgeStatus: 'FAILED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_DELIVERY',
+          progress: 0,
+          error: {
+            message: String(
+              pendingOutbox.lastError ??
+                'Failed to deliver Markdown artifact to SAG processing engine.',
+            ),
+          },
+        };
+        await persistSync(failedSync);
+        return failedSync;
+      }
+    }
+
+    if (storedSync) return storedSync;
+
+    return {
+      documentId: entityId,
+      version: versionNumber,
+      ...(fileSha256 ? { fileHash: fileSha256 } : {}),
+      status: 'NOT_SYNCED',
+      searchStatus: 'NOT_STARTED',
+      knowledgeStatus: 'NOT_STARTED',
+      searchReady: false,
+      knowledgeReady: false,
+      currentStage: null,
+      progress: 0,
+    };
+  }
+
+  private async resolveEntityKnowledgeChunks(params: {
+    actor: WorkNotesActor;
+    projectId: string;
+    aggregateType: 'WORK_NOTE' | 'WORK_REPORT';
+    entityId: string;
+    versionNumber: number;
+    rawProvenance: Record<string, unknown>;
+    options?: { limit?: number; offset?: number };
+  }): Promise<DocumentKnowledgeChunksResponse> {
+    const {
+      actor,
+      projectId,
+      aggregateType,
+      entityId,
+      versionNumber,
+      rawProvenance,
+      options,
+    } = params;
+    let sagDocumentId: string | undefined;
+    let sagVersionNo: number | undefined;
+    const storedSync = normalizeKnowledgeSyncForVersion(
+      rawProvenance.knowledgeSync,
+      versionNumber,
+    );
+
+    if (storedSync?.status === 'REVOKED') {
+      return {
+        documentId: entityId,
+        version: versionNumber,
+        ...(storedSync.sagDocumentId
+          ? { sagDocumentId: storedSync.sagDocumentId }
+          : {}),
+        ...(storedSync.sagVersionNo
+          ? { sagVersionNo: storedSync.sagVersionNo }
+          : {}),
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+
+    if (storedSync?.sagDocumentId && storedSync.sagVersionNo) {
+      sagDocumentId = storedSync.sagDocumentId;
+      sagVersionNo = storedSync.sagVersionNo;
+    } else {
+      const pendingOutbox = await this.database()
+        .collection('outbox_events')
+        .findOne({
+          aggregateType,
+          aggregateId: entityId,
+          eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+          'payload.version': versionNumber,
+          status: { $in: ['PENDING', 'PUBLISHED', 'FAILED'] },
+        });
+      const deliveryReceipt = (
+        pendingOutbox?.payload as
+          { delivery?: { receipt?: Record<string, unknown> } } | undefined
+      )?.delivery?.receipt;
+      if (
+        deliveryReceipt &&
+        typeof deliveryReceipt.documentId === 'string' &&
+        typeof deliveryReceipt.versionNo === 'number'
+      ) {
+        sagDocumentId = deliveryReceipt.documentId;
+        sagVersionNo = deliveryReceipt.versionNo;
+      }
+    }
+
+    if (
+      !sagDocumentId ||
+      !sagVersionNo ||
+      typeof this.sagTransport?.getProjectDocumentVersionChunks !== 'function'
+    ) {
+      return {
+        documentId: entityId,
+        version: versionNumber,
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+
+    try {
+      const chunksReceipt =
+        await this.sagTransport.getProjectDocumentVersionChunks({
+          organizationId: actor.organizationId,
+          projectId,
+          sagDocumentId,
+          versionNo: sagVersionNo,
+          actorUserId: actor.userId,
+          limit: options?.limit ?? 50,
+          offset: options?.offset ?? 0,
+        });
+      return {
+        documentId: entityId,
+        version: versionNumber,
+        sagDocumentId: chunksReceipt.documentId,
+        sagVersionNo: chunksReceipt.versionNo,
+        sourceStage: chunksReceipt.sourceStage,
+        totalChunks: chunksReceipt.totalChunks,
+        totalTokens: chunksReceipt.totalTokens,
+        items: chunksReceipt.items,
+      };
+    } catch {
+      return {
+        documentId: entityId,
+        version: versionNumber,
+        sagDocumentId,
+        sagVersionNo,
+        sourceStage: 'EMPTY',
+        totalChunks: 0,
+        totalTokens: 0,
+        items: [],
+      };
+    }
+  }
+
+  private async syncApprovedArtifactToSag(params: {
+    actor: WorkNotesActor;
+    projectId: string;
+    aggregateType: 'WORK_NOTE' | 'WORK_REPORT';
+    logicalPrefix: 'work_note' | 'work_report';
+    entityId: string;
+    versionNumber: number;
+    rawProvenance: Record<string, unknown>;
+    ensureStoredFile: () => Promise<{
+      key?: string;
+      name: string;
+      contentType: string;
+      size: number;
+      sha256: string;
+      bytes?: Buffer;
+    }>;
+    persistSync: (syncRecord: DocumentKnowledgeStatusRecord) => Promise<void>;
+    auditAction: string;
+  }): Promise<DocumentKnowledgeStatusRecord> {
+    const {
+      actor,
+      projectId,
+      aggregateType,
+      logicalPrefix,
+      entityId,
+      versionNumber,
+      rawProvenance,
+      ensureStoredFile,
+      persistSync,
+      auditAction,
+    } = params;
+    if (!this.sagTransport) {
+      throw new ServiceUnavailableException({
+        code: 'SAG_SYNC_UNAVAILABLE',
+        message: 'SAG Knowledge synchronization service is unavailable.',
+      });
+    }
+
+    const fileMeta = await ensureStoredFile();
+    const existingSync = normalizeKnowledgeSyncForVersion(
+      rawProvenance.knowledgeSync,
+      versionNumber,
+    );
+    const needsFreshIdempotencyKey = Boolean(
+      existingSync &&
+      ['REVOKED', 'FAILED', 'INDEX_FAILED'].some(
+        (terminalState) =>
+          String(existingSync.status ?? '').toUpperCase() === terminalState ||
+          String(existingSync.searchStatus ?? '').toUpperCase() ===
+            terminalState,
+      ),
+    );
+    const resyncSuffix = needsFreshIdempotencyKey
+      ? `:resync:${Date.now()}`
+      : '';
+    const logicalSourceId = `continuum:${logicalPrefix}:${entityId}`;
+    const fileHash = fileMeta.sha256;
+    const idempotencyKey = `continuum:${logicalPrefix}:${entityId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
+
+    const canDirectObjectIngest = Boolean(
+      fileMeta.key &&
+      fileMeta.size > 0 &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+      typeof this.sagTransport.ingestProjectDocumentObject === 'function',
+    );
+
+    let receipt: SagProjectDocumentUploadReceipt;
+    if (canDirectObjectIngest && this.documentStorage && fileMeta.key) {
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ) || 1800,
+      );
+      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
+        fileMeta.key,
+        sagIngestUrlTtlSeconds,
+        {
+          fileName: fileMeta.name,
+          contentType: fileMeta.contentType,
+        },
+      );
+      try {
+        receipt = await this.sagTransport.ingestProjectDocumentObject!({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId: entityId,
+          version: versionNumber,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId: actor.userId,
+          sourceUrl,
+          fileName: fileMeta.name,
+          contentType: fileMeta.contentType,
+          expectedSha256: fileHash,
+          expectedSizeBytes: fileMeta.size,
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+      }
+    } else {
+      let bytes = fileMeta.bytes;
+      if (!bytes) {
+        if (!this.documentStorage || !fileMeta.key) {
+          throw new ServiceUnavailableException(
+            'Project Document storage is unavailable.',
+          );
+        }
+        bytes = await this.documentStorage.get(fileMeta.key);
+      }
+      try {
+        receipt = await this.sagTransport.uploadProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId: entityId,
+          version: versionNumber,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId: actor.userId,
+          fileName: fileMeta.name,
+          contentType: fileMeta.contentType,
+          bytes,
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+      }
+    }
+
+    const syncedAt = new Date().toISOString();
+    const searchStatus = receipt.searchStatus ?? 'PENDING';
+    const knowledgeStatus = receipt.knowledgeStatus ?? 'NOT_STARTED';
+    const sameActiveSagVersion = Boolean(
+      existingSync &&
+      existingSync.sagDocumentId === receipt.documentId &&
+      existingSync.sagVersionNo === receipt.versionNo &&
+      !needsFreshIdempotencyKey,
+    );
+    const existingProgress = sameActiveSagVersion
+      ? Number(existingSync?.progress ?? 0)
+      : 0;
+    const searchReady = Boolean(
+      receipt.searchReady ||
+      searchStatus === 'SEARCH_READY' ||
+      (sameActiveSagVersion && existingSync?.searchReady === true),
+    );
+    const knowledgeReady = Boolean(
+      isKnowledgeSettledStatus(knowledgeStatus) ||
+      (sameActiveSagVersion && existingSync?.knowledgeReady === true),
+    );
+
+    const syncRecord: DocumentKnowledgeStatusRecord = {
+      documentId: entityId,
+      version: versionNumber,
+      sagDocumentId: receipt.documentId,
+      sagVersionId: receipt.versionId,
+      sagVersionNo: receipt.versionNo,
+      ...(receipt.runId ? { runId: receipt.runId } : {}),
+      fileHash: receipt.fileHash ?? fileHash,
+      status: searchReady ? 'SEARCH_READY' : receipt.status,
+      searchStatus: searchReady ? 'SEARCH_READY' : searchStatus,
+      knowledgeStatus,
+      searchReady,
+      knowledgeReady,
+      isDuplicate: Boolean(receipt.isDuplicate),
+      currentStage: searchReady
+        ? 'COMPLETE'
+        : sameActiveSagVersion &&
+            existingProgress > 10 &&
+            existingSync?.currentStage
+          ? existingSync.currentStage
+          : receipt.isDuplicate
+            ? 'DUPLICATE'
+            : 'RECEIVE',
+      progress: searchReady ? 100 : Math.max(0, existingProgress),
+      syncedAt,
+    };
+
+    await persistSync(syncRecord);
+    await this.auditEvent(actor, auditAction, aggregateType, entityId, {
+      version: versionNumber,
+      sagDocumentId: receipt.documentId,
+      sagVersionNo: receipt.versionNo,
+      isDuplicate: Boolean(receipt.isDuplicate),
+    });
+    return syncRecord;
+  }
+
+  private async controlEntityKnowledge(params: {
+    actor: WorkNotesActor;
+    projectId: string;
+    aggregateType: 'WORK_NOTE' | 'WORK_REPORT';
+    logicalPrefix: 'work_note' | 'work_report';
+    entityId: string;
+    versionNumber: number;
+    canControl: boolean;
+    rawProvenance: Record<string, unknown>;
+    action: DocumentKnowledgeControlAction;
+    ensureStoredFile: () => Promise<{
+      key?: string;
+      name: string;
+      contentType: string;
+      size: number;
+      sha256: string;
+      bytes?: Buffer;
+    }>;
+    persistSync: (syncRecord: DocumentKnowledgeStatusRecord) => Promise<void>;
+    resyncFn: () => Promise<DocumentKnowledgeStatusRecord>;
+    getStatusFn: () => Promise<DocumentKnowledgeStatusRecord>;
+    auditPrefix: string;
+  }): Promise<DocumentKnowledgeStatusRecord> {
+    const {
+      actor,
+      projectId,
+      aggregateType,
+      logicalPrefix,
+      entityId,
+      versionNumber,
+      canControl,
+      rawProvenance,
+      action,
+      ensureStoredFile,
+      persistSync,
+      resyncFn,
+      getStatusFn,
+      auditPrefix,
+    } = params;
+    if (!this.sagTransport) {
+      throw new ServiceUnavailableException({
+        code: 'SAG_SYNC_UNAVAILABLE',
+        message: 'SAG Knowledge synchronization service is unavailable.',
+      });
+    }
+    if (!canControl) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only the author or a Project reviewer can control SAG processing.',
+      });
+    }
+
+    const storedSync = normalizeKnowledgeSyncForVersion(
+      rawProvenance.knowledgeSync,
+      versionNumber,
+    );
+    const logicalSourceId = `continuum:${logicalPrefix}:${entityId}`;
+
+    if (action === 'REVOKE') {
+      let revokeReceipt;
+      try {
+        revokeReceipt = await this.sagTransport.revokeProjectDocument({
+          organizationId: actor.organizationId,
+          projectId,
+          documentId: entityId,
+          version: versionNumber,
+          logicalSourceId,
+          actorUserId: actor.userId,
+          reason: 'MANUAL_REVOKE',
+        });
+      } catch (error) {
+        this.mapSagTransportError(error, 'SAG_REVOKE_FAILED');
+      }
+      const revokedRecord: DocumentKnowledgeStatusRecord = {
+        ...(storedSync ?? {}),
+        documentId: entityId,
+        version: versionNumber,
+        ...(revokeReceipt.documentId
+          ? { sagDocumentId: revokeReceipt.documentId }
+          : {}),
+        status: 'REVOKED',
+        searchStatus: 'REVOKED',
+        knowledgeStatus: 'REVOKED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'REVOKED',
+        progress: 0,
+        syncedAt: new Date().toISOString(),
+      };
+      await persistSync(revokedRecord);
+      await this.auditEvent(
+        actor,
+        `${auditPrefix}_KNOWLEDGE_REVOKED`,
+        aggregateType,
+        entityId,
+        {
+          version: versionNumber,
+          ...(revokeReceipt.documentId
+            ? { sagDocumentId: revokeReceipt.documentId }
+            : {}),
+        },
+      );
+      return revokedRecord;
+    }
+
+    if (
+      action === 'REPROCESS' &&
+      actor.canReview &&
+      (!storedSync ||
+        storedSync.status === 'NOT_SYNCED' ||
+        storedSync.status === 'REVOKED' ||
+        storedSync.searchStatus === 'REVOKED')
+    ) {
+      return resyncFn();
+    }
+
+    if (typeof this.sagTransport.controlProjectDocument !== 'function') {
+      throw new ServiceUnavailableException({
+        code: 'SAG_CONTROL_UNSUPPORTED',
+        message: 'SAG Knowledge control transport is not available.',
+      });
+    }
+
+    const fileMeta = await ensureStoredFile();
+    let reprocessSourceUrl: string | undefined;
+    if (
+      action === 'REPROCESS' &&
+      fileMeta.key &&
+      this.documentStorage &&
+      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
+      this.documentStorage.isDirectCloudEnabled() &&
+      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+    ) {
+      const sagIngestUrlTtlSeconds = Math.max(
+        60,
+        Number(
+          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
+        ) || 1800,
+      );
+      reprocessSourceUrl = await this.documentStorage
+        .createDirectDownloadUrl(fileMeta.key, sagIngestUrlTtlSeconds, {
+          fileName: fileMeta.name,
+          contentType: fileMeta.contentType,
+        })
+        .catch(() => undefined);
+    }
+
+    const sagDocumentId = storedSync?.sagDocumentId || logicalSourceId;
+    try {
+      await this.sagTransport.controlProjectDocument({
+        organizationId: actor.organizationId,
+        projectId,
+        sagDocumentId,
+        actorUserId: actor.userId,
+        action: action.toLowerCase() as 'pause' | 'resume' | 'reprocess',
+        ...(reprocessSourceUrl ? { sourceUrl: reprocessSourceUrl } : {}),
+        fileName: fileMeta.name,
+        contentType: fileMeta.contentType,
+        expectedSha256: fileMeta.sha256,
+        ...(fileMeta.size > 0 ? { expectedSizeBytes: fileMeta.size } : {}),
+      });
+    } catch (error) {
+      this.mapSagTransportError(error, 'SAG_CONTROL_FAILED');
+    }
+
+    const controlAuditAction =
+      action === 'REPROCESS'
+        ? `${auditPrefix}_KNOWLEDGE_REPROCESSED`
+        : action === 'PAUSE'
+          ? `${auditPrefix}_KNOWLEDGE_PAUSED`
+          : `${auditPrefix}_KNOWLEDGE_RESUMED`;
+    await this.auditEvent(actor, controlAuditAction, aggregateType, entityId, {
+      version: versionNumber,
+      sagDocumentId,
+    });
+
+    if (action === 'REPROCESS') {
+      const resetRecord: DocumentKnowledgeStatusRecord = {
+        ...(storedSync ?? {}),
+        documentId: entityId,
+        version: versionNumber,
+        sagDocumentId,
+        status: 'RECEIVED',
+        searchStatus: 'PENDING',
+        knowledgeStatus: storedSync?.knowledgeStatus ?? 'NOT_STARTED',
+        searchReady: false,
+        knowledgeReady: false,
+        currentStage: 'RECEIVE',
+        documentStatus: 'pending',
+        progress: 0,
+        chunkCount: 0,
+        stageProgress: {},
+        error: null,
+        syncedAt: new Date().toISOString(),
+      };
+      await persistSync(resetRecord);
+      return resetRecord;
+    }
+
+    return getStatusFn();
   }
 }

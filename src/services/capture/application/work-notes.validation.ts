@@ -52,12 +52,27 @@ function optionalText(value: unknown, maxLength: number): string | undefined {
 
 export function validateTaskNoteInput(value: unknown): TaskNoteInput {
   const record = objectRecord(value);
-  assertKeys(record, ['title', 'accomplishments', 'approach', 'reason']);
+  assertKeys(record, [
+    'title',
+    'accomplishments',
+    'approach',
+    'reason',
+    'autoApprove',
+  ]);
+  if (
+    record.autoApprove !== undefined &&
+    typeof record.autoApprove !== 'boolean'
+  ) {
+    return invalid();
+  }
   return {
     title: requiredText(record.title, 160),
     accomplishments: requiredText(record.accomplishments, 10_000),
     approach: requiredText(record.approach, 10_000),
     reason: requiredText(record.reason, 5_000),
+    ...(record.autoApprove !== undefined
+      ? { autoApprove: record.autoApprove }
+      : {}),
   };
 }
 

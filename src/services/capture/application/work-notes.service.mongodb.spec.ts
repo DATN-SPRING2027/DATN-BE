@@ -2109,4 +2109,408 @@ describe('Capture Work Notes Mongo workflows', () => {
       ),
     ).rejects.toThrow(NotFoundException);
   });
+
+  it('enforces strict post-approval .md upload & SHA-256 deduplication for Task Notes and Work Reports', async () => {
+    const putSpy = jest.fn().mockResolvedValue(undefined);
+    const storedObjects = new Map<string, Buffer>();
+    putSpy.mockImplementation((key: string, bytes: Buffer) => {
+      storedObjects.set(key, bytes);
+      return Promise.resolve();
+    });
+    const customStorage = {
+      put: putSpy,
+      get: jest.fn((key: string) =>
+        Promise.resolve(storedObjects.get(key) ?? Buffer.alloc(0)),
+      ),
+      delete: jest.fn((key: string) => {
+        storedObjects.delete(key);
+        return Promise.resolve();
+      }),
+    } as unknown as ProjectDocumentStorage;
+
+    const outbox = {
+      append: async (
+        event: {
+          eventName: string;
+          aggregateType: string;
+          aggregateId: string;
+          payload: Record<string, unknown>;
+        },
+        session?: mongoose.ClientSession,
+      ) => {
+        await connection
+          .collection('outbox_events')
+          .insertOne(
+            { ...event, status: 'PENDING', occurredAt: new Date() },
+            session ? { session } : undefined,
+          );
+      },
+    };
+
+    const customService = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      outbox as OutboxService,
+      {
+        append: jest.fn().mockResolvedValue(undefined),
+      } as unknown as AuditService,
+      customStorage,
+    );
+
+    // 1. Member creates TaskNote -> PENDING_REVIEW, ZERO R2 puts, download blocked (404), direct SAG sync blocked (403)
+    const memberNote = await customService.createTaskNote(
+      {},
+      projectId,
+      taskId,
+      {
+        title: 'Cache invalidation runbook',
+        accomplishments: 'Documented Redis key eviction flow.',
+        approach: 'Tagged keys by project namespace.',
+        reason: 'Avoid stale task board reads.',
+      },
+    );
+    expect(memberNote.reviewStatus).toBe('PENDING_REVIEW');
+    expect(memberNote.file).toBeUndefined();
+    expect(memberNote.knowledgeSync).toBeUndefined();
+    expect(putSpy).not.toHaveBeenCalled();
+
+    await expect(
+      customService.downloadTaskNoteFile({}, projectId, memberNote.id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      customService.syncTaskNoteToSag({}, projectId, memberNote.id),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // 2. Member submits Periodic Work Report -> PENDING_REVIEW, ZERO R2 puts, download blocked (404)
+    const memberReport = await customService.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Completed cache invalidation runbook.',
+        approach: 'Verified Redis TTL under load.',
+        reason: 'Sprint reliability goal.',
+      },
+      'MEMBER',
+    );
+    await customService.submitWorkReport({}, projectId, memberReport.id);
+    expect(putSpy).not.toHaveBeenCalled();
+    await expect(
+      customService.downloadWorkReportFile({}, projectId, memberReport.id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    // 3. Switch to Leader -> Approves Member TaskNote -> outbox queued & .md materialized on download
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+    };
+
+    const approvedNote = await customService.reviewTaskNote(
+      {},
+      projectId,
+      memberNote.id,
+      'APPROVED',
+      { comment: 'Ready for SAG indexing.' },
+    );
+    expect(approvedNote.reviewStatus).toBe('APPROVED');
+    expect(approvedNote.knowledgeSync).toMatchObject({
+      status: 'QUEUED_OUTBOX',
+      progress: 5,
+    });
+    expect(
+      await connection.collection('outbox_events').findOne({
+        aggregateType: 'WORK_NOTE',
+        aggregateId: memberNote.id,
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+      }),
+    ).toBeTruthy();
+
+    const downloadedNoteMd = await customService.downloadTaskNoteFile(
+      {},
+      projectId,
+      memberNote.id,
+    );
+    expect(downloadedNoteMd.contentType).toBe('text/markdown');
+    expect(downloadedNoteMd.name).toMatch(/\.md$/);
+    expect(downloadedNoteMd.bytes.toString('utf-8')).toContain(
+      '# Cache invalidation runbook',
+    );
+    expect(putSpy).toHaveBeenCalledTimes(1);
+
+    // 4. Leader creates TaskNote directly -> Auto-Approved immediately!
+    const leaderAutoNote = await customService.createTaskNote(
+      {},
+      projectId,
+      taskId,
+      {
+        title: 'Leader architecture decision',
+        accomplishments: 'Approved R2 + SAG pipeline reuse.',
+        approach: 'Unified post-approval Markdown synthesis.',
+        reason: 'Keep storage clean from unapproved drafts.',
+      },
+    );
+    expect(leaderAutoNote.reviewStatus).toBe('APPROVED');
+    expect(leaderAutoNote.knowledgeSync?.status).toBe('QUEUED_OUTBOX');
+
+    // 5. Leader approves Member Work Report -> outbox queued & .md materialized on download
+    const approvedReport = await customService.reviewWorkReport(
+      {},
+      projectId,
+      memberReport.id,
+      'APPROVED',
+      { comment: 'Approved for SAG.' },
+    );
+    expect(approvedReport.status).toBe('APPROVED');
+    expect(approvedReport.knowledgeSync).toMatchObject({
+      status: 'QUEUED_OUTBOX',
+      progress: 5,
+    });
+
+    const downloadedReportMd = await customService.downloadWorkReportFile(
+      {},
+      projectId,
+      memberReport.id,
+    );
+    expect(downloadedReportMd.contentType).toBe('text/markdown');
+    expect(downloadedReportMd.name).toMatch(/\.md$/);
+    expect(downloadedReportMd.bytes.toString('utf-8')).toContain(
+      'Completed cache invalidation runbook.',
+    );
+    expect(putSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('supports post-approval SAG controls, cross-collection R2 ref-counted purge/reopen, and bulk governance actions', async () => {
+    const storedObjects = new Map<string, Buffer>();
+    const deleteSpy = jest.fn((key: string) => {
+      storedObjects.delete(key);
+      return Promise.resolve();
+    });
+    const customStorage = {
+      isDirectCloudEnabled: () => true,
+      put: jest.fn((key: string, bytes: Buffer) => {
+        storedObjects.set(key, bytes);
+        return Promise.resolve();
+      }),
+      get: jest.fn((key: string) =>
+        Promise.resolve(storedObjects.get(key) ?? Buffer.alloc(0)),
+      ),
+      delete: deleteSpy,
+    } as unknown as ProjectDocumentStorage;
+
+    const outbox = {
+      append: async (
+        event: {
+          eventName: string;
+          aggregateType: string;
+          aggregateId: string;
+          payload: Record<string, unknown>;
+        },
+        session?: mongoose.ClientSession,
+      ) => {
+        await connection
+          .collection('outbox_events')
+          .insertOne(
+            { ...event, status: 'PENDING', occurredAt: new Date() },
+            session ? { session } : undefined,
+          );
+      },
+    };
+
+    const revokeSpy = jest.fn().mockResolvedValue({
+      documentId: 'sag-doc-shared',
+      revoked: true,
+    });
+    const controlSpy = jest.fn().mockResolvedValue({
+      documentId: 'sag-doc-shared',
+      accepted: true,
+      status: 'paused',
+    });
+
+    const customService = new WorkNotesService(
+      authorization as WorkNotesAuthorizationService,
+      connection,
+      outbox as OutboxService,
+      {
+        append: jest.fn().mockResolvedValue(undefined),
+      } as unknown as AuditService,
+      customStorage,
+      undefined,
+      {
+        uploadProjectDocument: jest.fn(),
+        revokeProjectDocument: revokeSpy,
+        controlProjectDocument: controlSpy,
+      },
+    );
+
+    // Member creates 2 Task Notes + submits Periodic Work Report
+    const note1 = await customService.createTaskNote({}, projectId, taskId, {
+      title: 'Batch Note One',
+      accomplishments: 'Implemented bulk bar.',
+      approach: 'Multi-select checkboxes.',
+      reason: 'Operational speed.',
+    });
+    const note2 = await customService.createTaskNote({}, projectId, taskId, {
+      title: 'Batch Note Two',
+      accomplishments: 'Implemented R2 purge modal.',
+      approach: 'Cross-collection SHA-256 ref count.',
+      reason: 'Safe storage lifecycle.',
+    });
+    const report = await customService.saveCurrentWorkReportDraft(
+      {},
+      projectId,
+      {
+        accomplishments: 'Delivered batch governance.',
+        approach: 'Unified controller & gateway endpoints.',
+        reason: 'Leader productivity.',
+      },
+      'MEMBER',
+    );
+    await customService.submitWorkReport({}, projectId, report.id);
+
+    // Switch to Leader and batch-approve both Task Notes + batch-approve Work Report!
+    currentActor = {
+      ...currentActor,
+      userId: leaderId,
+      userName: 'Leo Leader',
+      canReview: true,
+      canConfigure: true,
+      isLeader: true,
+      isManager: false,
+    };
+
+    const bulkNotes = await customService.bulkTaskNoteAction({}, projectId, {
+      ids: [note1.id, note2.id],
+      action: 'APPROVE',
+      comment: 'Batch approved by Leader.',
+    });
+    expect(bulkNotes.succeededIds).toEqual([note1.id, note2.id]);
+    expect(bulkNotes.failed).toHaveLength(0);
+
+    const bulkReports = await customService.bulkWorkReportAction(
+      {},
+      projectId,
+      {
+        ids: [report.id],
+        action: 'APPROVE',
+        comment: 'Batch report approved.',
+      },
+    );
+    expect(bulkReports.succeededIds).toEqual([report.id]);
+
+    // Materialize .md on R2 for note1 and report
+    await customService.downloadTaskNoteFile({}, projectId, note1.id);
+    await customService.downloadWorkReportFile({}, projectId, report.id);
+
+    // Verify canControlKnowledge & canPurgeArtifact stay true AFTER approval even though canReview is false!
+    const fetchedNote1 = await customService.getProjectTaskNote(
+      {},
+      projectId,
+      note1.id,
+    );
+    expect(fetchedNote1.reviewStatus).toBe('APPROVED');
+    expect(fetchedNote1.reviewerName).toBe('Leo Leader');
+    expect(fetchedNote1.permissions.canReview).toBe(false);
+    expect(fetchedNote1.permissions.canControlKnowledge).toBe(true);
+    expect(fetchedNote1.permissions.canPurgeArtifact).toBe(true);
+    expect(fetchedNote1.storageReference).toMatchObject({
+      provider: 'CLOUDFLARE_R2',
+      externalDocumentRefs: 0,
+      willDeleteFromStorage: true,
+    });
+
+    // Pause & Resume SAG processing on approved Task Note
+    await customService.controlTaskNoteKnowledge(
+      {},
+      projectId,
+      note1.id,
+      'PAUSE',
+    );
+    await customService.controlTaskNoteKnowledge(
+      {},
+      projectId,
+      note1.id,
+      'RESUME',
+    );
+    expect(controlSpy).toHaveBeenCalledTimes(2);
+
+    // Simulate shared R2 key between note1 and note2 -> purging note1 retains shared R2 object!
+    const note1Doc = await connection
+      .collection('work_notes')
+      .findOne({ _id: new mongoose.Types.ObjectId(note1.id) });
+    const sharedMdFile = (
+      note1Doc?.provenance as { mdFile?: Record<string, unknown> }
+    )?.mdFile;
+    await connection
+      .collection('work_notes')
+      .updateOne(
+        { _id: new mongoose.Types.ObjectId(note2.id) },
+        { $set: { 'provenance.mdFile': sharedMdFile } },
+      );
+
+    const sharedCheck = await customService.getProjectTaskNote(
+      {},
+      projectId,
+      note1.id,
+    );
+    expect(sharedCheck.storageReference).toMatchObject({
+      externalDocumentRefs: 1,
+      willDeleteFromStorage: false,
+    });
+
+    const purgeShared = await customService.purgeTaskNoteArtifact(
+      {},
+      projectId,
+      note1.id,
+    );
+    expect(purgeShared).toMatchObject({
+      entityId: note1.id,
+      status: 'APPROVED',
+      sagRevoked: true,
+      r2DeletedKeys: 0,
+      r2RetainedSharedKeys: 1,
+    });
+    expect(deleteSpy).not.toHaveBeenCalled();
+
+    // Now note2 is the sole owner of that R2 key -> deleting note2 deletes the R2 object!
+    const deletedNote2 = await customService.deleteProjectTaskNote(
+      {},
+      projectId,
+      note2.id,
+    );
+    expect(deletedNote2).toMatchObject({
+      entityId: note2.id,
+      status: 'ARCHIVED',
+      sagRevoked: true,
+      r2DeletedKeys: 1,
+      r2RetainedSharedKeys: 0,
+    });
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+
+    // Purge Work Report R2 artifact with reopen=true -> revokes SAG, deletes R2 object, and transitions to CHANGES_REQUESTED
+    const purgedReport = await customService.purgeWorkReportArtifact(
+      {},
+      projectId,
+      report.id,
+      { reopen: true, comment: 'Reopened to update Q4 metrics.' },
+    );
+    expect(purgedReport).toMatchObject({
+      entityId: report.id,
+      status: 'CHANGES_REQUESTED',
+      sagRevoked: true,
+      r2DeletedKeys: 1,
+      r2RetainedSharedKeys: 0,
+    });
+    const reloadedReport = await customService.getWorkReport(
+      {},
+      projectId,
+      report.id,
+    );
+    expect(reloadedReport.status).toBe('CHANGES_REQUESTED');
+    expect(reloadedReport.file).toBeUndefined();
+    expect(reloadedReport.reviewComment).toBe('Reopened to update Q4 metrics.');
+  });
 });

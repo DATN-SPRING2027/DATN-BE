@@ -30,7 +30,7 @@ interface MockOutboxEvent {
     | 'KNOWLEDGE_SOURCE_APPROVED'
     | 'KNOWLEDGE_SOURCE_REPLACED'
     | 'KNOWLEDGE_SOURCE_REVOKED';
-  aggregateType: 'PROJECT_DOCUMENT';
+  aggregateType: 'PROJECT_DOCUMENT' | 'WORK_REPORT' | 'WORK_NOTE';
   aggregateId: string;
   payload: Record<string, unknown>;
   status: 'PENDING' | 'PUBLISHED' | 'FAILED';
@@ -1068,6 +1068,511 @@ describe('KnowledgeOutboxConsumer', () => {
     const remaining = await consumer.inspectPendingEvents();
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.documentId).toBe(secondDocumentId.toHexString());
+  });
+
+  it('does not regress higher live progress back to 10% RECEIVE when persisting an async outbox receipt for an already-advancing version', async () => {
+    const versionObjId = new Types.ObjectId();
+    const persistedDocUpdates: Array<Record<string, unknown>> = [];
+    const persistedVerUpdates: Array<Record<string, unknown>> = [];
+
+    const existingSync = {
+      documentId: documentId.toHexString(),
+      version: 1,
+      sagDocumentId: 'sag-doc-1',
+      sagVersionId: 'sag-ver-1',
+      sagVersionNo: 1,
+      status: 'RECEIVED',
+      searchStatus: 'PENDING',
+      knowledgeStatus: 'NOT_STARTED',
+      searchReady: false,
+      knowledgeReady: false,
+      currentStage: 'DEDUP_TEMPORAL',
+      documentStatus: 'extracting',
+      progress: 65,
+    };
+
+    const outboxEvent: MockOutboxEvent = {
+      _id: new Types.ObjectId('700000000000000000000088'),
+      eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+      aggregateType: 'PROJECT_DOCUMENT',
+      aggregateId: documentId.toHexString(),
+      payload: {
+        sourceType: 'PROJECT_DOCUMENT',
+        sourceId: documentId.toHexString(),
+        organizationId: organizationId.toHexString(),
+        projectId: projectId.toHexString(),
+        version: 1,
+      },
+      status: 'PENDING',
+      occurredAt: new Date('2026-11-02T08:00:00.000Z'),
+    };
+
+    let leased = false;
+    const connection = {
+      collection: jest.fn((name: string) => {
+        if (name === 'outbox_events') {
+          return {
+            findOneAndUpdate: jest.fn(() => {
+              if (leased || outboxEvent.status !== 'PENDING')
+                return Promise.resolve(null);
+              leased = true;
+              outboxEvent.payload.delivery = {
+                leaseId: 'lease-1',
+                attemptCount: 1,
+              };
+              return Promise.resolve({
+                ...outboxEvent,
+                payload: {
+                  ...outboxEvent.payload,
+                  delivery: { leaseId: 'lease-1', attemptCount: 1 },
+                },
+              });
+            }),
+            findOne: jest.fn(() => Promise.resolve(null)),
+            updateOne: jest.fn(() => {
+              outboxEvent.status = 'PUBLISHED';
+              return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+            }),
+          };
+        }
+        if (name === 'project_documents') {
+          return {
+            findOne: jest.fn(() =>
+              Promise.resolve({
+                _id: documentId,
+                organizationId,
+                projectId,
+                title: 'Advancing Doc',
+                status: 'APPROVED',
+                currentVersionNumber: 1,
+                latestApprovedVersionNumber: 1,
+                createdByUserId: reviewerUserId,
+                updatedByUserId: reviewerUserId,
+                knowledgeSync: existingSync,
+              }),
+            ),
+            updateOne: jest.fn(
+              (
+                _f: unknown,
+                u: { $set?: { knowledgeSync?: Record<string, unknown> } },
+              ) => {
+                if (u.$set?.knowledgeSync) {
+                  persistedDocUpdates.push(u.$set.knowledgeSync);
+                }
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            ),
+          };
+        }
+        if (name === 'project_document_versions') {
+          return {
+            findOne: jest.fn(() =>
+              Promise.resolve({
+                _id: versionObjId,
+                organizationId,
+                projectId,
+                documentId,
+                versionNumber: 1,
+                title: 'Advancing Doc',
+                status: 'APPROVED',
+                reviewedByUserId: reviewerUserId,
+                content: '# Content',
+                knowledgeSync: existingSync,
+              }),
+            ),
+            updateOne: jest.fn(
+              (
+                _f: unknown,
+                u: { $set?: { knowledgeSync?: Record<string, unknown> } },
+              ) => {
+                if (u.$set?.knowledgeSync) {
+                  persistedVerUpdates.push(u.$set.knowledgeSync);
+                }
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            ),
+          };
+        }
+        throw new Error(`Unexpected collection ${name}`);
+      }),
+    } as unknown as Connection;
+
+    const consumer = new KnowledgeOutboxConsumer(
+      connection,
+      new ConfigService({
+        KNOWLEDGE_OUTBOX_CONSUMER_ENABLED: 'false',
+        KNOWLEDGE_OUTBOX_ASYNC_HANDOFF: 'true',
+      }),
+      { get: jest.fn() } as unknown as ProjectDocumentStorage,
+      {
+        uploadProjectDocument: jest.fn().mockResolvedValue({
+          documentId: 'sag-doc-1',
+          versionId: 'sag-ver-1',
+          versionNo: 1,
+          status: 'RECEIVED',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'DATA_READY',
+          isDuplicate: false,
+        }),
+        revokeProjectDocument: jest.fn(),
+      },
+    );
+
+    await expect(consumer.runOnce()).resolves.toBe('PUBLISHED');
+    expect(persistedVerUpdates).toHaveLength(1);
+    expect(persistedVerUpdates[0]).toMatchObject({
+      progress: 65,
+      currentStage: 'DEDUP_TEMPORAL',
+      knowledgeReady: true,
+    });
+    expect(persistedDocUpdates[0]).toMatchObject({
+      progress: 65,
+      currentStage: 'DEDUP_TEMPORAL',
+      knowledgeReady: true,
+    });
+  });
+
+  it('skips unapproved WORK_REPORT with 0 R2 puts, and materializes .md to R2 + syncs SAG when WORK_REPORT is APPROVED', async () => {
+    const reportId = new Types.ObjectId('6cd7758334bd88b3f2cc9101');
+    const storagePuts: Array<{
+      key: string;
+      bytes: Buffer;
+      contentType: string;
+    }> = [];
+    const reportUpdates: Array<Record<string, unknown>> = [];
+    let liveReportStatus = 'PENDING_REVIEW';
+
+    const outboxEvents: MockOutboxEvent[] = [
+      {
+        _id: new Types.ObjectId('700000000000000000000091'),
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        aggregateType: 'WORK_REPORT',
+        aggregateId: reportId.toHexString(),
+        payload: {
+          sourceType: 'WORK_REPORT',
+          sourceId: reportId.toHexString(),
+          organizationId: organizationId.toHexString(),
+          projectId: projectId.toHexString(),
+          version: 1,
+        },
+        status: 'PENDING',
+        occurredAt: new Date('2026-11-02T09:00:00.000Z'),
+      },
+      {
+        _id: new Types.ObjectId('700000000000000000000092'),
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        aggregateType: 'WORK_REPORT',
+        aggregateId: reportId.toHexString(),
+        payload: {
+          sourceType: 'WORK_REPORT',
+          sourceId: reportId.toHexString(),
+          organizationId: organizationId.toHexString(),
+          projectId: projectId.toHexString(),
+          version: 1,
+        },
+        status: 'PENDING',
+        occurredAt: new Date('2026-11-02T09:05:00.000Z'),
+      },
+    ];
+
+    const connection = {
+      collection: jest.fn((name: string) => {
+        if (name === 'outbox_events') {
+          return {
+            findOneAndUpdate: jest.fn((filter: Record<string, unknown>) => {
+              const target = outboxEvents.find((e) => matchesFilter(e, filter));
+              if (!target) return Promise.resolve(null);
+              target.payload.delivery = {
+                leaseId: 'lease-wr',
+                attemptCount: 1,
+              };
+              return Promise.resolve(cloneEvent(target));
+            }),
+            findOne: jest.fn((filter: Record<string, unknown>) => {
+              const target = outboxEvents.find((e) => matchesFilter(e, filter));
+              return Promise.resolve(target ? cloneEvent(target) : null);
+            }),
+            updateOne: jest.fn(
+              (
+                filter: Record<string, unknown>,
+                update: Record<string, Record<string, unknown>>,
+              ) => {
+                const target = outboxEvents.find((e) =>
+                  matchesFilter(e, filter),
+                );
+                if (target) applyUpdate(target, update);
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            ),
+          };
+        }
+        if (name === 'work_reports') {
+          return {
+            findOne: jest.fn((filter: Record<string, unknown>) => {
+              if ('provenance.fileSha256' in filter) {
+                return Promise.resolve(null);
+              }
+              return Promise.resolve({
+                _id: reportId,
+                organizationId,
+                projectId,
+                memberUserId: reviewerUserId,
+                reviewedByUserId: reviewerUserId,
+                reportScope: 'MEMBER',
+                frequency: 'WEEKLY',
+                periodStart: new Date('2026-10-26T00:00:00.000Z'),
+                periodEnd: new Date('2026-11-01T23:59:59.000Z'),
+                title: 'Weekly Sprint Report',
+                contentMarkdown: '## Completed\n- Shipped outbox consumer',
+                currentVersionNumber: 1,
+                status: liveReportStatus,
+                provenance: {},
+              });
+            }),
+            updateOne: jest.fn(
+              (_f: unknown, u: { $set?: Record<string, unknown> }) => {
+                if (u.$set) reportUpdates.push(u.$set);
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            ),
+          };
+        }
+        return {
+          findOne: jest.fn(() => Promise.resolve(null)),
+          updateOne: jest.fn(() => Promise.resolve({})),
+        };
+      }),
+    } as unknown as Connection;
+
+    const uploads: SagProjectDocumentUploadInput[] = [];
+    const consumer = new KnowledgeOutboxConsumer(
+      connection,
+      new ConfigService({
+        KNOWLEDGE_OUTBOX_CONSUMER_ENABLED: 'false',
+        KNOWLEDGE_OUTBOX_ASYNC_HANDOFF: 'true',
+      }),
+      {
+        put: jest.fn((key: string, bytes: Buffer, contentType: string) => {
+          storagePuts.push({ key, bytes, contentType });
+          return Promise.resolve();
+        }),
+        get: jest.fn(),
+      } as unknown as ProjectDocumentStorage,
+      {
+        uploadProjectDocument: jest.fn(
+          (input: SagProjectDocumentUploadInput) => {
+            uploads.push(input);
+            return Promise.resolve({
+              documentId: 'sag-wr-1',
+              versionId: 'sag-wr-ver-1',
+              versionNo: 1,
+              status: 'RECEIVED',
+              searchStatus: 'SEARCH_READY',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: true,
+            });
+          },
+        ),
+        revokeProjectDocument: jest.fn(),
+      },
+    );
+
+    // 1. While PENDING_REVIEW -> SKIPPED, 0 R2 puts, 0 SAG uploads
+    await expect(consumer.runOnce()).resolves.toBe('SKIPPED');
+    expect(storagePuts).toHaveLength(0);
+    expect(uploads).toHaveLength(0);
+
+    // 2. Once APPROVED -> materializes .md into work-reports/... on R2 and syncs SAG
+    liveReportStatus = 'APPROVED';
+    await expect(consumer.runOnce()).resolves.toBe('PUBLISHED');
+    expect(storagePuts).toHaveLength(1);
+    expect(storagePuts[0]?.key).toMatch(
+      new RegExp(
+        `^work-reports/${organizationId.toHexString()}/${projectId.toHexString()}/${reportId.toHexString()}/`,
+      ),
+    );
+    expect(storagePuts[0]?.contentType).toBe('text/markdown');
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.logicalSourceId).toBe(
+      `continuum:work_report:${reportId.toHexString()}`,
+    );
+    expect(reportUpdates.some((u) => Boolean(u.file))).toBe(true);
+  });
+
+  it('skips unapproved WORK_NOTE with 0 R2 puts, and materializes .md to R2 + syncs SAG when WORK_NOTE is APPROVED', async () => {
+    const noteId = new Types.ObjectId('6dd7758334bd88b3f2cc9201');
+    const taskId = new Types.ObjectId('6dd7758334bd88b3f2cc9202');
+    const storagePuts: Array<{
+      key: string;
+      bytes: Buffer;
+      contentType: string;
+    }> = [];
+    const noteUpdates: Array<Record<string, unknown>> = [];
+    let reviewStatus = 'PENDING_REVIEW';
+
+    const outboxEvents: MockOutboxEvent[] = [
+      {
+        _id: new Types.ObjectId('700000000000000000000093'),
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        aggregateType: 'WORK_NOTE',
+        aggregateId: noteId.toHexString(),
+        payload: {
+          sourceType: 'WORK_NOTE',
+          sourceId: noteId.toHexString(),
+          organizationId: organizationId.toHexString(),
+          projectId: projectId.toHexString(),
+          version: 1,
+        },
+        status: 'PENDING',
+        occurredAt: new Date('2026-11-02T09:10:00.000Z'),
+      },
+      {
+        _id: new Types.ObjectId('700000000000000000000094'),
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        aggregateType: 'WORK_NOTE',
+        aggregateId: noteId.toHexString(),
+        payload: {
+          sourceType: 'WORK_NOTE',
+          sourceId: noteId.toHexString(),
+          organizationId: organizationId.toHexString(),
+          projectId: projectId.toHexString(),
+          version: 1,
+        },
+        status: 'PENDING',
+        occurredAt: new Date('2026-11-02T09:15:00.000Z'),
+      },
+    ];
+
+    const connection = {
+      collection: jest.fn((name: string) => {
+        if (name === 'outbox_events') {
+          return {
+            findOneAndUpdate: jest.fn((filter: Record<string, unknown>) => {
+              const target = outboxEvents.find((e) => matchesFilter(e, filter));
+              if (!target) return Promise.resolve(null);
+              target.payload.delivery = {
+                leaseId: 'lease-wn',
+                attemptCount: 1,
+              };
+              return Promise.resolve(cloneEvent(target));
+            }),
+            findOne: jest.fn((filter: Record<string, unknown>) => {
+              const target = outboxEvents.find((e) => matchesFilter(e, filter));
+              return Promise.resolve(target ? cloneEvent(target) : null);
+            }),
+            updateOne: jest.fn(
+              (
+                filter: Record<string, unknown>,
+                update: Record<string, Record<string, unknown>>,
+              ) => {
+                const target = outboxEvents.find((e) =>
+                  matchesFilter(e, filter),
+                );
+                if (target) applyUpdate(target, update);
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            ),
+          };
+        }
+        if (name === 'work_notes') {
+          return {
+            findOne: jest.fn((filter: Record<string, unknown>) => {
+              if ('provenance.mdFile.sha256' in filter) {
+                return Promise.resolve(null);
+              }
+              return Promise.resolve({
+                _id: noteId,
+                organizationId,
+                projectId,
+                taskId,
+                taskKey: 'DATN-42',
+                authorUserId: reviewerUserId,
+                authorName: 'Member One',
+                title: 'Root Cause Analysis',
+                contentMarkdown: 'Fixed stale outbox filter for WORK_NOTE.',
+                currentVersionNumber: 1,
+                status: 'CONFIRMED',
+                provenance: {
+                  review: {
+                    status: reviewStatus,
+                    reviewedBy: reviewerUserId.toHexString(),
+                    reviewedAt: '2026-11-02T09:15:00.000Z',
+                  },
+                },
+              });
+            }),
+            updateOne: jest.fn(
+              (_f: unknown, u: { $set?: Record<string, unknown> }) => {
+                if (u.$set) noteUpdates.push(u.$set);
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            ),
+          };
+        }
+        return {
+          findOne: jest.fn(() => Promise.resolve(null)),
+          updateOne: jest.fn(() => Promise.resolve({})),
+        };
+      }),
+    } as unknown as Connection;
+
+    const uploads: SagProjectDocumentUploadInput[] = [];
+    const consumer = new KnowledgeOutboxConsumer(
+      connection,
+      new ConfigService({
+        KNOWLEDGE_OUTBOX_CONSUMER_ENABLED: 'false',
+        KNOWLEDGE_OUTBOX_ASYNC_HANDOFF: 'true',
+      }),
+      {
+        put: jest.fn((key: string, bytes: Buffer, contentType: string) => {
+          storagePuts.push({ key, bytes, contentType });
+          return Promise.resolve();
+        }),
+        get: jest.fn(),
+      } as unknown as ProjectDocumentStorage,
+      {
+        uploadProjectDocument: jest.fn(
+          (input: SagProjectDocumentUploadInput) => {
+            uploads.push(input);
+            return Promise.resolve({
+              documentId: 'sag-wn-1',
+              versionId: 'sag-wn-ver-1',
+              versionNo: 1,
+              status: 'RECEIVED',
+              searchStatus: 'SEARCH_READY',
+              knowledgeStatus: 'NOT_STARTED',
+              searchReady: true,
+            });
+          },
+        ),
+        revokeProjectDocument: jest.fn(),
+      },
+    );
+
+    // 1. While PENDING_REVIEW -> SKIPPED, 0 R2 puts, 0 SAG uploads
+    await expect(consumer.runOnce()).resolves.toBe('SKIPPED');
+    expect(storagePuts).toHaveLength(0);
+    expect(uploads).toHaveLength(0);
+
+    // 2. Once APPROVED -> materializes .md into work-notes/... on R2 and syncs SAG
+    reviewStatus = 'APPROVED';
+    await expect(consumer.runOnce()).resolves.toBe('PUBLISHED');
+    expect(storagePuts).toHaveLength(1);
+    expect(storagePuts[0]?.key).toMatch(
+      new RegExp(
+        `^work-notes/${organizationId.toHexString()}/${projectId.toHexString()}/${noteId.toHexString()}/`,
+      ),
+    );
+    expect(storagePuts[0]?.contentType).toBe('text/markdown');
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.logicalSourceId).toBe(
+      `continuum:work_note:${noteId.toHexString()}`,
+    );
+    expect(
+      noteUpdates.some((u) =>
+        Boolean((u.provenance as { mdFile?: unknown } | undefined)?.mdFile),
+      ),
+    ).toBe(true);
   });
 });
 

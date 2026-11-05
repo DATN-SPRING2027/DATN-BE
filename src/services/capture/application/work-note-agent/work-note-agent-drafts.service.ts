@@ -24,8 +24,12 @@ import { WorkNotesAuthorizationService } from '../work-notes-authorization.servi
 import { WorkNotesService } from '../work-notes.service';
 import type {
   CaptureRequestHeaders,
+  DocumentKnowledgeStatusRecord,
+  DocumentVersionRecord,
+  ProjectDocumentFileRecord,
   TaskNoteAiChatSource,
   TaskNoteAiChatSourceInput,
+  TaskNoteReviewStatus,
   WorkNotesActor,
 } from '../work-notes.types';
 import { CAPTURE_PERSISTENCE } from '../../infrastructure/persistence';
@@ -1392,33 +1396,244 @@ export class WorkNoteAgentDraftsService {
     );
   }
 
+  private buildReviewGovernanceOnSave(params: {
+    actor: WorkNotesActor;
+    noteId: string;
+    version: number;
+    now: Date;
+    previous?: Document | null;
+    autoApprove?: boolean;
+  }): {
+    review: Record<string, unknown>;
+    knowledgeSync?: DocumentKnowledgeStatusRecord;
+    previousApprovedVersion?: number;
+  } {
+    const { actor, noteId, version, now, previous, autoApprove } = params;
+    const prevProv =
+      previous?.provenance &&
+      typeof previous.provenance === 'object' &&
+      !Array.isArray(previous.provenance)
+        ? (previous.provenance as Record<string, unknown>)
+        : undefined;
+    const prevReview =
+      prevProv?.review && typeof prevProv.review === 'object'
+        ? (prevProv.review as {
+            status?: string;
+            history?: DocumentVersionRecord['reviewHistory'];
+          })
+        : undefined;
+    const prevHistory = Array.isArray(prevReview?.history)
+      ? prevReview.history
+      : [];
+    const nowIso = now.toISOString();
+    const shouldAutoApprove = Boolean(actor.canReview) && autoApprove !== false;
+
+    if (shouldAutoApprove) {
+      const reviewerRole: 'MANAGER' | 'LEADER' = actor.isManager
+        ? 'MANAGER'
+        : 'LEADER';
+      const previousApprovedVersion =
+        prevReview?.status === 'APPROVED'
+          ? Math.max(1, Number(previous?.currentVersionNumber ?? 1))
+          : undefined;
+      return {
+        review: {
+          status: 'APPROVED',
+          submittedAt: nowIso,
+          reviewedBy: actor.userId,
+          reviewedAt: nowIso,
+          history: [
+            ...prevHistory,
+            {
+              action: 'APPROVED',
+              reviewerId: actor.userId,
+              reviewerRole,
+              at: nowIso,
+            },
+          ],
+        },
+        knowledgeSync: {
+          documentId: noteId,
+          version,
+          status: 'QUEUED_OUTBOX',
+          searchStatus: 'PENDING',
+          knowledgeStatus: 'NOT_STARTED',
+          searchReady: false,
+          knowledgeReady: false,
+          currentStage: 'OUTBOX_QUEUE',
+          progress: 5,
+          syncedAt: nowIso,
+        },
+        ...(previousApprovedVersion && previousApprovedVersion < version
+          ? { previousApprovedVersion }
+          : {}),
+      };
+    }
+
+    return {
+      review: {
+        status: 'PENDING_REVIEW',
+        submittedAt: nowIso,
+        history: [...prevHistory],
+      },
+    };
+  }
+
+  private async appendTaskNoteKnowledgeOutbox(
+    db: Db,
+    session: ClientSession,
+    params: {
+      organizationId: string;
+      projectId: string;
+      noteId: string;
+      version: number;
+      previousApprovedVersion?: number;
+      now: Date;
+    },
+  ): Promise<void> {
+    const outboxCol = db.collection('outbox_events');
+    if (
+      params.previousApprovedVersion &&
+      params.previousApprovedVersion < params.version
+    ) {
+      await outboxCol.insertOne(
+        {
+          eventName: 'KNOWLEDGE_SOURCE_REPLACED',
+          aggregateType: 'WORK_NOTE',
+          aggregateId: params.noteId,
+          payload: {
+            sourceType: 'WORK_NOTE',
+            sourceId: params.noteId,
+            organizationId: params.organizationId,
+            projectId: params.projectId,
+            previousVersion: params.previousApprovedVersion,
+            version: params.version,
+          },
+          status: 'PENDING',
+          occurredAt: params.now,
+          createdAt: params.now,
+          updatedAt: params.now,
+        },
+        { session },
+      );
+    }
+    await outboxCol.insertOne(
+      {
+        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        aggregateType: 'WORK_NOTE',
+        aggregateId: params.noteId,
+        payload: {
+          sourceType: 'WORK_NOTE',
+          sourceId: params.noteId,
+          organizationId: params.organizationId,
+          projectId: params.projectId,
+          version: params.version,
+          approvedAt: params.now.toISOString(),
+        },
+        status: 'PENDING',
+        occurredAt: params.now,
+        createdAt: params.now,
+        updatedAt: params.now,
+      },
+      { session },
+    );
+  }
+
   private canonical(row: Document, actor: WorkNotesActor): CanonicalTaskNote {
-    const manage = String(row.authorUserId) === actor.userId || actor.canReview;
-    const provenance = row.provenance as
-      { aiChatSource?: TaskNoteAiChatSource } | undefined;
+    const authorId = String(row.authorUserId);
+    const manage = authorId === actor.userId || actor.canReview;
+    const currentVersionNumber = Number(row.currentVersionNumber ?? 0);
+    const provenance =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as {
+            aiChatSource?: TaskNoteAiChatSource;
+            review?: {
+              status?: TaskNoteReviewStatus;
+              submittedAt?: string;
+              reviewedBy?: string;
+              reviewedAt?: string;
+              comment?: string;
+              history?: DocumentVersionRecord['reviewHistory'];
+            };
+            mdFile?: ProjectDocumentFileRecord & { version?: number };
+            knowledgeSync?: DocumentKnowledgeStatusRecord;
+          })
+        : undefined;
+    const rawReviewStatus = provenance?.review?.status;
+    const reviewStatus: TaskNoteReviewStatus =
+      rawReviewStatus === 'APPROVED' ||
+      rawReviewStatus === 'CHANGES_REQUESTED' ||
+      rawReviewStatus === 'REJECTED' ||
+      rawReviewStatus === 'PENDING_REVIEW'
+        ? rawReviewStatus
+        : 'PENDING_REVIEW';
+    const createdAtIso = new Date(row.createdAt as string).toISOString();
+    const mdFile =
+      reviewStatus === 'APPROVED' &&
+      provenance?.mdFile &&
+      typeof provenance.mdFile.name === 'string' &&
+      (provenance.mdFile.version === undefined ||
+        Number(provenance.mdFile.version) === Math.max(1, currentVersionNumber))
+        ? {
+            name: provenance.mdFile.name,
+            contentType: provenance.mdFile.contentType,
+            size: Number(provenance.mdFile.size ?? 0),
+            ...(provenance.mdFile.sha256
+              ? { sha256: provenance.mdFile.sha256 }
+              : {}),
+          }
+        : undefined;
+    const knowledgeSync =
+      reviewStatus === 'APPROVED' &&
+      provenance?.knowledgeSync &&
+      (provenance.knowledgeSync.version === undefined ||
+        Number(provenance.knowledgeSync.version) ===
+          Math.max(1, currentVersionNumber))
+        ? provenance.knowledgeSync
+        : undefined;
     return {
       id: String(row._id),
       projectId: String(row.projectId),
       taskId: String(row.taskId),
-      authorId: String(row.authorUserId),
+      authorId,
       authorName: String(row.authorName ?? ''),
       type: 'TASK_NOTE',
       status: 'CONFIRMED',
+      reviewStatus,
+      submittedAt: provenance?.review?.submittedAt ?? createdAtIso,
+      ...(provenance?.review?.reviewedBy
+        ? { reviewedBy: provenance.review.reviewedBy }
+        : {}),
+      ...(provenance?.review?.reviewedAt
+        ? { reviewedAt: provenance.review.reviewedAt }
+        : {}),
+      ...(typeof provenance?.review?.comment === 'string'
+        ? { reviewComment: provenance.review.comment }
+        : {}),
+      reviewHistory: Array.isArray(provenance?.review?.history)
+        ? provenance.review.history
+        : [],
+      ...(mdFile ? { file: mdFile } : {}),
+      ...(knowledgeSync ? { knowledgeSync } : {}),
       title: String(row.title),
       contentMarkdown: legacyBody(row),
       contentSchemaVersion: 2,
-      currentVersionNumber: Number(row.currentVersionNumber ?? 0),
+      currentVersionNumber,
       ...(provenance?.aiChatSource
         ? { aiChatSource: provenance.aiChatSource }
         : {}),
-      createdAt: new Date(row.createdAt as string).toISOString(),
+      createdAt: createdAtIso,
       updatedAt: new Date(row.updatedAt as string).toISOString(),
       permissions: {
         canCreate: true,
         canEdit: manage,
         canDelete: manage,
         canSubmit: false,
-        canReview: false,
+        canReview: Boolean(
+          actor.canReview && reviewStatus === 'PENDING_REVIEW',
+        ),
         canConfigure: false,
       },
     };
@@ -1538,7 +1753,14 @@ export class WorkNoteAgentDraftsService {
       return this.saveReplay(headers, projectId, initialActor, replay);
     const { actor } = await this.owned(headers, projectId, id);
     let ledger: { draft: DraftRow; noteId: string } | null = null;
-    const saved = await this.transaction(async (db, session) => {
+    let committedMeta: {
+      noteId: string;
+      taskId: string;
+      title: string;
+      version: number;
+      reviewStatus: TaskNoteReviewStatus;
+    } | null = null;
+    const savedNote = await this.transaction(async (db, session) => {
       const op = await this.prior(actor, input.operationId, payload, session);
       if (op) return this.saveReplay(headers, projectId, actor, op);
       const d = await this.drafts().findOne(
@@ -1628,10 +1850,30 @@ export class WorkNoteAgentDraftsService {
             previous?.provenance as
               { aiChatSource?: TaskNoteAiChatSource } | undefined
           )?.aiChatSource;
+      const bodyCharCount = d.state.contentMarkdown.trim().length;
+      const effectiveAutoApprove =
+        bodyCharCount >= 30 ? input.autoApprove : false;
+      const shouldAutoApprove =
+        Boolean(actor.canReview) && effectiveAutoApprove !== false;
+      const reviewStatus: TaskNoteReviewStatus = shouldAutoApprove
+        ? 'APPROVED'
+        : 'PENDING_REVIEW';
+      const governance = this.buildReviewGovernanceOnSave({
+        actor,
+        noteId: String(noteId),
+        version,
+        now,
+        previous,
+        autoApprove: effectiveAutoApprove,
+      });
       const provenance = {
         kind: 'AUTHOR_SAVE',
         actorUserId: actor.userId,
         at: now.toISOString(),
+        review: governance.review,
+        ...(governance.knowledgeSync
+          ? { knowledgeSync: governance.knowledgeSync }
+          : {}),
         ...(aiChatSource ? { aiChatSource } : {}),
         ...(d.state.hasAppliedRewrite ? { agent: d.state.provenance } : {}),
       };
@@ -1734,6 +1976,16 @@ export class WorkNoteAgentDraftsService {
         }),
         { session },
       );
+      if (shouldAutoApprove) {
+        await this.appendTaskNoteKnowledgeOutbox(db, session, {
+          organizationId: actor.organizationId,
+          projectId,
+          noteId: String(noteId),
+          version,
+          previousApprovedVersion: governance.previousApprovedVersion,
+          now,
+        });
+      }
       await this.audit?.append(
         {
           organizationId: actor.organizationId,
@@ -1742,11 +1994,21 @@ export class WorkNoteAgentDraftsService {
           action: previous ? 'TASK_NOTE_UPDATED' : 'TASK_NOTE_CREATED',
           targetResource: 'WORK_NOTE',
           targetResourceId: String(noteId),
-          metadata: { version },
+          metadata: {
+            version,
+            reviewStatus,
+          },
         },
         session,
       );
       ledger = { draft: d, noteId: String(noteId) };
+      committedMeta = {
+        noteId: String(noteId),
+        taskId: String(d.taskId),
+        title: String(row.title),
+        version,
+        reviewStatus,
+      };
       return this.canonical(row, actor);
     });
     // After commit, best-effort: remember answered clarifications at Task level.
@@ -1754,7 +2016,26 @@ export class WorkNoteAgentDraftsService {
       const { draft, noteId } = ledger;
       await this.recordClarificationLedger(draft, noteId);
     }
-    return saved;
+    if (committedMeta) {
+      const meta: {
+        noteId: string;
+        taskId: string;
+        title: string;
+        version: number;
+        reviewStatus: TaskNoteReviewStatus;
+      } = committedMeta;
+      await this.notes.afterTaskNoteSaved?.({
+        headers,
+        actor,
+        projectId,
+        taskId: meta.taskId,
+        noteId: meta.noteId,
+        title: meta.title,
+        version: meta.version,
+        reviewStatus: meta.reviewStatus,
+      });
+    }
+    return savedNote;
   }
   async versions(
     headers: CaptureRequestHeaders,
@@ -1816,7 +2097,12 @@ export class WorkNoteAgentDraftsService {
     const payload = { kind: 'restore', projectId, taskId, noteId, ...input };
     const replay = await this.prior(actor, input.operationId, payload);
     if (replay) return this.saveReplay(headers, projectId, actor, replay);
-    return this.transaction(async (db, session) => {
+    let committedRestore: {
+      title: string;
+      version: number;
+      reviewStatus: TaskNoteReviewStatus;
+    } | null = null;
+    const restoredNote = await this.transaction(async (db, session) => {
       const prior = await this.prior(
         actor,
         input.operationId,
@@ -1847,11 +2133,22 @@ export class WorkNoteAgentDraftsService {
         version = input.expectedVersion + 1;
       const historicProvenance = historic.provenance as
         { aiChatSource?: TaskNoteAiChatSource } | undefined;
+      const governance = this.buildReviewGovernanceOnSave({
+        actor,
+        noteId,
+        version,
+        now,
+        previous,
+      });
       const provenance = {
         kind: 'RESTORE',
         restoredVersion: input.versionNumber,
         actorUserId: actor.userId,
         at: now.toISOString(),
+        review: governance.review,
+        ...(governance.knowledgeSync
+          ? { knowledgeSync: governance.knowledgeSync }
+          : {}),
         ...(historicProvenance?.aiChatSource
           ? { aiChatSource: historicProvenance.aiChatSource }
           : {}),
@@ -1886,17 +2183,21 @@ export class WorkNoteAgentDraftsService {
           contentMarkdown: row.contentMarkdown,
           contentSchemaVersion: 2,
           editedByUserId: oid(actor.userId),
-          provenance: {
-            kind: 'RESTORE',
-            restoredVersion: input.versionNumber,
-            ...(historicProvenance?.aiChatSource
-              ? { aiChatSource: historicProvenance.aiChatSource }
-              : {}),
-          },
+          provenance,
           createdAt: now,
         },
         { session },
       );
+      if (actor.canReview) {
+        await this.appendTaskNoteKnowledgeOutbox(db, session, {
+          organizationId: actor.organizationId,
+          projectId,
+          noteId,
+          version,
+          previousApprovedVersion: governance.previousApprovedVersion,
+          now,
+        });
+      }
       await this.operations().insertOne(
         this.receipt(actor, input.operationId, `restore:${noteId}`, payload, {
           noteId,
@@ -1917,7 +2218,30 @@ export class WorkNoteAgentDraftsService {
         },
         session,
       );
+      committedRestore = {
+        title: String(row.title),
+        version,
+        reviewStatus: actor.canReview ? 'APPROVED' : 'PENDING_REVIEW',
+      };
       return this.canonical(row, actor);
     });
+    if (committedRestore) {
+      const meta: {
+        title: string;
+        version: number;
+        reviewStatus: TaskNoteReviewStatus;
+      } = committedRestore;
+      await this.notes.afterTaskNoteSaved?.({
+        headers,
+        actor,
+        projectId,
+        taskId,
+        noteId,
+        title: meta.title,
+        version: meta.version,
+        reviewStatus: meta.reviewStatus,
+      });
+    }
+    return restoredNote;
   }
 }
