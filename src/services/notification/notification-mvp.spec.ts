@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/require-await */
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Types } from 'mongoose';
 import { NotificationCenterRepository } from './infrastructure/mongodb/notification-center.repository';
 import { NotificationRealtimeBus } from './notification-realtime.bus';
@@ -65,12 +69,271 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
       );
       await controller.getUnreadCount(`Bearer ${userBId}`, undefined);
 
-      expect(listForUser).toHaveBeenCalledWith(userBId, {
-        cursor: undefined,
-        limit: 20,
-        unreadOnly: false,
+      expect(listForUser).toHaveBeenCalledWith(
+        userBId,
+        {
+          cursor: undefined,
+          limit: 20,
+          unreadOnly: false,
+          organizationId: orgId,
+        },
+        orgId,
+      );
+      expect(getUnreadCount).toHaveBeenCalledWith(userBId, orgId);
+    });
+
+    it('rejects ACCOUNT-context sessions with 403 ORGANIZATION_CONTEXT_REQUIRED across all endpoints', async () => {
+      const accountAuth = {
+        getCurrentSessionIdentity: jest.fn(async () => ({
+          id: userBId,
+          email: 'userb@example.test',
+          name: 'User B',
+          context: 'ACCOUNT' as const,
+        })),
+      };
+      const accountController = new NotificationCenterController(
+        service,
+        accountAuth as never,
+      );
+      const fakeNotifId = new Types.ObjectId().toHexString();
+
+      await expect(
+        accountController.listNotifications(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.getUnreadCount(`Bearer ${userBId}`, undefined),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.markAllAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.markAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          fakeNotifId,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.resolveTarget(
+          `Bearer ${userBId}`,
+          undefined,
+          fakeNotifId,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('isolates list, unread-count, markAsRead, markAllAsRead, and resolveTarget by active organizationId', async () => {
+      const orgBId = new Types.ObjectId().toHexString();
+      const projectBId = new Types.ObjectId().toHexString();
+      const taskBId = new Types.ObjectId().toHexString();
+
+      const [orgANotif] = await service.notifyTaskAssigned({
+        actorId: adminId,
+        assigneeUserId: userBId,
+        organizationId: orgId,
+        projectId,
+        taskId,
+        taskTitle: 'Org A Confidential Task',
+        eventId: 'org-a-task-1',
       });
-      expect(getUnreadCount).toHaveBeenCalledWith(userBId);
+      const [orgBNotif] = await service.notifyTaskAssigned({
+        actorId: adminId,
+        assigneeUserId: userBId,
+        organizationId: orgBId,
+        projectId: projectBId,
+        taskId: taskBId,
+        taskTitle: 'Org B Secret Task',
+        eventId: 'org-b-task-1',
+      });
+
+      let activeOrgId = orgId;
+      const multiOrgAuth = {
+        getCurrentSessionIdentity: jest.fn(async () => ({
+          id: userBId,
+          email: 'userb@example.test',
+          name: 'User B',
+          organizationId: activeOrgId,
+          roles: ['MEMBER'],
+        })),
+      };
+      const multiOrgController = new NotificationCenterController(
+        service,
+        multiOrgAuth as never,
+      );
+
+      // In Org A context: only sees Org A notification and unreadCount = 1
+      const orgAList = await multiOrgController.listNotifications(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(orgAList.items).toHaveLength(1);
+      expect(orgAList.items[0].id).toBe(orgANotif.id);
+      expect(orgAList.unreadCount).toBe(1);
+
+      const orgACount = await multiOrgController.getUnreadCount(
+        `Bearer ${userBId}`,
+        undefined,
+      );
+      expect(orgACount.count).toBe(1);
+
+      // Cannot mark or resolve Org B notification while in Org A context
+      await expect(
+        multiOrgController.markAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          orgBNotif.id,
+        ),
+      ).rejects.toThrow(NotFoundException);
+
+      await expect(
+        multiOrgController.resolveTarget(
+          `Bearer ${userBId}`,
+          undefined,
+          orgBNotif.id,
+        ),
+      ).rejects.toThrow(NotFoundException);
+
+      // markAllAsRead in Org A only marks Org A's notification as read
+      const readAllOrgA = await multiOrgController.markAllAsRead(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+      );
+      expect(readAllOrgA.updatedCount).toBe(1);
+      expect(
+        (
+          await multiOrgController.getUnreadCount(
+            `Bearer ${userBId}`,
+            undefined,
+          )
+        ).count,
+      ).toBe(0);
+
+      // Switch to Org B context: Org B's notification is still UNREAD
+      activeOrgId = orgBId;
+      const orgBCount = await multiOrgController.getUnreadCount(
+        `Bearer ${userBId}`,
+        undefined,
+      );
+      expect(orgBCount.count).toBe(1);
+
+      const orgBList = await multiOrgController.listNotifications(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(orgBList.items).toHaveLength(1);
+      expect(orgBList.items[0].id).toBe(orgBNotif.id);
+      expect(orgBList.items[0].readAt).toBeNull();
+    });
+
+    it('passes organizationId filter to Mongoose model queries for list, countUnread, markRead, markAllRead, and findByIdForRecipient', async () => {
+      const mockFindExec = jest.fn(async () => []);
+      const mockCountExec = jest.fn(async () => 0);
+      const mockFindOneExec = jest.fn(async () => null);
+      const mockUpdateManyExec = jest.fn(async () => ({ modifiedCount: 2 }));
+
+      const mockModel = {
+        find: jest.fn(() => ({
+          sort: () => ({
+            limit: () => ({
+              lean: () => ({
+                exec: mockFindExec,
+              }),
+            }),
+          }),
+        })),
+        countDocuments: jest.fn(() => ({
+          exec: mockCountExec,
+        })),
+        findOne: jest.fn(() => ({
+          lean: () => ({
+            exec: mockFindOneExec,
+          }),
+        })),
+        updateMany: jest.fn(() => ({
+          exec: mockUpdateManyExec,
+        })),
+      };
+
+      const mongoRepo = new NotificationCenterRepository({
+        useDb: () => ({
+          models: { notifications: mockModel },
+        }),
+      } as never);
+
+      await mongoRepo.listByRecipient(userBId, { limit: 10 }, orgId);
+      const expectedOrgClause = {
+        $or: [{ organizationId: orgId }, { 'target.organizationId': orgId }],
+      };
+      expect(mockModel.find).toHaveBeenCalledWith({
+        $and: [
+          { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+          expectedOrgClause,
+        ],
+      });
+      expect(mockModel.countDocuments).toHaveBeenCalledWith({
+        $and: [
+          { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+          {
+            $or: [
+              { readAt: null, isRead: { $ne: true } },
+              { readAt: { $exists: false }, isRead: { $ne: true } },
+            ],
+          },
+          expectedOrgClause,
+        ],
+      });
+
+      await mongoRepo.countUnread(userBId, orgId);
+      await mongoRepo.markAllRead(userBId, orgId);
+      expect(mockModel.updateMany).toHaveBeenCalledWith(
+        {
+          $and: [
+            { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+            {
+              $or: [
+                { readAt: null, isRead: { $ne: true } },
+                { readAt: { $exists: false }, isRead: { $ne: true } },
+              ],
+            },
+            expectedOrgClause,
+          ],
+        },
+        expect.anything(),
+      );
+
+      const notifId = new Types.ObjectId().toHexString();
+      await mongoRepo.markRead(userBId, notifId, orgId);
+      await mongoRepo.findByIdForRecipient(userBId, notifId, orgId);
+      expect(mockModel.findOne).toHaveBeenCalledWith({
+        _id: new Types.ObjectId(notifId),
+        $and: [
+          { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+          expectedOrgClause,
+        ],
+      });
     });
   });
 

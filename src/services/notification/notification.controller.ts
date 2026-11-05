@@ -34,7 +34,7 @@ export class NotificationCenterController {
   private async resolveAuthenticatedUser(
     authorization: string | undefined,
     cookie: string | undefined,
-  ): Promise<{ id: string; organizationId: string | null }> {
+  ): Promise<{ id: string; organizationId: string }> {
     if (!this.auth) {
       throw new UnauthorizedException({
         code: 'AUTHENTICATION_REQUIRED',
@@ -45,10 +45,21 @@ export class NotificationCenterController {
       authorization,
       cookie,
     );
+    const organizationId =
+      'organizationId' in identity &&
+      typeof identity.organizationId === 'string' &&
+      identity.organizationId.trim().length > 0
+        ? identity.organizationId.trim()
+        : null;
+    if (!organizationId) {
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_CONTEXT_REQUIRED',
+        message: 'An active organization context is required.',
+      });
+    }
     return {
       id: identity.id,
-      organizationId:
-        'organizationId' in identity ? identity.organizationId : null,
+      organizationId,
     };
   }
 
@@ -89,12 +100,19 @@ export class NotificationCenterController {
     const actor = await this.resolveAuthenticatedUser(authorization, cookie);
     const parsedLimit = limit ? Number(limit) : 20;
     const isUnreadOnly = unreadOnly === 'true' || unreadOnly === '1';
-    return this.notificationService.listForUser(actor.id, {
-      cursor:
-        typeof cursor === 'string' && cursor.trim() ? cursor.trim() : undefined,
-      limit: Number.isFinite(parsedLimit) ? parsedLimit : 20,
-      unreadOnly: isUnreadOnly,
-    });
+    return this.notificationService.listForUser(
+      actor.id,
+      {
+        cursor:
+          typeof cursor === 'string' && cursor.trim()
+            ? cursor.trim()
+            : undefined,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : 20,
+        unreadOnly: isUnreadOnly,
+        organizationId: actor.organizationId,
+      },
+      actor.organizationId,
+    );
   }
 
   @Get('unread-count')
@@ -105,7 +123,10 @@ export class NotificationCenterController {
   ) {
     response?.setHeader('Cache-Control', 'no-store');
     const actor = await this.resolveAuthenticatedUser(authorization, cookie);
-    return this.notificationService.getUnreadCount(actor.id);
+    return this.notificationService.getUnreadCount(
+      actor.id,
+      actor.organizationId,
+    );
   }
 
   @Patch('read-all')
@@ -135,7 +156,11 @@ export class NotificationCenterController {
     response?.setHeader('Cache-Control', 'no-store');
     const actor = await this.resolveAuthenticatedUser(authorization, cookie);
     this.assertCsrfIfCookieAuthenticated(authorization, cookie, csrfHeader);
-    return this.notificationService.markAsRead(actor.id, id);
+    return this.notificationService.markAsRead(
+      actor.id,
+      id,
+      actor.organizationId,
+    );
   }
 
   @Get(':id/resolve')
@@ -147,6 +172,10 @@ export class NotificationCenterController {
   ) {
     response?.setHeader('Cache-Control', 'no-store');
     const actor = await this.resolveAuthenticatedUser(authorization, cookie);
-    return this.notificationService.resolveTarget(actor.id, id);
+    return this.notificationService.resolveTarget(
+      actor.id,
+      id,
+      actor.organizationId,
+    );
   }
 }
