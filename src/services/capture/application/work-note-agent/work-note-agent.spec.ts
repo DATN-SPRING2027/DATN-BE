@@ -389,4 +389,117 @@ describe('WorkNote Agent boundary (offline, no runtime registration)', () => {
       ).toThrow();
     }
   });
+
+  it('D10b (F17): allows empty changeSummary only when restored replacementText is identical under CRLF+NFC normalization', () => {
+    const body = 'Ghi chú giữ nguyên 12 mục.\r\nKhông cần chỉnh sửa.';
+    const prepared = prepareAgentRequest(
+      input({ draft: { revision: 1, title: 'Tiêu đề', body } }),
+    );
+    const payload = JSON.parse(prepared.messages.at(-1)!.content) as {
+      source: { text: string };
+    };
+    // 1. Unchanged body (with \r\n -> \n and NFC decomposition normalized) + empty changeSummary -> ACCEPTED
+    const nfdMasked = payload.source.text
+      .replace(/\r\n/g, '\n')
+      .normalize('NFD');
+    const unchanged = parseAgentResult(
+      prepared,
+      json(nfdMasked, {
+        suggestion: {
+          replacementText: nfdMasked,
+          suggestedTitle: null,
+          changeSummary: [],
+        },
+      }),
+    );
+    expect(unchanged.status).toBe('SUGGESTION_READY');
+    expect(unchanged.suggestion?.changeSummary).toEqual([]);
+
+    // 2. Modified body + empty changeSummary -> REJECTED with REWRITE_EMPTY_CHANGE_SUMMARY
+    expect(() =>
+      parseAgentResult(
+        prepared,
+        json(payload.source.text + ' Thêm câu.', {
+          suggestion: {
+            replacementText: payload.source.text + ' Thêm câu.',
+            suggestedTitle: null,
+            changeSummary: [],
+          },
+        }),
+      ),
+    ).toThrow(/REWRITE_EMPTY_CHANGE_SUMMARY/);
+
+    // 3. Even whitespace-only or capitalization change + empty changeSummary -> REJECTED (no fuzzy matching)
+    expect(() =>
+      parseAgentResult(
+        prepared,
+        json(payload.source.text + ' ', {
+          suggestion: {
+            replacementText: payload.source.text + ' ',
+            suggestedTitle: null,
+            changeSummary: [],
+          },
+        }),
+      ),
+    ).toThrow(/REWRITE_EMPTY_CHANGE_SUMMARY/);
+
+    // 4. Unchanged body BUT proposed a different suggestedTitle + empty changeSummary -> REJECTED
+    expect(() =>
+      parseAgentResult(
+        prepared,
+        json(payload.source.text, {
+          suggestion: {
+            replacementText: payload.source.text,
+            suggestedTitle: 'Tiêu đề mới khác hẳn',
+            changeSummary: [],
+          },
+        }),
+      ),
+    ).toThrow(/REWRITE_EMPTY_CHANGE_SUMMARY/);
+
+    // 5. Title operation + empty changeSummary -> REJECTED
+    const titlePrepared = prepareAgentRequest(input({ operation: 'title' }));
+    expect(() =>
+      parseAgentResult(
+        titlePrepared,
+        json('unused', {
+          suggestion: {
+            replacementText: null,
+            suggestedTitle: 'Tiêu đề mới',
+            changeSummary: [],
+          },
+        }),
+      ),
+    ).toThrow();
+
+    // 6. Selection scope unchanged + empty changeSummary -> ACCEPTED
+    const selBody = 'Phần đầu. Giữ nguyên câu này. Phần cuối.';
+    const selQuote = 'Giữ nguyên câu này.';
+    const selStart = selBody.indexOf(selQuote);
+    const selPrepared = prepareAgentRequest(
+      input({
+        scope: 'selection',
+        draft: { revision: 1, title: 'Note', body: selBody },
+        selection: {
+          start: selStart,
+          end: selStart + selQuote.length,
+          quote: selQuote,
+        },
+      }),
+    );
+    const selPayload = JSON.parse(selPrepared.messages.at(-1)!.content) as {
+      source: { text: string };
+    };
+    const selResult = parseAgentResult(
+      selPrepared,
+      json(selPayload.source.text, {
+        suggestion: {
+          replacementText: selPayload.source.text,
+          suggestedTitle: null,
+          changeSummary: [],
+        },
+      }),
+    );
+    expect(selResult.suggestion?.changeSummary).toEqual([]);
+  });
 });

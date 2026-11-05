@@ -1,0 +1,55 @@
+name: Work Note Agent release evidence
+
+on:
+  workflow_call:
+    inputs:
+      assessment_active:
+        required: true
+        type: string
+      assessment_receipt:
+        required: true
+        type: string
+      editor_active:
+        required: true
+        type: string
+      editor_receipt:
+        required: true
+        type: string
+      rewrite_active:
+        required: true
+        type: string
+      rewrite_receipt:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-release-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Verify all enabled agent surfaces before deployment
+        env:
+          ASSESSMENT_ACTIVE: ${{ inputs.assessment_active }}
+          ASSESSMENT_RECEIPT: ${{ inputs.assessment_receipt }}
+          EDITOR_ACTIVE: ${{ inputs.editor_active }}
+          EDITOR_RECEIPT: ${{ inputs.editor_receipt }}
+          REWRITE_ACTIVE: ${{ inputs.rewrite_active }}
+          REWRITE_RECEIPT: ${{ inputs.rewrite_receipt }}
+        shell: bash
+        run: |
+          node -r ts-node/register/transpile-only scripts/work-note-agent/assessment-deployment-gate.ts "$ASSESSMENT_ACTIVE" "$ASSESSMENT_RECEIPT" assessment
+          node -r ts-node/register/transpile-only scripts/work-note-agent/assessment-deployment-gate.ts "$EDITOR_ACTIVE" "$EDITOR_RECEIPT" assessment-editor
+          node -r ts-node/register/transpile-only scripts/work-note-agent/assessment-deployment-gate.ts "$REWRITE_ACTIVE" "$REWRITE_RECEIPT" rewrite

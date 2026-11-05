@@ -863,4 +863,112 @@ describe('Code-driven assessment states', () => {
     expect(assembled.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
     expect(assembled.state).toBe('ready_to_edit');
   });
+
+  it('normalizes residual completion blocking gaps to OPTIONAL on purpose reset to PROGRESS (Phase 2.4 / F16 / L2)', () => {
+    const completionPrior = assemble(
+      { purpose: 'COMPLETION' },
+      {
+        ...out,
+        purpose: 'COMPLETION',
+        taskContextStatus: 'CLEAR',
+        noteAdequacy: 'NEEDS_AUTHOR_INPUT',
+        gaps: [
+          {
+            kind: 'RESULT',
+            needCode: 'test_result.behavior',
+            target: 'kết quả kiểm thử mã 401',
+            impact: 'BLOCKING',
+            owner: 'NOTE_AUTHOR',
+            sourceRefs: [{ sourceId: 'note.body', quote: 'Updated the form.' }],
+          },
+        ],
+      },
+    );
+
+    // Reset purpose to PROGRESS with ENOUGH_FOR_PURPOSE; leftover test_result.behavior gap
+    // is not an allowed blocking need under PROGRESS, so it must be normalized to OPTIONAL
+    // and must NOT trigger rawInconsistentEnough -> UNDETERMINED.
+    const progressReset = assemble(
+      {
+        purpose: 'PROGRESS',
+        previous: completionPrior,
+      },
+      {
+        ...out,
+        purpose: 'PROGRESS',
+        taskContextStatus: 'CLEAR',
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+        gaps: [
+          {
+            kind: 'RESULT',
+            needCode: 'test_result.behavior',
+            target: 'kết quả kiểm thử mã 401',
+            impact: 'BLOCKING',
+            owner: 'NOTE_AUTHOR',
+            sourceRefs: [{ sourceId: 'note.body', quote: 'Updated the form.' }],
+          },
+        ],
+        nextQuestion: null,
+      },
+    );
+
+    expect(progressReset.gaps[0].impact).toBe('OPTIONAL');
+    expect(progressReset.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(progressReset.state).toBe('ready_to_edit');
+  });
+});
+
+describe('contradictory criterion safety', () => {
+  it.each(['DECISION', 'COMPLETION'] as const)(
+    'does not accept sufficient %s with contradictory coverage',
+    (purpose) => {
+      const view = assemble(
+        { purpose },
+        {
+          ...out,
+          purpose,
+          taskContextStatus: 'CLEAR',
+          noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+          taskUnderstanding: {
+            ...out.taskUnderstanding,
+            requirements: [
+              { text: 'Use the approved configuration.', sourceRefs: [] },
+            ],
+          },
+          coverage: [
+            { requirementIndex: 0, status: 'CONTRADICTORY', sourceRefs: [] },
+          ],
+          gaps: [],
+          nextQuestion: null,
+        },
+      );
+      expect(view.noteAdequacy).toBe('UNDETERMINED');
+    },
+  );
+});
+
+describe('QA outcome reporting is separate from Task acceptance', () => {
+  it('allows a clear QA failure report without claiming that the Task criterion is met', () => {
+    const view = assemble(
+      { purpose: 'QA' },
+      {
+        ...out,
+        purpose: 'QA',
+        taskContextStatus: 'CLEAR',
+        noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+        taskUnderstanding: {
+          ...out.taskUnderstanding,
+          requirements: [
+            { text: 'Required field blocks submission.', sourceRefs: [] },
+          ],
+        },
+        coverage: [
+          { requirementIndex: 0, status: 'CONTRADICTORY', sourceRefs: [] },
+        ],
+        gaps: [],
+        nextQuestion: null,
+      },
+    );
+    expect(view.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+  });
 });

@@ -1,8 +1,11 @@
 import {
   gradeAssessment,
   loadAssessmentCorpus,
+  loadDevV26AssessmentCorpus,
+  loadHistoryAssessmentCorpus,
   loadRegression80Corpus,
   loadRelease60Corpus,
+  loadRelease60V6Corpus,
   makeAssessmentWorksheet,
   type AssessmentEvaluationRow,
   type AssessmentScenario,
@@ -19,9 +22,11 @@ import {
   runAssessmentEvaluation,
 } from '../../../../../scripts/work-note-agent/assessment-run';
 import {
+  getFrozenFiles,
   mergeResumedStageRows,
   partitionResumableStageScenarios,
 } from '../../../../../scripts/work-note-agent/assessment-release-gate-run';
+import { replaySplitRows } from '../../../../../scripts/work-note-agent/assessment-release-replay';
 import type { AssessmentModelOutput } from './work-note-assessment.types';
 import {
   parseAssessmentOutput,
@@ -751,6 +756,62 @@ describe('Plan v3 §§6-7 release60 corpus, dual-layer quality gate, and blinded
     ).toContain('FORBIDDEN_ASSERTION');
   });
 
+  it('checkpoints immediately when both credentials are rate limited even with no-fail-fast', async () => {
+    const network = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(() =>
+        Promise.resolve(new Response('{}', { status: 429 })),
+      );
+    const result = await runAssessmentEvaluation(
+      [
+        '--live',
+        '--model',
+        'test/model',
+        '--max-attempts',
+        '6',
+        '--no-fail-fast',
+      ],
+      {
+        readCredentials: () =>
+          Promise.resolve({
+            apiKey: 'synthetic-primary',
+            secondaryApiKey: 'synthetic-secondary',
+          }),
+        fetcher: network,
+        writeReport: false,
+      },
+    );
+    expect(network).toHaveBeenCalledTimes(2);
+    expect(result.rows.filter((row) => row.errorCode)).toHaveLength(1);
+    expect(result.rows.find((row) => row.errorCode)?.errorCode).toBe(
+      'XKIRO_HTTP_ERROR_429',
+    );
+  });
+  it('stops after one unavailable-provider response when the operator requests transport fail-fast', async () => {
+    const network = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(() =>
+        Promise.resolve(new Response('{}', { status: 503 })),
+      );
+    await runAssessmentEvaluation(
+      [
+        '--live',
+        '--model',
+        'test/model',
+        '--max-attempts',
+        '6',
+        '--no-fail-fast',
+        '--stop-on-transport-error',
+      ],
+      {
+        readCredentials: () => Promise.resolve({ apiKey: 'synthetic' }),
+        fetcher: network,
+        writeReport: false,
+      },
+    );
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
   it('resumes only transport/quota-interrupted or skipped scenarios while keeping model-failed and completed scenarios immutable', () => {
     const scenarioIds = [
       'case-pass',
@@ -795,6 +856,155 @@ describe('Plan v3 §§6-7 release60 corpus, dual-layer quality gate, and blinded
       ['case-429', 'OK'],
       ['case-skip', 'OK'],
     ]);
+  });
+
+  it('marks incomplete stage gates as provisional, excludes 429/resumable turns from metrics, and surfaces per-class n with low-sample warnings (D9)', () => {
+    const rel = loadRelease60Corpus();
+    const sufficientScenario = rel.scenarios.find(
+      (s) =>
+        s.turns.length === 1 &&
+        s.turns[0].expected.noteAdequacy[0] === 'ENOUGH_FOR_PURPOSE',
+    )!;
+    const reqScenario = rel.scenarios.find(
+      (s) =>
+        s.turns.length === 1 && s.turns[0].expected.question === 'required',
+    )!;
+    const validOut = fixture(sufficientScenario);
+    const rows: AssessmentEvaluationRow[] = [
+      {
+        caseId: sufficientScenario.id,
+        turn: 1,
+        role: 'analysis',
+        output: validOut,
+        grade: gradeAssessment(sufficientScenario, 0, validOut),
+        runtimeState: {
+          state: 'assessed',
+          noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+          counters: { questionCount: 0, noProgress: 0 },
+        },
+        runtimeGrade: gradeAssessment(sufficientScenario, 0, validOut),
+      },
+      {
+        caseId: reqScenario.id,
+        turn: 1,
+        role: 'analysis',
+        errorCode: 'XKIRO_HTTP_ERROR_429',
+      },
+    ];
+
+    // Without provisional options (final mode), 429 is counted as a failure
+    const finalReport = computeAssessmentQualityGate(rows, rel);
+    expect(finalReport.provisional).toBe(false);
+    expect(finalReport.rawModelOutput.evaluatedTurns).toBe(2);
+    expect(finalReport.rawModelOutput.firstPassFormatValidity.rate).toBe(1);
+    expect(finalReport.rawModelOutput.workflowCompletion.pass).toBe(false);
+    expect(finalReport.rawModelOutput.adequacy.perClass.SUFFICIENT.n).toBe(1);
+    expect(finalReport.rawModelOutput.adequacy.lowSampleWarning).toBe(true);
+    expect(finalReport.rawModelOutput.adequacy.lowSampleClasses).toContain(
+      'SUFFICIENT',
+    );
+
+    // With remainingCaseIds (provisional mode), 429 row is excluded from metrics while automatedGatePassed stays false
+    const provisionalReport = computeAssessmentQualityGate(rows, rel, {
+      remainingCaseIds: [reqScenario.id],
+    });
+    expect(provisionalReport.provisional).toBe(true);
+    expect(provisionalReport.remainingCaseCount).toBe(1);
+    expect(provisionalReport.excludedResumableTurns).toBe(1);
+    expect(provisionalReport.rawModelOutput.evaluatedTurns).toBe(1);
+    expect(provisionalReport.rawModelOutput.firstPassFormatValidity.rate).toBe(
+      1,
+    );
+    expect(provisionalReport.postGuardRuntime.questions.fn).toBe(0);
+    expect(provisionalReport.automatedGatePassed).toBe(false);
+    expect(provisionalReport.releaseStatus).toBe(
+      'PROVISIONAL_INCOMPLETE_STAGE',
+    );
+  });
+
+  it('includes split prompt and security gateway files in the freeze manifest and replays synthetic rows offline (F5, 1.2)', () => {
+    const frozenV5 = getFrozenFiles('v5');
+    const frozenV6 = getFrozenFiles('v6');
+    expect(frozenV5).toContain(
+      'src/services/capture/application/work-note-agent/work-note-assessment-split.ts',
+    );
+    expect(frozenV5).toContain(
+      'src/services/capture/application/work-note-agent/security/llm-security-gateway.ts',
+    );
+    expect(frozenV5).toContain(
+      'scripts/work-note-agent/cases-assessment-v5-release.json',
+    );
+    expect(frozenV6).toContain(
+      'scripts/work-note-agent/cases-assessment-v6-release.json',
+    );
+
+    const rel = loadRelease60Corpus();
+    const scenario = rel.scenarios.find(
+      (s) =>
+        s.turns.length === 1 &&
+        s.turns[0].expected.noteAdequacy[0] === 'ENOUGH_FOR_PURPOSE',
+    )!;
+    const rawOut = fixture(scenario);
+    const savedRows: AssessmentEvaluationRow[] = [
+      {
+        caseId: scenario.id,
+        turn: 1,
+        role: 'analysis',
+        sources: scenario.sources,
+        answers: [],
+        rawSyntheticResponse: JSON.stringify(rawOut),
+        output: rawOut,
+        runtimeState: {
+          state: 'assessed',
+          noteAdequacy: 'ENOUGH_FOR_PURPOSE',
+          counters: { questionCount: 0, noProgress: 0 },
+        },
+      },
+    ];
+    const replayed = replaySplitRows([scenario], savedRows);
+    expect(replayed.replayedRows).toHaveLength(1);
+    expect(replayed.claimsDemotedFromFull).toBe(0);
+    expect(replayed.replayedRows[0].errorCode).toBeUndefined();
+  });
+
+  it('loads and validates Plan v4 unseen v6 release60 (with >=12 CONTRADICTORY turns and >=8 in holdout), history-v1, and dev-v26 corpora with zero overlap', () => {
+    const v6 = loadRelease60V6Corpus();
+    expect(v6.scenarios).toHaveLength(60);
+    const holdoutContra = v6.scenarios
+      .filter((s) => s.split === 'holdout')
+      .flatMap((s) => s.turns)
+      .filter(
+        (t) =>
+          t.expected.noteAdequacy.length === 1 &&
+          t.expected.noteAdequacy[0] === 'CONTRADICTORY',
+      ).length;
+    expect(holdoutContra).toBeGreaterThanOrEqual(8);
+
+    const hist = loadHistoryAssessmentCorpus();
+    expect(hist.scenarios).toHaveLength(18);
+    expect(
+      hist.scenarios.filter((s) => s.split === 'development'),
+    ).toHaveLength(6);
+    expect(hist.scenarios.filter((s) => s.split === 'validation')).toHaveLength(
+      6,
+    );
+    expect(hist.scenarios.filter((s) => s.split === 'holdout')).toHaveLength(6);
+
+    const dev26 = loadDevV26AssessmentCorpus();
+    expect(dev26.scenarios).toHaveLength(10);
+    expect(dev26.scenarios.every((s) => s.split === 'development')).toBe(true);
+
+    // Ensure zero ID or family overlap between dev26 / history-v1 and v5/v6 holdout
+    const holdoutIdsAndFamilies = new Set(
+      [...loadRelease60Corpus().scenarios, ...v6.scenarios].flatMap((s) => [
+        s.id,
+        s.family,
+      ]),
+    );
+    for (const s of [...dev26.scenarios, ...hist.scenarios]) {
+      expect(holdoutIdsAndFamilies.has(s.id)).toBe(false);
+      expect(holdoutIdsAndFamilies.has(s.family)).toBe(false);
+    }
   });
 });
 

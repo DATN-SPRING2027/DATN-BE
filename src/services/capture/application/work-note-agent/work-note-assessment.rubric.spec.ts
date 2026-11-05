@@ -6,6 +6,8 @@ import {
   deriveTaskCompletionStatus,
   extractGapNeedCode,
 } from './work-note-assessment.rubric';
+import { assessmentSystemPrompt } from './work-note-assessment.prompt';
+import { taskAssessorSystemPrompt } from './work-note-assessment-split';
 import { ASSESSMENT_PURPOSES } from './work-note-assessment.types';
 
 describe('WorkNote assessment purpose rubric & gap taxonomy (Plan v3 §§1, 3, 5)', () => {
@@ -140,5 +142,23 @@ describe('WorkNote assessment purpose rubric & gap taxonomy (Plan v3 §§1, 3, 5
         },
       }),
     ).toEqual(['ENOUGH_WITH_BLOCKING_GAP', 'ENOUGH_WITH_QUESTION']);
+  });
+
+  it('keeps assessmentSystemPrompt and taskAssessorSystemPrompt strictly synchronized with PURPOSE_RUBRIC_TABLE allowedBlockingNeeds (D3 / F6)', () => {
+    const resolved = ASSESSMENT_PURPOSES.filter((p) => p !== 'AUTO');
+    for (const purpose of resolved) {
+      const rule = PURPOSE_RUBRIC_TABLE[purpose];
+      const expectedLine = `ALLOWED BLOCKING NEEDS (${purpose}): ${rule.allowedBlockingNeeds.join(', ')}`;
+      const combinedPrompt = assessmentSystemPrompt(purpose);
+      const splitPrompt = taskAssessorSystemPrompt(purpose);
+      expect(combinedPrompt).toContain(expectedLine);
+      expect(splitPrompt).toContain(expectedLine);
+      // Verify no prompt claims PROGRESS excludes history.conflict
+      if (purpose === 'PROGRESS') {
+        expect(combinedPrompt).not.toContain(
+          'CHỈ gồm scope.completed_part và contradiction.conflict',
+        );
+      }
+    }
   });
 });

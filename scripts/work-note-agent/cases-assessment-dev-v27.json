@@ -1,0 +1,2118 @@
+{
+  "version": "task-note-assessment-dev/2026-11-04.v27",
+  "classification": "synthetic-only",
+  "splitPolicy": "Development only, 24 cases from 8 purposes; never an independent release holdout.",
+  "scenarios": [
+    {
+      "id": "dev27-progress-1",
+      "family": "dev27-progress",
+      "category": "progress-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "PROGRESS",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Điều chỉnh giới hạn trang danh bạ nhân sự",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Trang danh bạ phải giới hạn pageSize tối đa 75 và giữ cursor ổn định.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã thêm clamp pageSize tối đa 75 tại handler danh bạ, chưa chạy kiểm thử cursor.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-progress-2",
+      "family": "dev27-progress",
+      "category": "progress-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "PROGRESS",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Điều chỉnh giới hạn trang danh bạ nhân sự",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Trang danh bạ phải giới hạn pageSize tối đa 75 và giữ cursor ổn định.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã xử lý xong phần danh bạ.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION",
+              "SCOPE"
+            ],
+            "expectedNeedCodes": [
+              "scope.completed_part"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-progress-3",
+      "family": "dev27-progress",
+      "category": "progress-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "PROGRESS",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Điều chỉnh giới hạn trang danh bạ nhân sự",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Trang danh bạ phải giới hạn pageSize tối đa 75 và giữ cursor ổn định.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Chưa sửa được handler clamp pageSize vì tài khoản staging chưa có quyền đọc bảng danh bạ.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-qa-1",
+      "family": "dev27-qa",
+      "category": "qa-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "QA",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Xác minh xuất tệp lịch làm việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tệp tải về phải chứa đúng 7 cột, không mất ký tự tiếng Việt.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã chạy tải tệp lịch tuần bằng tài khoản điều phối trên staging; tệp có 7 cột và dấu tiếng Việt hiển thị đúng.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-qa-2",
+      "family": "dev27-qa",
+      "category": "qa-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "QA",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Xác minh xuất tệp lịch làm việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tệp tải về phải chứa đúng 7 cột, không mất ký tự tiếng Việt.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã chạy tải tệp lịch tuần bằng tài khoản điều phối trên staging.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE",
+              "RESULT"
+            ],
+            "expectedNeedCodes": [
+              "test_result.behavior"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-qa-3",
+      "family": "dev27-qa",
+      "category": "qa-C",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": true,
+      "purpose": "QA",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Xác minh xuất tệp lịch làm việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tệp tải về phải chứa đúng 7 cột, không mất ký tự tiếng Việt.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã chạy tải tệp lịch tuần trên staging bằng tài khoản điều phối; tệp có 5 cột thay vì 7 cột bắt buộc.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-decision-1",
+      "family": "dev27-decision",
+      "category": "decision-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "DECISION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Chốt thời gian lưu bản nháp biểu mẫu",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Thời gian lưu bản nháp phải ít nhất 36 giờ để hỗ trợ xử lý ca đêm.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Chốt lưu bản nháp 48 giờ để nhân viên ca đêm có đủ thời gian hoàn thiện biểu mẫu.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-decision-2",
+      "family": "dev27-decision",
+      "category": "decision-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "DECISION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Chốt thời gian lưu bản nháp biểu mẫu",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Thời gian lưu bản nháp phải ít nhất 36 giờ để hỗ trợ xử lý ca đêm.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Chốt lưu bản nháp 48 giờ.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION",
+              "PURPOSE"
+            ],
+            "expectedNeedCodes": [
+              "decision.rationale"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-decision-3",
+      "family": "dev27-decision",
+      "category": "decision-C",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": true,
+      "purpose": "DECISION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Chốt thời gian lưu bản nháp biểu mẫu",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Thời gian lưu bản nháp phải ít nhất 36 giờ để hỗ trợ xử lý ca đêm.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Chốt lưu bản nháp 12 giờ để bảo đảm lưu ít nhất 36 giờ theo yêu cầu.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-handover-1",
+      "family": "dev27-handover",
+      "category": "handover-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "HANDOVER",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Bàn giao triển khai bộ lọc nhật ký truy cập",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Thêm bộ lọc nhật ký theo mã phiên và giữ thứ tự thời gian giảm dần.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã thêm bộ lọc sessionKey tại nhánh feat/audit-session. Ca tối tiếp tục thêm index sessionKey_createdAt trên staging rồi đo truy vấn bằng bộ dữ liệu 500 phiên mẫu.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-handover-2",
+      "family": "dev27-handover",
+      "category": "handover-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "HANDOVER",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Bàn giao triển khai bộ lọc nhật ký truy cập",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Thêm bộ lọc nhật ký theo mã phiên và giữ thứ tự thời gian giảm dần.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Bàn giao: đã thêm bộ lọc sessionKey tại nhánh feat/audit-session.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION",
+              "SCOPE"
+            ],
+            "expectedNeedCodes": [
+              "handover.next_steps"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-handover-3",
+      "family": "dev27-handover",
+      "category": "handover-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "HANDOVER",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Bàn giao triển khai bộ lọc nhật ký truy cập",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Thêm bộ lọc nhật ký theo mã phiên và giữ thứ tự thời gian giảm dần.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Bộ lọc sessionKey chưa triển khai vì staging hết dung lượng đĩa; bàn giao ca tối giải phóng 2GB log thử rồi chạy migration index tại nhánh feat/audit-session.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-incident-1",
+      "family": "dev27-incident",
+      "category": "incident-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "INCIDENT",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Điều tra danh sách thiết bị mất kết nối",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Danh sách thiết bị phải hiển thị thiết bị trong dự án được cấp quyền.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Trên staging, mở danh sách thiết bị bằng tài khoản vận hành trả HTTP 502 ngay sau khi đăng nhập. Chưa biết nguyên nhân.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-incident-2",
+      "family": "dev27-incident",
+      "category": "incident-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "INCIDENT",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Điều tra danh sách thiết bị mất kết nối",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Danh sách thiết bị phải hiển thị thiết bị trong dự án được cấp quyền.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Màn danh sách đang gặp trục trặc.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE",
+              "RESULT"
+            ],
+            "expectedNeedCodes": [
+              "incident.symptom"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-incident-3",
+      "family": "dev27-incident",
+      "category": "incident-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "INCIDENT",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Điều tra danh sách thiết bị mất kết nối",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Danh sách thiết bị phải hiển thị thiết bị trong dự án được cấp quyền.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Trên local, danh sách thiết bị trả mảng rỗng sau khi chuyển dự án, dù tài khoản có quyền xem dự án mới. Chưa sửa được.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-completion-1",
+      "family": "dev27-completion",
+      "category": "completion-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Hoàn tất giới hạn tên nhãn kho",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tên nhãn kho dài tối đa 45 ký tự; chuỗi 46 ký tự phải bị từ chối HTTP 422.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã thêm validator tên nhãn kho tối đa 45 ký tự; thử chuỗi 46 ký tự trên staging trả HTTP 422, chuỗi 45 ký tự lưu được.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-completion-2",
+      "family": "dev27-completion",
+      "category": "completion-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Hoàn tất giới hạn tên nhãn kho",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tên nhãn kho dài tối đa 45 ký tự; chuỗi 46 ký tự phải bị từ chối HTTP 422.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã thêm validator tên nhãn kho tối đa 45 ký tự, chưa chạy thử chuỗi 46 ký tự.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "EVIDENCE",
+              "RESULT"
+            ],
+            "expectedNeedCodes": [
+              "test_result.behavior"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-completion-3",
+      "family": "dev27-completion",
+      "category": "completion-C",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": true,
+      "purpose": "COMPLETION",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Hoàn tất giới hạn tên nhãn kho",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tên nhãn kho dài tối đa 45 ký tự; chuỗi 46 ký tự phải bị từ chối HTTP 422.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã nghiệm thu validator: chuỗi tên nhãn kho 46 ký tự vẫn lưu thành công HTTP 201 dù yêu cầu phải từ chối HTTP 422.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "CONTRADICTORY"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-auto-1",
+      "family": "dev27-auto",
+      "category": "auto-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "AUTO",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Cập nhật tiến độ chuẩn hóa mã vùng giao hàng",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Chuẩn hóa mã vùng giao hàng thành chữ hoa và bỏ khoảng trắng đầu cuối.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã thêm trim và uppercase tại parser mã vùng giao hàng; phần kiểm thử địa chỉ quốc tế sẽ làm ở ca sau.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-auto-2",
+      "family": "dev27-auto",
+      "category": "auto-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "AUTO",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Cập nhật tiến độ chuẩn hóa mã vùng giao hàng",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Chuẩn hóa mã vùng giao hàng thành chữ hoa và bỏ khoảng trắng đầu cuối.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Đã xử lý xong phần mã vùng.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "IMPLEMENTATION",
+              "SCOPE"
+            ],
+            "expectedNeedCodes": [
+              "scope.completed_part"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-auto-3",
+      "family": "dev27-auto",
+      "category": "auto-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "AUTO",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Cập nhật tiến độ chuẩn hóa mã vùng giao hàng",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Chuẩn hóa mã vùng giao hàng thành chữ hoa và bỏ khoảng trắng đầu cuối.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Sự cố: trên staging, tải danh sách mã vùng trả HTTP 504 sau 15 giây khi dùng tài khoản điều phối. Chưa xác định nguyên nhân.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-other-1",
+      "family": "dev27-other",
+      "category": "other-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "OTHER",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Ghi chú tham chiếu chuẩn tên thuộc tính",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tên thuộc tính metadata cần dùng camelCase khi thêm thuộc tính mới.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Ghi chú tham khảo: quy ước đặt tên thuộc tính metadata nằm ở tài liệu Metadata Naming v3, mục 2.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-other-2",
+      "family": "dev27-other",
+      "category": "other-I",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "OTHER",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Ghi chú tham chiếu chuẩn tên thuộc tính",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tên thuộc tính metadata cần dùng camelCase khi thêm thuộc tính mới.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Ghi tạm.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "NEEDS_AUTHOR_INPUT",
+              "UNDETERMINED"
+            ],
+            "question": "required",
+            "questionGapKinds": [
+              "PURPOSE"
+            ],
+            "expectedNeedCodes": [
+              "purpose.intent"
+            ],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 0,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    },
+    {
+      "id": "dev27-other-3",
+      "family": "dev27-other",
+      "category": "other-S",
+      "split": "development",
+      "synthetic": true,
+      "pilot": false,
+      "critical": false,
+      "purpose": "OTHER",
+      "sources": [
+        {
+          "id": "task.title",
+          "kind": "TASK",
+          "label": "task.title",
+          "text": "Ghi chú tham chiếu chuẩn tên thuộc tính",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.description",
+          "kind": "TASK",
+          "label": "task.description",
+          "text": "Tên thuộc tính metadata cần dùng camelCase khi thêm thuộc tính mới.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "task.status",
+          "kind": "TASK",
+          "label": "task.status",
+          "text": "IN_PROGRESS",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.title",
+          "kind": "NOTE",
+          "label": "note.title",
+          "text": "Ghi chú công việc",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        },
+        {
+          "id": "note.body",
+          "kind": "NOTE",
+          "label": "note.body",
+          "text": "Lưu ý tham khảo: chỉ dùng tài liệu Metadata Naming v3 cho thuộc tính mới; phần dữ liệu cũ chưa nằm trong phạm vi ghi chú này.",
+          "version": "dev27-20261104",
+          "loadStatus": "LOADED",
+          "includedInRequest": true
+        }
+      ],
+      "turns": [
+        {
+          "action": "assess",
+          "expected": {
+            "taskContextStatus": [
+              "CLEAR"
+            ],
+            "noteAdequacy": [
+              "ENOUGH_FOR_PURPOSE"
+            ],
+            "question": "none",
+            "questionGapKinds": [],
+            "expectedNeedCodes": [],
+            "questionTopicPatterns": [],
+            "forbiddenAssertions": [],
+            "minReportedClaims": 1,
+            "requirements": "grounded"
+          }
+        }
+      ],
+      "rubric": {
+        "accepted": [
+          "Áp dụng purpose rubric, dùng đúng thông tin tác giả đã cung cấp."
+        ],
+        "prohibited": [
+          "Tự thêm thông tin, yêu cầu ngoài purpose hoặc bỏ qua mâu thuẫn trực tiếp."
+        ],
+        "questionUtility": "Chỉ hỏi thông tin còn thiếu theo needCode của purpose."
+      }
+    }
+  ]
+}

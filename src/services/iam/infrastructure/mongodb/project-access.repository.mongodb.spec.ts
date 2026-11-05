@@ -893,10 +893,11 @@ integration('MongoProjectAccessRepository mutations and audit', () => {
           { $set: { status: 'SUSPENDED' } },
         );
       await repository.assignLeader(organization, admin, project, addedMember);
+      // Appointing a different Leader must not reactivate a previously removed member.
       expect(
         await db.collection('project_memberships').findOne({
           _id: memberRecord._id,
-          status: 'ACTIVE',
+          status: 'INACTIVE',
         }),
       ).not.toBeNull();
       expect(

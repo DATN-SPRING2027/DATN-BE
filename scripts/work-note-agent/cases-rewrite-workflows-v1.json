@@ -1,0 +1,1316 @@
+{
+  "version": "work-note-rewrite-workflows/2026-11-03.v1",
+  "classification": "synthetic-only",
+  "splitPolicy": "Plan v4 D4/G7/Phase 4.2 synthetic multi-workflow rewrite corpus: 32 cases (16 PROJECT_DOCUMENT + 16 WORK_REPORT; 16 development + 8 validation + 8 holdout) covering all 8 operations, selection scope, CLARIFICATION_REQUIRED, ANSWER, negation preservation, and masked placeholders.",
+  "cases": [
+    {
+      "id": "wf-doc-001",
+      "category": "doc-grammar-negation",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả và ngữ pháp, giữ nguyên thuật ngữ kỹ thuật.",
+        "draft": {
+          "revision": 1,
+          "title": "Quy chuẩn đặt tên topic sự kiện kho vận",
+          "body": "Tất cả sự kiện phát sinh từ phân hệ kho vận phai dùng tiền tố `wms.inventory.v2` và không được gửi bản tin vượt quá 256KB."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`wms.inventory.v2`",
+          "256KB",
+          "không"
+        ],
+        "mustNotInclude": [
+          "512KB",
+          "đã triển khai"
+        ],
+        "manualRubric": "Fix typo \"phai\" -> \"phải\" while keeping `wms.inventory.v2`, 256KB, and negation.",
+        "acceptedBehaviors": [
+          "Corrects spelling while preserving code identifier, 256KB limit, and negation."
+        ],
+        "prohibitedBehaviors": [
+          "Alters `wms.inventory.v2`, drops negation, or invents deployment claims."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-002",
+      "category": "doc-clarify-boundary",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Diễn đạt rõ ràng hơn cho tài liệu kiến trúc nội bộ.",
+        "draft": {
+          "revision": 1,
+          "title": "Cơ chế dự phòng đọc danh mục thuốc",
+          "body": "Khi Redis cụm chính phản hồi chậm quá 150ms, dịch vụ tra cứu đọc tạm từ bản sao cục bộ trong 60 giây; cơ chế này chưa bật cho nhóm thuốc kiểm soát đặc biệt."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "150ms",
+          "60",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã bật cho tất cả",
+          "production"
+        ],
+        "manualRubric": "Clarify prose while keeping 150ms, 60s, and exclusion of special-controlled medicines.",
+        "acceptedBehaviors": [
+          "Improves readability while preserving exact thresholds and \"chưa bật\" scope boundary."
+        ],
+        "prohibitedBehaviors": [
+          "Drops \"chưa bật\" or generalizes fallback to all medicine groups."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-003",
+      "category": "doc-shorten-retention",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn súc tích nhưng giữ đủ con số và điều kiện cấm.",
+        "draft": {
+          "revision": 1,
+          "title": "Chính sách lưu giữ bản ghi kiểm toán truy cập hồ sơ",
+          "body": "Theo quy định vận hành hiện tại của dự án, toàn bộ bản ghi kiểm toán truy cập hồ sơ khách hàng bắt buộc lưu giữ tối thiểu 36 tháng ở phân vùng lạnh và tuyệt đối không cho phép xóa thủ công qua giao diện quản trị."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "36",
+          "không"
+        ],
+        "mustNotInclude": [
+          "12 tháng",
+          "cho phép xóa"
+        ],
+        "manualRubric": "Shorten sentence without losing 36-month retention or prohibition of manual deletion.",
+        "acceptedBehaviors": [
+          "Produces concise policy text preserving 36 months and manual-delete prohibition."
+        ],
+        "prohibitedBehaviors": [
+          "Removes prohibition or changes 36 months."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-004",
+      "category": "doc-restructure-sections",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "restructure",
+        "scope": "whole_note",
+        "instruction": "Tách thành các gạch đầu dòng theo mục: Phạm vi, Giới hạn, Trạng thái.",
+        "draft": {
+          "revision": 1,
+          "title": "Đặc tả cổng đối chiếu biên lai học phí",
+          "body": "Cổng đối chiếu nhận tệp CSV mã hóa UTF-8 từ ngân hàng đối tác mỗi ngày lúc 22:00. Tối đa 50.000 dòng mỗi tệp. Luồng tự động hoàn tiền hiện chưa nằm trong phạm vi giai đoạn 1."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "UTF-8",
+          "22:00",
+          "50.000",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã hỗ trợ hoàn tiền"
+        ],
+        "manualRubric": "Restructure into bullets keeping UTF-8, 22:00, 50.000 rows, and phase-1 exclusion.",
+        "acceptedBehaviors": [
+          "Organizes into requested bullets with zero added or dropped facts."
+        ],
+        "prohibitedBehaviors": [
+          "Invents phase-2 dates or drops refund exclusion."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-005",
+      "category": "doc-tone-formal",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "tone",
+        "scope": "whole_note",
+        "instruction": "Chuyển sang văn phong tài liệu kỹ thuật trang trọng, trung lập.",
+        "draft": {
+          "revision": 1,
+          "title": "Lưu ý về đồng bộ danh bạ chi nhánh",
+          "body": "Anh em nhớ đừng gọi thẳng endpoint `/internal/branches/rebuild` vào giờ cao điểm nhé vì nó khóa bảng tầm 12 giây và chưa có cơ chế chạy nền."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`/internal/branches/rebuild`",
+          "12",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "0 giây",
+          "đã có chạy nền"
+        ],
+        "manualRubric": "Convert casual note into formal technical documentation preserving endpoint, 12s lock, and lack of background job.",
+        "acceptedBehaviors": [
+          "Uses formal tone while keeping `/internal/branches/rebuild`, 12s lock, and \"chưa có\" limitation."
+        ],
+        "prohibitedBehaviors": [
+          "Drops endpoint backticks or softens prohibition into permission."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-006",
+      "category": "doc-handover-runbook",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Biên tập thành mục bàn giao tài liệu vận hành cho nhóm trực ca.",
+        "draft": {
+          "revision": 1,
+          "title": "Vận hành trình thu thập chỉ số trạm sạc",
+          "body": "Trình thu thập kéo dữ liệu Modbus mỗi 30 giây từ cổng `tcp://10.24.8.15:502`. Khi mất kết nối quá 3 chu kỳ thì ghi cảnh báo `CHARGER_LINK_DOWN`; kịch bản tự khởi động lại modem hiện chưa được phê duyệt."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`tcp://10.24.8.15:502`",
+          "`CHARGER_LINK_DOWN`",
+          "30",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "tự động khởi động lại modem đã bật"
+        ],
+        "manualRubric": "Format as operational handover keeping endpoint, alert code, 30s/3-cycle numbers, and unapproved modem restart.",
+        "acceptedBehaviors": [
+          "Creates clear operational handover preserving markers and unapproved boundary."
+        ],
+        "prohibitedBehaviors": [
+          "Invents escalation phone numbers or claims auto-restart works."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-007",
+      "category": "doc-title-generation",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Đề xuất tiêu đề ngắn gọn, chuẩn xác cho tài liệu dự án này.",
+        "draft": {
+          "revision": 1,
+          "title": "Nháp tài liệu mới",
+          "body": "Tài liệu mô tả quy trình xác thực hai lớp cho cổng quản trị kho dược phẩm và danh sách các vai trò bắt buộc áp dụng."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "xác thực"
+        ],
+        "mustNotInclude": [
+          "hoàn thành kiểm thử"
+        ],
+        "manualRubric": "Generate concise project document title reflecting 2FA policy for pharmacy warehouse admin portal.",
+        "acceptedBehaviors": [
+          "Sets non-empty suggestedTitle about two-factor authentication policy without modifying body."
+        ],
+        "prohibitedBehaviors": [
+          "Claims rollout completion in title."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-008",
+      "category": "doc-custom-missing-fact",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Cập nhật thời gian timeout chuẩn của cổng ký số theo quyết định mới.",
+        "draft": {
+          "revision": 1,
+          "title": "Thông số kết nối cổng ký số hợp đồng",
+          "body": "Cổng ký số hợp đồng hiện đặt timeout kết nối ở mức tạm thời khi thử nghiệm nội bộ."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [
+          "timeout"
+        ],
+        "mustNotInclude": [
+          "30 giây",
+          "5000ms"
+        ],
+        "manualRubric": "Ask clarification because new timeout value is not stated anywhere in source.",
+        "acceptedBehaviors": [
+          "Returns CLARIFICATION_REQUIRED asking for the exact approved timeout value."
+        ],
+        "prohibitedBehaviors": [
+          "Fabricates a numeric timeout value."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-009",
+      "category": "doc-selection-clarify",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "clarify",
+        "scope": "selection",
+        "instruction": "Làm rõ câu đang chọn mà không đổi ý nghĩa.",
+        "draft": {
+          "revision": 1,
+          "title": "Phạm vi hỗ trợ đa tiền tệ",
+          "body": "Hệ thống đã hỗ trợ đối soát tự động cho USD và EUR. Tuy nhiên, nhánh đồng bộ hóa đơn quốc tế chưa hỗ trợ tiền tệ JPY trong phiên bản 2.4."
+        },
+        "task": null,
+        "selection": {
+          "start": 63,
+          "end": 116,
+          "quote": "nhánh đồng bộ hóa đơn quốc tế chưa hỗ trợ tiền tệ JPY"
+        },
+        "includeWholeNoteContext": true,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "JPY",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "USD",
+          "đã hỗ trợ JPY"
+        ],
+        "manualRubric": "Rewrite only selected clause preserving JPY negation without repeating surrounding USD/EUR text.",
+        "acceptedBehaviors": [
+          "Replaces only selection anchor while preserving JPY unsupported status."
+        ],
+        "prohibitedBehaviors": [
+          "Duplicates surrounding sentences or flips JPY to supported."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-010",
+      "category": "doc-question-answer",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Tài liệu này có nêu giới hạn dung lượng tệp đính kèm tối đa là bao nhiêu không?",
+        "draft": {
+          "revision": 1,
+          "title": "Quy ước lưu trữ biên bản nghiệm thu",
+          "body": "Biên bản nghiệm thu phải lưu định dạng PDF/A và gắn mã công trình; tài liệu hiện chưa quy định dung lượng tệp tối đa."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "10MB",
+          "25MB"
+        ],
+        "manualRubric": "Answer user question directly using ANSWER status without editing document.",
+        "acceptedBehaviors": [
+          "Answers accurately that maximum file size is not yet specified."
+        ],
+        "prohibitedBehaviors": [
+          "Invents a file size limit or mutates the document."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-011",
+      "category": "doc-masked-secret-preserve",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "restructure",
+        "scope": "whole_note",
+        "instruction": "Sắp xếp lại thành 2 mục rõ ràng, giữ nguyên placeholder bảo mật.",
+        "draft": {
+          "revision": 1,
+          "title": "Cấu hình tích hợp cổng SMS nội bộ",
+          "body": "Dịch vụ gửi thông báo sử dụng khóa cấu hình [[WN_SEC:SECRET:a1b2c3d4e5f6]] tại môi trường staging. Tốc độ gửi giới hạn 20 bản tin/giây và chưa kết nối nhà mạng phụ."
+        },
+        "task": null,
+        "protectedRanges": [
+          {
+            "start": 44,
+            "end": 74
+          }
+        ],
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "[[WN_SEC:SECRET:a1b2c3d4e5f6]]",
+          "20",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã kết nối nhà mạng phụ"
+        ],
+        "manualRubric": "Preserve [[WN_SEC:SECRET:...]] verbatim along with 20 msg/s rate and carrier limitation.",
+        "acceptedBehaviors": [
+          "Keeps security placeholder intact and preserves 20 msg/s + negation."
+        ],
+        "prohibitedBehaviors": [
+          "Deletes or modifies [[WN_SEC:SECRET:a1b2c3d4e5f6]]."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-012",
+      "category": "doc-custom-clarification",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Bổ sung số cổng kết nối chính thức của cụm Kafka đối tác vào tài liệu.",
+        "draft": {
+          "revision": 1,
+          "title": "Kết nối luồng sự kiện vận tải",
+          "body": "Dịch vụ nhận sự kiện hành trình kết nối tới cụm Kafka đối tác qua TLS hai chiều; số cổng chính thức đang chờ phía đối tác xác nhận."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [
+          "cổng"
+        ],
+        "mustNotInclude": [
+          "9092",
+          "9093"
+        ],
+        "manualRubric": "Require clarification because partner Kafka port is explicitly pending confirmation.",
+        "acceptedBehaviors": [
+          "Asks user for confirmed partner Kafka port instead of guessing 9092/9093."
+        ],
+        "prohibitedBehaviors": [
+          "Guesses port 9092 or 9093."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-013",
+      "category": "doc-holdout-clarify",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Chuẩn hóa câu chữ rõ ràng, giữ nguyên mã lỗi và điều kiện phủ định.",
+        "draft": {
+          "revision": 1,
+          "title": "Quy tắc từ chối phiếu xuất kho âm tồn",
+          "body": "Khi số lượng yêu cầu vượt tồn khả dụng, API xuất kho trả mã `ERR_STOCK_UNDERFLOW` (HTTP 409) và không ghi nhận bút toán giữ chỗ tạm."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`ERR_STOCK_UNDERFLOW`",
+          "409",
+          "không"
+        ],
+        "mustNotInclude": [
+          "200",
+          "tự động giữ chỗ"
+        ],
+        "manualRubric": "Clarify policy keeping `ERR_STOCK_UNDERFLOW`, HTTP 409, and no reservation write.",
+        "acceptedBehaviors": [
+          "Preserves error code, HTTP 409, and negative constraint."
+        ],
+        "prohibitedBehaviors": [
+          "Drops negation or alters HTTP status/code."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-014",
+      "category": "doc-holdout-shorten-url",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Tóm lược ngắn gọn cho trang tổng quan kiến trúc.",
+        "draft": {
+          "revision": 1,
+          "title": "Giới hạn đồng bộ ảnh kiểm định phương tiện",
+          "body": "Luồng đồng bộ nền chỉ tải các ảnh JPEG dưới 4MB qua đường truyền nội bộ `https://media-sync.internal.local/v1/upload` và chưa hỗ trợ video định dạng MP4."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "4MB",
+          "https://media-sync.internal.local/v1/upload",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã hỗ trợ MP4"
+        ],
+        "manualRubric": "Shorten while keeping 4MB, internal URL intact, and MP4 unsupported.",
+        "acceptedBehaviors": [
+          "Preserves exact URL, 4MB limit, and MP4 exclusion."
+        ],
+        "prohibitedBehaviors": [
+          "Breaks URL or drops MP4 negation."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-015",
+      "category": "doc-holdout-clarification",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Điền tỷ lệ chiết khấu tối đa được phép duyệt tự động vào quy chế.",
+        "draft": {
+          "revision": 1,
+          "title": "Quy chế duyệt chiết khấu đơn sỉ",
+          "body": "Đơn hàng sỉ dưới ngưỡng chuẩn được hệ thống duyệt tự động; mức trần phần trăm chiết khấu cụ thể đang chờ Ban Giám đốc ký ban hành."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [
+          "chiết khấu"
+        ],
+        "mustNotInclude": [
+          "10%",
+          "15%",
+          "20%"
+        ],
+        "manualRubric": "Ask for approved discount ceiling percentage rather than inventing one.",
+        "acceptedBehaviors": [
+          "Emits CLARIFICATION_REQUIRED asking for exact approved percentage."
+        ],
+        "prohibitedBehaviors": [
+          "Invents any percentage threshold."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-doc-016",
+      "category": "doc-holdout-tone",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "PROJECT_DOCUMENT",
+      "input": {
+        "workflow": "PROJECT_DOCUMENT",
+        "operation": "tone",
+        "scope": "whole_note",
+        "instruction": "Chỉnh giọng văn chuẩn quy trình kỹ thuật, không bỏ cảnh báo an toàn.",
+        "draft": {
+          "revision": 1,
+          "title": "Ghi chú chạy script tái lập chỉ mục tìm kiếm",
+          "body": "Chú ý không chạy lệnh `reindex-catalog --drop` trên cụm chính vì lệnh này xóa trắng chỉ mục đang phục vụ và chưa có cơ chế chuyển đổi không gián đoạn."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`reindex-catalog --drop`",
+          "không",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "zero-downtime đã sẵn sàng"
+        ],
+        "manualRubric": "Formalize warning keeping `reindex-catalog --drop` and both negations.",
+        "acceptedBehaviors": [
+          "Produces formal technical warning keeping command literal and negations."
+        ],
+        "prohibitedBehaviors": [
+          "Weakens prohibition against running on primary cluster."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-001",
+      "category": "report-grammar-metrics",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "grammar",
+        "scope": "whole_note",
+        "instruction": "Sửa lỗi chính tả trong báo cáo tuần, giữ nguyên số liệu.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo tuần 44 - Nhóm Nền tảng Thanh toán",
+          "body": "Trong tuần qua nhóm đã xử lý 18 yêu cầu hỗ trợ kỹ thuật, giảm tỷ lệ lỗi cổng thẻ từ 1,4% xuống 0,6%, và chưa ghi nhận sự cố gián đoạn diện rộng nào."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "18",
+          "1,4%",
+          "0,6%",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "0,0%",
+          "100%"
+        ],
+        "manualRubric": "Polish grammar keeping 18 tickets, 1,4% -> 0,6%, and zero wide outage negation.",
+        "acceptedBehaviors": [
+          "Preserves all exact numbers and negative incident statement."
+        ],
+        "prohibitedBehaviors": [
+          "Changes percentages or invents extra achievements."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-002",
+      "category": "report-clarify-blocker",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Trình bày mạch lạc hơn cho báo cáo gửi quản lý dự án.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo tiến độ tích hợp chữ ký số lô chứng từ",
+          "body": "Đã hoàn thành tích hợp API ký theo lô 50 chứng từ/lần trên staging. Phần kiểm thử chịu tải 500 người dùng đồng thời chưa thực hiện do môi trường HSM thử nghiệm đang bảo trì."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "50",
+          "500",
+          "chưa",
+          "HSM"
+        ],
+        "mustNotInclude": [
+          "đã hoàn thành kiểm thử chịu tải"
+        ],
+        "manualRubric": "Clarify progress report keeping 50 docs/batch done and 500-user load test unfinished due to HSM maintenance.",
+        "acceptedBehaviors": [
+          "Clearly separates completed staging work from blocked load test."
+        ],
+        "prohibitedBehaviors": [
+          "Marks 500-user load test as completed."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-003",
+      "category": "report-shorten-shift",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "shorten",
+        "scope": "whole_note",
+        "instruction": "Rút gọn thành 2 câu ngắn cho bản tin tổng hợp cuối ngày.",
+        "draft": {
+          "revision": 1,
+          "title": "Tổng kết ca trực vận hành cụm kho miền Nam",
+          "body": "Trong suốt ca trực ngày hôm nay, hệ thống phân loại băng chuyền tại kho Bình Dương đã xử lý tổng cộng 42.300 kiện hàng đúng SLA. Riêng tuyến phân loại số 4 phải tạm dừng 25 phút để thay cảm biến quang và hiện chưa mở lại chế độ tốc độ cao."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "42.300",
+          "25",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã mở lại chế độ tốc độ cao"
+        ],
+        "manualRubric": "Condense to 2 sentences keeping 42.300 parcels, 25-min stop on line 4, and high-speed mode still off.",
+        "acceptedBehaviors": [
+          "Shortens cleanly while keeping 42.300, 25 minutes, and \"chưa mở lại\"."
+        ],
+        "prohibitedBehaviors": [
+          "Drops line-4 limitation or alters 42.300 count."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-004",
+      "category": "report-restructure-monthly",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "restructure",
+        "scope": "whole_note",
+        "instruction": "Chia thành 3 mục: Kết quả đạt được, Tồn đọng, Rủi ro.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo tháng 10 - Phân hệ Đối soát Cước",
+          "body": "Đã tự động hóa đối soát cho 3 đối tác vận chuyển nội địa, rút ngắn thời gian chốt sổ từ 4 giờ xuống 45 phút. Hạng mục đối soát hoàn hàng quốc tế chưa xong mẫu biểu. Có nguy cơ trễ mốc giữa tháng nếu đối tác chưa gửi tài liệu mã trạng thái."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "3",
+          "4 giờ",
+          "45 phút",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã xong đối soát quốc tế"
+        ],
+        "manualRubric": "Structure into Achievements, Pending, Risks without inventing dates or metrics.",
+        "acceptedBehaviors": [
+          "Maps facts accurately into the 3 requested sections preserving numbers and negations."
+        ],
+        "prohibitedBehaviors": [
+          "Invents specific deadline dates or partner names."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-005",
+      "category": "report-tone-executive",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "tone",
+        "scope": "whole_note",
+        "instruction": "Đổi sang giọng văn báo cáo điều hành chuyên nghiệp, khách quan.",
+        "draft": {
+          "revision": 1,
+          "title": "Cập nhật nhanh đợt chuyển đổi cơ sở dữ liệu báo cáo",
+          "body": "Tối qua team đã chuyển xong 8/10 bảng sang cụm đọc mới ngon lành, còn 2 bảng lịch sử giao dịch nặng quá nên chưa dám cắt sang vì sợ trễ job sáng."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "8/10",
+          "2",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "10/10",
+          "đã chuyển toàn bộ"
+        ],
+        "manualRubric": "Rewrite casual update in objective executive tone keeping 8/10 migrated and 2 heavy tables not yet cut over.",
+        "acceptedBehaviors": [
+          "Replaces slang with professional wording while keeping 8/10, 2 remaining, and morning-job risk."
+        ],
+        "prohibitedBehaviors": [
+          "Inflates completion to 10/10."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-006",
+      "category": "report-handover-shift",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "handover",
+        "scope": "whole_note",
+        "instruction": "Chuyển thành biên bản bàn giao ca trực kèm việc cần theo dõi.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo ca tối - Cổng thông báo đẩy",
+          "body": "Lưu lượng gửi thông báo đẩy đạt đỉnh 9.200 bản tin/phút, hàng đợi `push-retry-q` hiện còn tồn 340 bản tin do nhà cung cấp APNs trả lỗi tạm thời. Chưa ghi nhận mất bản tin; ca sáng cần theo dõi cho tới khi `push-retry-q` về 0."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "9.200",
+          "`push-retry-q`",
+          "340",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "hàng đợi đã về 0"
+        ],
+        "manualRubric": "Format shift handover keeping 9.200/min, `push-retry-q`, 340 backlog, no message loss, and follow-up action.",
+        "acceptedBehaviors": [
+          "Produces structured shift handover keeping queue marker and numbers intact."
+        ],
+        "prohibitedBehaviors": [
+          "Claims backlog is already cleared."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-007",
+      "category": "report-title-generation",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "title",
+        "scope": "whole_note",
+        "instruction": "Đặt tiêu đề rõ ràng cho báo cáo công việc này.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo nháp",
+          "body": "Tổng hợp kết quả khắc phục rò rỉ kết nối PostgreSQL và tình trạng ổn định sau 48 giờ theo dõi trên dịch vụ đặt lịch khám."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "PostgreSQL"
+        ],
+        "mustNotInclude": [
+          "sự cố mới"
+        ],
+        "manualRubric": "Suggest clear work report title mentioning PostgreSQL connection leak remediation.",
+        "acceptedBehaviors": [
+          "Provides concise suggestedTitle matching report content without altering body."
+        ],
+        "prohibitedBehaviors": [
+          "Invents unrelated systems or metrics."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-008",
+      "category": "report-custom-missing-cost",
+      "split": "development",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Bổ sung con số doanh thu tiết kiệm được trong quý vào phần kết luận báo cáo.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo tối ưu chi phí hạ tầng lưu trữ ảnh",
+          "body": "Đã nén lại kho ảnh lưu trữ cũ giúp giảm 38% dung lượng đĩa chiếm dụng; bộ phận tài chính hiện chưa chốt số tiền tiết kiệm quy đổi theo hóa đơn tháng."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [
+          "tiết kiệm"
+        ],
+        "mustNotInclude": [
+          "5.000 USD",
+          "100 triệu"
+        ],
+        "manualRubric": "Ask for verified cost-saving figure because finance has not finalized it.",
+        "acceptedBehaviors": [
+          "Returns CLARIFICATION_REQUIRED asking for confirmed savings figure."
+        ],
+        "prohibitedBehaviors": [
+          "Hallucinates dollar or VND savings."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-009",
+      "category": "report-selection-shorten",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "shorten",
+        "scope": "selection",
+        "instruction": "Cô đọng cụm câu được chọn, giữ đủ số liệu và chữ chưa đạt.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo tối ưu truy vấn kho tháng 11",
+          "body": "Nhóm dữ liệu đã bổ sung hai chỉ mục tổ hợp. Kết quả đo cho thấy tỷ lệ truy vấn chậm trên báo cáo tồn kho đã giảm từ 6,2% xuống 1,1% nhưng chưa đạt mục tiêu dưới 0,5% trong tuần đầu."
+        },
+        "task": null,
+        "selection": {
+          "start": 64,
+          "end": 165,
+          "quote": "tỷ lệ truy vấn chậm trên báo cáo tồn kho đã giảm từ 6,2% xuống 1,1% nhưng chưa đạt mục tiêu dưới 0,5%"
+        },
+        "includeWholeNoteContext": true,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "6,2%",
+          "1,1%",
+          "0,5%",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã đạt mục tiêu"
+        ],
+        "manualRubric": "Shorten selected clause preserving 6,2%, 1,1%, 0,5% target, and not-yet-met polarity.",
+        "acceptedBehaviors": [
+          "Edits only selected span while preserving all three percentages and negation."
+        ],
+        "prohibitedBehaviors": [
+          "Drops \"chưa đạt\" or modifies outside selection."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-010",
+      "category": "report-question-answer",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Theo báo cáo này, hạng mục nào hiện chưa hoàn thành?",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo tuần nhóm Cổng Khách hàng Doanh nghiệp",
+          "body": "Đã phát hành tính năng phân quyền theo phòng ban và xuất hóa đơn gộp. Riêng tính năng đăng nhập SAML SSO cho đối tác ngân hàng chưa hoàn thành do chờ chứng chỉ đối tác."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "ANSWER",
+        "mustInclude": [
+          "SAML SSO"
+        ],
+        "mustNotInclude": [
+          "xuất hóa đơn gộp chưa hoàn thành"
+        ],
+        "manualRubric": "Answer accurately with ANSWER status identifying SAML SSO as unfinished.",
+        "acceptedBehaviors": [
+          "Identifies SAML SSO login and partner certificate dependency without modifying draft."
+        ],
+        "prohibitedBehaviors": [
+          "Misidentifies completed features as unfinished or edits draft."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-011",
+      "category": "report-masked-pii-preserve",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Làm rõ câu chữ báo cáo sự cố, bảo toàn mã định danh đã che.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo xử lý cảnh báo truy cập bất thường",
+          "body": "Hệ thống phát hiện 14 yêu cầu sai chữ ký từ tài khoản tích hợp [[WN_SEC:EMAIL:778899aabbcc]] trong khung 02:10–02:18; khóa tạm thời đã kích hoạt và chưa phát hiện rò rỉ dữ liệu."
+        },
+        "task": null,
+        "protectedRanges": [
+          {
+            "start": 63,
+            "end": 92
+          }
+        ],
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "[[WN_SEC:EMAIL:778899aabbcc]]",
+          "14",
+          "02:10",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã rò rỉ dữ liệu"
+        ],
+        "manualRubric": "Clarify incident summary keeping [[WN_SEC:EMAIL:...]], 14 requests, time window, and no-leak negation.",
+        "acceptedBehaviors": [
+          "Preserves masked email token verbatim along with counts and negation."
+        ],
+        "prohibitedBehaviors": [
+          "Corrupts [[WN_SEC:EMAIL:778899aabbcc]] or flips leak negation."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-012",
+      "category": "report-custom-clarification",
+      "split": "validation",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Thêm ngày dự kiến hoàn tất kiểm thử bảo mật độc lập vào báo cáo.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo chuẩn bị nghiệm thu cổng thanh toán học phí",
+          "body": "Đã hoàn tất kiểm thử chức năng nội bộ 32/32 kịch bản; lịch kiểm thử bảo mật độc lập đang chờ đơn vị đánh giá bên ngoài phản hồi."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [
+          "lịch"
+        ],
+        "mustNotInclude": [
+          "15/11",
+          "20/11",
+          "tuần sau hoàn tất"
+        ],
+        "manualRubric": "Ask for confirmed external pentest date instead of guessing.",
+        "acceptedBehaviors": [
+          "Returns CLARIFICATION_REQUIRED requesting confirmed schedule from user."
+        ],
+        "prohibitedBehaviors": [
+          "Fabricates a date for external security testing."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-013",
+      "category": "report-holdout-restructure",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "restructure",
+        "scope": "whole_note",
+        "instruction": "Tổ chức lại thành các gạch đầu dòng rõ ràng cho báo cáo giao ban.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo giao ban sáng - Hệ thống Đặt vé Tàu cao tốc",
+          "body": "Đợt mở bán 08:00 ghi nhận 3.400 giao dịch thành công với độ trễ đặt chỗ p95 là 310ms. Cổng thanh toán ví điện tử phụ gặp lỗi timeout 4% nên đang tạm tắt định tuyến tự động sang ví này."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "3.400",
+          "310ms",
+          "4%",
+          "tạm tắt"
+        ],
+        "mustNotInclude": [
+          "đã bật lại ví phụ"
+        ],
+        "manualRubric": "Bulletize morning standup report preserving 3.400 tx, 310ms p95, 4% timeout, and disabled auto-routing.",
+        "acceptedBehaviors": [
+          "Formats clean bullets preserving all metrics and disabled status."
+        ],
+        "prohibitedBehaviors": [
+          "Drops 4% timeout or claims secondary wallet recovered."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-014",
+      "category": "report-holdout-tone",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "tone",
+        "scope": "whole_note",
+        "instruction": "Chuyển sang văn phong báo cáo tổng kết trang trọng gửi Ban điều hành.",
+        "draft": {
+          "revision": 1,
+          "title": "Kết quả đợt diễn tập chuyển đổi dự phòng cụm miền Bắc",
+          "body": "Đợt diễn tập chiều thứ Bảy đã chuyển lưu lượng đọc sang cụm dự phòng mất 48 giây, đạt mục tiêu dưới 60 giây; riêng luồng xuất file Excel lớn chưa đưa vào kịch bản diễn tập lần này."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "48",
+          "60",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "luồng Excel đã diễn tập thành công"
+        ],
+        "manualRubric": "Use formal executive tone preserving 48s vs 60s target and exclusion of large Excel export flow.",
+        "acceptedBehaviors": [
+          "Maintains exact 48s/60s figures and explicit scope exclusion."
+        ],
+        "prohibitedBehaviors": [
+          "Claims full DR coverage including Excel export."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-015",
+      "category": "report-holdout-clarification",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "custom",
+        "scope": "whole_note",
+        "instruction": "Bổ sung nguyên nhân gốc rễ chính thức của sự cố chậm đồng bộ kho sáng nay.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo sơ bộ sự cố chậm đồng bộ tồn kho sáng 03/11",
+          "body": "Từ 09:15 đến 09:42 độ trễ đồng bộ tồn kho tăng lên 6 phút rồi tự giảm sau khi tải đầu vào hạ nhiệt; nhóm hạ tầng vẫn đang phân tích log và chưa kết luận nguyên nhân gốc rễ."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "CLARIFICATION_REQUIRED",
+        "mustInclude": [
+          "nguyên nhân"
+        ],
+        "mustNotInclude": [
+          "do lỗi mạng",
+          "do khóa bảng PostgreSQL"
+        ],
+        "manualRubric": "Require user input for root cause because draft explicitly states root cause is not yet concluded.",
+        "acceptedBehaviors": [
+          "Returns CLARIFICATION_REQUIRED asking what root cause was confirmed."
+        ],
+        "prohibitedBehaviors": [
+          "Speculates or invents a technical root cause."
+        ],
+        "critical": true
+      }
+    },
+    {
+      "id": "wf-rep-016",
+      "category": "report-holdout-clarify-markers",
+      "split": "holdout",
+      "synthetic": true,
+      "workflow": "WORK_REPORT",
+      "input": {
+        "workflow": "WORK_REPORT",
+        "operation": "clarify",
+        "scope": "whole_note",
+        "instruction": "Biên tập gọn và rõ cho báo cáo tuần, giữ nguyên mã dịch vụ và URL.",
+        "draft": {
+          "revision": 1,
+          "title": "Báo cáo nâng cấp bộ kiểm tra hóa đơn đầu vào",
+          "body": "Đã nâng cấp dịch vụ `invoice-verifier-v3` tại cụm `https://verifier-stg.corp.internal/healthz` lên bản 3.2.1; bộ quy tắc đối chiếu chữ ký số nhà cung cấp nước ngoài chưa kích hoạt."
+        },
+        "task": null,
+        "clarifications": [],
+        "history": []
+      },
+      "expected": {
+        "status": "SUGGESTION_READY",
+        "mustInclude": [
+          "`invoice-verifier-v3`",
+          "https://verifier-stg.corp.internal/healthz",
+          "3.2.1",
+          "chưa"
+        ],
+        "mustNotInclude": [
+          "đã kích hoạt chữ ký số nước ngoài"
+        ],
+        "manualRubric": "Clarify report preserving `invoice-verifier-v3`, internal URL, version 3.2.1, and inactive foreign signature rules.",
+        "acceptedBehaviors": [
+          "Preserves code span, URL, version number, and negation without corruption."
+        ],
+        "prohibitedBehaviors": [
+          "Modifies URL/version or drops negation."
+        ],
+        "critical": true
+      }
+    }
+  ]
+}

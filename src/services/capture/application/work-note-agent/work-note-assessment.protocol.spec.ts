@@ -848,5 +848,94 @@ describe('Task assessment sourced protocol', () => {
         parseAssessmentOutput(i, JSON.stringify(forgedClaimHistory)),
       ).toThrow();
     });
+
+    it('enforces G6/O3: allows BLOCKING HISTORICAL_CONFLICT only for SELF CONFLICT_* with current anchor and normalizes PARENT/OUTDATED to OPTIONAL', () => {
+      const i: AssessmentModelInput = {
+        ...input,
+        purpose: 'PROGRESS',
+        sources: [
+          ...input.sources,
+          historySource('history.selfConflict', 'Staging job was disabled.', {
+            relation: 'SELF',
+            factStatus: 'CONFLICT_CURRENT',
+            factKind: 'STATUS',
+          }),
+          historySource('history.parentDec', 'Must use PostgreSQL 16.', {
+            relation: 'PARENT',
+            taskKey: 'OPS-10',
+            factStatus: 'CONFLICT_CURRENT',
+            factKind: 'DECISION',
+          }),
+          historySource('history.outdatedSelf', 'Old local draft.', {
+            relation: 'SELF',
+            factStatus: 'OUTDATED',
+            factKind: 'STATUS',
+          }),
+        ],
+      };
+
+      const selfConflictBlocking = output();
+      selfConflictBlocking.purpose = 'PROGRESS';
+      selfConflictBlocking.noteAdequacy = 'NEEDS_AUTHOR_INPUT';
+      selfConflictBlocking.gaps = [
+        {
+          kind: 'HISTORICAL_CONFLICT',
+          needCode: 'history.conflict',
+          target: 'Staging job status conflict',
+          impact: 'BLOCKING',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            {
+              sourceId: 'history.selfConflict',
+              quote: 'Staging job was disabled.',
+            },
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+          ],
+        },
+      ];
+      expect(
+        parseAssessmentOutput(i, JSON.stringify(selfConflictBlocking)).gaps[0]
+          .impact,
+      ).toBe('BLOCKING');
+
+      const parentDecisionBlocking = output();
+      parentDecisionBlocking.purpose = 'PROGRESS';
+      parentDecisionBlocking.gaps = [
+        {
+          kind: 'HISTORICAL_CONFLICT',
+          needCode: 'history.conflict',
+          target: 'Parent decision check',
+          impact: 'BLOCKING',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.parentDec', quote: 'Must use PostgreSQL 16.' },
+            { sourceId: 'note.body', quote: 'The API has not been tested.' },
+          ],
+        },
+      ];
+      expect(
+        parseAssessmentOutput(i, JSON.stringify(parentDecisionBlocking)).gaps[0]
+          .impact,
+      ).toBe('OPTIONAL');
+
+      const outdatedBlocking = output();
+      outdatedBlocking.purpose = 'PROGRESS';
+      outdatedBlocking.gaps = [
+        {
+          kind: 'OUTDATED_INFO',
+          needCode: 'history.outdated',
+          target: 'Outdated note',
+          impact: 'BLOCKING',
+          owner: 'NOTE_AUTHOR',
+          sourceRefs: [
+            { sourceId: 'history.outdatedSelf', quote: 'Old local draft.' },
+          ],
+        },
+      ];
+      expect(
+        parseAssessmentOutput(i, JSON.stringify(outdatedBlocking)).gaps[0]
+          .impact,
+      ).toBe('OPTIONAL');
+    });
   });
 });

@@ -2,10 +2,8 @@ import { DynamicModule, Module } from '@nestjs/common';
 import { createBullMqTelemetry } from '../../../common/observability/bullmq-telemetry';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import {
-  bullmqPrefix,
-  createRedisConnection,
-} from '../../../common/redis/redis-connection';
+import { bullmqPrefix } from '../../../common/redis/redis-connection';
+import { BullMqRedisOwner } from '../../../common/redis/bullmq-redis-owner';
 import { AuditService } from './audit/audit.service';
 import { MongoInfrastructureModule } from './mongodb/mongodb.module';
 import { OutboxService } from './outbox/outbox.service';
@@ -43,9 +41,10 @@ export class IngestionInfrastructureModule {
         MongoInfrastructureModule.register(INGESTION_PERSISTENCE),
         BullModule.forRootAsync({
           imports: [ConfigModule],
-          inject: [ConfigService],
-          useFactory: (config: ConfigService) => ({
-            connection: createRedisConnection(config),
+          inject: [ConfigService, BullMqRedisOwner],
+          extraProviders: [BullMqRedisOwner],
+          useFactory: (config: ConfigService, redis: BullMqRedisOwner) => ({
+            connection: redis.client,
             prefix: bullmqPrefix(config),
             telemetry: createBullMqTelemetry(),
           }),

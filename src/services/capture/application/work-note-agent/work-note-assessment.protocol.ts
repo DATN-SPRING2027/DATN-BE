@@ -6,10 +6,12 @@ import {
 } from './work-note-assessment.prompt';
 import { createHash } from 'node:crypto';
 import { assessmentRequestContext } from './work-note-assessment.context';
+import { isCoverageQuoteGrounded } from './work-note-assessment.grounding';
 import {
   hasNegation as negative,
   dropsSourceNegation,
   coveragePolarityConflict,
+  isContiguousGroundedClaimSubstring,
 } from './work-note-assessment.polarity';
 import type { AgentMessage } from './work-note-agent.types';
 import { ASSESSMENT_NEED_CODES } from './work-note-assessment.rubric';
@@ -20,7 +22,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-11-02.v25';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-11-05.v34';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {
@@ -28,8 +30,8 @@ const invalid = (message = 'Assessment output is invalid.') => {
 };
 const normalize = (s: string) =>
   s
-    .normalize('NFKC')
-    .toLocaleLowerCase()
+    .normalize('NFC')
+    .toLocaleLowerCase('vi')
     .replace(/[\s.!?]+/g, ' ')
     .trim();
 const normalizeClaimQuote = (s: string) =>
@@ -192,19 +194,27 @@ export function parseAssessmentOutput(
       );
       if (!source) return invalid('INVALID_SOURCE_REFERENCE');
       if (source.text.includes(quote)) return { sourceId, quote };
-      // Resolve capitalization-only variations to the actual source passage.
-      // Never repair missing words, punctuation, negation or ambiguous matches.
+      // Resolve capitalization-only or clause-trailing punctuation variations
+      // to the actual unique source passage. Never repair missing words,
+      // internal punctuation, negation or ambiguous matches.
       const folded = source.text.toLocaleLowerCase();
-      const candidate = quote.toLocaleLowerCase();
-      const start = folded.indexOf(candidate);
-      const exact = source.text.slice(start, start + quote.length);
-      if (
-        start < 0 ||
-        folded.indexOf(candidate, start + 1) >= 0 ||
-        exact.toLocaleLowerCase() !== candidate
-      )
-        return invalid('INVALID_SOURCE_REFERENCE');
-      return { sourceId, quote: exact };
+      for (const rawCandidate of [
+        quote,
+        quote.replace(/[.;,]+$/u, '').trim(),
+      ]) {
+        if (!rawCandidate) continue;
+        const candidate = rawCandidate.toLocaleLowerCase();
+        const start = folded.indexOf(candidate);
+        const exact = source.text.slice(start, start + rawCandidate.length);
+        if (
+          start >= 0 &&
+          folded.indexOf(candidate, start + 1) < 0 &&
+          exact.toLocaleLowerCase() === candidate
+        ) {
+          return { sourceId, quote: exact };
+        }
+      }
+      return invalid('INVALID_SOURCE_REFERENCE');
     });
     if (required && !r.length) return invalid('MISSING_SOURCE_REFERENCE');
     return r;
@@ -302,7 +312,14 @@ export function parseAssessmentOutput(
     if (
       supportRelation === 'FULL' &&
       !sourceRefs.some(
-        (r) => normalizeClaimQuote(r.quote) === normalizeClaimQuote(text),
+        (r) =>
+          normalizeClaimQuote(r.quote) === normalizeClaimQuote(text) ||
+          isContiguousGroundedClaimSubstring(
+            sourceText(r.sourceId),
+            r.quote,
+            text,
+            taskTitle,
+          ),
       )
     )
       supportRelation = 'PARTIAL';
@@ -371,8 +388,8 @@ export function parseAssessmentOutput(
         }))
     )
       return invalid('REQUIREMENT_IS_NOT_RESULT');
-    // Supporting evidence must itself be a fully grounded author claim. The
-    // requirement/result relationship remains explicit for semantic review.
+    // Supporting evidence must be fully covered by grounded author claims.
+    // The requirement/result relationship still requires semantic review.
     if (
       status === 'SUPPORTED' &&
       (sourceRefs.some((r) =>
@@ -383,16 +400,7 @@ export function parseAssessmentOutput(
           taskTitle,
         ),
       ) ||
-        !sourceRefs.every((s) =>
-          claims.some(
-            (c) =>
-              c.originKind === 'AUTHOR_REPORT' &&
-              c.supportRelation === 'FULL' &&
-              c.sourceRefs.some(
-                (r) => r.sourceId === s.sourceId && r.quote.includes(s.quote),
-              ),
-          ),
-        ))
+        !sourceRefs.every((s) => isCoverageQuoteGrounded(s, claims)))
     )
       status = 'PARTIAL';
     return { requirementIndex: Number(i), status, sourceRefs };
@@ -466,13 +474,38 @@ export function parseAssessmentOutput(
       historyRefs.every((s) => (s.history?.relation ?? 'SELF') !== 'SELF')
     )
       return invalid('RELATED_TASK_HISTORY_GAP_INVALID');
+    let impact = en(x.impact, ['BLOCKING', 'OPTIONAL'] as const);
+    if (kind === 'OUTDATED_INFO') {
+      impact = 'OPTIONAL';
+    } else if (kind === 'HISTORICAL_CONFLICT') {
+      const hasSelfVerifiedConflict = historyRefs.some(
+        (s) =>
+          (s.history?.relation ?? 'SELF') === 'SELF' &&
+          Boolean(s.history?.factStatus.startsWith('CONFLICT_')),
+      );
+      const hasCurrentAnchor = sourceRefs.some((r) => {
+        const k = sourceOf(r.sourceId)?.kind;
+        if (k === 'NOTE' || k === 'ANSWER') return true;
+        if (k === 'TASK') {
+          return historyRefs.some(
+            (s) =>
+              (s.history?.relation ?? 'SELF') === 'SELF' &&
+              s.history?.factStatus === 'CONFLICT_TASK',
+          );
+        }
+        return false;
+      });
+      if (!hasSelfVerifiedConflict || !hasCurrentAnchor) {
+        impact = 'OPTIONAL';
+      }
+    }
     return {
       kind,
       ...(hasNeedCode
         ? { needCode: en(x.needCode, ASSESSMENT_NEED_CODES) }
         : {}),
       target: str(x.target, 160),
-      impact: en(x.impact, ['BLOCKING', 'OPTIONAL'] as const),
+      impact,
       owner: en(x.owner, ['NOTE_AUTHOR', 'TASK_REQUIREMENT_OWNER'] as const),
       sourceRefs,
     };

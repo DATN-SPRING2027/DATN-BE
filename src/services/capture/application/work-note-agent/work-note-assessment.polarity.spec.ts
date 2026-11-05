@@ -65,6 +65,87 @@ function fixture(
   return { input, out };
 }
 describe('Evidence polarity is scoped, not a keyword over the whole paragraph', () => {
+  it('preserves coverage when adjacent fully grounded author claims jointly cover the evidence quote', () => {
+    const first = 'Added normalization to the label parser;';
+    const second = 'verified invalid labels return HTTP 400.';
+    const f = fixture(
+      'Normalize labels and reject invalid labels.',
+      `${first} ${second}`,
+    );
+    f.out.claims = [first, second].map((text) => ({
+      text,
+      originKind: 'AUTHOR_REPORT',
+      supportRelation: 'FULL',
+      sourceRefs: [{ sourceId: 'note.body', quote: text }],
+    }));
+    expect(
+      parseAssessmentOutput(f.input, JSON.stringify(f.out)).coverage[0].status,
+    ).toBe('SUPPORTED');
+  });
+
+  it.each(['unclaimed text', 'partially grounded claim', 'different source'])(
+    'does not bridge a compound coverage quote over %s',
+    (variant) => {
+      const first = 'Added normalization to the label parser;';
+      const second = 'verified invalid labels return HTTP 400.';
+      const middle =
+        variant === 'unclaimed text' ? ' recorded the deployment event;' : '';
+      const f = fixture(
+        'Normalize labels and reject invalid labels.',
+        `${first}${middle} ${second}`,
+      );
+      if (variant === 'different source')
+        f.input.sources.push({
+          ...f.input.sources[2],
+          id: 'note.title',
+          text: second,
+        });
+      f.out.claims = [
+        {
+          text: first,
+          originKind: 'AUTHOR_REPORT',
+          supportRelation: 'FULL',
+          sourceRefs: [{ sourceId: 'note.body', quote: first }],
+        },
+        {
+          text: second,
+          originKind: 'AUTHOR_REPORT',
+          supportRelation:
+            variant === 'partially grounded claim' ? 'PARTIAL' : 'FULL',
+          sourceRefs: [
+            {
+              sourceId:
+                variant === 'different source' ? 'note.title' : 'note.body',
+              quote: second,
+            },
+          ],
+        },
+      ];
+      expect(
+        parseAssessmentOutput(f.input, JSON.stringify(f.out)).coverage[0]
+          .status,
+      ).toBe('PARTIAL');
+    },
+  );
+
+  it('recognizes a prohibition requirement as negative when the author reports compliance', () => {
+    const f = fixture(
+      'Nghiêm cấm ghi mã truy cập ra tệp bền vững.',
+      'Đã kiểm tra bộ lưu trữ, không ghi mã truy cập ra tệp bền vững.',
+    );
+    expect(
+      parseAssessmentOutput(f.input, JSON.stringify(f.out)).coverage[0].status,
+    ).toBe('SUPPORTED');
+  });
+  it('still rejects negative evidence for a positive persistence requirement', () => {
+    const f = fixture(
+      'Phải ghi nhật ký tác vụ ra tệp bền vững.',
+      'Đã kiểm tra bộ lưu trữ, không ghi nhật ký tác vụ ra tệp bền vững.',
+    );
+    expect(
+      parseAssessmentOutput(f.input, JSON.stringify(f.out)).coverage[0].status,
+    ).toBe('PARTIAL');
+  });
   it('fails closed on excessively repeated ambiguous excerpts instead of unbounded context scanning', () => {
     const quote = 'API passed.';
     const f = fixture('API passes.', `${quote} `.repeat(100), quote);
@@ -238,6 +319,187 @@ describe('Evidence polarity is scoped, not a keyword over the whole paragraph', 
     };
     expect(() => parseAssessmentOutput(f.input, JSON.stringify(f.out))).toThrow(
       'REQUIREMENT_POLARITY_MISMATCH',
+    );
+  });
+
+  describe('D10a (F15 / G2): contiguous literal clause substring claims and adversarial vetoes', () => {
+    function evalClaimRelation(note: string, quote: string, claimText: string) {
+      const f = fixture('Kiểm tra phân quyền tổ chức.', note, quote);
+      f.out.claims = [
+        {
+          text: claimText,
+          sourceRefs: [{ sourceId: 'note.body', quote }],
+          originKind: 'AUTHOR_REPORT',
+          supportRelation: 'FULL',
+        },
+      ];
+      f.out.coverage = [
+        { requirementIndex: 0, status: 'PARTIAL', sourceRefs: [] },
+      ];
+      f.out.noteAdequacy = 'UNDETERMINED';
+      const parsed = parseAssessmentOutput(f.input, JSON.stringify(f.out));
+      return parsed.claims[0].supportRelation;
+    }
+
+    // Group 1: Dropped negation (>= 3 cases VI + EN)
+    it.each([
+      [
+        'Đã chạy nhưng chưa kiểm thử staging cho cổng thanh toán.',
+        'kiểm thử staging cho cổng thanh toán',
+      ],
+      [
+        'Đã viết migration, không triển khai cụm cơ sở dữ liệu phụ.',
+        'triển khai cụm cơ sở dữ liệu phụ',
+      ],
+      [
+        ' deployed worker queue, but never verified webhook signature validation.',
+        'verified webhook signature validation',
+      ],
+      [
+        'The batch importer has not completed reconciliation for invoice ledger.',
+        'completed reconciliation for invoice ledger',
+      ],
+    ])(
+      'Adversarial Group 1 (dropped negation): rejects FULL for %s -> %s',
+      (note, claimText) => {
+        const result = () => evalClaimRelation(note, note, claimText);
+        try {
+          expect(result()).toBe('PARTIAL');
+        } catch (err) {
+          expect((err as Error).message).toBe('SEMANTIC_POLARITY_MISMATCH');
+        }
+      },
+    );
+
+    // Group 2: Flipped completion / status (>= 3 cases VI + EN)
+    it.each([
+      [
+        'Đã xong phần biểu mẫu đăng ký, chưa xong phần xác thực hai lớp.',
+        'xong phần xác thực hai lớp',
+      ],
+      [
+        'Đã hoàn thành API danh mục, chưa hoàn thành bộ lọc phân trang.',
+        'hoàn thành bộ lọc phân trang',
+      ],
+      [
+        'Completed user profile endpoint; have not completed audit export job.',
+        'completed audit export job',
+      ],
+      [
+        'Staging smoke suite passed, production smoke suite has not passed.',
+        'production smoke suite has passed',
+      ],
+    ])(
+      'Adversarial Group 2 (flipped completion status): rejects FULL for %s -> %s',
+      (note, claimText) => {
+        const result = () => evalClaimRelation(note, note, claimText);
+        try {
+          expect(result()).toBe('PARTIAL');
+        } catch (err) {
+          expect((err as Error).message).toBe('SEMANTIC_POLARITY_MISMATCH');
+        }
+      },
+    );
+
+    // Group 3: Meaning-changing conditional / mid-clause truncation (>= 3 cases VI + EN)
+    it.each([
+      [
+        'Nếu bật cờ định tuyến mới thì API thanh toán trả 200.',
+        'API thanh toán trả 200',
+      ],
+      [
+        'Chỉ khi tài khoản có quyền quản trị, giao diện mới cho phép xóa dự án.',
+        'giao diện mới cho phép xóa dự án',
+      ],
+      [
+        'API xuất báo cáo trả mã 200 nếu tệp nhỏ hơn 5MB.',
+        'API xuất báo cáo trả mã 200',
+      ],
+      [
+        'If feature flag billing_v2 is enabled, checkout endpoint returns HTTP 200.',
+        'checkout endpoint returns HTTP 200',
+      ],
+      [
+        'Unless token is revoked, session refresh endpoint issues a new cookie.',
+        'session refresh endpoint issues a new cookie',
+      ],
+    ])(
+      'Adversarial Group 3 (meaning-changing conditional truncation): downgrades to PARTIAL for %s -> %s',
+      (note, claimText) => {
+        expect(evalClaimRelation(note, note, claimText)).toBe('PARTIAL');
+      },
+    );
+
+    // Group 4: Insufficient context / dropped adverse failure outcome or too-short fragment (>= 3 cases VI + EN)
+    it.each([
+      [
+        'Đã chạy kiểm thử luồng đồng bộ kho hàng nhưng thất bại.',
+        'Đã chạy kiểm thử luồng đồng bộ kho hàng',
+      ],
+      [
+        'Đã thực hiện đối soát bảng lương tháng mười, kết quả bị lỗi timeout.',
+        'Đã thực hiện đối soát bảng lương tháng mười',
+      ],
+      [
+        'Ran integration suite for webhook retry worker, but staging failed.',
+        'Ran integration suite for webhook retry worker',
+      ],
+      ['Đã chạy thử nghiệm, và đã ghi nhận kết quả.', 'Đã chạy'],
+    ])(
+      'Adversarial Group 4 (insufficient context / dropped adverse outcome): downgrades to PARTIAL for %s -> %s',
+      (note, claimText) => {
+        expect(evalClaimRelation(note, note, claimText)).toBe('PARTIAL');
+      },
+    );
+
+    // Group 5: Non-contiguous stitched claims & ambiguous repeated substrings (>= 3 cases VI + EN)
+    it.each([
+      [
+        'Phần đăng nhập xong; phần giỏ hàng chưa xong; phần thanh toán xong.',
+        'Phần đăng nhập xong; phần thanh toán xong',
+      ],
+      [
+        'Module A passed unit tests; Module B failed; Module C passed unit tests.',
+        'Module A passed unit tests Module C passed unit tests',
+      ],
+      [
+        'Tài khoản nội bộ đọc được báo cáo và xuất được tệp CSV trên local.',
+        'Tài khoản nội bộ xuất được tệp CSV trên local',
+      ],
+      [
+        'Tài khoản nhóm A nhận mã 200; sau khi tải lại, tài khoản nhóm A nhận mã 200.',
+        'tài khoản nhóm A nhận mã 200',
+      ],
+    ])(
+      'Adversarial Group 5 (non-contiguous stitched or ambiguous repeated substring): downgrades to PARTIAL for %s -> %s',
+      (note, claimText) => {
+        expect(evalClaimRelation(note, note, claimText)).toBe('PARTIAL');
+      },
+    );
+
+    // Group 6: Valid contiguous literal clause substrings (positive controls VI + EN)
+    it.each([
+      [
+        'Tài khoản thuộc nhóm A đọc được hồ sơ nội bộ, và tài khoản thuộc nhóm B nhận 403.',
+        'tài khoản thuộc nhóm B nhận 403',
+      ],
+      [
+        'Tài khoản thuộc nhóm A đọc được hồ sơ nội bộ, và tài khoản thuộc nhóm B nhận 403.',
+        'Tài khoản thuộc nhóm A đọc được hồ sơ nội bộ',
+      ],
+      [
+        'Admin session can rotate signing keys; guest session receives 403 Forbidden.',
+        'guest session receives 403 Forbidden',
+      ],
+      [
+        'Đã thêm chỉ mục tìm kiếm hóa đơn; chưa kiểm thử tải cao trên staging.',
+        'Đã thêm chỉ mục tìm kiếm hóa đơn',
+      ],
+    ])(
+      'Valid Group 6 (genuine contiguous clause substring): preserves FULL for %s -> %s',
+      (note, claimText) => {
+        expect(evalClaimRelation(note, note, claimText)).toBe('FULL');
+      },
     );
   });
 });
