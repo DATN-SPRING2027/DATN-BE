@@ -12,7 +12,8 @@ describe('Chat Local Enterprise Vault storage fallback', () => {
     const config = {
       get: (key: string) => {
         if (key === 'WORK_NOTE_LOCAL_STORAGE_DIR') return root;
-        if (key === 'R2_ENDPOINT') return 'https://example.r2.cloudflarestorage.com';
+        if (key === 'R2_ENDPOINT')
+          return 'https://example.r2.cloudflarestorage.com';
         if (key === 'R2_BUCKET') return 'legacy-bucket';
         if (key === 'R2_ACCESS_KEY_ID') return 'legacy-key';
         if (key === 'R2_SECRET_ACCESS_KEY') return 'legacy-secret';

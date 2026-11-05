@@ -6364,7 +6364,7 @@ export class WorkNotesService {
     const now = new Date();
     let shouldAutoApprove = Boolean(
       options?.autoApprove &&
-        (actor.canReview || isActorLeader(actor) || isActorManager(actor)),
+      (actor.canReview || isActorLeader(actor) || isActorManager(actor)),
     );
     let reportVersion = 1;
     const { submittedScope } = await this.transaction(async (db, session) => {

@@ -97,7 +97,9 @@ export class ProjectDocumentStorage {
     const path = this.localPath(key);
     const existing = await stat(path).catch(() => null);
     if (existing) {
-      const err = new Error(`EEXIST: file already exists, open '${path}'`) as Error & {
+      const err = new Error(
+        `EEXIST: file already exists, open '${path}'`,
+      ) as Error & {
         code?: string;
       };
       err.code = 'EEXIST';
@@ -169,10 +171,7 @@ export class ProjectDocumentStorage {
     await rm(path, { force: true });
     await rm(`${path}.meta.json`, { force: true }).catch(() => undefined);
     await this.pruneEmptyParentDirs(dirname(path));
-    if (
-      this.r2.isConfigured() &&
-      typeof this.r2.deleteObject === 'function'
-    ) {
+    if (this.r2.isConfigured() && typeof this.r2.deleteObject === 'function') {
       await this.r2.deleteObject(key).catch(() => undefined);
     }
   }
