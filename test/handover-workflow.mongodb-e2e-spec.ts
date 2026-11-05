@@ -894,22 +894,43 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .set('Cookie', cookieFor('outsider'))
       .expect(404);
 
-    // A02: Org Manager (not a member of PRIVATE project) is denied confidential list (403) & detail (404),
-    //      but CAN appoint eligible Project TEAM_LEADER D2 via PUT .../coordinator returning ONLY safe Receipt!
-    await request(server)
+    // A02: Org Manager (not a member of PRIVATE project) can read safe summary metadata & ETag
+    //      to discover handoverId/version and appoint eligible Project TEAM_LEADER D2 via PUT .../coordinator,
+    //      while remaining strictly denied confidential draft (403) and revision (404) endpoints!
+    const orgMgrListRes = await request(server)
       .get(baseUrl())
       .set('Cookie', cookieFor('orgManager'))
-      .expect(403);
-    await request(server)
+      .expect(200);
+    expect(
+      (orgMgrListRes.body as { data: Array<{ id: string; version: number }> })
+        .data,
+    ).toEqual([
+      expect.objectContaining({
+        id: handoverId,
+        version: 1,
+        status: 'OPEN',
+      }),
+    ]);
+
+    const orgMgrDetailRes = await request(server)
       .get(baseUrl(`/${handoverId}`))
       .set('Cookie', cookieFor('orgManager'))
-      .expect(404);
+      .expect(200);
+    expect(orgMgrDetailRes.headers['etag']).toBe(etag1);
+    expect(
+      (orgMgrDetailRes.body as { capabilities: string[] }).capabilities,
+    ).toEqual(['READ']);
+
+    await request(server)
+      .get(baseUrl(`/${handoverId}/draft`))
+      .set('Cookie', cookieFor('orgManager'))
+      .expect(403);
 
     const coordRes = await request(server)
       .put(baseUrl(`/${handoverId}/coordinator`))
       .set('Cookie', cookieFor('orgManager'))
       .set('x-csrf-token', csrfToken)
-      .set('If-Match', etag1)
+      .set('If-Match', orgMgrDetailRes.headers['etag'])
       .set('Idempotency-Key', randomUUID())
       .send({
         assignedLeaderId: leaderD2Id.toHexString(),
@@ -1461,6 +1482,34 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       rev1ForD.body as { items: Array<Record<string, unknown>> }
     ).items.find((i) => i.itemId === itemConfidentialId)!;
     expect(dRestricted.access).toBe('AVAILABLE');
+
+    // A02 + A04: Non-member Org Manager reading handover detail after Revision #1 is published
+    // receives ONLY unavailable item shells ({ itemId, access: 'UNAVAILABLE' }) and is denied direct revision endpoint (404)!
+    const detailForOrgMgr = await request(server)
+      .get(baseUrl(`/${handoverId}`))
+      .set('Cookie', cookieFor('orgManager'))
+      .expect(200);
+    const orgMgrItems = (
+      detailForOrgMgr.body as {
+        publishedRevision: { items: Array<Record<string, unknown>> };
+      }
+    ).publishedRevision.items;
+    expect(orgMgrItems).toHaveLength(3);
+    for (const item of orgMgrItems) {
+      expect(item).toEqual({
+        itemId: item.itemId,
+        access: 'UNAVAILABLE',
+      });
+    }
+    expect(JSON.stringify(detailForOrgMgr.body)).not.toContain(
+      'Canary Rollout',
+    );
+    expect(JSON.stringify(detailForOrgMgr.body)).not.toContain('SECRET_TITLE');
+
+    await request(server)
+      .get(baseUrl(`/${handoverId}/revisions/${rev1Id}`))
+      .set('Cookie', cookieFor('orgManager'))
+      .expect(404);
 
     // A10: Task transfer BEFORE B1 accepts package MUST fail 409 PACKAGE_NOT_ACCEPTED!
     await request(server)
