@@ -285,7 +285,10 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
 
       await mongoRepo.listByRecipient(userBId, { limit: 10 }, orgId);
       const expectedOrgClause = {
-        $or: [{ organizationId: orgId }, { 'target.organizationId': orgId }],
+        $or: [
+          { organizationId: orgId },
+          { organizationId: null, 'target.organizationId': orgId },
+        ],
       };
       expect(mockModel.find).toHaveBeenCalledWith({
         $and: [

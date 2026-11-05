@@ -134,6 +134,10 @@ export class NotificationCenterRepository {
   ): Promise<{ item: NotificationItemDto; created: boolean }> {
     const model = this.notificationsModel();
     const now = new Date();
+    const resolvedOrganizationId =
+      this.normalizeOrganizationId(
+        input.organizationId ?? input.target?.organizationId,
+      ) ?? null;
     if (!model) {
       const dedupKey = `${input.recipientId}::${input.eventKey}`;
       const existingId = this.memoryEventIndex.get(dedupKey);
@@ -147,7 +151,7 @@ export class NotificationCenterRepository {
         recipientId: input.recipientId,
         recipientUserId: input.recipientId,
         actorId: input.actorId ?? null,
-        organizationId: input.organizationId ?? null,
+        organizationId: resolvedOrganizationId,
         projectId: input.projectId ?? null,
         taskId: input.taskId ?? null,
         noteId: input.noteId ?? null,
@@ -184,7 +188,7 @@ export class NotificationCenterRepository {
         recipientId: input.recipientId,
         recipientUserId: input.recipientId,
         actorId: input.actorId ?? null,
-        organizationId: input.organizationId ?? null,
+        organizationId: resolvedOrganizationId,
         projectId: input.projectId ?? null,
         taskId: input.taskId ?? null,
         noteId: input.noteId ?? null,
@@ -260,7 +264,7 @@ export class NotificationCenterRepository {
     return {
       $or: [
         { organizationId: normalizedOrgId },
-        { 'target.organizationId': normalizedOrgId },
+        { organizationId: null, 'target.organizationId': normalizedOrgId },
       ],
     };
   }
@@ -304,6 +308,7 @@ export class NotificationCenterRepository {
   private async sanitizeItemsForListing(
     recipientId: string,
     items: NotificationItemDto[],
+    activeOrganizationId?: string | null,
   ): Promise<NotificationItemDto[]> {
     if (!this.activeConnection() || items.length === 0) {
       return items;
@@ -350,6 +355,7 @@ export class NotificationCenterRepository {
                 recipientId,
                 item,
                 accessLookupCache,
+                activeOrganizationId,
               ),
             ] as const;
           } catch {
@@ -427,6 +433,7 @@ export class NotificationCenterRepository {
       const sanitizedItems = await this.sanitizeItemsForListing(
         recipientId,
         pageItems.map((doc) => this.toDto(doc)),
+        scopedOrgId,
       );
       return {
         items: sanitizedItems,
@@ -475,6 +482,7 @@ export class NotificationCenterRepository {
     const sanitizedItems = await this.sanitizeItemsForListing(
       recipientId,
       pageRows.map((row) => this.toDto(row)),
+      scopedOrgId,
     );
 
     return {
@@ -961,7 +969,8 @@ export class NotificationCenterRepository {
       target.kind === 'WORK_NOTE'
     ) {
       const projectId = target.projectId ?? notification.projectId;
-      const orgId = target.organizationId ?? notification.organizationId;
+      const orgId =
+        target.organizationId ?? notification.organizationId ?? scopedOrgId;
       if (
         !projectId ||
         !Types.ObjectId.isValid(projectId) ||
@@ -1003,6 +1012,14 @@ export class NotificationCenterRepository {
         }
 
         const projectOrgId = project.organizationId as Types.ObjectId;
+        if (scopedOrgId && String(projectOrgId) !== scopedOrgId) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
         const memberships = this.dbCollection(
           SERVICE_DATABASES.iam,
           'organization_memberships',
@@ -1222,10 +1239,20 @@ export class NotificationCenterRepository {
           };
         }
 
+        const convOrgId = conv.organizationId
+          ? String(conv.organizationId)
+          : null;
+        if (scopedOrgId && convOrgId && convOrgId !== scopedOrgId) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
+
         const chatOrgId =
-          target.organizationId ??
-          notification.organizationId ??
-          (conv.organizationId ? String(conv.organizationId) : null);
+          target.organizationId ?? notification.organizationId ?? convOrgId;
         if (
           chatOrgId &&
           Types.ObjectId.isValid(chatOrgId) &&
@@ -1421,7 +1448,7 @@ export class NotificationCenterRepository {
       id: doc._id.toHexString(),
       recipientId: doc.recipientId || doc.recipientUserId || '',
       actorId: doc.actorId ?? null,
-      organizationId: doc.organizationId ?? null,
+      organizationId: doc.organizationId ?? doc.target?.organizationId ?? null,
       projectId: doc.projectId ?? null,
       taskId: doc.taskId ?? null,
       noteId: doc.noteId ?? null,
