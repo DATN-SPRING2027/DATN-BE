@@ -670,57 +670,6 @@ const captureSchemas: Record<string, Schema> = {
     },
     { collection: 'task_clarification_ledger', strict: true },
   ),
-  work_note_assessment_feedback: new Schema(
-    {
-      organizationId: { type: Schema.Types.ObjectId, required: true },
-      projectId: { type: Schema.Types.ObjectId, required: true },
-      assessmentId: { type: String, required: true, maxlength: 80 },
-      promptVersion: { type: String, required: true, maxlength: 120 },
-      model: { type: String, required: true, maxlength: 120 },
-      architecture: {
-        type: String,
-        enum: ['combined', 'split'],
-        required: true,
-      },
-      purpose: {
-        type: String,
-        enum: [
-          'AUTO',
-          'PROGRESS',
-          'INCIDENT',
-          'DECISION',
-          'HANDOVER',
-          'COMPLETION',
-          'QA',
-          'OTHER',
-        ],
-        required: true,
-      },
-      noteAdequacy: {
-        type: String,
-        enum: [
-          'ENOUGH_FOR_PURPOSE',
-          'NEEDS_AUTHOR_INPUT',
-          'UNDETERMINED',
-          'CONTRADICTORY',
-        ],
-        required: true,
-      },
-      category: {
-        type: String,
-        enum: [
-          'UNNECESSARY_QUESTION',
-          'MISSING_QUESTION',
-          'WRONG_SOURCE',
-          'FALSE_SUFFICIENT',
-        ],
-        required: true,
-      },
-      openNeedCodes: [{ type: String, maxlength: 60 }],
-      recordedAt: { type: Date, required: true },
-    },
-    { collection: 'work_note_assessment_feedback', strict: true },
-  ),
 };
 
 export function createCollectionSchema(

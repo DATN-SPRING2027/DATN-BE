@@ -218,27 +218,6 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
         ),
       ],
     },
-    {
-      name: 'work_note_assessment_feedback',
-      indexes: [
-        index(
-          {
-            promptVersion: 1,
-            purpose: 1,
-            category: 1,
-            recordedAt: -1,
-          },
-          { name: 'assessment_feedback_version_purpose_category' },
-        ),
-        index(
-          { recordedAt: 1 },
-          {
-            name: 'assessment_feedback_retention_180d',
-            expireAfterSeconds: 15_552_000,
-          },
-        ),
-      ],
-    },
   ],
 };
 

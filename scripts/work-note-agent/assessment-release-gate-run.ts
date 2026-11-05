@@ -6,6 +6,7 @@ import { ASSESSMENT_PROMPT_VERSION } from '../../src/services/capture/applicatio
 import { ASSESSMENT_EDITOR_INSTRUCTION_VERSION } from '../../src/services/capture/application/work-note-agent/work-note-assessment-editor';
 import {
   loadRelease60Corpus,
+  loadRelease60V6Corpus,
   loadRelease60V7Corpus,
   type AssessmentEvaluationRow,
 } from './assessment-evaluation';
@@ -14,9 +15,21 @@ import {
   makeBlindedReviewPack,
   RESUMABLE_TRANSPORT_ERROR_CODES,
 } from './assessment-quality-gate';
-import { runAssessmentEvaluation } from './assessment-run';
+import {
+  isValidAssessmentPhaseId,
+  runAssessmentEvaluation,
+} from './assessment-run';
 
 export type ReleaseCorpusVariant = 'v5' | 'v6' | 'v7';
+
+export function parseReleaseCorpusVariant(
+  corpusFlag?: string,
+): ReleaseCorpusVariant {
+  if (!corpusFlag || corpusFlag === '--corpus=v5') return 'v5';
+  if (corpusFlag === '--corpus=v6') return 'v6';
+  if (corpusFlag === '--corpus=v7') return 'v7';
+  throw Error('RELEASE_CORPUS_VARIANT_INVALID');
+}
 
 const FROZEN_BASE_FILES = [
   'src/services/capture/application/work-note-agent/work-note-assessment.prompt.ts',
@@ -171,7 +184,7 @@ export async function runReleaseGateStage(
   onlyCaseIds?: readonly string[],
   corpusVariant: ReleaseCorpusVariant = 'v5',
 ) {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/u.test(phaseId))
+  if (!isValidAssessmentPhaseId(phaseId))
     throw Error('RELEASE_PHASE_ID_INVALID');
   const rootDir = process.cwd();
   const evalDir = resolve(rootDir, '.worknote-agent-evals');
@@ -180,16 +193,10 @@ export async function runReleaseGateStage(
   const manifestPath = resolve(evalDir, `${phaseId}.freeze-manifest.json`);
   const valRowsPath = resolve(evalDir, `${phaseId}.validation-rows.json`);
   const holdRowsPath = resolve(evalDir, `${phaseId}.holdout-rows.json`);
-  const summaryOutPath =
-    phaseId === 'plan-v3-release60-20261029'
-      ? resolve(
-          rootDir,
-          'scripts/work-note-agent/assessment-plan-v3-release-gate-2026-10-29.json',
-        )
-      : resolve(
-          rootDir,
-          `scripts/work-note-agent/assessment-${phaseId}-release-gate.json`,
-        );
+  const summaryOutPath = resolve(
+    rootDir,
+    `scripts/work-note-agent/assessment-${phaseId}-release-gate.json`,
+  );
 
   const currentManifest = buildFreezeManifest(rootDir, corpusVariant);
 
@@ -235,17 +242,12 @@ export async function runReleaseGateStage(
     }
   }
 
-  const corpusPath =
-    corpusVariant === 'v6'
-      ? resolve(
-          rootDir,
-          'scripts/work-note-agent/cases-assessment-v6-release.json',
-        )
-      : undefined;
   const corpus =
     corpusVariant === 'v7'
       ? loadRelease60V7Corpus()
-      : loadRelease60Corpus(corpusPath);
+      : corpusVariant === 'v6'
+        ? loadRelease60V6Corpus()
+        : loadRelease60Corpus();
   const expectedTurnCounts = new Map(
     corpus.scenarios.map((c) => [c.id, c.turns.length]),
   );
@@ -552,12 +554,6 @@ if (require.main === module) {
   const corpusFlag = process.argv
     .slice(4)
     .find((arg) => arg.startsWith('--corpus='));
-  const corpusVariant: ReleaseCorpusVariant =
-    corpusFlag === '--corpus=v7'
-      ? 'v7'
-      : corpusFlag === '--corpus=v6'
-        ? 'v6'
-        : 'v5';
   const onlyCases = casesFlag
     ? casesFlag
         .slice('--cases='.length)
@@ -567,10 +563,11 @@ if (require.main === module) {
     : undefined;
   if (!['freeze', 'validation', 'holdout'].includes(stageArg)) {
     console.error(
-      'Usage: assessment-release-gate-run.ts <freeze|validation|holdout> [phaseId] [--cases=id1,id2] [--corpus=v5|v6]',
+      'Usage: assessment-release-gate-run.ts <freeze|validation|holdout> [phaseId] [--cases=id1,id2] [--corpus=v5|v6|v7]',
     );
     process.exit(1);
   }
+  const corpusVariant = parseReleaseCorpusVariant(corpusFlag);
   runReleaseGateStage(stageArg, phaseIdArg, onlyCases, corpusVariant)
     .then((out) => {
       console.log(JSON.stringify(out, null, 2));

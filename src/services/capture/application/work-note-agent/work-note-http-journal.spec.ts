@@ -87,4 +87,28 @@ describe('Durable synthetic evaluation HTTP journal', () => {
     );
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
+  it('marks 401 authentication errors as retryable so a resumed run can succeed after fixing credentials', async () => {
+    const path = join(dir, 'journal.json');
+    const fetcher = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(
+        new Response('{"error":"invalid_api_key"}', { status: 401 }),
+      )
+      .mockResolvedValueOnce(
+        new Response('{"value":"ok-after-credential-fix"}', { status: 200 }),
+      );
+    const first = new AssessmentHttpJournal(path, 'hash');
+    const firstResp = await first.call('one', url, init, fetcher, (s) => s);
+    expect(firstResp.status).toBe(401);
+    expect(first.lastReadKind).toBe('FETCH');
+    first.close();
+
+    const resumed = new AssessmentHttpJournal(path, 'hash');
+    const secondResp = await resumed.call('one', url, init, fetcher, (s) => s);
+    expect(secondResp.status).toBe(200);
+    expect(resumed.lastReadKind).toBe('FETCH');
+    expect(await secondResp.text()).toContain('ok-after-credential-fix');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    resumed.close();
+  });
 });

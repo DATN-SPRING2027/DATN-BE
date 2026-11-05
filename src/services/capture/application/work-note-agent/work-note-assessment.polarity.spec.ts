@@ -1,4 +1,9 @@
 import { parseAssessmentOutput } from './work-note-assessment.protocol';
+import { assembleAssessment } from './work-note-assessment.state';
+import {
+  coveragePolarityConflict,
+  hasNegation,
+} from './work-note-assessment.polarity';
 import type {
   AssessmentModelInput,
   AssessmentModelOutput,
@@ -127,6 +132,66 @@ describe('Evidence polarity is scoped, not a keyword over the whole paragraph', 
       ).toBe('PARTIAL');
     },
   );
+
+  it('keeps negation for unperformed registration ("Chưa đăng ký webhook thanh toán.") while allowing control for blocking unregistered queries ("Đã chặn query chưa đăng ký.")', () => {
+    const unperformedReq = 'Đăng ký webhook thanh toán.';
+    const unperformedNote = 'Chưa đăng ký webhook thanh toán.';
+    expect(hasNegation(unperformedNote)).toBe(true);
+    expect(
+      coveragePolarityConflict(
+        unperformedReq,
+        unperformedNote,
+        unperformedNote,
+        'Tích hợp thanh toán',
+      ),
+    ).toBe(true);
+
+    const fUnperformed = fixture(unperformedReq, unperformedNote);
+    const parsedUnperformed = parseAssessmentOutput(
+      fUnperformed.input,
+      JSON.stringify(fUnperformed.out),
+    );
+    expect(parsedUnperformed.coverage[0].status).toBe('PARTIAL');
+    const assembledUnperformed = assembleAssessment(
+      fUnperformed.input,
+      parsedUnperformed,
+      {
+        sourceRevision: 1,
+        taskContextHash: 'h1',
+        model: 'synthetic/test',
+        expiresAt: '2026-12-31T00:00:00.000Z',
+      },
+    );
+    expect(assembledUnperformed.noteAdequacy).toBe('UNDETERMINED');
+    expect(assembledUnperformed.state).toBe('missing_context');
+
+    const controlReq =
+      'Chỉ cho phép persisted query đã đăng ký; từ chối query ngoài whitelist.';
+    const controlNote = 'Đã chặn query chưa đăng ký.';
+    expect(hasNegation(controlNote)).toBe(false);
+    expect(
+      coveragePolarityConflict(
+        controlReq,
+        controlNote,
+        controlNote,
+        'Bảo mật GraphQL',
+      ),
+    ).toBe(false);
+    const fControl = fixture(controlReq, controlNote);
+    const parsedControl = parseAssessmentOutput(
+      fControl.input,
+      JSON.stringify(fControl.out),
+    );
+    expect(parsedControl.coverage[0].status).toBe('SUPPORTED');
+    const assembledControl = assembleAssessment(fControl.input, parsedControl, {
+      sourceRevision: 1,
+      taskContextHash: 'h1',
+      model: 'synthetic/test',
+      expiresAt: '2026-12-31T00:00:00.000Z',
+    });
+    expect(assembledControl.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(assembledControl.state).toBe('ready_to_edit');
+  });
 
   it('recognizes a prohibition requirement as negative when the author reports compliance', () => {
     const f = fixture(

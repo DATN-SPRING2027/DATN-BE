@@ -9,7 +9,9 @@ const fold = (s: string) =>
     .replace(/[đĐ]/gu, 'd')
     .toLowerCase();
 const withoutIdioms = (s: string) =>
-  fold(s).replace(/\bnot only\b|\bkhong chi\b|\bchua dang ky\b/gu, '');
+  fold(s)
+    .replace(/\bnot only\b|\bkhong chi\b/gu, '')
+    .replace(/\b((?:query|truy van)(?:\s+tuy\s+y)?)\s+chua dang ky\b/gu, '$1');
 const pendingEpistemic = (s: string) =>
   /\b(?:(?:tests?|testing|verification|deployment)\s+(?:(?:is|are)\s+)?(?:still\s+)?pending|pending\s+(?:tests?|testing|verification|deployment))\b/iu.test(
     fold(s),

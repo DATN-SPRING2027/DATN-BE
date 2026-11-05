@@ -114,7 +114,9 @@ export class AssessmentHttpJournal {
       }
       throw error;
     }
-    const retryable = [408, 429, 500, 502, 503, 504].includes(response.status);
+    const retryable = [401, 408, 429, 500, 502, 503, 504].includes(
+      response.status,
+    );
     const body = await response.clone().text();
     if (Buffer.byteLength(body) > 1_000_000)
       throw Error('HTTP_JOURNAL_RESPONSE_LIMIT');

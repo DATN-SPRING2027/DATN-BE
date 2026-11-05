@@ -1,9 +1,16 @@
-import { partitionResumableStageScenarios } from '../../../../../scripts/work-note-agent/assessment-release-gate-run';
+import {
+  parseReleaseCorpusVariant,
+  partitionResumableStageScenarios,
+} from '../../../../../scripts/work-note-agent/assessment-release-gate-run';
 import { computeAssessmentQualityGate } from '../../../../../scripts/work-note-agent/assessment-quality-gate';
 import {
   loadDevV26AssessmentCorpus,
   type AssessmentEvaluationRow,
 } from '../../../../../scripts/work-note-agent/assessment-evaluation';
+import {
+  isValidAssessmentPhaseId,
+  parseAssessmentRunOptions,
+} from '../../../../../scripts/work-note-agent/assessment-run';
 
 describe('Release evaluator integrity', () => {
   const corpus = loadDevV26AssessmentCorpus();
@@ -107,5 +114,23 @@ describe('Stage checkpoint turn completeness', () => {
         new Map([['case-a', 2]]),
       ),
     ).toThrow('DUPLICATE_ANALYSIS_TURN');
+  });
+  it('rejects unknown release corpus variants and validates phase IDs consistently across freeze and runner', () => {
+    expect(parseReleaseCorpusVariant()).toBe('v5');
+    expect(parseReleaseCorpusVariant('--corpus=v5')).toBe('v5');
+    expect(parseReleaseCorpusVariant('--corpus=v6')).toBe('v6');
+    expect(parseReleaseCorpusVariant('--corpus=v7')).toBe('v7');
+    expect(() => parseReleaseCorpusVariant('--corpus=V7')).toThrow(
+      'RELEASE_CORPUS_VARIANT_INVALID',
+    );
+    expect(() => parseReleaseCorpusVariant('--corpus=v8')).toThrow(
+      'RELEASE_CORPUS_VARIANT_INVALID',
+    );
+
+    const validPhaseId = 'Plan_V4-release60_20261105';
+    expect(isValidAssessmentPhaseId(validPhaseId)).toBe(true);
+    expect(
+      parseAssessmentRunOptions(['--phase-id', validPhaseId]).phaseId,
+    ).toBe(validPhaseId);
   });
 });

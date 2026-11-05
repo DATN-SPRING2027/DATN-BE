@@ -1,6 +1,6 @@
 {
   "classification": "PLAN_V3_SECTIONS_6_7_FROZEN_RELEASE60_EVALUATION",
-  "createdAt": "2026-11-05T08:50:08.622Z",
+  "createdAt": "2026-11-05T09:49:54.242Z",
   "phaseId": "plan-v4-release60-v37-20261105",
   "freezeManifest": {
     "model": "mistralai/ministral-14b",
@@ -21,15 +21,15 @@
       "scripts/work-note-agent/assessment-domain-run.ts": "ab58216845b13b4af4ec3e93d9dc4d70267f9ec845f509d9e97af6abb4993ea1",
       "scripts/work-note-agent/assessment-domains.ts": "6f99be41fb30235b14aec3c21420f79c2b1dec82c00d80ea6e8f431359312029",
       "scripts/work-note-agent/assessment-evaluation.ts": "0ff1d5a2e03638b29d304e2e4ef6881420549b07e5e925a889ebb67f7fb4d84f",
-      "scripts/work-note-agent/assessment-http-journal.ts": "bb052ec483cbbdceefc2149a07bcf809a61abdf4b3c8cd5d652285c9b5e9e24b",
+      "scripts/work-note-agent/assessment-http-journal.ts": "3c45c6d62cb8fc1a5f31e28a5d2b0ecabf4c468a31fdc26e58595b6cc9072851",
       "scripts/work-note-agent/assessment-phase-budget.ts": "46fc9d4eae38aeb441ad1315c14573b03f097fb24ef31e11cfbff60b802425bf",
       "scripts/work-note-agent/assessment-progress.ts": "05b66545ef18f787c69bb136d9edccea8da7602163f456a0f1f344ae1fb383bb",
       "scripts/work-note-agent/assessment-quality-gate.ts": "cc5ab16ce2fdeef686f597981485cd2346c4f5351e6c0ad616fbc4fda4ab63c6",
-      "scripts/work-note-agent/assessment-release-gate-run.ts": "5cb02393966d2489cdb3aa5d668138f685dc48c49caa98a17e2179b5de946939",
+      "scripts/work-note-agent/assessment-release-gate-run.ts": "53aa6bd2ed4077b05e91f3e9ce65eb287625ee847a65298209e15a9d8b235d9e",
       "scripts/work-note-agent/assessment-release-replay.ts": "61b9ad7f236b14a04dca024699a587d7e44c80d2684e176af48c3edd0ab08bcd",
       "scripts/work-note-agent/assessment-replay.ts": "6ba2d9144337f9eda48e05e44680b1829dacadf57adacf5777936e78b9465a40",
       "scripts/work-note-agent/assessment-response-cache.ts": "903475ebf20af4729dea51711027c32ec095a079a17c7f0334e09a079c404221",
-      "scripts/work-note-agent/assessment-run.ts": "1c34d84eba81e410864bdb09b43f33ee98be75f667ec4ad589e32c127cf5a5d8",
+      "scripts/work-note-agent/assessment-run.ts": "838d432ebf3ad0ed948bb333dcf8d38c20d04bf5a7f9a7b4f3dc882c7f925368",
       "scripts/work-note-agent/cases-assessment-v7-release.json": "7fc8d903b91e39de5f174433d79d48bec2ecbef26ca93ffd6bfa31f834277ff1",
       "scripts/work-note-agent/evaluation.ts": "cbe68ef0575dd1ead1322f9980ba2feb6543c3edb26ed2b96dc5fa95cb7ee5b2",
       "scripts/work-note-agent/feedback-report.ts": "9466bcbdb9ed8767707cc91c8b578801a503cf77a6d55c694f4a08aef7ceb044",
@@ -67,7 +67,7 @@
       "src/services/capture/application/work-note-agent/work-note-assessment.context.ts": "27627244490aba793f01f63798d46a696d22f8396a09fa52a55d13506db4fc24",
       "src/services/capture/application/work-note-agent/work-note-assessment.grounding.ts": "89810ce0307b59db8ecb3d41a95a5eac3d888bf5ae90d8e27e5e963df5cbdaeb",
       "src/services/capture/application/work-note-agent/work-note-assessment.pipeline.ts": "ffdbd25db7a08a23448d4aa005a84847e7fab2e421840167dab97dfada643150",
-      "src/services/capture/application/work-note-agent/work-note-assessment.polarity.ts": "3ab934ae83a48e1c11af7f3371b2da02a8ff125fa8c45b244c8db396d56ac80a",
+      "src/services/capture/application/work-note-agent/work-note-assessment.polarity.ts": "b9cbaad153e179d35468b1f0212ea921e17bd0ed7773505b9fc2c425bc7249a0",
       "src/services/capture/application/work-note-agent/work-note-assessment.prompt.ts": "e8698987b491c0fc63c2692469a51d537253a97198015b339d931c55a896d6f9",
       "src/services/capture/application/work-note-agent/work-note-assessment.protocol.ts": "f9f321f1e79313b687e57b5c1923ba120c45f4e89f1d10785bb45472a4cd24f3",
       "src/services/capture/application/work-note-agent/work-note-assessment.rubric.ts": "db6561d11e3e40b1566087c74bddf950e56cbec566e00b89a7ec07fbce2125df",
@@ -82,7 +82,7 @@
       "tsconfig.build.json": "d78119a040707ca210c41a7d6fa046ac92d3a8bd0b7c2ca33a9a88328bb2914e",
       "tsconfig.json": "e842d82e49eb9d08d26f9afd42f47cf56f916d6348ccfec37c11ce4c6642cb1e"
     },
-    "manifestHash": "42d0d6cb818dc3604cb5f62c45540b0f907469e355017e112c11726872e3385a"
+    "manifestHash": "a25df24c9bd6f977e627a40af3b954357bed146e461d801aaa326090e5a3d173"
   },
   "corpusVersion": "task-note-assessment-release60/2026-11-05.v7",
   "scenarioCounts": {
@@ -94,12 +94,571 @@
     "httpCeiling": 148
   },
   "phaseBudget": {
-    "maxHttpAttempts": 148,
-    "actualHttpAttempts": 106,
-    "reportedTokens": 750856,
-    "unknownUsageAttempts": 11,
-    "accountedTokens": 1010343,
-    "maxAccountedTokens": 3000000
+    "version": 1,
+    "maxAttempts": 148,
+    "maxTokens": 3000000,
+    "entries": [
+      {
+        "reserved": 45928,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45928,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45928,
+        "reported": 9669,
+        "settled": true
+      },
+      {
+        "reserved": 10794,
+        "reported": 1620,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": 10519,
+        "settled": true
+      },
+      {
+        "reserved": 44582,
+        "reported": 9616,
+        "settled": true
+      },
+      {
+        "reserved": 49060,
+        "reported": 10531,
+        "settled": true
+      },
+      {
+        "reserved": 41932,
+        "reported": 8563,
+        "settled": true
+      },
+      {
+        "reserved": 10769,
+        "reported": 1685,
+        "settled": true
+      },
+      {
+        "reserved": 48892,
+        "reported": 10555,
+        "settled": true
+      },
+      {
+        "reserved": 45181,
+        "reported": 9893,
+        "settled": true
+      },
+      {
+        "reserved": 11429,
+        "reported": 2197,
+        "settled": true
+      },
+      {
+        "reserved": 48873,
+        "reported": 10552,
+        "settled": true
+      },
+      {
+        "reserved": 46213,
+        "reported": 9838,
+        "settled": true
+      },
+      {
+        "reserved": 11123,
+        "reported": 1749,
+        "settled": true
+      },
+      {
+        "reserved": 48902,
+        "reported": 10589,
+        "settled": true
+      },
+      {
+        "reserved": 29963,
+        "reported": 5670,
+        "settled": true
+      },
+      {
+        "reserved": 10807,
+        "reported": 1743,
+        "settled": true
+      },
+      {
+        "reserved": 48836,
+        "reported": 10595,
+        "settled": true
+      },
+      {
+        "reserved": 54798,
+        "reported": 11748,
+        "settled": true
+      },
+      {
+        "reserved": 48839,
+        "reported": 10725,
+        "settled": true
+      },
+      {
+        "reserved": 49288,
+        "reported": 10679,
+        "settled": true
+      },
+      {
+        "reserved": 50653,
+        "reported": 11119,
+        "settled": true
+      },
+      {
+        "reserved": 10990,
+        "reported": 1671,
+        "settled": true
+      },
+      {
+        "reserved": 49203,
+        "reported": 10750,
+        "settled": true
+      },
+      {
+        "reserved": 54106,
+        "reported": 11695,
+        "settled": true
+      },
+      {
+        "reserved": 10943,
+        "reported": 1629,
+        "settled": true
+      },
+      {
+        "reserved": 41556,
+        "reported": 8468,
+        "settled": true
+      },
+      {
+        "reserved": 42893,
+        "reported": 8687,
+        "settled": true
+      },
+      {
+        "reserved": 48934,
+        "reported": 10542,
+        "settled": true
+      },
+      {
+        "reserved": 53393,
+        "reported": 11588,
+        "settled": true
+      },
+      {
+        "reserved": 10897,
+        "reported": 1601,
+        "settled": true
+      },
+      {
+        "reserved": 49827,
+        "reported": 10979,
+        "settled": true
+      },
+      {
+        "reserved": 51600,
+        "reported": 11335,
+        "settled": true
+      },
+      {
+        "reserved": 45554,
+        "reported": 9636,
+        "settled": true
+      },
+      {
+        "reserved": 10755,
+        "reported": 1628,
+        "settled": true
+      },
+      {
+        "reserved": 49402,
+        "reported": 10909,
+        "settled": true
+      },
+      {
+        "reserved": 51443,
+        "reported": 11296,
+        "settled": true
+      },
+      {
+        "reserved": 45129,
+        "reported": 9460,
+        "settled": true
+      },
+      {
+        "reserved": 10743,
+        "reported": 1615,
+        "settled": true
+      },
+      {
+        "reserved": 45728,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45728,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 45728,
+        "reported": 9623,
+        "settled": true
+      },
+      {
+        "reserved": 10843,
+        "reported": 1666,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": 10484,
+        "settled": true
+      },
+      {
+        "reserved": 45614,
+        "reported": 9905,
+        "settled": true
+      },
+      {
+        "reserved": 48707,
+        "reported": 10562,
+        "settled": true
+      },
+      {
+        "reserved": 44693,
+        "reported": 9370,
+        "settled": true
+      },
+      {
+        "reserved": 49219,
+        "reported": 10673,
+        "settled": true
+      },
+      {
+        "reserved": 41935,
+        "reported": 8640,
+        "settled": true
+      },
+      {
+        "reserved": 10969,
+        "reported": 1838,
+        "settled": true
+      },
+      {
+        "reserved": 48801,
+        "reported": 10563,
+        "settled": true
+      },
+      {
+        "reserved": 45285,
+        "reported": 9704,
+        "settled": true
+      },
+      {
+        "reserved": 11571,
+        "reported": 2247,
+        "settled": true
+      },
+      {
+        "reserved": 48794,
+        "reported": 10423,
+        "settled": true
+      },
+      {
+        "reserved": 46520,
+        "reported": 9772,
+        "settled": true
+      },
+      {
+        "reserved": 11269,
+        "reported": 1977,
+        "settled": true
+      },
+      {
+        "reserved": 48919,
+        "reported": 10519,
+        "settled": true
+      },
+      {
+        "reserved": 49251,
+        "reported": 10647,
+        "settled": true
+      },
+      {
+        "reserved": 10981,
+        "reported": 1765,
+        "settled": true
+      },
+      {
+        "reserved": 49102,
+        "reported": 10625,
+        "settled": true
+      },
+      {
+        "reserved": 49642,
+        "reported": 10983,
+        "settled": true
+      },
+      {
+        "reserved": 11157,
+        "reported": 1888,
+        "settled": true
+      },
+      {
+        "reserved": 48958,
+        "reported": 10655,
+        "settled": true
+      },
+      {
+        "reserved": 30000,
+        "reported": 5699,
+        "settled": true
+      },
+      {
+        "reserved": 10631,
+        "reported": 1585,
+        "settled": true
+      },
+      {
+        "reserved": 48944,
+        "reported": 10486,
+        "settled": true
+      },
+      {
+        "reserved": 55690,
+        "reported": 12137,
+        "settled": true
+      },
+      {
+        "reserved": 11317,
+        "reported": 1940,
+        "settled": true
+      },
+      {
+        "reserved": 48985,
+        "reported": 10498,
+        "settled": true
+      },
+      {
+        "reserved": 49408,
+        "reported": 10732,
+        "settled": true
+      },
+      {
+        "reserved": 10991,
+        "reported": 1721,
+        "settled": true
+      },
+      {
+        "reserved": 44725,
+        "reported": 9399,
+        "settled": true
+      },
+      {
+        "reserved": 44993,
+        "reported": 9572,
+        "settled": true
+      },
+      {
+        "reserved": 10631,
+        "reported": 1554,
+        "settled": true
+      },
+      {
+        "reserved": 44623,
+        "reported": 9519,
+        "settled": true
+      },
+      {
+        "reserved": 41581,
+        "reported": 8557,
+        "settled": true
+      },
+      {
+        "reserved": 45549,
+        "reported": 9372,
+        "settled": true
+      },
+      {
+        "reserved": 48990,
+        "reported": 10706,
+        "settled": true
+      },
+      {
+        "reserved": 50586,
+        "reported": 11118,
+        "settled": true
+      },
+      {
+        "reserved": 11002,
+        "reported": 1672,
+        "settled": true
+      },
+      {
+        "reserved": 49072,
+        "reported": 10587,
+        "settled": true
+      },
+      {
+        "reserved": 53362,
+        "reported": 11665,
+        "settled": true
+      },
+      {
+        "reserved": 10838,
+        "reported": 1618,
+        "settled": true
+      },
+      {
+        "reserved": 44626,
+        "reported": 9536,
+        "settled": true
+      },
+      {
+        "reserved": 46625,
+        "reported": 10147,
+        "settled": true
+      },
+      {
+        "reserved": 10949,
+        "reported": 1788,
+        "settled": true
+      },
+      {
+        "reserved": 44428,
+        "reported": 9291,
+        "settled": true
+      },
+      {
+        "reserved": 46018,
+        "reported": 9521,
+        "settled": true
+      },
+      {
+        "reserved": 41578,
+        "reported": 8570,
+        "settled": true
+      },
+      {
+        "reserved": 43444,
+        "reported": 9113,
+        "settled": true
+      },
+      {
+        "reserved": 10796,
+        "reported": 1697,
+        "settled": true
+      },
+      {
+        "reserved": 45380,
+        "reported": 9344,
+        "settled": true
+      },
+      {
+        "reserved": 46734,
+        "reported": 9586,
+        "settled": true
+      },
+      {
+        "reserved": 44269,
+        "reported": 9469,
+        "settled": true
+      },
+      {
+        "reserved": 47343,
+        "reported": 10675,
+        "settled": true
+      },
+      {
+        "reserved": 10990,
+        "reported": 1786,
+        "settled": true
+      },
+      {
+        "reserved": 48923,
+        "reported": 10603,
+        "settled": true
+      },
+      {
+        "reserved": 53223,
+        "reported": 11720,
+        "settled": true
+      },
+      {
+        "reserved": 10877,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 10883,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48927,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": null,
+        "settled": true
+      },
+      {
+        "reserved": 48983,
+        "reported": null,
+        "settled": true
+      }
+    ]
   },
   "editorSummary": {
     "attempted": 28,

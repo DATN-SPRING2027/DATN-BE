@@ -238,6 +238,10 @@ export type AssessmentRunOptions = {
   stopOnTransportError?: boolean;
 };
 
+export function isValidAssessmentPhaseId(phaseId: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/u.test(phaseId);
+}
+
 export function parseAssessmentRunOptions(
   args: readonly string[],
 ): AssessmentRunOptions {
@@ -315,10 +319,7 @@ export function parseAssessmentRunOptions(
         : value,
     });
   }
-  if (
-    o.phaseId !== undefined &&
-    !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/u.test(o.phaseId)
-  )
+  if (o.phaseId !== undefined && !isValidAssessmentPhaseId(o.phaseId))
     throw Error('ASSESSMENT_PHASE_ID_INVALID');
   if (
     o.journalScope !== undefined &&
@@ -375,8 +376,6 @@ export function parseAssessmentRunOptions(
     (o.model !== undefined && !/^[\w.-]+\/[\w.:-]+$/.test(o.model))
   )
     throw Error('ASSESSMENT_ARGUMENT_LIMIT');
-  if (o.phaseId !== undefined && !/^[a-z0-9][a-z0-9-]{0,79}$/.test(o.phaseId))
-    throw Error('ASSESSMENT_PHASE_ID_INVALID');
   if (o.live && !o.model) throw Error('ASSESSMENT_MODEL_REQUIRED');
   return o;
 }
