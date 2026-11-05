@@ -320,7 +320,7 @@ export class HandoverWorkflowService {
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<HandoverListDto>> {
     const actor = await this.resolveActor(projectId, headers, false);
-    if (!actor.isProjectMember) {
+    if (!actor.isProjectMember && !actor.canAdministerCoordinator) {
       throw new ForbiddenException({
         code: 'HANDOVER_FORBIDDEN',
         message: 'Active project membership is required to read handovers.',
@@ -338,7 +338,7 @@ export class HandoverWorkflowService {
       projectId: projObj,
     };
 
-    if (!actor.isProjectLeader) {
+    if (!actor.isProjectLeader && !actor.canAdministerCoordinator) {
       const ownedFollowUps = await this.repository.followUps
         .find({
           schemaVersion: 2,
@@ -720,8 +720,24 @@ export class HandoverWorkflowService {
       input.revision.reviews.map((r) => [r.itemId.toHexString(), r]),
     );
 
+    const viewerLower = input.viewer.userId.toLowerCase();
+    const hasContentReadAccess =
+      input.viewer.isProjectMember &&
+      (input.viewer.isProjectLeader ||
+        input.handover.assignedLeaderId.toLowerCase() === viewerLower ||
+        (input.handover.successorUserId !== null &&
+          input.handover.successorUserId.toLowerCase() === viewerLower) ||
+        input.handover.departingUserId.toLowerCase() === viewerLower ||
+        followUps.some((f) => f.ownerUserId.toLowerCase() === viewerLower));
+
     const projectedItems = input.revision.items.map((item) => {
       const itemHex = item.itemId.toHexString();
+      if (!hasContentReadAccess) {
+        return {
+          itemId: itemHex,
+          access: 'UNAVAILABLE' as const,
+        };
+      }
       const bindingState = resolveItemBindingState({
         revisionId: input.revision._id.toHexString(),
         successorUserId: input.handover.successorUserId,
@@ -818,6 +834,7 @@ export class HandoverWorkflowService {
       actorUserId: actor.userId,
       isProjectMember: actor.isProjectMember,
       isProjectLeader: actor.isProjectLeader,
+      canAdministerCoordinator: actor.canAdministerCoordinator,
       handover,
       packageAcceptedByCurrentSuccessor: packageAccepted,
       isFollowUpOwner: ownedFollowUpCount > 0,

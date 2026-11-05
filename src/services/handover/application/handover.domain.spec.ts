@@ -6,6 +6,7 @@ import {
   evaluateCarriedItemAcceptances,
   evaluateCompletionReadiness,
   projectRevisionItemForViewer,
+  resolveHandoverCapabilities,
   resolveItemBindingState,
   sourceRefKey,
 } from './handover.domain';
@@ -700,5 +701,68 @@ describe('Handover Domain Invariants (A04, A05, A06, A07, A08, A11, A13, A15)', 
       code: 'SELECTED_TASK_ASSIGNEE_DRIFTED',
       taskId: task1Id.toHexString(),
     });
+  });
+
+  it('grants READ capability to Org Admin (canAdministerCoordinator) for coordinator recovery without granting MANAGE/REVIEW/ACKNOWLEDGE (A02)', () => {
+    const handover: StoredHandoverDoc = {
+      _id: handoverId,
+      schemaVersion: 2,
+      organizationId: orgId,
+      projectId,
+      departingUserId: departingA,
+      assignedLeaderId: leaderD,
+      successorUserId: succB1,
+      title: 'Handover',
+      targetCompletionDate: new Date(),
+      status: 'OPEN',
+      version: 2,
+      draftVersion: 1,
+      assignmentVersion: 1,
+      publishedRevisionId: rev1Id,
+      selectedSources: [],
+      selectedTasks: [],
+      createdBy: leaderD,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Non-member without canAdministerCoordinator -> no capabilities
+    expect(
+      resolveHandoverCapabilities({
+        actorUserId: '888888888888888888888888',
+        isProjectMember: false,
+        isProjectLeader: false,
+        canAdministerCoordinator: false,
+        handover,
+        packageAcceptedByCurrentSuccessor: false,
+        isFollowUpOwner: false,
+      }),
+    ).toEqual([]);
+
+    // Non-member Org Manager with canAdministerCoordinator -> strictly ['READ']
+    expect(
+      resolveHandoverCapabilities({
+        actorUserId: '888888888888888888888888',
+        isProjectMember: false,
+        isProjectLeader: false,
+        canAdministerCoordinator: true,
+        handover,
+        packageAcceptedByCurrentSuccessor: true,
+        isFollowUpOwner: false,
+      }),
+    ).toEqual(['READ']);
+
+    // Project member (non-leader, non-participant) Org Manager with canAdministerCoordinator -> strictly ['READ']
+    expect(
+      resolveHandoverCapabilities({
+        actorUserId: '888888888888888888888888',
+        isProjectMember: true,
+        isProjectLeader: false,
+        canAdministerCoordinator: true,
+        handover,
+        packageAcceptedByCurrentSuccessor: true,
+        isFollowUpOwner: false,
+      }),
+    ).toEqual(['READ']);
   });
 });
