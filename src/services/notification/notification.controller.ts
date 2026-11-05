@@ -1,5 +1,6 @@
 import {
   Controller,
+  ConflictException,
   ForbiddenException,
   Get,
   Headers,
@@ -34,6 +35,7 @@ export class NotificationCenterController {
   private async resolveAuthenticatedUser(
     authorization: string | undefined,
     cookie: string | undefined,
+    expectedOrganizationId?: string,
   ): Promise<{ id: string; organizationId: string }> {
     if (!this.auth) {
       throw new UnauthorizedException({
@@ -55,6 +57,15 @@ export class NotificationCenterController {
       throw new ForbiddenException({
         code: 'ORGANIZATION_CONTEXT_REQUIRED',
         message: 'An active organization context is required.',
+      });
+    }
+    if (
+      expectedOrganizationId !== undefined &&
+      expectedOrganizationId.trim() !== organizationId
+    ) {
+      throw new ConflictException({
+        code: 'ORGANIZATION_CONTEXT_MISMATCH',
+        message: 'The active organization changed. Refresh and retry.',
       });
     }
     return {
@@ -95,9 +106,14 @@ export class NotificationCenterController {
     @Query('limit') limit: string | undefined,
     @Query('unreadOnly') unreadOnly: string | undefined,
     @Res({ passthrough: true }) response?: Response,
+    @Headers('x-expected-organization-id') expectedOrganizationId?: string,
   ) {
     response?.setHeader('Cache-Control', 'no-store');
-    const actor = await this.resolveAuthenticatedUser(authorization, cookie);
+    const actor = await this.resolveAuthenticatedUser(
+      authorization,
+      cookie,
+      expectedOrganizationId,
+    );
     const parsedLimit = limit ? Number(limit) : 20;
     const isUnreadOnly = unreadOnly === 'true' || unreadOnly === '1';
     return this.notificationService.listForUser(
@@ -120,9 +136,14 @@ export class NotificationCenterController {
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
     @Res({ passthrough: true }) response?: Response,
+    @Headers('x-expected-organization-id') expectedOrganizationId?: string,
   ) {
     response?.setHeader('Cache-Control', 'no-store');
-    const actor = await this.resolveAuthenticatedUser(authorization, cookie);
+    const actor = await this.resolveAuthenticatedUser(
+      authorization,
+      cookie,
+      expectedOrganizationId,
+    );
     return this.notificationService.getUnreadCount(
       actor.id,
       actor.organizationId,
@@ -135,9 +156,14 @@ export class NotificationCenterController {
     @Headers('cookie') cookie: string | undefined,
     @Headers('x-csrf-token') csrfHeader: string | undefined,
     @Res({ passthrough: true }) response?: Response,
+    @Headers('x-expected-organization-id') expectedOrganizationId?: string,
   ) {
     response?.setHeader('Cache-Control', 'no-store');
-    const actor = await this.resolveAuthenticatedUser(authorization, cookie);
+    const actor = await this.resolveAuthenticatedUser(
+      authorization,
+      cookie,
+      expectedOrganizationId,
+    );
     this.assertCsrfIfCookieAuthenticated(authorization, cookie, csrfHeader);
     return this.notificationService.markAllAsRead(
       actor.id,
@@ -152,9 +178,14 @@ export class NotificationCenterController {
     @Headers('x-csrf-token') csrfHeader: string | undefined,
     @Param('id') id: string,
     @Res({ passthrough: true }) response?: Response,
+    @Headers('x-expected-organization-id') expectedOrganizationId?: string,
   ) {
     response?.setHeader('Cache-Control', 'no-store');
-    const actor = await this.resolveAuthenticatedUser(authorization, cookie);
+    const actor = await this.resolveAuthenticatedUser(
+      authorization,
+      cookie,
+      expectedOrganizationId,
+    );
     this.assertCsrfIfCookieAuthenticated(authorization, cookie, csrfHeader);
     return this.notificationService.markAsRead(
       actor.id,
@@ -169,13 +200,45 @@ export class NotificationCenterController {
     @Headers('cookie') cookie: string | undefined,
     @Param('id') id: string,
     @Res({ passthrough: true }) response?: Response,
+    @Headers('x-expected-organization-id') expectedOrganizationId?: string,
   ) {
     response?.setHeader('Cache-Control', 'no-store');
-    const actor = await this.resolveAuthenticatedUser(authorization, cookie);
+    const actor = await this.resolveAuthenticatedUser(
+      authorization,
+      cookie,
+      expectedOrganizationId,
+    );
     return this.notificationService.resolveTarget(
       actor.id,
       id,
       actor.organizationId,
     );
+  }
+
+  @Get('account-events')
+  async listAccountEvents(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Query('cursor') cursor: string | undefined,
+    @Query('limit') limit: string | undefined,
+    @Res({ passthrough: true }) response?: Response,
+  ) {
+    response?.setHeader('Cache-Control', 'no-store');
+    if (!this.auth) {
+      throw new UnauthorizedException({
+        code: 'AUTHENTICATION_REQUIRED',
+        message: 'Authentication is required.',
+      });
+    }
+    const identity = await this.auth.getCurrentAccountEventsIdentity(
+      authorization,
+      cookie,
+    );
+    const parsedLimit = limit ? Number(limit) : 20;
+    return this.notificationService.listAccountEventsForUser(identity.id, {
+      cursor:
+        typeof cursor === 'string' && cursor.trim() ? cursor.trim() : undefined,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : 20,
+    });
   }
 }

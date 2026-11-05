@@ -6,8 +6,14 @@ import type {
   NotificationItemDto,
   NotificationListQuery,
   NotificationListResponseDto,
+  NotificationMvpType,
   NotificationResolveResponseDto,
 } from './notification-center.types';
+
+const ACCOUNT_EVENT_NOTIFICATION_TYPES: readonly NotificationMvpType[] = [
+  'ORGANIZATION_MEMBER_INVITED',
+  'ORGANIZATION_MEMBER_REMOVED',
+];
 
 @Injectable()
 export class NotificationService {
@@ -114,6 +120,18 @@ export class NotificationService {
       userId,
       scopedOrgId ? { ...query, organizationId: scopedOrgId } : query,
       scopedOrgId,
+    );
+  }
+
+  async listAccountEventsForUser(
+    userId: string,
+    query: NotificationListQuery = {},
+  ): Promise<NotificationListResponseDto> {
+    return this.repository.listByRecipient(
+      userId,
+      query,
+      null,
+      ACCOUNT_EVENT_NOTIFICATION_TYPES,
     );
   }
 

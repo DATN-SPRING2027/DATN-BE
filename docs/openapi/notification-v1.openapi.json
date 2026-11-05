@@ -38,6 +38,9 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "$ref": "#/components/parameters/ExpectedOrganizationId"
           }
         ],
         "responses": {
@@ -56,7 +59,42 @@
           },
           "403": {
             "$ref": "#/components/responses/OrganizationContextForbiddenError"
+          },
+          "409": {
+            "$ref": "#/components/responses/OrganizationContextMismatchError"
           }
+        }
+      }
+    },
+    "/api/v1/notifications/account-events": {
+      "get": {
+        "operationId": "listAccountLifecycleEvents",
+        "summary": "List only the authenticated user's organization invitation and removal events",
+        "description": "Accepts verified ACCOUNT sessions and verified ORGANIZATION sessions, including an organization session whose membership has since been removed. This endpoint returns only ORGANIZATION_MEMBER_INVITED and ORGANIZATION_MEMBER_REMOVED events for the authenticated recipient.",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated organization invitation and removal events",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotificationListResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" }
         }
       }
     },
@@ -64,6 +102,9 @@
       "get": {
         "operationId": "getUnreadNotificationCount",
         "summary": "Get unread notification count for the authenticated user",
+        "parameters": [
+          { "$ref": "#/components/parameters/ExpectedOrganizationId" }
+        ],
         "responses": {
           "200": {
             "description": "Unread notification count",
@@ -87,6 +128,9 @@
           },
           "403": {
             "$ref": "#/components/responses/OrganizationContextForbiddenError"
+          },
+          "409": {
+            "$ref": "#/components/responses/OrganizationContextMismatchError"
           }
         }
       }
@@ -103,7 +147,8 @@
             "schema": {
               "type": "string"
             }
-          }
+          },
+          { "$ref": "#/components/parameters/ExpectedOrganizationId" }
         ],
         "responses": {
           "200": {
@@ -124,6 +169,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/OrganizationContextMismatchError"
           }
         }
       }
@@ -132,6 +180,9 @@
       "patch": {
         "operationId": "markAllNotificationsAsRead",
         "summary": "Mark all unread notifications as read for the authenticated user",
+        "parameters": [
+          { "$ref": "#/components/parameters/ExpectedOrganizationId" }
+        ],
         "responses": {
           "200": {
             "description": "Summary of updated notifications",
@@ -159,6 +210,9 @@
           },
           "403": {
             "$ref": "#/components/responses/CsrfForbiddenError"
+          },
+          "409": {
+            "$ref": "#/components/responses/OrganizationContextMismatchError"
           }
         }
       }
@@ -175,7 +229,8 @@
             "schema": {
               "type": "string"
             }
-          }
+          },
+          { "$ref": "#/components/parameters/ExpectedOrganizationId" }
         ],
         "responses": {
           "200": {
@@ -196,12 +251,24 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/OrganizationContextMismatchError"
           }
         }
       }
     }
   },
   "components": {
+    "parameters": {
+      "ExpectedOrganizationId": {
+        "name": "X-Expected-Organization-Id",
+        "in": "header",
+        "required": false,
+        "description": "Organization context held by the requesting tab. When supplied, the server returns 409 if it differs from the authenticated session organization.",
+        "schema": { "type": "string" }
+      }
+    },
     "schemas": {
       "NotificationMvpType": {
         "type": "string",
@@ -393,6 +460,9 @@
       },
       "OrganizationContextForbiddenError": {
         "description": "Active organization context is required (rejected in ACCOUNT context)"
+      },
+      "OrganizationContextMismatchError": {
+        "description": "The requesting tab's expected organization differs from the authenticated session organization"
       },
       "NotFoundError": {
         "description": "Notification not found or does not belong to authenticated recipient"

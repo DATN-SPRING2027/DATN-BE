@@ -242,31 +242,71 @@ export class NotificationCenterRepository {
     organizationId?: string | null,
   ): boolean {
     const normalizedOrgId = this.normalizeOrganizationId(organizationId);
+    const docOrgId = this.normalizeOrganizationId(doc.organizationId);
+    const targetOrgId = this.normalizeOrganizationId(
+      doc.target?.organizationId,
+    );
+    if (docOrgId && targetOrgId && docOrgId !== targetOrgId) return false;
     if (!normalizedOrgId) return true;
-    const docOrgId =
-      (typeof doc.organizationId === 'string' && doc.organizationId.trim()
-        ? doc.organizationId.trim()
-        : doc.organizationId
-          ? String(doc.organizationId)
-          : null) ??
-      (typeof doc.target?.organizationId === 'string' &&
-      doc.target.organizationId.trim()
-        ? doc.target.organizationId.trim()
-        : null);
-    return docOrgId === normalizedOrgId;
+    return (docOrgId ?? targetOrgId) === normalizedOrgId;
+  }
+
+  private organizationConsistencyFilter(): Record<string, unknown> {
+    const asString = (path: string) => ({
+      $convert: {
+        input: path,
+        to: 'string',
+        onError: '__invalid_organization_id__',
+        onNull: null,
+      },
+    });
+    return {
+      $expr: {
+        $or: [
+          { $eq: [{ $ifNull: ['$organizationId', null] }, null] },
+          { $eq: [{ $ifNull: ['$target.organizationId', null] }, null] },
+          {
+            $eq: [
+              asString('$organizationId'),
+              asString('$target.organizationId'),
+            ],
+          },
+        ],
+      },
+    };
   }
 
   private organizationMatchFilter(
     organizationId?: string | null,
   ): Record<string, unknown> | null {
     const normalizedOrgId = this.normalizeOrganizationId(organizationId);
-    if (!normalizedOrgId) return null;
+    if (!normalizedOrgId) return this.organizationConsistencyFilter();
     return {
       $or: [
-        { organizationId: normalizedOrgId },
+        {
+          $and: [
+            { organizationId: normalizedOrgId },
+            {
+              $or: [
+                { 'target.organizationId': { $exists: false } },
+                { 'target.organizationId': null },
+                { 'target.organizationId': normalizedOrgId },
+              ],
+            },
+          ],
+        },
         { organizationId: null, 'target.organizationId': normalizedOrgId },
       ],
     };
+  }
+
+  private filterByNotificationTypes(
+    filter: Record<string, unknown>,
+    allowedTypes?: readonly NotificationMvpType[],
+  ): Record<string, unknown> {
+    return allowedTypes
+      ? { $and: [filter, { type: { $in: [...allowedTypes] } }] }
+      : filter;
   }
 
   private recipientMatchFilter(
@@ -391,6 +431,7 @@ export class NotificationCenterRepository {
     recipientId: string,
     query: NotificationListQuery,
     organizationId?: string | null,
+    allowedTypes?: readonly NotificationMvpType[],
   ): Promise<NotificationListResponseDto> {
     const scopedOrgId = this.normalizeOrganizationId(
       organizationId ?? query.organizationId,
@@ -405,7 +446,8 @@ export class NotificationCenterRepository {
           (doc) =>
             (doc.recipientId === recipientId ||
               doc.recipientUserId === recipientId) &&
-            this.matchesOrganization(doc, scopedOrgId),
+            this.matchesOrganization(doc, scopedOrgId) &&
+            (!allowedTypes || allowedTypes.includes(doc.type)),
         )
         .sort(
           (a, b) =>
@@ -447,10 +489,14 @@ export class NotificationCenterRepository {
       ? this.unreadMatchFilter(recipientId, scopedOrgId)
       : this.recipientMatchFilter(recipientId, scopedOrgId);
 
+    const typeFilteredBase = this.filterByNotificationTypes(
+      baseFilter,
+      allowedTypes,
+    );
     const filter: Record<string, unknown> = parsedCursor
       ? {
           $and: [
-            baseFilter,
+            typeFilteredBase,
             {
               $or: [
                 { createdAt: { $lt: parsedCursor.createdAt } },
@@ -462,7 +508,7 @@ export class NotificationCenterRepository {
             },
           ],
         }
-      : baseFilter;
+      : typeFilteredBase;
 
     const [rows, unreadCount] = await Promise.all([
       model
@@ -472,7 +518,12 @@ export class NotificationCenterRepository {
         .lean()
         .exec(),
       model
-        .countDocuments(this.unreadMatchFilter(recipientId, scopedOrgId))
+        .countDocuments(
+          this.filterByNotificationTypes(
+            this.unreadMatchFilter(recipientId, scopedOrgId),
+            allowedTypes,
+          ),
+        )
         .exec(),
     ]);
 
@@ -844,9 +895,21 @@ export class NotificationCenterRepository {
     activeOrganizationId?: string | null,
   ): Promise<NotificationResolveResponseDto> {
     const scopedOrgId = this.normalizeOrganizationId(activeOrganizationId);
-    const notifOrgId = this.normalizeOrganizationId(
-      notification.organizationId ?? notification.target?.organizationId,
+    const notificationOrgId = this.normalizeOrganizationId(
+      notification.organizationId,
     );
+    const targetOrgId = this.normalizeOrganizationId(
+      notification.target?.organizationId,
+    );
+    if (notificationOrgId && targetOrgId && notificationOrgId !== targetOrgId) {
+      return {
+        available: false,
+        reason: 'FORBIDDEN',
+        message: 'This content is no longer available',
+        target: null,
+      };
+    }
+    const notifOrgId = notificationOrgId ?? targetOrgId;
     if (scopedOrgId && notifOrgId && scopedOrgId !== notifOrgId) {
       return {
         available: false,
