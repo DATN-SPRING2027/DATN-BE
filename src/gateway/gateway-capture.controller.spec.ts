@@ -163,4 +163,46 @@ describe('GatewayCaptureController Work Note forwarding', () => {
     );
     expect(timeout).toHaveBeenLastCalledWith(185_000);
   });
+
+  it('forwards Task Note .md downloads with CAPTURE_FILE_TIMEOUT_MS and SAG review/sync routes', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    const controller = new GatewayCaptureController(config as never);
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new globalThis.Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const responseState = createResponse();
+
+    await controller.downloadTaskNoteFile(
+      {
+        method: 'GET',
+        originalUrl:
+          '/api/v1/capture/projects/111111111111111111111111/work-notes/222222222222222222222222/file?format=url',
+        headers: {},
+      } as Request,
+      responseState.response,
+    );
+    expect(timeout).toHaveBeenLastCalledWith(120000);
+    expect(fetchMock.mock.calls[0]?.[0]).toEqual(
+      new URL(
+        'http://127.0.0.1:3102/internal/capture/projects/111111111111111111111111/work-notes/222222222222222222222222/file?format=url',
+      ),
+    );
+
+    await controller.approveTaskNote(
+      {
+        method: 'POST',
+        originalUrl:
+          '/api/v1/capture/projects/111111111111111111111111/work-notes/222222222222222222222222/approve',
+        headers: { 'content-type': 'application/json' },
+        body: { comment: 'Approved' },
+      } as unknown as Request,
+      responseState.response,
+    );
+    expect(timeout).toHaveBeenLastCalledWith(5000);
+  });
 });

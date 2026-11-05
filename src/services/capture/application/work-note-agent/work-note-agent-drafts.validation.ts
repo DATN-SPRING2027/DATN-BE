@@ -152,6 +152,7 @@ const fields: Record<keyof InputMap, readonly string[]> = {
     'expectedRevision',
     'discardOriginalConfirmed',
     'aiChatSource',
+    'autoApprove',
   ],
   reset: ['operationId', 'expectedRevision'],
   restore: ['operationId', 'expectedVersion', 'versionNumber'],
@@ -198,12 +199,15 @@ export function parseDraftInput<K extends keyof InputMap>(
     } as InputMap[K];
   if (kind === 'save') {
     if (typeof r.discardOriginalConfirmed !== 'boolean') return invalid();
+    if (r.autoApprove !== undefined && typeof r.autoApprove !== 'boolean')
+      return invalid();
     return {
       ...base,
       discardOriginalConfirmed: r.discardOriginalConfirmed,
       ...(r.aiChatSource !== undefined
         ? { aiChatSource: parseAiChatSource(r.aiChatSource) }
         : {}),
+      ...(r.autoApprove !== undefined ? { autoApprove: r.autoApprove } : {}),
     } as InputMap[K];
   }
   if (kind === 'apply') {

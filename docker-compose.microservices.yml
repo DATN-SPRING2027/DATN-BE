@@ -153,6 +153,8 @@ services:
       MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
       SERVICE_DATABASE: continuum_capture
       REDIS_HOST: redis
+    volumes:
+      - continuum-vault-data:/var/lib/continuum/vault
     depends_on:
       redis:
         condition: service_healthy
@@ -212,6 +214,8 @@ services:
       CHAT_S3_BUCKET: ${CHAT_S3_BUCKET:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - continuum-vault-data:/var/lib/continuum/vault
     depends_on:
       redis:
         condition: service_healthy
@@ -274,3 +278,4 @@ volumes:
   mongo1-data:
   mongo2-data:
   mongo3-data:
+  continuum-vault-data:

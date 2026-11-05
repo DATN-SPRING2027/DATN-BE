@@ -6,8 +6,12 @@ import type {
   SelectionAnchor,
 } from './work-note-agent.types';
 import type {
+  DocumentKnowledgeStatusRecord,
+  DocumentVersionRecord,
+  ProjectDocumentFileRecord,
   TaskNoteAiChatSource,
   TaskNoteAiChatSourceInput,
+  TaskNoteReviewStatus,
 } from '../work-notes.types';
 import type { SecurityReport } from './security/security.types';
 export type RevisionOperation = {
@@ -41,6 +45,7 @@ export type ApplyInput = RevisionOperation & {
 export type SaveInput = RevisionOperation & {
   discardOriginalConfirmed: boolean;
   aiChatSource?: TaskNoteAiChatSourceInput;
+  autoApprove?: boolean;
 };
 export type RestoreInput = {
   operationId: string;
@@ -109,6 +114,14 @@ export type CanonicalTaskNote = {
   authorName: string;
   type: 'TASK_NOTE';
   status: 'CONFIRMED';
+  reviewStatus?: TaskNoteReviewStatus;
+  submittedAt?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewComment?: string;
+  reviewHistory?: DocumentVersionRecord['reviewHistory'];
+  file?: ProjectDocumentFileRecord;
+  knowledgeSync?: DocumentKnowledgeStatusRecord;
   title: string;
   contentMarkdown: string;
   contentSchemaVersion: 2;

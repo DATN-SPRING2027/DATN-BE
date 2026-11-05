@@ -39,6 +39,24 @@ describe('WorkNotesController CSRF enforcement', () => {
       submitWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
       reviewWorkReport: jest.fn().mockResolvedValue({ id: reportId }),
       listTaskNotes: jest.fn().mockResolvedValue({ data: [] }),
+      listProjectTaskNotes: jest.fn().mockResolvedValue({ data: [] }),
+      reviewTaskNote: jest.fn().mockResolvedValue({ id: noteId }),
+      resolveTaskNoteFileDownloadUrl: jest.fn().mockResolvedValue({
+        mode: 'DIRECT_GET',
+        downloadUrl: 'https://r2.example/note.md',
+        fileName: 'note.md',
+        contentType: 'text/markdown',
+      }),
+      syncTaskNoteToSag: jest.fn().mockResolvedValue({ documentId: noteId }),
+      controlTaskNoteKnowledge: jest
+        .fn()
+        .mockResolvedValue({ documentId: noteId }),
+      syncWorkReportToSag: jest
+        .fn()
+        .mockResolvedValue({ documentId: reportId }),
+      controlWorkReportKnowledge: jest
+        .fn()
+        .mockResolvedValue({ documentId: reportId }),
       listWorkReports: jest.fn().mockResolvedValue({ data: [] }),
       getDocumentKnowledgeChunks: jest.fn().mockResolvedValue({
         documentId,
@@ -307,5 +325,83 @@ describe('WorkNotesController CSRF enforcement', () => {
         unexpected: '1',
       }),
     ).toThrow();
+  });
+
+  it('validates Task Note reviewStatus filter, approval mutations, .md url resolution, and SAG knowledge controls', async () => {
+    const bearerReq = makeRequest({
+      authorization: 'Bearer access-token-123',
+    });
+
+    await controller.listProjectTaskNotes(bearerReq, projectId, {
+      page: '1',
+      pageSize: '20',
+      reviewStatus: 'PENDING_REVIEW',
+    });
+    expect(service.listProjectTaskNotes).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: 'Bearer access-token-123' }),
+      projectId,
+      1,
+      20,
+      { reviewStatus: 'PENDING_REVIEW' },
+    );
+    expect(() =>
+      controller.listProjectTaskNotes(bearerReq, projectId, {
+        reviewStatus: 'DRAFT',
+      }),
+    ).toThrow();
+
+    await controller.approveTaskNote(bearerReq, projectId, noteId, {
+      comment: 'LGTM',
+    });
+    expect(service.reviewTaskNote).toHaveBeenCalledWith(
+      expect.anything(),
+      projectId,
+      noteId,
+      'APPROVED',
+      { comment: 'LGTM' },
+    );
+
+    const mockRes = {
+      setHeader: jest.fn(),
+      status: jest.fn(),
+    } as never;
+    const urlRes = await controller.downloadTaskNoteFile(
+      bearerReq,
+      mockRes,
+      projectId,
+      noteId,
+      { format: 'url' },
+    );
+    expect(urlRes).toMatchObject({
+      mode: 'DIRECT_GET',
+      fileName: 'note.md',
+    });
+
+    await controller.syncTaskNoteToSag(bearerReq, projectId, noteId);
+    expect(service.syncTaskNoteToSag).toHaveBeenCalledTimes(1);
+    await controller.controlTaskNoteKnowledge(bearerReq, projectId, noteId, {
+      action: 'REPROCESS',
+    });
+    expect(service.controlTaskNoteKnowledge).toHaveBeenCalledWith(
+      expect.anything(),
+      projectId,
+      noteId,
+      'REPROCESS',
+    );
+
+    await controller.syncWorkReportToSag(bearerReq, projectId, reportId);
+    expect(service.syncWorkReportToSag).toHaveBeenCalledTimes(1);
+    await controller.controlWorkReportKnowledge(
+      bearerReq,
+      projectId,
+      reportId,
+      { action: 'PAUSE' },
+    );
+    expect(service.controlWorkReportKnowledge).toHaveBeenCalledWith(
+      expect.anything(),
+      projectId,
+      reportId,
+      'PAUSE',
+    );
   });
 });
