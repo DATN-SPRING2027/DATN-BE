@@ -1240,4 +1240,96 @@ describe('HttpSagKnowledgeSyncTransport (Real HTTP Contract)', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it('requests batched live Project document readiness with trusted scope headers', async () => {
+    let requestBody = '';
+    let requestHeaders: IncomingMessage['headers'] | undefined;
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      requestHeaders = req.headers;
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        requestBody += chunk;
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            verified_at: '2026-11-04T00:00:00.000Z',
+            items: [
+              {
+                document_id: 'sag-doc-1',
+                version_no: 2,
+                found: true,
+                status: 'SEARCH_READY',
+                search_status: 'SEARCH_READY',
+                search_ready: true,
+                document_status: 'ready',
+                chunk_count: 4,
+              },
+            ],
+          }),
+        );
+      });
+    });
+
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const transport = new HttpSagKnowledgeSyncTransport(
+        new ConfigService({
+          SAG_API_BASE_URL: `http://127.0.0.1:${port}`,
+          SAG_BFF_SERVICE_TOKEN: 'bff-test-secret',
+          CAPTURE_FILE_TIMEOUT_MS: 5_000,
+        }),
+      );
+      const receipt = await transport.getProjectDocumentReadinessBatch({
+        organizationId: organizationId.toHexString(),
+        projectId: projectId.toHexString(),
+        actorUserId: reviewerUserId.toHexString(),
+        documents: [{ documentId: 'sag-doc-1', versionNo: 2 }],
+      });
+
+      expect(receipt).toEqual({
+        verifiedAt: '2026-11-04T00:00:00.000Z',
+        items: [
+          {
+            documentId: 'sag-doc-1',
+            versionNo: 2,
+            found: true,
+            status: 'SEARCH_READY',
+            searchStatus: 'SEARCH_READY',
+            searchReady: true,
+            documentStatus: 'ready',
+            chunkCount: 4,
+          },
+        ],
+      });
+      expect(requestHeaders?.['x-sag-bff-service-token']).toBe(
+        'bff-test-secret',
+      );
+      expect(requestHeaders?.['x-continuum-user-id']).toBe(
+        reviewerUserId.toHexString(),
+      );
+      expect(requestHeaders?.['x-continuum-organization-id']).toBe(
+        organizationId.toHexString(),
+      );
+      expect(requestHeaders?.['x-continuum-project-id']).toBe(
+        projectId.toHexString(),
+      );
+      expect(requestHeaders?.['x-continuum-security-partition']).toBe(
+        projectId.toHexString(),
+      );
+      expect(requestBody).toBe(
+        JSON.stringify({
+          documents: [{ document_id: 'sag-doc-1', version_no: 2 }],
+        }),
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

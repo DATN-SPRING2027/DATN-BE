@@ -85,6 +85,27 @@ export interface SagProjectDocumentVersionStatusReceipt {
   tokenUsage?: number;
 }
 
+export interface SagProjectDocumentReadinessBatchInput {
+  organizationId: string;
+  projectId: string;
+  actorUserId: string;
+  documents: readonly { documentId: string; versionNo: number }[];
+}
+
+export interface SagProjectDocumentReadinessBatchReceipt {
+  verifiedAt: string;
+  items: Array<{
+    documentId: string;
+    versionNo: number;
+    found: boolean;
+    status: string;
+    searchStatus: string;
+    searchReady: boolean;
+    documentStatus: string | null;
+    chunkCount: number;
+  }>;
+}
+
 export interface SagProjectDocumentVersionChunksInput {
   organizationId: string;
   projectId: string;
@@ -174,6 +195,9 @@ export interface SagKnowledgeSyncTransport {
   getProjectDocumentVersionStatus?(
     input: SagProjectDocumentVersionStatusInput,
   ): Promise<SagProjectDocumentVersionStatusReceipt>;
+  getProjectDocumentReadinessBatch?(
+    input: SagProjectDocumentReadinessBatchInput,
+  ): Promise<SagProjectDocumentReadinessBatchReceipt>;
   getProjectDocumentVersionChunks?(
     input: SagProjectDocumentVersionChunksInput,
   ): Promise<SagProjectDocumentVersionChunksReceipt>;
@@ -478,6 +502,121 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
         ? { tokenUsage: body.token_usage }
         : {}),
     };
+  }
+
+  async getProjectDocumentReadinessBatch(
+    input: SagProjectDocumentReadinessBatchInput,
+  ): Promise<SagProjectDocumentReadinessBatchReceipt> {
+    if (
+      input.documents.length < 1 ||
+      input.documents.length > 100 ||
+      new Set(
+        input.documents.map((item) => `${item.documentId}:${item.versionNo}`),
+      ).size !== input.documents.length
+    ) {
+      throw new Error('SAG_READINESS_REQUEST_INVALID');
+    }
+
+    const { baseUrl, serviceToken, timeoutMs } = this.resolveConfig();
+    const target = new URL(
+      `/api/v1/projects/${encodeURIComponent(input.projectId)}/documents/readiness`,
+      `${baseUrl.origin}/`,
+    );
+    const headers = this.scopeHeaders(
+      serviceToken,
+      input.actorUserId,
+      input.organizationId,
+      input.projectId,
+    );
+    headers.set('Content-Type', 'application/json');
+
+    const response = await fetch(target, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        documents: input.documents.map((item) => ({
+          document_id: item.documentId,
+          version_no: item.versionNo,
+        })),
+      }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const body = (await response.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null;
+    if (!response.ok || !body) {
+      throw new Error(
+        `SAG_READINESS_FAILED_${response.status}:${extractErrorDetail(body)}`,
+      );
+    }
+
+    const verifiedAt =
+      typeof body.verified_at === 'string' ? body.verified_at.trim() : '';
+    if (
+      !verifiedAt ||
+      !Number.isFinite(Date.parse(verifiedAt)) ||
+      !Array.isArray(body.items)
+    ) {
+      throw new Error('SAG_READINESS_RESPONSE_INVALID');
+    }
+
+    const requestedKeys = new Set(
+      input.documents.map((item) => `${item.documentId}:${item.versionNo}`),
+    );
+    const seenKeys = new Set<string>();
+    const items: SagProjectDocumentReadinessBatchReceipt['items'] = [];
+    for (const rawItem of body.items) {
+      if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+        throw new Error('SAG_READINESS_RESPONSE_INVALID');
+      }
+      const item = rawItem as Record<string, unknown>;
+      const documentId =
+        typeof item.document_id === 'string' ? item.document_id.trim() : '';
+      const versionNo = item.version_no;
+      const key = `${documentId}:${String(versionNo)}`;
+      const found = item.found;
+      const status = item.status;
+      const searchStatus = item.search_status;
+      const searchReady = item.search_ready;
+      const documentStatus = item.document_status;
+      const chunkCount = item.chunk_count;
+      if (
+        !documentId ||
+        typeof versionNo !== 'number' ||
+        !Number.isSafeInteger(versionNo) ||
+        versionNo < 1 ||
+        !requestedKeys.has(key) ||
+        seenKeys.has(key) ||
+        typeof found !== 'boolean' ||
+        typeof status !== 'string' ||
+        typeof searchStatus !== 'string' ||
+        typeof searchReady !== 'boolean' ||
+        (documentStatus !== null && typeof documentStatus !== 'string') ||
+        typeof chunkCount !== 'number' ||
+        !Number.isSafeInteger(chunkCount) ||
+        chunkCount < 0
+      ) {
+        throw new Error('SAG_READINESS_RESPONSE_INVALID');
+      }
+      seenKeys.add(key);
+      items.push({
+        documentId,
+        versionNo,
+        found,
+        status,
+        searchStatus,
+        searchReady: found && searchReady && chunkCount > 0,
+        documentStatus,
+        chunkCount,
+      });
+    }
+    if (seenKeys.size !== requestedKeys.size) {
+      throw new Error('SAG_READINESS_RESPONSE_INCOMPLETE');
+    }
+
+    return { verifiedAt, items };
   }
 
   async getProjectDocumentVersionChunks(
