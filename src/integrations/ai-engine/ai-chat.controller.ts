@@ -32,6 +32,162 @@ import {
 } from './ai-chat.types';
 
 const SAFE_PATH_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SAFE_UNIVERSE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+function validateUniverseIdentifier(value: unknown, fieldName: string): string {
+  if (
+    typeof value !== 'string' ||
+    value !== value.trim() ||
+    !SAFE_UNIVERSE_ID_PATTERN.test(value)
+  ) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: `${fieldName} is invalid.`,
+    });
+  }
+  return value;
+}
+
+function validateKnowledgeUniverseClusterQuery(
+  query: Record<string, unknown> | undefined,
+): {
+  treeVersion: string;
+  nodeId: string;
+  limit: number;
+  cursor?: string;
+  relatedTo?: string;
+} {
+  if (!query) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'tree_version and node_id are required.',
+    });
+  }
+  const allowedKeys = new Set([
+    'tree_version',
+    'treeVersion',
+    'node_id',
+    'nodeId',
+    'limit',
+    'cursor',
+    'related_to',
+    'relatedTo',
+    'project_id',
+    'projectId',
+  ]);
+  if (Object.keys(query).some((key) => !allowedKeys.has(key))) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Unexpected query parameters.',
+    });
+  }
+  const treeVersion = validateUniverseIdentifier(
+    query.tree_version ?? query.treeVersion,
+    'tree_version',
+  );
+  const nodeId = validateUniverseIdentifier(
+    query.node_id ?? query.nodeId,
+    'node_id',
+  );
+  const rawLimit =
+    typeof query.limit === 'string'
+      ? query.limit
+      : typeof query.limit === 'number'
+        ? String(query.limit)
+        : query.limit === undefined
+          ? undefined
+          : 'invalid';
+  const limit = parseBoundedInt(rawLimit, {
+    field: 'limit',
+    min: 1,
+    max: 50,
+    fallback: 24,
+  });
+  let cursor: string | undefined;
+  if (query.cursor !== undefined && query.cursor !== '') {
+    if (
+      typeof query.cursor !== 'string' ||
+      query.cursor.length > 2048 ||
+      query.cursor !== query.cursor.trim()
+    ) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'cursor is invalid.',
+      });
+    }
+    cursor = query.cursor;
+  }
+  const rawRelatedTo = query.related_to ?? query.relatedTo;
+  const relatedTo =
+    rawRelatedTo === undefined || rawRelatedTo === ''
+      ? undefined
+      : validateUniverseIdentifier(rawRelatedTo, 'related_to');
+
+  return {
+    treeVersion,
+    nodeId,
+    limit,
+    ...(cursor ? { cursor } : {}),
+    ...(relatedTo ? { relatedTo } : {}),
+  };
+}
+
+function validateKnowledgeUniverseResolveBody(body: unknown): ReadonlyArray<{
+  source_id: string;
+  document_version_id?: string | null;
+  search_unit_id?: string | null;
+  block_id?: string | null;
+}> {
+  if (!isPlainRecord(body) || !Array.isArray(body.references)) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'references must be an array.',
+    });
+  }
+  if (body.references.length > 100) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'references must contain at most 100 items.',
+    });
+  }
+  return body.references.map((item, idx) => {
+    if (!isPlainRecord(item)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: `references[${idx}] must be an object.`,
+      });
+    }
+    const sourceId = validateUniverseIdentifier(
+      item.source_id,
+      `references[${idx}].source_id`,
+    );
+    const optionalString = (
+      val: unknown,
+      field: string,
+    ): string | null | undefined => {
+      if (val === undefined || val === null || val === '') return undefined;
+      return validateUniverseIdentifier(val, field);
+    };
+    const docVersionId = optionalString(
+      item.document_version_id,
+      `references[${idx}].document_version_id`,
+    );
+    const searchUnitId = optionalString(
+      item.search_unit_id,
+      `references[${idx}].search_unit_id`,
+    );
+    const blockId = optionalString(
+      item.block_id,
+      `references[${idx}].block_id`,
+    );
+    return {
+      source_id: sourceId,
+      ...(docVersionId ? { document_version_id: docVersionId } : {}),
+      ...(searchUnitId ? { search_unit_id: searchUnitId } : {}),
+      ...(blockId ? { block_id: blockId } : {}),
+    };
+  });
+}
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (typeof value === 'string') return value;
@@ -669,6 +825,78 @@ export class AiChatController {
       this.mutationHeaders(request),
       validProjectId,
       input,
+    );
+  }
+
+  @Get('knowledge-universe/overview')
+  async getKnowledgeUniverseOverview(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    return this.aiChat.getKnowledgeUniverseOverview(
+      this.readHeaders(request),
+      validProjectId,
+    );
+  }
+
+  @Get('knowledge-universe/cluster')
+  async getKnowledgeUniverseCluster(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Query() query?: Record<string, unknown>,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validQuery = validateKnowledgeUniverseClusterQuery(query);
+    return this.aiChat.getKnowledgeUniverseCluster(
+      this.readHeaders(request),
+      validProjectId,
+      validQuery,
+    );
+  }
+
+  @Get('knowledge-universe/units/:unitId')
+  async getKnowledgeUniverseUnit(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Param('unitId') unitId: string,
+    @Query() query?: Record<string, unknown>,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const validUnitId = validateUniverseIdentifier(unitId, 'unitId');
+    const treeVersion = validateUniverseIdentifier(
+      query?.tree_version ?? query?.treeVersion,
+      'tree_version',
+    );
+    return this.aiChat.getKnowledgeUniverseUnit(
+      this.readHeaders(request),
+      validProjectId,
+      validUnitId,
+      treeVersion,
+    );
+  }
+
+  @Post('knowledge-universe/resolve')
+  @HttpCode(HttpStatus.OK)
+  async resolveKnowledgeUniverseReferences(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('projectId') projectId: string,
+    @Body() body: unknown,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    const validProjectId = validatePathIdentifier(projectId, 'projectId');
+    const references = validateKnowledgeUniverseResolveBody(body);
+    return this.aiChat.resolveKnowledgeUniverseReferences(
+      this.mutationHeaders(request),
+      validProjectId,
+      references,
     );
   }
 

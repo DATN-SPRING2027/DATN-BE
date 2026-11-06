@@ -21,6 +21,10 @@ describe('AiChatController', () => {
     const getMindMapMock = jest.fn();
     const generateMindMapMock = jest.fn();
     const resolveAllProjectsManagerContextMock = jest.fn();
+    const getKnowledgeUniverseOverviewMock = jest.fn();
+    const getKnowledgeUniverseClusterMock = jest.fn();
+    const getKnowledgeUniverseUnitMock = jest.fn();
+    const resolveKnowledgeUniverseReferencesMock = jest.fn();
     const listAiChatProjectSourcesMock = jest.fn();
     const listAiChatAllProjectsSourcesMock = jest.fn();
     const service = {
@@ -41,6 +45,11 @@ describe('AiChatController', () => {
       getMindMap: getMindMapMock,
       generateMindMap: generateMindMapMock,
       resolveAllProjectsManagerContext: resolveAllProjectsManagerContextMock,
+      getKnowledgeUniverseOverview: getKnowledgeUniverseOverviewMock,
+      getKnowledgeUniverseCluster: getKnowledgeUniverseClusterMock,
+      getKnowledgeUniverseUnit: getKnowledgeUniverseUnitMock,
+      resolveKnowledgeUniverseReferences:
+        resolveKnowledgeUniverseReferencesMock,
     } as unknown as AiChatService;
     const workNotes = {
       listAiChatProjectSources: listAiChatProjectSourcesMock,
@@ -62,6 +71,10 @@ describe('AiChatController', () => {
       getMindMapMock,
       generateMindMapMock,
       resolveAllProjectsManagerContextMock,
+      getKnowledgeUniverseOverviewMock,
+      getKnowledgeUniverseClusterMock,
+      getKnowledgeUniverseUnitMock,
+      resolveKnowledgeUniverseReferencesMock,
       listAiChatProjectSourcesMock,
       listAiChatAllProjectsSourcesMock,
     };
@@ -714,5 +727,121 @@ describe('AiChatController', () => {
       { title: 'Architecture Q&A' },
     );
     expect(out).toEqual(mockBranched);
+  });
+
+  it('proxies Knowledge Universe overview, cluster, unit, and resolve endpoints with validation and CSRF enforcement', async () => {
+    const {
+      controller,
+      getKnowledgeUniverseOverviewMock,
+      getKnowledgeUniverseClusterMock,
+      getKnowledgeUniverseUnitMock,
+      resolveKnowledgeUniverseReferencesMock,
+    } = setup();
+    const { res, headers } = makeRes();
+
+    getKnowledgeUniverseOverviewMock.mockResolvedValueOnce({
+      total_trees: 1,
+      total_nodes: 2,
+      total_units: 10,
+      trees: [],
+    });
+
+    const overview = await controller.getKnowledgeUniverseOverview(
+      makeReq({ authorization: 'Bearer token' }),
+      res,
+      'proj-1',
+    );
+    expect(headers['cache-control']).toBe('no-store');
+    expect(overview).toMatchObject({ total_trees: 1 });
+    expect(getKnowledgeUniverseOverviewMock).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: 'Bearer token' }),
+      'proj-1',
+    );
+
+    // Cluster query validation
+    await expect(
+      controller.getKnowledgeUniverseCluster(
+        makeReq({ authorization: 'Bearer token' }),
+        res,
+        'proj-1',
+        { tree_version: 'v1' }, // missing node_id
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    getKnowledgeUniverseClusterMock.mockResolvedValueOnce({
+      project_id: 'proj-1',
+      tree_version: 'v1',
+      node_id: 'root_1',
+      total_units: 2,
+      units: [],
+      edges: [],
+    });
+    const cluster = await controller.getKnowledgeUniverseCluster(
+      makeReq({ authorization: 'Bearer token' }),
+      res,
+      'proj-1',
+      { tree_version: 'v1', node_id: 'root_1', limit: '50' },
+    );
+    expect(cluster).toMatchObject({ node_id: 'root_1' });
+    expect(getKnowledgeUniverseClusterMock).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: 'Bearer token' }),
+      'proj-1',
+      { treeVersion: 'v1', nodeId: 'root_1', limit: 50 },
+    );
+
+    // Unit detail
+    getKnowledgeUniverseUnitMock.mockResolvedValueOnce({ id: 'unit:1' });
+    const unit = await controller.getKnowledgeUniverseUnit(
+      makeReq({ authorization: 'Bearer token' }),
+      res,
+      'proj-1',
+      'unit:1',
+      { tree_version: 'v1' },
+    );
+    expect(unit).toEqual({ id: 'unit:1' });
+    expect(getKnowledgeUniverseUnitMock).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: 'Bearer token' }),
+      'proj-1',
+      'unit:1',
+      'v1',
+    );
+
+    // Resolve references requires CSRF on cookie auth
+    await expect(
+      controller.resolveKnowledgeUniverseReferences(
+        makeReq({
+          cookie: 'continuum_access=jwt; __Host-csrf=csrf-ok',
+          'x-csrf-token': 'bad-csrf',
+        }),
+        res,
+        'proj-1',
+        { references: [{ source_id: 's1', search_unit_id: 'u1' }] },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+
+    resolveKnowledgeUniverseReferencesMock.mockResolvedValueOnce({
+      total_resolved: 1,
+      matches: [],
+    });
+    const resolved = await controller.resolveKnowledgeUniverseReferences(
+      makeReq({
+        cookie: 'continuum_access=jwt; __Host-csrf=csrf-ok',
+        'x-csrf-token': 'csrf-ok',
+      }),
+      res,
+      'proj-1',
+      { references: [{ source_id: 's1', search_unit_id: 'u1' }] },
+    );
+    expect(resolved).toEqual({ total_resolved: 1, matches: [] });
+    expect(resolveKnowledgeUniverseReferencesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ csrfToken: 'csrf-ok' }),
+      'proj-1',
+      [
+        {
+          source_id: 's1',
+          search_unit_id: 'u1',
+        },
+      ],
+    );
   });
 });

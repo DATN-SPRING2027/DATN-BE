@@ -78,6 +78,15 @@ export class AiChatService {
     string,
     Promise<CachedSagSession>
   >();
+  private readonly inflightActorScopes = new Map<
+    string,
+    Promise<{
+      actor: Awaited<
+        ReturnType<AuthenticationApplicationService['getCurrentIdentity']>
+      >;
+      project: Awaited<ReturnType<ProjectService['get']>>;
+    }>
+  >();
 
   constructor(
     private readonly auth: AuthenticationApplicationService,
@@ -207,16 +216,19 @@ export class AiChatService {
     bearerHeaders: Record<string, string>;
     cacheKey: string;
   }> {
-    const actor = await this.auth.getCurrentIdentity(
-      headers.authorization,
-      headers.cookie,
-    );
     const isAllProjects = this.isAllProjectsScope(projectId);
+    let actor: Awaited<
+      ReturnType<AuthenticationApplicationService['getCurrentIdentity']>
+    >;
     let resolvedOrganizationId: string;
     let resolvedProjectId: string;
     let allowedProjectIds: string[] | undefined;
 
     if (isAllProjects) {
+      actor = await this.auth.getCurrentIdentity(
+        headers.authorization,
+        headers.cookie,
+      );
       this.assertOrganizationManagerForAllProjects(actor, headers);
       const activeProjects =
         await this.listAllActiveOrganizationProjects(actor);
@@ -230,7 +242,27 @@ export class AiChatService {
       resolvedProjectId = AI_CHAT_ALL_PROJECTS_ID;
       allowedProjectIds = activeProjects.map((project) => project.id).sort();
     } else {
-      const project = await this.projects.get(actor, projectId);
+      const scopeInflightKey = `${headers.authorization ?? ''}|${headers.cookie ?? ''}|${projectId}`;
+      let pendingScope = this.inflightActorScopes.get(scopeInflightKey);
+      if (!pendingScope) {
+        pendingScope = (async () => {
+          const resolvedActor = await this.auth.getCurrentIdentity(
+            headers.authorization,
+            headers.cookie,
+          );
+          const resolvedProject = await this.projects.get(
+            resolvedActor,
+            projectId,
+          );
+          return { actor: resolvedActor, project: resolvedProject };
+        })().finally(() => {
+          this.inflightActorScopes.delete(scopeInflightKey);
+        });
+        this.inflightActorScopes.set(scopeInflightKey, pendingScope);
+      }
+      const resolvedScope = await pendingScope;
+      actor = resolvedScope.actor;
+      const project = resolvedScope.project;
       if (options?.requireActiveProject && project.status !== 'ACTIVE') {
         throw new NotFoundException({
           code: 'PROJECT_NOT_FOUND',
@@ -991,11 +1023,11 @@ export class AiChatService {
     projectId: string;
     bffHeaders: Record<string, string>;
   }> {
-    const actor = await this.auth.getCurrentIdentity(
-      headers.authorization,
-      headers.cookie,
-    );
     if (this.isAllProjectsScope(projectId)) {
+      const actor = await this.auth.getCurrentIdentity(
+        headers.authorization,
+        headers.cookie,
+      );
       this.assertOrganizationManagerForAllProjects(actor, headers);
       const activeProjects =
         await this.listAllActiveOrganizationProjects(actor);
@@ -1018,7 +1050,25 @@ export class AiChatService {
         },
       };
     }
-    const project = await this.projects.get(actor, projectId);
+    const scopeInflightKey = `${headers.authorization ?? ''}|${headers.cookie ?? ''}|${projectId}`;
+    let pendingScope = this.inflightActorScopes.get(scopeInflightKey);
+    if (!pendingScope) {
+      pendingScope = (async () => {
+        const resolvedActor = await this.auth.getCurrentIdentity(
+          headers.authorization,
+          headers.cookie,
+        );
+        const resolvedProject = await this.projects.get(
+          resolvedActor,
+          projectId,
+        );
+        return { actor: resolvedActor, project: resolvedProject };
+      })().finally(() => {
+        this.inflightActorScopes.delete(scopeInflightKey);
+      });
+      this.inflightActorScopes.set(scopeInflightKey, pendingScope);
+    }
+    const { actor, project } = await pendingScope;
     if (project.status !== 'ACTIVE') {
       throw new NotFoundException({
         code: 'PROJECT_NOT_FOUND',
@@ -1083,5 +1133,124 @@ export class AiChatService {
       );
     }
     return mapped;
+  }
+
+  async getKnowledgeUniverseOverview(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+  ): Promise<unknown> {
+    const { bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+    );
+    const params = new URLSearchParams({
+      project_id: projectId,
+    });
+    try {
+      const result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/universe/knowledge/overview?${params.toString()}`,
+        method: 'GET',
+        headers: bearerHeaders,
+      });
+      return result.body;
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async getKnowledgeUniverseCluster(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    query: Readonly<{
+      treeVersion: string;
+      nodeId: string;
+      limit: number;
+      cursor?: string;
+      relatedTo?: string;
+    }>,
+  ): Promise<unknown> {
+    const { bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+    );
+    const params = new URLSearchParams({
+      project_id: projectId,
+      tree_version: query.treeVersion,
+      node_id: query.nodeId,
+      limit: String(query.limit),
+    });
+    if (query.cursor) {
+      params.set('cursor', query.cursor);
+    }
+    if (query.relatedTo) {
+      params.set('related_to', query.relatedTo);
+    }
+    try {
+      const result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/universe/knowledge/cluster?${params.toString()}`,
+        method: 'GET',
+        headers: bearerHeaders,
+      });
+      return result.body;
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async getKnowledgeUniverseUnit(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    unitId: string,
+    treeVersion: string,
+  ): Promise<unknown> {
+    const { bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+    );
+    const params = new URLSearchParams({
+      project_id: projectId,
+      tree_version: treeVersion,
+    });
+    try {
+      const result = await this.aiEngine.request<unknown>({
+        path: `/api/v1/universe/knowledge/units/${encodeURIComponent(unitId)}?${params.toString()}`,
+        method: 'GET',
+        headers: bearerHeaders,
+      });
+      return result.body;
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async resolveKnowledgeUniverseReferences(
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    references: ReadonlyArray<{
+      source_id: string;
+      document_version_id?: string | null;
+      search_unit_id?: string | null;
+      block_id?: string | null;
+    }>,
+  ): Promise<unknown> {
+    const { bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      projectId,
+    );
+    try {
+      const result = await this.aiEngine.request<unknown>({
+        path: '/api/v1/universe/knowledge/resolve',
+        method: 'POST',
+        headers: bearerHeaders,
+        body: { references },
+      });
+      return result.body;
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
   }
 }
