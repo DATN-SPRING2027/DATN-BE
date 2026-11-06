@@ -22,11 +22,12 @@ describe('Notification Center v1 OpenAPI contract alignment', () => {
     };
   };
 
-  it('declares all 5 Notification Center endpoints and matches schema enums', () => {
+  it('declares all 6 Notification Center endpoints and matches schema enums', () => {
     expect(document.openapi).toBe('3.1.0');
     expect(Object.keys(document.paths).sort()).toEqual(
       [
         '/api/v1/notifications',
+        '/api/v1/notifications/account-events',
         '/api/v1/notifications/unread-count',
         '/api/v1/notifications/{id}/read',
         '/api/v1/notifications/read-all',
