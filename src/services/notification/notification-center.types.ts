@@ -38,6 +38,7 @@ export type NotificationListQuery = Readonly<{
   cursor?: string;
   limit?: number;
   unreadOnly?: boolean;
+  organizationId?: string | null;
 }>;
 
 export type NotificationListResponseDto = Readonly<{

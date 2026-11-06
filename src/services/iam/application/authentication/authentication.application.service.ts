@@ -762,6 +762,24 @@ export class AuthenticationApplicationService {
     return identity;
   }
 
+  /**
+   * Authenticates the recipient for the narrowly scoped account-events inbox.
+   * Organization membership is intentionally not required here: a removed
+   * member must still be able to read the removal event addressed to them.
+   * The caller must restrict the returned identity to lifecycle event types.
+   */
+  async getCurrentAccountEventsIdentity(
+    authorization: string | undefined,
+    cookieHeader: string | undefined,
+  ): Promise<{ id: string }> {
+    const { claims } = await this.getVerifiedActiveSubject(
+      authorization,
+      cookieHeader,
+    );
+    if (claims.context === 'PLATFORM') throw unauthorized();
+    return { id: claims.sub };
+  }
+
   async getCurrentSessionIdentity(
     authorization: string | undefined,
     cookieHeader: string | undefined,

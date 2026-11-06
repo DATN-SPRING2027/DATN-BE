@@ -936,6 +936,55 @@ describe('AuthenticationApplicationService', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it('verifies an organization session for account lifecycle events after membership removal', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'ORGANIZATION',
+      orgId: ORG_ID,
+      roles: ['MEMBER'],
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+      sid: SESSION_ID,
+      userFence: 0,
+    });
+    repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
+
+    await expect(
+      service.getCurrentAccountEventsIdentity(
+        'Bearer removed-member-token',
+        undefined,
+      ),
+    ).resolves.toEqual({ id: USER_ID });
+    await expect(
+      service.getCurrentSessionIdentity(
+        'Bearer removed-member-token',
+        undefined,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects Platform sessions from the account lifecycle events identity', async () => {
+    accessTokens.verifyAccessToken.mockReturnValue({
+      sub: USER_ID,
+      email: account.email,
+      context: 'PLATFORM',
+      iat: 100,
+      exp: 1000,
+      jti: 'd9428888-122b-4f20-8f3b-6f96e5be2a5a',
+      sid: SESSION_ID,
+      userFence: 0,
+    });
+
+    await expect(
+      service.getCurrentAccountEventsIdentity(
+        'Bearer platform-token',
+        undefined,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
   it('authenticates a Human User for platform APIs without requiring Organization membership', async () => {
     repository.findActiveOrganizationMembershipIds.mockResolvedValue([]);
     accessTokens.verifyAccessToken.mockReturnValue({

@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/require-await */
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Types } from 'mongoose';
 import { NotificationCenterRepository } from './infrastructure/mongodb/notification-center.repository';
 import { NotificationRealtimeBus } from './notification-realtime.bus';
@@ -65,12 +69,503 @@ describe('Notification MVP — End-to-End Business Rules & 13 Event Types', () =
       );
       await controller.getUnreadCount(`Bearer ${userBId}`, undefined);
 
-      expect(listForUser).toHaveBeenCalledWith(userBId, {
-        cursor: undefined,
-        limit: 20,
-        unreadOnly: false,
+      expect(listForUser).toHaveBeenCalledWith(
+        userBId,
+        {
+          cursor: undefined,
+          limit: 20,
+          unreadOnly: false,
+          organizationId: orgId,
+        },
+        orgId,
+      );
+      expect(getUnreadCount).toHaveBeenCalledWith(userBId, orgId);
+    });
+
+    it('rejects ACCOUNT-context sessions with 403 ORGANIZATION_CONTEXT_REQUIRED across all endpoints', async () => {
+      const accountAuth = {
+        getCurrentSessionIdentity: jest.fn(async () => ({
+          id: userBId,
+          email: 'userb@example.test',
+          name: 'User B',
+          context: 'ACCOUNT' as const,
+        })),
+      };
+      const accountController = new NotificationCenterController(
+        service,
+        accountAuth as never,
+      );
+      const fakeNotifId = new Types.ObjectId().toHexString();
+
+      await expect(
+        accountController.listNotifications(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.getUnreadCount(`Bearer ${userBId}`, undefined),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.markAllAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.markAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          fakeNotifId,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        accountController.resolveTarget(
+          `Bearer ${userBId}`,
+          undefined,
+          fakeNotifId,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects notification requests when the tab organization differs from the authenticated session', async () => {
+      const staleOrganizationId = new Types.ObjectId().toHexString();
+      const organizationAuth = {
+        getCurrentSessionIdentity: jest.fn(async () => ({
+          id: userBId,
+          email: 'userb@example.test',
+          name: 'User B',
+          organizationId: orgId,
+          roles: ['MEMBER'],
+        })),
+      };
+      const scopedController = new NotificationCenterController(
+        service,
+        organizationAuth as never,
+      );
+      const fakeNotifId = new Types.ObjectId().toHexString();
+
+      await expect(
+        scopedController.listNotifications(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          staleOrganizationId,
+        ),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        scopedController.getUnreadCount(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          staleOrganizationId,
+        ),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        scopedController.markAllAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          undefined,
+          staleOrganizationId,
+        ),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        scopedController.markAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          fakeNotifId,
+          undefined,
+          staleOrganizationId,
+        ),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        scopedController.resolveTarget(
+          `Bearer ${userBId}`,
+          undefined,
+          fakeNotifId,
+          undefined,
+          staleOrganizationId,
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it.each(['ACCOUNT', 'ORGANIZATION'] as const)(
+      'lists only organization invitation and removal events in %s context',
+      async (context) => {
+        const organizationBId = new Types.ObjectId().toHexString();
+        const accountAuth = {
+          getCurrentAccountEventsIdentity: jest.fn(async () => ({
+            id: userBId,
+            context,
+          })),
+        };
+        const accountController = new NotificationCenterController(
+          service,
+          accountAuth as never,
+        );
+
+        await service.emit({
+          type: 'ORGANIZATION_MEMBER_INVITED',
+          actorId: adminId,
+          recipients: [userBId],
+          title: 'Organization invitation',
+          message: 'You have been invited to join Organization Northstar',
+          organizationId: organizationBId,
+          target: {
+            kind: 'ORGANIZATION',
+            url: '/select-organization',
+            organizationId: organizationBId,
+          },
+          eventKey: 'account-invite-1',
+        });
+        await service.emit({
+          type: 'ORGANIZATION_MEMBER_REMOVED',
+          actorId: adminId,
+          recipients: [userBId],
+          title: 'Removed from organization',
+          message: 'You were removed from Organization Northstar',
+          organizationId: organizationBId,
+          target: {
+            kind: 'ORGANIZATION',
+            url: '/select-organization',
+            organizationId: organizationBId,
+          },
+          eventKey: 'account-removal-1',
+        });
+        await service.notifyTaskAssigned({
+          actorId: adminId,
+          assigneeUserId: userBId,
+          organizationId: organizationBId,
+          projectId,
+          taskId,
+          taskTitle: 'Confidential task',
+          eventId: 'account-task-1',
+        });
+        await service.emit({
+          type: 'ORGANIZATION_MEMBER_INVITED',
+          actorId: adminId,
+          recipients: [userBId],
+          title: 'Malformed organization event',
+          message: 'The top-level and target organization do not match',
+          organizationId: orgId,
+          target: {
+            kind: 'ORGANIZATION',
+            url: '/select-organization',
+            organizationId: organizationBId,
+          },
+          eventKey: 'account-invite-conflicting-orgs',
+        });
+
+        const result = await accountController.listAccountEvents(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          undefined,
+        );
+
+        expect(result.items.map((item) => item.type).sort()).toEqual([
+          'ORGANIZATION_MEMBER_INVITED',
+          'ORGANIZATION_MEMBER_REMOVED',
+        ]);
+        expect(result.unreadCount).toBe(2);
+      },
+    );
+
+    it('excludes notifications whose stored and target organization IDs conflict', async () => {
+      const organizationBId = new Types.ObjectId().toHexString();
+      const [notification] = await service.emit({
+        type: 'ORGANIZATION_MEMBER_INVITED',
+        actorId: adminId,
+        recipients: [userBId],
+        title: 'Organization invitation',
+        message: 'Invite for another organization',
+        organizationId: orgId,
+        target: {
+          kind: 'ORGANIZATION',
+          url: '/select-organization',
+          organizationId: organizationBId,
+        },
+        eventKey: 'conflicting-organization-ids',
       });
-      expect(getUnreadCount).toHaveBeenCalledWith(userBId);
+
+      const list = await service.listForUser(userBId, {}, orgId);
+      const targetAccess = await repository.resolveTargetAccess(
+        userBId,
+        notification,
+        undefined,
+        orgId,
+      );
+
+      expect(list.items).toHaveLength(0);
+      expect(list.unreadCount).toBe(0);
+      expect(targetAccess).toMatchObject({
+        available: false,
+        reason: 'FORBIDDEN',
+        target: null,
+      });
+    });
+
+    it('isolates list, unread-count, markAsRead, markAllAsRead, and resolveTarget by active organizationId', async () => {
+      const orgBId = new Types.ObjectId().toHexString();
+      const projectBId = new Types.ObjectId().toHexString();
+      const taskBId = new Types.ObjectId().toHexString();
+
+      const [orgANotif] = await service.notifyTaskAssigned({
+        actorId: adminId,
+        assigneeUserId: userBId,
+        organizationId: orgId,
+        projectId,
+        taskId,
+        taskTitle: 'Org A Confidential Task',
+        eventId: 'org-a-task-1',
+      });
+      const [orgBNotif] = await service.notifyTaskAssigned({
+        actorId: adminId,
+        assigneeUserId: userBId,
+        organizationId: orgBId,
+        projectId: projectBId,
+        taskId: taskBId,
+        taskTitle: 'Org B Secret Task',
+        eventId: 'org-b-task-1',
+      });
+
+      let activeOrgId = orgId;
+      const multiOrgAuth = {
+        getCurrentSessionIdentity: jest.fn(async () => ({
+          id: userBId,
+          email: 'userb@example.test',
+          name: 'User B',
+          organizationId: activeOrgId,
+          roles: ['MEMBER'],
+        })),
+      };
+      const multiOrgController = new NotificationCenterController(
+        service,
+        multiOrgAuth as never,
+      );
+
+      // In Org A context: only sees Org A notification and unreadCount = 1
+      const orgAList = await multiOrgController.listNotifications(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(orgAList.items).toHaveLength(1);
+      expect(orgAList.items[0].id).toBe(orgANotif.id);
+      expect(orgAList.unreadCount).toBe(1);
+
+      const orgACount = await multiOrgController.getUnreadCount(
+        `Bearer ${userBId}`,
+        undefined,
+      );
+      expect(orgACount.count).toBe(1);
+
+      // Cannot mark or resolve Org B notification while in Org A context
+      await expect(
+        multiOrgController.markAsRead(
+          `Bearer ${userBId}`,
+          undefined,
+          undefined,
+          orgBNotif.id,
+        ),
+      ).rejects.toThrow(NotFoundException);
+
+      await expect(
+        multiOrgController.resolveTarget(
+          `Bearer ${userBId}`,
+          undefined,
+          orgBNotif.id,
+        ),
+      ).rejects.toThrow(NotFoundException);
+
+      // markAllAsRead in Org A only marks Org A's notification as read
+      const readAllOrgA = await multiOrgController.markAllAsRead(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+      );
+      expect(readAllOrgA.updatedCount).toBe(1);
+      expect(
+        (
+          await multiOrgController.getUnreadCount(
+            `Bearer ${userBId}`,
+            undefined,
+          )
+        ).count,
+      ).toBe(0);
+
+      // Switch to Org B context: Org B's notification is still UNREAD
+      activeOrgId = orgBId;
+      const orgBCount = await multiOrgController.getUnreadCount(
+        `Bearer ${userBId}`,
+        undefined,
+      );
+      expect(orgBCount.count).toBe(1);
+
+      const orgBList = await multiOrgController.listNotifications(
+        `Bearer ${userBId}`,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(orgBList.items).toHaveLength(1);
+      expect(orgBList.items[0].id).toBe(orgBNotif.id);
+      expect(orgBList.items[0].readAt).toBeNull();
+    });
+
+    it('passes organizationId filter to Mongoose model queries for list, countUnread, markRead, markAllRead, and findByIdForRecipient', async () => {
+      const mockFindExec = jest.fn(async () => []);
+      const mockCountExec = jest.fn(async () => 0);
+      const mockFindOneExec = jest.fn(async () => null);
+      const mockUpdateManyExec = jest.fn(async () => ({ modifiedCount: 2 }));
+      const findFilters: unknown[] = [];
+      const countFilters: unknown[] = [];
+
+      const mockModel = {
+        find: jest.fn((filter: unknown) => {
+          findFilters.push(filter);
+          return {
+            sort: () => ({
+              limit: () => ({
+                lean: () => ({
+                  exec: mockFindExec,
+                }),
+              }),
+            }),
+          };
+        }),
+        countDocuments: jest.fn((filter: unknown) => {
+          countFilters.push(filter);
+          return { exec: mockCountExec };
+        }),
+        findOne: jest.fn(() => ({
+          lean: () => ({
+            exec: mockFindOneExec,
+          }),
+        })),
+        updateMany: jest.fn(() => ({
+          exec: mockUpdateManyExec,
+        })),
+      };
+
+      const mongoRepo = new NotificationCenterRepository({
+        useDb: () => ({
+          models: { notifications: mockModel },
+        }),
+      } as never);
+
+      await mongoRepo.listByRecipient(userBId, { limit: 10 }, orgId);
+      const expectedOrgClause = {
+        $or: [
+          {
+            $and: [
+              { organizationId: orgId },
+              {
+                $or: [
+                  { 'target.organizationId': { $exists: false } },
+                  { 'target.organizationId': null },
+                  { 'target.organizationId': orgId },
+                ],
+              },
+            ],
+          },
+          { organizationId: null, 'target.organizationId': orgId },
+        ],
+      };
+      expect(mockModel.find).toHaveBeenCalledWith({
+        $and: [
+          { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+          expectedOrgClause,
+        ],
+      });
+      expect(mockModel.countDocuments).toHaveBeenCalledWith({
+        $and: [
+          { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+          {
+            $or: [
+              { readAt: null, isRead: { $ne: true } },
+              { readAt: { $exists: false }, isRead: { $ne: true } },
+            ],
+          },
+          expectedOrgClause,
+        ],
+      });
+
+      await mongoRepo.countUnread(userBId, orgId);
+      await mongoRepo.markAllRead(userBId, orgId);
+      expect(mockModel.updateMany).toHaveBeenCalledWith(
+        {
+          $and: [
+            { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+            {
+              $or: [
+                { readAt: null, isRead: { $ne: true } },
+                { readAt: { $exists: false }, isRead: { $ne: true } },
+              ],
+            },
+            expectedOrgClause,
+          ],
+        },
+        expect.anything(),
+      );
+
+      const notifId = new Types.ObjectId().toHexString();
+      await mongoRepo.markRead(userBId, notifId, orgId);
+      await mongoRepo.findByIdForRecipient(userBId, notifId, orgId);
+      expect(mockModel.findOne).toHaveBeenCalledWith({
+        _id: new Types.ObjectId(notifId),
+        $and: [
+          { $or: [{ recipientId: userBId }, { recipientUserId: userBId }] },
+          expectedOrgClause,
+        ],
+      });
+
+      await mongoRepo.listByRecipient(userBId, { limit: 10 }, null, [
+        'ORGANIZATION_MEMBER_INVITED',
+        'ORGANIZATION_MEMBER_REMOVED',
+      ]);
+      const accountEventsFilter = findFilters.at(-1) as
+        Record<string, unknown> | undefined;
+      const accountEventsCountFilter = countFilters.at(-1) as
+        Record<string, unknown> | undefined;
+      expect(JSON.stringify(accountEventsFilter)).toContain('"$expr"');
+      const includesOnlyAccountEventTypes = (
+        filter: Record<string, unknown> | undefined,
+      ) => {
+        const clauses = Array.isArray(filter?.$and)
+          ? (filter.$and as Record<string, unknown>[])
+          : [];
+        return clauses.some((clause) => {
+          const typeFilter = clause.type as Record<string, unknown> | undefined;
+          const allowedTypes = typeFilter?.$in;
+          return (
+            Array.isArray(allowedTypes) &&
+            allowedTypes.includes('ORGANIZATION_MEMBER_INVITED') &&
+            allowedTypes.includes('ORGANIZATION_MEMBER_REMOVED')
+          );
+        });
+      };
+      expect(includesOnlyAccountEventTypes(accountEventsFilter)).toBe(true);
+      expect(includesOnlyAccountEventTypes(accountEventsCountFilter)).toBe(
+        true,
+      );
     });
   });
 

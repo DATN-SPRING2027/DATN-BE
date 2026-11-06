@@ -6,8 +6,14 @@ import type {
   NotificationItemDto,
   NotificationListQuery,
   NotificationListResponseDto,
+  NotificationMvpType,
   NotificationResolveResponseDto,
 } from './notification-center.types';
+
+const ACCOUNT_EVENT_NOTIFICATION_TYPES: readonly NotificationMvpType[] = [
+  'ORGANIZATION_MEMBER_INVITED',
+  'ORGANIZATION_MEMBER_REMOVED',
+];
 
 @Injectable()
 export class NotificationService {
@@ -107,20 +113,46 @@ export class NotificationService {
   async listForUser(
     userId: string,
     query: NotificationListQuery = {},
+    organizationId?: string | null,
   ): Promise<NotificationListResponseDto> {
-    return this.repository.listByRecipient(userId, query);
+    const scopedOrgId = organizationId ?? query.organizationId ?? null;
+    return this.repository.listByRecipient(
+      userId,
+      scopedOrgId ? { ...query, organizationId: scopedOrgId } : query,
+      scopedOrgId,
+    );
   }
 
-  async getUnreadCount(userId: string): Promise<{ count: number }> {
-    const count = await this.repository.countUnread(userId);
+  async listAccountEventsForUser(
+    userId: string,
+    query: NotificationListQuery = {},
+  ): Promise<NotificationListResponseDto> {
+    return this.repository.listByRecipient(
+      userId,
+      query,
+      null,
+      ACCOUNT_EVENT_NOTIFICATION_TYPES,
+    );
+  }
+
+  async getUnreadCount(
+    userId: string,
+    organizationId?: string | null,
+  ): Promise<{ count: number }> {
+    const count = await this.repository.countUnread(userId, organizationId);
     return { count };
   }
 
   async markAsRead(
     userId: string,
     notificationId: string,
+    organizationId?: string | null,
   ): Promise<NotificationItemDto> {
-    const updated = await this.repository.markRead(userId, notificationId);
+    const updated = await this.repository.markRead(
+      userId,
+      notificationId,
+      organizationId,
+    );
     if (!updated) {
       throw new NotFoundException({
         code: 'NOTIFICATION_NOT_FOUND',
@@ -129,7 +161,7 @@ export class NotificationService {
     }
     if (updated.readAt) {
       this.realtimeBus.publishRead({
-        organizationId: updated.organizationId,
+        organizationId: updated.organizationId ?? organizationId ?? null,
         recipientId: userId,
         notificationId: updated.id,
         readAt: updated.readAt,
@@ -142,7 +174,7 @@ export class NotificationService {
     userId: string,
     organizationId: string | null = null,
   ): Promise<{ updatedCount: number; readAt: string }> {
-    const result = await this.repository.markAllRead(userId);
+    const result = await this.repository.markAllRead(userId, organizationId);
     if (result.updatedCount > 0) {
       this.realtimeBus.publishReadAll({
         organizationId,
@@ -156,10 +188,12 @@ export class NotificationService {
   async resolveTarget(
     userId: string,
     notificationId: string,
+    organizationId?: string | null,
   ): Promise<NotificationResolveResponseDto> {
     const notification = await this.repository.findByIdForRecipient(
       userId,
       notificationId,
+      organizationId,
     );
     if (!notification) {
       throw new NotFoundException({
@@ -167,7 +201,12 @@ export class NotificationService {
         message: 'Notification not found.',
       });
     }
-    return this.repository.resolveTargetAccess(userId, notification);
+    return this.repository.resolveTargetAccess(
+      userId,
+      notification,
+      undefined,
+      organizationId,
+    );
   }
 
   // ============================================================

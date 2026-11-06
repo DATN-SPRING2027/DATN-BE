@@ -134,6 +134,10 @@ export class NotificationCenterRepository {
   ): Promise<{ item: NotificationItemDto; created: boolean }> {
     const model = this.notificationsModel();
     const now = new Date();
+    const resolvedOrganizationId =
+      this.normalizeOrganizationId(
+        input.organizationId ?? input.target?.organizationId,
+      ) ?? null;
     if (!model) {
       const dedupKey = `${input.recipientId}::${input.eventKey}`;
       const existingId = this.memoryEventIndex.get(dedupKey);
@@ -147,7 +151,7 @@ export class NotificationCenterRepository {
         recipientId: input.recipientId,
         recipientUserId: input.recipientId,
         actorId: input.actorId ?? null,
-        organizationId: input.organizationId ?? null,
+        organizationId: resolvedOrganizationId,
         projectId: input.projectId ?? null,
         taskId: input.taskId ?? null,
         noteId: input.noteId ?? null,
@@ -184,7 +188,7 @@ export class NotificationCenterRepository {
         recipientId: input.recipientId,
         recipientUserId: input.recipientId,
         actorId: input.actorId ?? null,
-        organizationId: input.organizationId ?? null,
+        organizationId: resolvedOrganizationId,
         projectId: input.projectId ?? null,
         taskId: input.taskId ?? null,
         noteId: input.noteId ?? null,
@@ -225,29 +229,126 @@ export class NotificationCenterRepository {
     }
   }
 
-  private recipientMatchFilter(recipientId: string): Record<string, unknown> {
+  private normalizeOrganizationId(
+    organizationId?: string | null,
+  ): string | null {
+    const trimmed =
+      typeof organizationId === 'string' ? organizationId.trim() : '';
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private matchesOrganization(
+    doc: NotificationDocumentRecord,
+    organizationId?: string | null,
+  ): boolean {
+    const normalizedOrgId = this.normalizeOrganizationId(organizationId);
+    const docOrgId = this.normalizeOrganizationId(doc.organizationId);
+    const targetOrgId = this.normalizeOrganizationId(
+      doc.target?.organizationId,
+    );
+    if (docOrgId && targetOrgId && docOrgId !== targetOrgId) return false;
+    if (!normalizedOrgId) return true;
+    return (docOrgId ?? targetOrgId) === normalizedOrgId;
+  }
+
+  private organizationConsistencyFilter(): Record<string, unknown> {
+    const asString = (path: string) => ({
+      $convert: {
+        input: path,
+        to: 'string',
+        onError: '__invalid_organization_id__',
+        onNull: null,
+      },
+    });
     return {
-      $or: [{ recipientId }, { recipientUserId: recipientId }],
+      $expr: {
+        $or: [
+          { $eq: [{ $ifNull: ['$organizationId', null] }, null] },
+          { $eq: [{ $ifNull: ['$target.organizationId', null] }, null] },
+          {
+            $eq: [
+              asString('$organizationId'),
+              asString('$target.organizationId'),
+            ],
+          },
+        ],
+      },
     };
   }
 
-  private unreadMatchFilter(recipientId: string): Record<string, unknown> {
+  private organizationMatchFilter(
+    organizationId?: string | null,
+  ): Record<string, unknown> | null {
+    const normalizedOrgId = this.normalizeOrganizationId(organizationId);
+    if (!normalizedOrgId) return this.organizationConsistencyFilter();
     return {
-      $and: [
-        this.recipientMatchFilter(recipientId),
+      $or: [
         {
-          $or: [
-            { readAt: null, isRead: { $ne: true } },
-            { readAt: { $exists: false }, isRead: { $ne: true } },
+          $and: [
+            { organizationId: normalizedOrgId },
+            {
+              $or: [
+                { 'target.organizationId': { $exists: false } },
+                { 'target.organizationId': null },
+                { 'target.organizationId': normalizedOrgId },
+              ],
+            },
           ],
         },
+        { organizationId: null, 'target.organizationId': normalizedOrgId },
       ],
     };
+  }
+
+  private filterByNotificationTypes(
+    filter: Record<string, unknown>,
+    allowedTypes?: readonly NotificationMvpType[],
+  ): Record<string, unknown> {
+    return allowedTypes
+      ? { $and: [filter, { type: { $in: [...allowedTypes] } }] }
+      : filter;
+  }
+
+  private recipientMatchFilter(
+    recipientId: string,
+    organizationId?: string | null,
+  ): Record<string, unknown> {
+    const recipientCondition = {
+      $or: [{ recipientId }, { recipientUserId: recipientId }],
+    };
+    const orgCondition = this.organizationMatchFilter(organizationId);
+    if (!orgCondition) {
+      return recipientCondition;
+    }
+    return {
+      $and: [recipientCondition, orgCondition],
+    };
+  }
+
+  private unreadMatchFilter(
+    recipientId: string,
+    organizationId?: string | null,
+  ): Record<string, unknown> {
+    const clauses: Record<string, unknown>[] = [
+      { $or: [{ recipientId }, { recipientUserId: recipientId }] },
+      {
+        $or: [
+          { readAt: null, isRead: { $ne: true } },
+          { readAt: { $exists: false }, isRead: { $ne: true } },
+        ],
+      },
+    ];
+    const orgCondition = this.organizationMatchFilter(organizationId);
+    if (orgCondition) {
+      clauses.push(orgCondition);
+    }
+    return { $and: clauses };
   }
 
   private async sanitizeItemsForListing(
     recipientId: string,
     items: NotificationItemDto[],
+    activeOrganizationId?: string | null,
   ): Promise<NotificationItemDto[]> {
     if (!this.activeConnection() || items.length === 0) {
       return items;
@@ -294,6 +395,7 @@ export class NotificationCenterRepository {
                 recipientId,
                 item,
                 accessLookupCache,
+                activeOrganizationId,
               ),
             ] as const;
           } catch {
@@ -328,7 +430,12 @@ export class NotificationCenterRepository {
   async listByRecipient(
     recipientId: string,
     query: NotificationListQuery,
+    organizationId?: string | null,
+    allowedTypes?: readonly NotificationMvpType[],
   ): Promise<NotificationListResponseDto> {
+    const scopedOrgId = this.normalizeOrganizationId(
+      organizationId ?? query.organizationId,
+    );
     const limit = Math.min(Math.max(Number(query.limit) || 20, 1), 100);
     const parsedCursor = this.parseCursor(query.cursor);
     const model = this.notificationsModel();
@@ -337,8 +444,10 @@ export class NotificationCenterRepository {
       const allForRecipient = [...this.memoryStore.values()]
         .filter(
           (doc) =>
-            doc.recipientId === recipientId ||
-            doc.recipientUserId === recipientId,
+            (doc.recipientId === recipientId ||
+              doc.recipientUserId === recipientId) &&
+            this.matchesOrganization(doc, scopedOrgId) &&
+            (!allowedTypes || allowedTypes.includes(doc.type)),
         )
         .sort(
           (a, b) =>
@@ -366,6 +475,7 @@ export class NotificationCenterRepository {
       const sanitizedItems = await this.sanitizeItemsForListing(
         recipientId,
         pageItems.map((doc) => this.toDto(doc)),
+        scopedOrgId,
       );
       return {
         items: sanitizedItems,
@@ -376,13 +486,17 @@ export class NotificationCenterRepository {
     }
 
     const baseFilter = query.unreadOnly
-      ? this.unreadMatchFilter(recipientId)
-      : this.recipientMatchFilter(recipientId);
+      ? this.unreadMatchFilter(recipientId, scopedOrgId)
+      : this.recipientMatchFilter(recipientId, scopedOrgId);
 
+    const typeFilteredBase = this.filterByNotificationTypes(
+      baseFilter,
+      allowedTypes,
+    );
     const filter: Record<string, unknown> = parsedCursor
       ? {
           $and: [
-            baseFilter,
+            typeFilteredBase,
             {
               $or: [
                 { createdAt: { $lt: parsedCursor.createdAt } },
@@ -394,7 +508,7 @@ export class NotificationCenterRepository {
             },
           ],
         }
-      : baseFilter;
+      : typeFilteredBase;
 
     const [rows, unreadCount] = await Promise.all([
       model
@@ -403,7 +517,14 @@ export class NotificationCenterRepository {
         .limit(limit + 1)
         .lean()
         .exec(),
-      model.countDocuments(this.unreadMatchFilter(recipientId)).exec(),
+      model
+        .countDocuments(
+          this.filterByNotificationTypes(
+            this.unreadMatchFilter(recipientId, scopedOrgId),
+            allowedTypes,
+          ),
+        )
+        .exec(),
     ]);
 
     const hasMore = rows.length > limit;
@@ -412,6 +533,7 @@ export class NotificationCenterRepository {
     const sanitizedItems = await this.sanitizeItemsForListing(
       recipientId,
       pageRows.map((row) => this.toDto(row)),
+      scopedOrgId,
     );
 
     return {
@@ -422,25 +544,41 @@ export class NotificationCenterRepository {
     };
   }
 
-  async countUnread(recipientId: string): Promise<number> {
+  async countUnread(
+    recipientId: string,
+    organizationId?: string | null,
+  ): Promise<number> {
+    const scopedOrgId = this.normalizeOrganizationId(organizationId);
     const model = this.notificationsModel();
     if (!model) {
       return [...this.memoryStore.values()].filter(
         (doc) =>
           (doc.recipientId === recipientId ||
             doc.recipientUserId === recipientId) &&
+          this.matchesOrganization(doc, scopedOrgId) &&
           !doc.readAt &&
           !doc.isRead,
       ).length;
     }
-    return model.countDocuments(this.unreadMatchFilter(recipientId)).exec();
+    return model
+      .countDocuments(this.unreadMatchFilter(recipientId, scopedOrgId))
+      .exec();
   }
 
   async markRead(
     recipientId: string,
     notificationId: string,
-    now = new Date(),
+    organizationIdOrNow?: string | Date | null,
+    maybeNow?: Date,
   ): Promise<NotificationItemDto | null> {
+    const scopedOrgId =
+      organizationIdOrNow instanceof Date
+        ? null
+        : this.normalizeOrganizationId(organizationIdOrNow);
+    const now =
+      organizationIdOrNow instanceof Date
+        ? organizationIdOrNow
+        : (maybeNow ?? new Date());
     if (!Types.ObjectId.isValid(notificationId)) {
       return null;
     }
@@ -449,7 +587,9 @@ export class NotificationCenterRepository {
       const doc = this.memoryStore.get(notificationId);
       if (
         !doc ||
-        (doc.recipientId !== recipientId && doc.recipientUserId !== recipientId)
+        (doc.recipientId !== recipientId &&
+          doc.recipientUserId !== recipientId) ||
+        !this.matchesOrganization(doc, scopedOrgId)
       ) {
         return null;
       }
@@ -466,7 +606,7 @@ export class NotificationCenterRepository {
     const existing = await model
       .findOne({
         _id: new Types.ObjectId(notificationId),
-        ...this.recipientMatchFilter(recipientId),
+        ...this.recipientMatchFilter(recipientId, scopedOrgId),
       })
       .lean()
       .exec();
@@ -479,7 +619,7 @@ export class NotificationCenterRepository {
       .findOneAndUpdate(
         {
           _id: new Types.ObjectId(notificationId),
-          ...this.unreadMatchFilter(recipientId),
+          ...this.unreadMatchFilter(recipientId, scopedOrgId),
         },
         {
           $set: {
@@ -499,8 +639,17 @@ export class NotificationCenterRepository {
 
   async markAllRead(
     recipientId: string,
-    now = new Date(),
+    organizationIdOrNow?: string | Date | null,
+    maybeNow?: Date,
   ): Promise<{ updatedCount: number; readAt: string }> {
+    const scopedOrgId =
+      organizationIdOrNow instanceof Date
+        ? null
+        : this.normalizeOrganizationId(organizationIdOrNow);
+    const now =
+      organizationIdOrNow instanceof Date
+        ? organizationIdOrNow
+        : (maybeNow ?? new Date());
     const model = this.notificationsModel();
     if (!model) {
       let updatedCount = 0;
@@ -508,6 +657,7 @@ export class NotificationCenterRepository {
         if (
           (doc.recipientId === recipientId ||
             doc.recipientUserId === recipientId) &&
+          this.matchesOrganization(doc, scopedOrgId) &&
           !doc.readAt &&
           !doc.isRead
         ) {
@@ -523,7 +673,7 @@ export class NotificationCenterRepository {
     }
 
     const result = await model
-      .updateMany(this.unreadMatchFilter(recipientId), {
+      .updateMany(this.unreadMatchFilter(recipientId, scopedOrgId), {
         $set: {
           recipientId,
           recipientUserId: recipientId,
@@ -542,7 +692,9 @@ export class NotificationCenterRepository {
   async findByIdForRecipient(
     recipientId: string,
     notificationId: string,
+    organizationId?: string | null,
   ): Promise<NotificationItemDto | null> {
+    const scopedOrgId = this.normalizeOrganizationId(organizationId);
     if (!Types.ObjectId.isValid(notificationId)) {
       return null;
     }
@@ -551,7 +703,9 @@ export class NotificationCenterRepository {
       const doc = this.memoryStore.get(notificationId);
       if (
         !doc ||
-        (doc.recipientId !== recipientId && doc.recipientUserId !== recipientId)
+        (doc.recipientId !== recipientId &&
+          doc.recipientUserId !== recipientId) ||
+        !this.matchesOrganization(doc, scopedOrgId)
       ) {
         return null;
       }
@@ -560,7 +714,7 @@ export class NotificationCenterRepository {
     const doc = await model
       .findOne({
         _id: new Types.ObjectId(notificationId),
-        ...this.recipientMatchFilter(recipientId),
+        ...this.recipientMatchFilter(recipientId, scopedOrgId),
       })
       .lean()
       .exec();
@@ -738,7 +892,33 @@ export class NotificationCenterRepository {
     actorUserId: string,
     notification: NotificationItemDto,
     accessLookupCache?: Map<string, Promise<unknown>>,
+    activeOrganizationId?: string | null,
   ): Promise<NotificationResolveResponseDto> {
+    const scopedOrgId = this.normalizeOrganizationId(activeOrganizationId);
+    const notificationOrgId = this.normalizeOrganizationId(
+      notification.organizationId,
+    );
+    const targetOrgId = this.normalizeOrganizationId(
+      notification.target?.organizationId,
+    );
+    if (notificationOrgId && targetOrgId && notificationOrgId !== targetOrgId) {
+      return {
+        available: false,
+        reason: 'FORBIDDEN',
+        message: 'This content is no longer available',
+        target: null,
+      };
+    }
+    const notifOrgId = notificationOrgId ?? targetOrgId;
+    if (scopedOrgId && notifOrgId && scopedOrgId !== notifOrgId) {
+      return {
+        available: false,
+        reason: 'FORBIDDEN',
+        message: 'This content is no longer available',
+        target: null,
+      };
+    }
+
     const target = notification.target;
     if (!target) {
       return {
@@ -852,7 +1032,8 @@ export class NotificationCenterRepository {
       target.kind === 'WORK_NOTE'
     ) {
       const projectId = target.projectId ?? notification.projectId;
-      const orgId = target.organizationId ?? notification.organizationId;
+      const orgId =
+        target.organizationId ?? notification.organizationId ?? scopedOrgId;
       if (
         !projectId ||
         !Types.ObjectId.isValid(projectId) ||
@@ -894,6 +1075,14 @@ export class NotificationCenterRepository {
         }
 
         const projectOrgId = project.organizationId as Types.ObjectId;
+        if (scopedOrgId && String(projectOrgId) !== scopedOrgId) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
         const memberships = this.dbCollection(
           SERVICE_DATABASES.iam,
           'organization_memberships',
@@ -1113,10 +1302,20 @@ export class NotificationCenterRepository {
           };
         }
 
+        const convOrgId = conv.organizationId
+          ? String(conv.organizationId)
+          : null;
+        if (scopedOrgId && convOrgId && convOrgId !== scopedOrgId) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
+
         const chatOrgId =
-          target.organizationId ??
-          notification.organizationId ??
-          (conv.organizationId ? String(conv.organizationId) : null);
+          target.organizationId ?? notification.organizationId ?? convOrgId;
         if (
           chatOrgId &&
           Types.ObjectId.isValid(chatOrgId) &&
@@ -1312,7 +1511,7 @@ export class NotificationCenterRepository {
       id: doc._id.toHexString(),
       recipientId: doc.recipientId || doc.recipientUserId || '',
       actorId: doc.actorId ?? null,
-      organizationId: doc.organizationId ?? null,
+      organizationId: doc.organizationId ?? doc.target?.organizationId ?? null,
       projectId: doc.projectId ?? null,
       taskId: doc.taskId ?? null,
       noteId: doc.noteId ?? null,
