@@ -53,6 +53,11 @@ const PROJECT_MIND_MAP_PATTERN = new RegExp(
   `^/api/v1/projects/${PROJECT_ID_SEGMENT}/mind-map$`,
 );
 const PLATFORM_AI_FEEDBACK_PATH = '/api/v1/platform/ai/feedback';
+const UNIVERSE_KNOWLEDGE_OVERVIEW_PATH = '/api/v1/universe/knowledge/overview';
+const UNIVERSE_KNOWLEDGE_CLUSTER_PATH = '/api/v1/universe/knowledge/cluster';
+const UNIVERSE_KNOWLEDGE_UNIT_PATTERN =
+  /^\/api\/v1\/universe\/knowledge\/units\/[A-Za-z0-9_.:%-]{1,128}$/;
+const UNIVERSE_KNOWLEDGE_RESOLVE_PATH = '/api/v1/universe/knowledge/resolve';
 
 function isAnswerActionClientValidatedRoute(pathname: string): boolean {
   return (
@@ -131,6 +136,17 @@ function isAllowedJsonRoute(
     return true;
   }
   if (method === 'GET' && pathname === PLATFORM_AI_FEEDBACK_PATH) {
+    return true;
+  }
+  if (
+    method === 'GET' &&
+    (pathname === UNIVERSE_KNOWLEDGE_OVERVIEW_PATH ||
+      pathname === UNIVERSE_KNOWLEDGE_CLUSTER_PATH ||
+      UNIVERSE_KNOWLEDGE_UNIT_PATTERN.test(pathname))
+  ) {
+    return true;
+  }
+  if (method === 'POST' && pathname === UNIVERSE_KNOWLEDGE_RESOLVE_PATH) {
     return true;
   }
   return false;
