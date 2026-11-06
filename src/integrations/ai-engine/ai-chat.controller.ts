@@ -92,9 +92,11 @@ function validateKnowledgeUniverseClusterQuery(
   const rawLimit =
     typeof query.limit === 'string'
       ? query.limit
-      : query.limit === undefined
-        ? undefined
-        : String(query.limit);
+      : typeof query.limit === 'number'
+        ? String(query.limit)
+        : query.limit === undefined
+          ? undefined
+          : 'invalid';
   const limit = parseBoundedInt(rawLimit, {
     field: 'limit',
     min: 1,
@@ -159,21 +161,30 @@ function validateKnowledgeUniverseResolveBody(body: unknown): ReadonlyArray<{
       item.source_id,
       `references[${idx}].source_id`,
     );
-    const optionalString = (val: unknown, field: string): string | null | undefined => {
+    const optionalString = (
+      val: unknown,
+      field: string,
+    ): string | null | undefined => {
       if (val === undefined || val === null || val === '') return undefined;
       return validateUniverseIdentifier(val, field);
     };
+    const docVersionId = optionalString(
+      item.document_version_id,
+      `references[${idx}].document_version_id`,
+    );
+    const searchUnitId = optionalString(
+      item.search_unit_id,
+      `references[${idx}].search_unit_id`,
+    );
+    const blockId = optionalString(
+      item.block_id,
+      `references[${idx}].block_id`,
+    );
     return {
       source_id: sourceId,
-      ...(optionalString(item.document_version_id, `references[${idx}].document_version_id`)
-        ? { document_version_id: optionalString(item.document_version_id, `references[${idx}].document_version_id`) }
-        : {}),
-      ...(optionalString(item.search_unit_id, `references[${idx}].search_unit_id`)
-        ? { search_unit_id: optionalString(item.search_unit_id, `references[${idx}].search_unit_id`) }
-        : {}),
-      ...(optionalString(item.block_id, `references[${idx}].block_id`)
-        ? { block_id: optionalString(item.block_id, `references[${idx}].block_id`) }
-        : {}),
+      ...(docVersionId ? { document_version_id: docVersionId } : {}),
+      ...(searchUnitId ? { search_unit_id: searchUnitId } : {}),
+      ...(blockId ? { block_id: blockId } : {}),
     };
   });
 }
