@@ -478,6 +478,42 @@ describe('Platform administration Mongo projections and membership lifecycle', (
     });
   });
 
+  it('projects effective: false for self-granted PLATFORM authority assignments', async () => {
+    await connection
+      .collection('platform_authority_assignments')
+      .updateOne(
+        { subjectUserId: memberId, permission: 'platform.health.read' },
+        { $set: { grantedBy: memberId } },
+      );
+
+    const detail = await administration.findUser(memberId.toHexString());
+    expect(detail?.effectivePlatformPermissions).toEqual([
+      expect.objectContaining({
+        permission: 'platform.health.read',
+        scope: 'PLATFORM',
+        status: 'ACTIVE',
+        effective: false,
+      }),
+    ]);
+  });
+
+  it('projects effective: false for PLATFORM authority assignments when subject user account is SUSPENDED', async () => {
+    await connection
+      .collection('users')
+      .updateOne({ _id: memberId }, { $set: { status: 'SUSPENDED' } });
+
+    const detail = await administration.findUser(memberId.toHexString());
+    expect(detail?.status).toBe('SUSPENDED');
+    expect(detail?.effectivePlatformPermissions).toEqual([
+      expect.objectContaining({
+        permission: 'platform.health.read',
+        scope: 'PLATFORM',
+        status: 'ACTIVE',
+        effective: false,
+      }),
+    ]);
+  });
+
   it('lists Platform-safe Projects and computes real dashboard aggregates', async () => {
     const page = await administration.listProjects({
       page: 1,

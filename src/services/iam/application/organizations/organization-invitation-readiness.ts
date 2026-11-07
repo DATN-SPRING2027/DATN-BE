@@ -1,13 +1,27 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 export const ORGANIZATION_INVITATION_READINESS = Symbol(
   'ORGANIZATION_INVITATION_READINESS',
+);
+
+export const ORGANIZATION_INVITATION_READINESS_EVIDENCE = Symbol(
+  'ORGANIZATION_INVITATION_READINESS_EVIDENCE',
 );
 
 export type OrganizationInvitationReadinessGate =
   | 'A7_NOTIFICATION_CONTRACT_PROVIDER'
   | 'A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF'
   | 'A8_COORDINATED_CUTOVER';
+
+export type OrganizationInvitationReadinessGateEvidence =
+  boolean | (() => boolean | Promise<boolean>);
+
+export type OrganizationInvitationReadinessEvidence = Partial<
+  Record<
+    OrganizationInvitationReadinessGate,
+    OrganizationInvitationReadinessGateEvidence
+  >
+>;
 
 export interface OrganizationInvitationReadiness {
   isReady(gate: OrganizationInvitationReadinessGate): Promise<boolean>;
@@ -27,8 +41,22 @@ export class UnconfiguredOrganizationInvitationReadiness implements Organization
 
 @Injectable()
 export class ConfiguredOrganizationInvitationReadiness implements OrganizationInvitationReadiness {
-  isReady(): Promise<boolean> {
-    return Promise.resolve(true);
+  constructor(
+    @Optional()
+    @Inject(ORGANIZATION_INVITATION_READINESS_EVIDENCE)
+    private readonly evidence: OrganizationInvitationReadinessEvidence = {},
+  ) {}
+
+  async isReady(gate: OrganizationInvitationReadinessGate): Promise<boolean> {
+    try {
+      const gateEvidence = this.evidence?.[gate];
+      if (typeof gateEvidence === 'function') {
+        return (await gateEvidence()) === true;
+      }
+      return gateEvidence === true;
+    } catch {
+      return false;
+    }
   }
 }
 

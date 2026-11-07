@@ -109,6 +109,7 @@ interface PlatformAuthorityDocument {
   permission: PlatformPermission;
   scope: string;
   status: string;
+  grantedBy?: Types.ObjectId | null;
   grantedAt: Date;
   expiresAt?: Date | null;
   revokedAt?: Date | null;
@@ -1134,6 +1135,7 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
         permission: 1,
         scope: 1,
         status: 1,
+        grantedBy: 1,
         grantedAt: 1,
         expiresAt: 1,
         revokedAt: 1,
@@ -1142,17 +1144,16 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       .lean()
       .exec();
     const now = Date.now();
+    const subjectActive = row.status === 'ACTIVE';
     const validCounts = new Map<string, number>();
     for (const assignment of assignments) {
       if (
-        assignment.status === 'ACTIVE' &&
-        assignment.revokedAt == null &&
-        assignment.grantedAt instanceof Date &&
-        Number.isFinite(assignment.grantedAt.getTime()) &&
-        assignment.grantedAt.getTime() <= now &&
-        (assignment.expiresAt == null ||
-          (assignment.expiresAt instanceof Date &&
-            assignment.expiresAt.getTime() > now))
+        this.isPlatformAssignmentValidForSubject(
+          assignment,
+          userId,
+          subjectActive,
+          now,
+        )
       ) {
         validCounts.set(
           assignment.permission,
@@ -1163,6 +1164,8 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     const effectivePlatformPermissions = assignments.map((assignment) =>
       this.mapEffectivePermission(
         assignment,
+        userId,
+        subjectActive,
         validCounts.get(assignment.permission) === 1,
         now,
       ),
@@ -2281,8 +2284,34 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     };
   }
 
+  private isPlatformAssignmentValidForSubject(
+    row: PlatformAuthorityDocument,
+    subjectUserId: Types.ObjectId,
+    subjectActive: boolean,
+    now: number,
+  ): boolean {
+    const expiresAt = row.expiresAt ?? null;
+    return (
+      subjectActive &&
+      row.scope === 'PLATFORM' &&
+      row.status === 'ACTIVE' &&
+      row.revokedAt == null &&
+      row.grantedBy instanceof Types.ObjectId &&
+      !row.grantedBy.equals(subjectUserId) &&
+      row.grantedAt instanceof Date &&
+      Number.isFinite(row.grantedAt.getTime()) &&
+      row.grantedAt.getTime() <= now &&
+      (expiresAt === null ||
+        (expiresAt instanceof Date &&
+          Number.isFinite(expiresAt.getTime()) &&
+          expiresAt.getTime() > now))
+    );
+  }
+
   private mapEffectivePermission(
     row: PlatformAuthorityDocument,
+    subjectUserId: Types.ObjectId,
+    subjectActive: boolean,
     uniquelyEffective: boolean,
     now: number,
   ): PlatformEffectivePermissionProjection {
@@ -2303,10 +2332,12 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       unavailable();
     const isEffective =
       uniquelyEffective &&
-      row.status === 'ACTIVE' &&
-      row.revokedAt == null &&
-      row.grantedAt.getTime() <= now &&
-      (expiresAt === null || expiresAt.getTime() > now);
+      this.isPlatformAssignmentValidForSubject(
+        row,
+        subjectUserId,
+        subjectActive,
+        now,
+      );
     return {
       permission: row.permission,
       scope: 'PLATFORM',
