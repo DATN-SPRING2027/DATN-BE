@@ -39,6 +39,7 @@ import type {
   CitationDto,
   GenerateRequestDto,
   HandoverAnswerDto,
+  HandoverAiCoverageDto,
   HandoverAiWarning,
   JobDto,
   QuestionRequestDto,
@@ -82,9 +83,12 @@ interface SagHandoverAssistResponse {
   answerStatus?: 'ANSWERED' | 'INSUFFICIENT_EVIDENCE' | null;
   message?: string | null;
   coverage?: {
-    truncated?: boolean;
+    requestedSources?: number;
+    includedSources?: unknown[];
     skippedSources?: unknown[];
     truncatedSources?: unknown[];
+    totalEvidenceUnits?: number;
+    truncated?: boolean;
   } | null;
   sections?: Array<{
     text: string;
@@ -106,6 +110,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     string,
     Map<string, string>
   >();
+  private readonly jobCoverageCache = new Map<string, HandoverAiCoverageDto>();
   private recoveryTimer: ReturnType<typeof setInterval> | null = null;
   private isDestroyed = false;
 
@@ -161,6 +166,23 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       }
     }
     this.candidateReasonCache.set(jobHex, reasons);
+  }
+
+  private setJobCoverage(
+    jobHex: string,
+    coverage: HandoverAiCoverageDto,
+  ): void {
+    if (this.jobCoverageCache.has(jobHex)) {
+      this.jobCoverageCache.delete(jobHex);
+    } else if (
+      this.jobCoverageCache.size >= HandoverAiService.MAX_REASON_CACHE_ENTRIES
+    ) {
+      for (const oldestKey of this.jobCoverageCache.keys()) {
+        this.jobCoverageCache.delete(oldestKey);
+        break;
+      }
+    }
+    this.jobCoverageCache.set(jobHex, coverage);
   }
 
   async recoverStalledJobs(): Promise<void> {
@@ -229,19 +251,154 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
   }
 
   private toJobDto(job: StoredJobDoc): JobDto {
+    const jobHex = job._id.toHexString();
+    const hasIncompleteWarning =
+      job.state === 'SUCCEEDED' &&
+      job.safeErrorCode === 'AI_EVIDENCE_INCOMPLETE';
+    const cachedCoverage = this.jobCoverageCache.get(jobHex);
+    const coverage =
+      job.state === 'SUCCEEDED'
+        ? (cachedCoverage ??
+          (hasIncompleteWarning
+            ? this.deriveFallbackJobCoverage(job)
+            : undefined))
+        : undefined;
     return {
-      id: job._id.toHexString(),
+      id: jobHex,
       handoverId: job.handoverId.toHexString(),
       kind: job.kind,
       state: job.state,
       inputDraftVersion: job.inputDraftVersion,
       safeErrorCode: job.safeErrorCode ?? null,
-      warnings:
-        job.state === 'SUCCEEDED' &&
-        job.safeErrorCode === 'AI_EVIDENCE_INCOMPLETE'
-          ? ['AI_EVIDENCE_INCOMPLETE']
-          : [],
+      warnings: hasIncompleteWarning ? ['AI_EVIDENCE_INCOMPLETE'] : [],
+      ...(coverage ? { coverage } : {}),
       createdAt: job.createdAt.toISOString(),
+    };
+  }
+
+  private deriveFallbackJobCoverage(job: StoredJobDoc): HandoverAiCoverageDto {
+    const selected = (job.selectedSources ?? []).map((ref) => ({
+      kind: ref.kind,
+      id: ref.id.toLowerCase(),
+      version: String(parseSourceVersionNumber(ref.version) ?? ref.version),
+    }));
+    const usedMap = new Map<string, SourceRefDto>();
+    for (const item of job.resultItems ?? []) {
+      for (const ref of item.sources ?? []) {
+        const normalized: SourceRefDto = {
+          kind: ref.kind,
+          id: ref.id.toLowerCase(),
+          version: String(parseSourceVersionNumber(ref.version) ?? ref.version),
+        };
+        usedMap.set(sourceRefKey(normalized), normalized);
+      }
+      for (const cit of item.citations ?? []) {
+        const normalized: SourceRefDto = {
+          kind: cit.source.kind,
+          id: cit.source.id.toLowerCase(),
+          version: String(
+            parseSourceVersionNumber(cit.source.version) ?? cit.source.version,
+          ),
+        };
+        usedMap.set(sourceRefKey(normalized), normalized);
+      }
+    }
+    for (const cand of job.candidates ?? []) {
+      const normalized: SourceRefDto = {
+        kind: cand.kind,
+        id: cand.id.toLowerCase(),
+        version: String(parseSourceVersionNumber(cand.version) ?? cand.version),
+      };
+      usedMap.set(sourceRefKey(normalized), normalized);
+    }
+    const includedSources =
+      usedMap.size > 0 ? [...usedMap.values()] : [...selected];
+    const includedKeys = new Set(includedSources.map((s) => sourceRefKey(s)));
+    const skippedSources = selected.filter(
+      (s) => !includedKeys.has(sourceRefKey(s)),
+    );
+    const truncatedSources =
+      skippedSources.length === 0 ? [...includedSources] : [];
+    return {
+      requestedSources: Math.max(selected.length, includedSources.length),
+      includedSources,
+      skippedSources,
+      truncatedSources,
+      truncated: true,
+    };
+  }
+
+  private normalizeSagCoverage(
+    body: SagHandoverAssistResponse,
+    allowedKeys: ReadonlySet<string>,
+    requestedCount: number,
+  ): HandoverAiCoverageDto | undefined {
+    const raw = body.coverage;
+    if (!raw || typeof raw !== 'object') {
+      return undefined;
+    }
+    const parseRefs = (items: unknown[] | undefined): SourceRefDto[] => {
+      if (!Array.isArray(items)) return [];
+      const seen = new Set<string>();
+      const out: SourceRefDto[] = [];
+      for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const candidate = item as Record<string, unknown>;
+        const kind = candidate.kind;
+        const id =
+          typeof candidate.id === 'string'
+            ? candidate.id.trim().toLowerCase()
+            : '';
+        const rawVer = candidate.version;
+        const verStr =
+          typeof rawVer === 'number' || typeof rawVer === 'string'
+            ? String(rawVer)
+            : '';
+        const verNum = parseSourceVersionNumber(verStr);
+        if (
+          (kind !== 'PROJECT_DOCUMENT' &&
+            kind !== 'WORK_REPORT' &&
+            kind !== 'TASK_NOTE' &&
+            kind !== 'KNOWLEDGE_OBJECT') ||
+          !id ||
+          !verNum
+        ) {
+          continue;
+        }
+        const key = `${kind}:${id}:${verNum}`;
+        if (!allowedKeys.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          kind,
+          id,
+          version: String(verNum),
+        });
+      }
+      return out;
+    };
+
+    const includedSources = parseRefs(raw.includedSources);
+    const skippedSources = parseRefs(raw.skippedSources);
+    const truncatedSources = parseRefs(raw.truncatedSources);
+    const truncated = Boolean(
+      raw.truncated || skippedSources.length > 0 || truncatedSources.length > 0,
+    );
+    return {
+      requestedSources:
+        typeof raw.requestedSources === 'number' &&
+        Number.isSafeInteger(raw.requestedSources) &&
+        raw.requestedSources >= 0
+          ? raw.requestedSources
+          : requestedCount,
+      includedSources,
+      skippedSources,
+      truncatedSources,
+      ...(typeof raw.totalEvidenceUnits === 'number' &&
+      Number.isSafeInteger(raw.totalEvidenceUnits) &&
+      raw.totalEvidenceUnits >= 0
+        ? { totalEvidenceUnits: raw.totalEvidenceUnits }
+        : {}),
+      truncated,
     };
   }
 
@@ -1236,6 +1393,19 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           this.sourceEvidenceIdentity(after)
       );
     });
+    const readableAllowedKeys = new Set(
+      [...allowedKeys].filter((key) => {
+        const postEv = postEvalMap.get(key);
+        return Boolean(postEv && postEv.eligible && postEv.readable);
+      }),
+    );
+    const coverage = allInputsStillReadable
+      ? this.normalizeSagCoverage(
+          sagRes.body,
+          readableAllowedKeys,
+          permittedSources.length,
+        )
+      : undefined;
 
     const verifiedSections = (sagRes.body.sections ?? []).flatMap((sec) => {
       const validCitations: CitationDto[] = [];
@@ -1282,6 +1452,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           'Insufficient grounded evidence in the authorized published handover sources.',
         sections: [],
         warnings,
+        ...(coverage ? { coverage } : {}),
       };
     }
 
@@ -1291,6 +1462,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       message: 'Answered from authorized published handover sources.',
       sections: verifiedSections.slice(0, 20),
       warnings,
+      ...(coverage ? { coverage } : {}),
     };
   }
 
@@ -1637,6 +1809,14 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         );
         if (propUpd.matchedCount === 1) {
           this.setCandidateReasons(claimedJob._id.toHexString(), reasonMap);
+          const propCoverage = this.normalizeSagCoverage(
+            sagRes.body,
+            new Set(allowedDiscovered.keys()),
+            sagSources.length,
+          );
+          if (propCoverage) {
+            this.setJobCoverage(claimedJob._id.toHexString(), propCoverage);
+          }
         }
         return;
       }
@@ -1888,6 +2068,14 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         );
         if (jobUpd.matchedCount !== 1) {
           return;
+        }
+        const genCoverage = this.normalizeSagCoverage(
+          sagRes.body,
+          allowedGenKeys,
+          sagGenSources.length,
+        );
+        if (genCoverage) {
+          this.setJobCoverage(claimedJob._id.toHexString(), genCoverage);
         }
 
         const upd = await this.repository.handovers.updateOne(

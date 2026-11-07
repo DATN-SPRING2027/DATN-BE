@@ -165,6 +165,39 @@ describe('Evidence polarity is scoped, not a keyword over the whole paragraph', 
     expect(assembledUnperformed.noteAdequacy).toBe('UNDETERMINED');
     expect(assembledUnperformed.state).toBe('missing_context');
 
+    const unperformedQueryReq = 'Đăng ký truy vấn tùy ý vào persisted query.';
+    const unperformedQueryNote = 'Truy vấn tùy ý chưa đăng ký';
+    expect(hasNegation(unperformedQueryNote)).toBe(true);
+    expect(
+      coveragePolarityConflict(
+        unperformedQueryReq,
+        unperformedQueryNote,
+        unperformedQueryNote,
+        'Bảo mật GraphQL',
+      ),
+    ).toBe(true);
+    const fUnperformedQuery = fixture(
+      unperformedQueryReq,
+      unperformedQueryNote,
+    );
+    const parsedUnperformedQuery = parseAssessmentOutput(
+      fUnperformedQuery.input,
+      JSON.stringify(fUnperformedQuery.out),
+    );
+    expect(parsedUnperformedQuery.coverage[0].status).toBe('PARTIAL');
+    const assembledUnperformedQuery = assembleAssessment(
+      fUnperformedQuery.input,
+      parsedUnperformedQuery,
+      {
+        sourceRevision: 1,
+        taskContextHash: 'h1',
+        model: 'synthetic/test',
+        expiresAt: '2026-12-31T00:00:00.000Z',
+      },
+    );
+    expect(assembledUnperformedQuery.noteAdequacy).toBe('UNDETERMINED');
+    expect(assembledUnperformedQuery.state).toBe('missing_context');
+
     const controlReq =
       'Chỉ cho phép persisted query đã đăng ký; từ chối query ngoài whitelist.';
     const controlNote = 'Đã chặn query chưa đăng ký.';

@@ -11,7 +11,10 @@ const fold = (s: string) =>
 const withoutIdioms = (s: string) =>
   fold(s)
     .replace(/\bnot only\b|\bkhong chi\b/gu, '')
-    .replace(/\b((?:query|truy van)(?:\s+tuy\s+y)?)\s+chua dang ky\b/gu, '$1');
+    .replace(
+      /\b(chan|tu choi|cam|khong cho phep|chi cho phep|block(?:ed|s|ing)?|reject(?:ed|s|ing)?|forbid(?:s|den)?|deny|denied|prevent(?:ed|s|ing)?)\b([^.;!?\r\n]{0,40}?\b(?:query|truy van)(?:\s+tuy\s+y)?)\s+chua dang ky\b/gu,
+      '$1$2',
+    );
 const pendingEpistemic = (s: string) =>
   /\b(?:(?:tests?|testing|verification|deployment)\s+(?:(?:is|are)\s+)?(?:still\s+)?pending|pending\s+(?:tests?|testing|verification|deployment))\b/iu.test(
     fold(s),

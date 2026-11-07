@@ -167,4 +167,106 @@ describe('Handover Task Note immutable pinning (R2-BE03)', () => {
       'Token rotation migrated cleanly.',
     );
   });
+
+  it('uses Capture-persisted Work Report version instead of reviewHistory approval count', async () => {
+    const viewer = {
+      organizationId: new Types.ObjectId().toHexString(),
+      projectId: new Types.ObjectId().toHexString(),
+      userId: new Types.ObjectId().toHexString(),
+      isProjectMember: true,
+      isProjectLeader: true,
+    };
+    const reportV3 = {
+      _id: new Types.ObjectId(),
+      memberUserId: new Types.ObjectId(viewer.userId),
+      reportScope: 'MEMBER',
+      status: 'APPROVED',
+      periodStart: new Date('2026-10-20T00:00:00Z'),
+      title: 'Sprint 4 Handover Report v3',
+      contentSchemaVersion: 2,
+      currentVersionNumber: 3,
+      contentMarkdown:
+        '## Handover Summary v3\n\nApproved after three draft revisions.',
+      reviewHistory: [{ action: 'APPROVED' }],
+    };
+    const reportSnapshots = [
+      {
+        reportId: reportV3._id,
+        versionNumber: 1,
+        title: 'Sprint 4 Handover Report v1',
+        contentMarkdown: 'Draft v1',
+      },
+      {
+        reportId: reportV3._id,
+        versionNumber: 2,
+        title: 'Sprint 4 Handover Report v2',
+        contentMarkdown: 'Draft v2',
+      },
+      {
+        reportId: reportV3._id,
+        versionNumber: 3,
+        title: 'Sprint 4 Handover Report v3',
+        contentMarkdown:
+          '## Handover Summary v3\n\nApproved after three draft revisions.',
+      },
+    ];
+    const db = {
+      collection: (name: string) => ({
+        findOne: () =>
+          Promise.resolve(name === 'work_reports' ? reportV3 : null),
+        find: () => ({
+          limit: () => ({
+            toArray: () =>
+              Promise.resolve(name === 'work_reports' ? [reportV3] : []),
+          }),
+          toArray: () =>
+            Promise.resolve(
+              name === 'work_report_versions' ? reportSnapshots : [],
+            ),
+        }),
+      }),
+    };
+    const svc = new HandoverCaptureSourceService({ db } as never);
+
+    const rejectedV1 = await svc.evaluateSource(viewer, {
+      kind: 'WORK_REPORT',
+      id: reportV3._id.toHexString(),
+      version: 1,
+    });
+    expect(rejectedV1.exists).toBe(true);
+    expect(rejectedV1.eligible).toBe(false);
+    expect(rejectedV1.readable).toBe(false);
+    expect(rejectedV1.currentVersion).toBe(3);
+    expect(rejectedV1.excerpts).toEqual([]);
+
+    const acceptedV3 = await svc.evaluateSource(viewer, {
+      kind: 'WORK_REPORT',
+      id: reportV3._id.toHexString(),
+      version: 3,
+    });
+    expect(acceptedV3.eligible).toBe(true);
+    expect(acceptedV3.readable).toBe(true);
+    expect(acceptedV3.isCurrent).toBe(true);
+    expect(acceptedV3.version).toBe(3);
+    expect(acceptedV3.currentVersion).toBe(3);
+    expect(acceptedV3.title).toBe('Sprint 4 Handover Report v3');
+    expect(acceptedV3.excerpts.map((e) => e.content).join(' ')).toContain(
+      'Approved after three draft revisions.',
+    );
+
+    const candidates = await svc.discoverCandidateSources(
+      viewer,
+      viewer.userId,
+      '',
+      10,
+    );
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        kind: 'WORK_REPORT',
+        id: reportV3._id.toHexString(),
+        version: 3,
+        currentVersion: 3,
+      }),
+    ]);
+  });
 });

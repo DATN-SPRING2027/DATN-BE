@@ -284,6 +284,18 @@ describe('Handover AI live authorization boundary (review round 2)', () => {
       );
       expect(result.sections).toHaveLength(revoked ? 0 : 1);
       expect(result).toHaveProperty('warnings', ['AI_EVIDENCE_INCOMPLETE']);
+      if (revoked) {
+        expect(result.coverage).toBeUndefined();
+      } else {
+        expect(result.coverage).toEqual({
+          requestedSources: 1,
+          includedSources: [f.ref],
+          skippedSources: [],
+          truncatedSources: [f.ref],
+          totalEvidenceUnits: 25,
+          truncated: true,
+        });
+      }
     },
   );
 
@@ -330,6 +342,13 @@ describe('Handover AI live authorization boundary (review round 2)', () => {
           jobId: f.job._id.toHexString(),
         });
         expect(dto.warnings).toEqual(['AI_EVIDENCE_INCOMPLETE']);
+        expect(dto.coverage).toEqual({
+          requestedSources: 1,
+          includedSources: [f.ref],
+          skippedSources: [],
+          truncatedSources: [f.ref],
+          truncated: true,
+        });
       }
     },
   );
