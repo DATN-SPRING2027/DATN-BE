@@ -155,122 +155,16 @@ export class HandoverCaptureSourceService {
       if (!report || report.status !== 'APPROVED') {
         return unavailable();
       }
-      const rawReportSnapshots = await db
-        .collection('work_report_versions')
-        .find({ reportId: idObj })
-        .toArray();
-      const reportSnapshots = (
-        Array.isArray(rawReportSnapshots) ? rawReportSnapshots : []
-      ).filter((row: Record<string, unknown>) => {
-        if (!row || typeof row !== 'object') return false;
-        const repId =
-          row.reportId instanceof Types.ObjectId
-            ? row.reportId.toHexString()
-            : typeof row.reportId === 'string'
-              ? row.reportId
-              : null;
-        return repId !== null
-          ? repId.toLowerCase() === ref.id.toLowerCase()
-          : row.workNoteId == null;
-      });
-      const currentVersion = this.resolveWorkReportCurrentVersion(
-        report,
-        reportSnapshots,
-      );
+      const currentVersion = this.resolveWorkReportCurrentVersion(report);
       if (ref.version !== currentVersion) {
         return { ...unavailable(), exists: true, currentVersion };
       }
-      const matchingSnapshot =
-        reportSnapshots.find(
-          (snap: Record<string, unknown>) =>
-            typeof snap.versionNumber === 'number' &&
-            snap.versionNumber === ref.version,
-        ) ?? null;
-
-      const authorId = String(report.memberUserId ?? '').toLowerCase();
-      const scope = report.reportScope === 'LEADER' ? 'LEADER' : 'MEMBER';
-      const isAuthor = authorId === viewer.userId.toLowerCase();
-      const canReadReport =
-        scope === 'LEADER' ? isAuthor : isAuthor || viewer.isProjectLeader;
-
-      const str = (source: Record<string, unknown>, k: string) =>
-        typeof source[k] === 'string' ? source[k].trim() : '';
-      const liveMatchesSnapshot =
-        !matchingSnapshot ||
-        (str(matchingSnapshot, 'title') === str(report, 'title') &&
-          str(matchingSnapshot, 'contentMarkdown') ===
-            str(report, 'contentMarkdown'));
-      const isCurrent = ref.version === currentVersion && liveMatchesSnapshot;
-
-      if (!canReadReport) {
-        return {
-          kind: 'WORK_REPORT',
-          id: ref.id.toLowerCase(),
-          version: ref.version,
-          exists: true,
-          eligible: true,
-          readable: false,
-          isCurrent,
-          currentVersion,
-          title: '',
-          excerpts: [],
-        };
-      }
-
-      const contentDoc = matchingSnapshot ?? report;
-      const periodStr =
-        report.periodStart instanceof Date
-          ? report.periodStart.toISOString().slice(0, 10)
-          : 'period';
-      const rawReportTitle = str(contentDoc, 'title') || str(report, 'title');
-      const title = (rawReportTitle || `Work Report (${periodStr})`).slice(
-        0,
-        255,
-      );
-      const excerpts: HandoverSourceExcerpt[] = [];
-      for (const [key, label] of [
-        ['accomplishments', 'Accomplishments'],
-        ['approach', 'Approach'],
-        ['reason', 'Decision Rationale'],
-        ['blockers', 'Blockers'],
-        ['nextSteps', 'Next Steps'],
-      ] as const) {
-        const val = str(contentDoc, key) || str(report, key);
-        if (val) {
-          excerpts.push({
-            locatorKind: 'SECTION',
-            locatorValue: key,
-            heading: label,
-            content: val.slice(0, 15000),
-          });
-        }
-      }
-      if (excerpts.length === 0) {
-        const markdown =
-          str(contentDoc, 'contentMarkdown') || str(report, 'contentMarkdown');
-        if (markdown) {
-          excerpts.push(
-            ...this.chunkTextToExcerpts(
-              'SECTION',
-              'report-body',
-              title,
-              markdown,
-            ),
-          );
-        }
-      }
-      return {
-        kind: 'WORK_REPORT',
-        id: ref.id.toLowerCase(),
-        version: ref.version,
-        exists: true,
-        eligible: true,
-        readable: true,
-        isCurrent,
+      return this.projectApprovedWorkReport(
+        viewer,
+        report,
+        ref.id,
         currentVersion,
-        title,
-        excerpts,
-      };
+      );
     }
 
     // TASK_NOTE
@@ -455,35 +349,16 @@ export class HandoverCaptureSourceService {
 
     for (const report of reports) {
       if (report.status !== 'APPROVED') continue;
-      const reportIdStr = String(report._id);
-      const rawReportSnapshots = await db
-        .collection('work_report_versions')
-        .find({ reportId: report._id })
-        .toArray();
-      const reportSnapshots = (
-        Array.isArray(rawReportSnapshots) ? rawReportSnapshots : []
-      ).filter((row: Record<string, unknown>) => {
-        if (!row || typeof row !== 'object') return false;
-        const repId =
-          row.reportId instanceof Types.ObjectId
-            ? row.reportId.toHexString()
-            : typeof row.reportId === 'string'
-              ? row.reportId
-              : null;
-        return repId !== null
-          ? repId.toLowerCase() === reportIdStr.toLowerCase()
-          : row.workNoteId == null;
-      });
-      const currentVersion = this.resolveWorkReportCurrentVersion(
+      const currentVersion = this.resolveWorkReportCurrentVersion(report);
+      const reportId = String(report._id);
+      if (currentVersion === null || !OBJECT_ID_RE.test(reportId)) continue;
+      const evaluated = this.projectApprovedWorkReport(
+        viewer,
         report,
-        reportSnapshots,
+        reportId,
+        currentVersion,
       );
-      const evaluated = await this.evaluateSource(viewer, {
-        kind: 'WORK_REPORT',
-        id: reportIdStr,
-        version: currentVersion,
-      });
-      if (evaluated.eligible && evaluated.readable) {
+      if (evaluated.readable) {
         results.push(evaluated);
       }
       if (results.length >= limit) break;
@@ -494,27 +369,7 @@ export class HandoverCaptureSourceService {
 
   private resolveWorkReportCurrentVersion(
     report: Record<string, unknown>,
-    reportSnapshots: Array<Record<string, unknown>>,
-  ): number {
-    const persistedVersion =
-      typeof report.currentVersionNumber === 'number' &&
-      Number.isSafeInteger(report.currentVersionNumber) &&
-      report.currentVersionNumber >= 1
-        ? report.currentVersionNumber
-        : null;
-    let maxSnapVer = 0;
-    for (const snap of reportSnapshots) {
-      const v =
-        typeof snap.versionNumber === 'number' &&
-        Number.isSafeInteger(snap.versionNumber) &&
-        snap.versionNumber >= 1
-          ? snap.versionNumber
-          : 0;
-      if (v > maxSnapVer) maxSnapVer = v;
-    }
-    if (persistedVersion !== null || maxSnapVer >= 1) {
-      return Math.max(persistedVersion ?? 1, maxSnapVer);
-    }
+  ): number | null {
     const history = Array.isArray(report.reviewHistory)
       ? report.reviewHistory
       : [];
@@ -522,7 +377,96 @@ export class HandoverCaptureSourceService {
       (h: Record<string, unknown>) =>
         h?.action === 'APPROVED' || h?.status === 'APPROVED',
     ).length;
-    return Math.max(1, approvals);
+    const legacyVersion = Math.max(1, approvals);
+    if (
+      report.contentSchemaVersion === undefined &&
+      report.currentVersionNumber === undefined
+    ) {
+      return legacyVersion;
+    }
+
+    // Capture writes canonical content and version together. Editor history can
+    // include drafts saved after this approved row was read.
+    const version = report.currentVersionNumber;
+    if (
+      report.contentSchemaVersion !== 2 ||
+      typeof version !== 'number' ||
+      !Number.isSafeInteger(version) ||
+      // A lower editor version could already identify a prior approval.
+      version < legacyVersion ||
+      typeof report.contentMarkdown !== 'string' ||
+      !report.contentMarkdown.trim()
+    ) {
+      return null;
+    }
+    return version;
+  }
+
+  private projectApprovedWorkReport(
+    viewer: HandoverSourceViewer,
+    report: Record<string, unknown>,
+    id: string,
+    version: number,
+  ): EvaluatedHandoverSource {
+    const memberUserId = report.memberUserId;
+    const authorId =
+      memberUserId instanceof Types.ObjectId
+        ? memberUserId.toHexString()
+        : typeof memberUserId === 'string'
+          ? memberUserId.toLowerCase()
+          : '';
+    const isAuthor = authorId === viewer.userId.toLowerCase();
+    const readable =
+      isAuthor || (report.reportScope !== 'LEADER' && viewer.isProjectLeader);
+    const source: EvaluatedHandoverSource = {
+      kind: 'WORK_REPORT',
+      id: id.toLowerCase(),
+      version,
+      exists: true,
+      eligible: true,
+      readable,
+      isCurrent: true,
+      currentVersion: version,
+      title: '',
+      excerpts: [],
+    };
+    if (!readable) return source;
+
+    const period =
+      report.periodStart instanceof Date
+        ? report.periodStart.toISOString().slice(0, 10)
+        : 'period';
+    const title = typeof report.title === 'string' ? report.title.trim() : '';
+    source.title = (title || `Work Report (${period})`).slice(0, 255);
+    for (const [key, heading] of [
+      ['accomplishments', 'Accomplishments'],
+      ['approach', 'Approach'],
+      ['reason', 'Decision Rationale'],
+      ['blockers', 'Blockers'],
+      ['nextSteps', 'Next Steps'],
+    ] as const) {
+      const content = typeof report[key] === 'string' ? report[key].trim() : '';
+      if (content) {
+        source.excerpts.push({
+          locatorKind: 'SECTION',
+          locatorValue: key,
+          heading,
+          content: content.slice(0, 15000),
+        });
+      }
+    }
+    if (
+      source.excerpts.length === 0 &&
+      typeof report.contentMarkdown === 'string'
+    ) {
+      source.excerpts = this.chunkTextToExcerpts(
+        'SECTION',
+        'report-body',
+        source.title,
+        report.contentMarkdown.trim(),
+      );
+    }
+    return source;
   }
 
   private chunkTextToExcerpts(

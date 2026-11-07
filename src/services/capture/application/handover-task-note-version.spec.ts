@@ -124,6 +124,7 @@ describe('Handover Task Note immutable pinning (R2-BE03)', () => {
       periodStart: new Date('2026-10-20T00:00:00Z'),
       title: 'Sprint 4 Handover Report',
       contentSchemaVersion: 2,
+      currentVersionNumber: 1,
       contentMarkdown:
         '## Handover Summary\n\nToken rotation migrated cleanly.',
       reviewHistory: [{ action: 'APPROVED' }],
@@ -268,5 +269,127 @@ describe('Handover Task Note immutable pinning (R2-BE03)', () => {
         currentVersion: 3,
       }),
     ]);
+  });
+
+  it('keeps a legacy pin unavailable when backfill reuses its version number', async () => {
+    const viewer = {
+      organizationId: new Types.ObjectId().toHexString(),
+      projectId: new Types.ObjectId().toHexString(),
+      userId: new Types.ObjectId().toHexString(),
+      isProjectMember: true,
+      isProjectLeader: true,
+    };
+    const report = {
+      _id: new Types.ObjectId(),
+      memberUserId: new Types.ObjectId(viewer.userId),
+      status: 'APPROVED',
+      accomplishments: 'Original approved content',
+      reviewHistory: [{ action: 'APPROVED' }],
+    };
+    const snapshots: Record<string, unknown>[] = [];
+    const db = {
+      collection: () => ({
+        findOne: () => Promise.resolve(report),
+        find: () => ({ toArray: () => Promise.resolve(snapshots) }),
+      }),
+    };
+    const svc = new HandoverCaptureSourceService({ db } as never);
+    const readPin = (version: number) =>
+      svc.evaluateSource(viewer, {
+        kind: 'WORK_REPORT',
+        id: report._id.toHexString(),
+        version,
+      });
+
+    expect((await readPin(1)).excerpts[0]?.content).toBe(
+      'Original approved content',
+    );
+    report.accomplishments = 'Newly reapproved content';
+    report.reviewHistory.push({ action: 'APPROVED' });
+    expect((await readPin(1)).readable).toBe(false);
+    expect((await readPin(2)).readable).toBe(true);
+
+    // The editor backfill creates its first snapshot without using approval count.
+    const contentMarkdown = '## Accomplishments\nNewly reapproved content';
+    Object.assign(report, {
+      contentSchemaVersion: 2,
+      currentVersionNumber: 1,
+      title: 'Backfilled report',
+      contentMarkdown,
+    });
+    snapshots.push({
+      reportId: report._id,
+      versionNumber: 1,
+      title: 'Backfilled report',
+      contentMarkdown,
+    });
+
+    expect(await readPin(1)).toMatchObject({
+      eligible: false,
+      readable: false,
+      isCurrent: false,
+      excerpts: [],
+    });
+  });
+
+  it('never serves a newer unapproved snapshot read after an approved Work Report', async () => {
+    const viewer = {
+      organizationId: new Types.ObjectId().toHexString(),
+      projectId: new Types.ObjectId().toHexString(),
+      userId: new Types.ObjectId().toHexString(),
+      isProjectMember: true,
+      isProjectLeader: true,
+    };
+    const approved = {
+      _id: new Types.ObjectId(),
+      memberUserId: new Types.ObjectId(viewer.userId),
+      status: 'APPROVED',
+      title: 'Approved v2',
+      contentSchemaVersion: 2,
+      currentVersionNumber: 2,
+      contentMarkdown: 'Approved v2 content',
+      reviewHistory: [{ action: 'APPROVED' }],
+    };
+    const snapshots = [
+      {
+        reportId: approved._id,
+        versionNumber: 2,
+        title: approved.title,
+        contentMarkdown: approved.contentMarkdown,
+      },
+      {
+        reportId: approved._id,
+        versionNumber: 3,
+        title: 'Unapproved v3',
+        contentMarkdown: 'Unapproved v3 content',
+        canonicalResult: { status: 'CHANGES_REQUESTED' },
+      },
+    ];
+    const db = {
+      collection: () => ({
+        findOne: () => Promise.resolve(approved),
+        find: () => ({ toArray: () => Promise.resolve(snapshots) }),
+      }),
+    };
+    const svc = new HandoverCaptureSourceService({ db } as never);
+    const readPin = (version: number) =>
+      svc.evaluateSource(viewer, {
+        kind: 'WORK_REPORT',
+        id: approved._id.toHexString(),
+        version,
+      });
+
+    expect(await readPin(3)).toMatchObject({
+      eligible: false,
+      readable: false,
+      currentVersion: 2,
+      excerpts: [],
+    });
+    expect(await readPin(2)).toMatchObject({
+      eligible: true,
+      readable: true,
+      isCurrent: true,
+      excerpts: [expect.objectContaining({ content: 'Approved v2 content' })],
+    });
   });
 });

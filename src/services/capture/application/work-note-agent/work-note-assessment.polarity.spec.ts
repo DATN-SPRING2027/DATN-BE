@@ -226,6 +226,54 @@ describe('Evidence polarity is scoped, not a keyword over the whole paragraph', 
     expect(assembledControl.state).toBe('ready_to_edit');
   });
 
+  it.each([
+    {
+      context: 'a comma-separated registration claim',
+      requirement: 'Đăng ký truy vấn tùy ý.',
+      note: 'Đã chặn request lỗi, truy vấn tùy ý chưa đăng ký.',
+      quote: 'truy vấn tùy ý chưa đăng ký.',
+      expectedCoverage: 'PARTIAL',
+      expectedState: 'missing_context',
+    },
+    {
+      context: 'a comma-separated registration claim citing the full sentence',
+      requirement: 'Đăng ký truy vấn tùy ý.',
+      note: 'Đã chặn request lỗi, truy vấn tùy ý chưa đăng ký.',
+      expectedCoverage: 'PARTIAL',
+      expectedState: 'missing_context',
+    },
+    {
+      context: 'a registration claim joined by a conjunction',
+      requirement: 'Đăng ký truy vấn tùy ý.',
+      note: 'Đã chặn request lỗi và truy vấn tùy ý chưa đăng ký.',
+      quote: 'truy vấn tùy ý chưa đăng ký.',
+      expectedCoverage: 'PARTIAL',
+      expectedState: 'missing_context',
+    },
+    {
+      context: 'a long blocking action with an explicit object link',
+      requirement: 'Chặn mọi truy vấn tùy ý chưa đăng ký.',
+      note: 'Đã chặn toàn bộ yêu cầu thực thi tại production đối với mọi truy vấn tùy ý chưa đăng ký.',
+      expectedCoverage: 'SUPPORTED',
+      expectedState: 'ready_to_edit',
+    },
+  ])('scopes negation to $context', (scenario) => {
+    const quote = scenario.quote ?? scenario.note;
+    const { input, out } = fixture(scenario.requirement, scenario.note, quote);
+    out.claims[0].text = quote;
+    out.claims[0].sourceRefs[0].quote = quote;
+
+    const parsed = parseAssessmentOutput(input, JSON.stringify(out));
+    expect(parsed.coverage[0].status).toBe(scenario.expectedCoverage);
+    const assembled = assembleAssessment(input, parsed, {
+      sourceRevision: 1,
+      taskContextHash: 'h1',
+      model: 'synthetic/test',
+      expiresAt: '2026-12-31T00:00:00.000Z',
+    });
+    expect(assembled.state).toBe(scenario.expectedState);
+  });
+
   it('recognizes a prohibition requirement as negative when the author reports compliance', () => {
     const f = fixture(
       'Nghiêm cấm ghi mã truy cập ra tệp bền vững.',

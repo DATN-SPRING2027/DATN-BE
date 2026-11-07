@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { RuntimeConfigModule } from '../../config/runtime-config.module';
 import { AccessTokenService } from './application/authentication/access-token.service';
 import { AUTH_SECURITY_STORE } from './application/authentication/auth-security.store';
@@ -102,7 +103,9 @@ import { MongoOrganizationMembershipCommandRepository } from './infrastructure/m
 import { OrganizationInvitationService } from './application/organizations/organization-invitation.service';
 import {
   ORGANIZATION_INVITATION_READINESS,
+  ORGANIZATION_INVITATION_READINESS_EVIDENCE,
   ConfiguredOrganizationInvitationReadiness,
+  type OrganizationInvitationReadinessEvidence,
 } from './application/organizations/organization-invitation-readiness';
 import { ORGANIZATION_INVITATION_REPOSITORY } from './application/organizations/organization-invitation.repository';
 import { MongoOrganizationInvitationRepository } from './infrastructure/mongodb/organization-invitation.repository';
@@ -238,6 +241,23 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
     {
       provide: ORGANIZATION_INVITATION_READINESS,
       useClass: ConfiguredOrganizationInvitationReadiness,
+    },
+    {
+      provide: ORGANIZATION_INVITATION_READINESS_EVIDENCE,
+      inject: [ConfigService],
+      useFactory: (
+        config: ConfigService,
+      ): OrganizationInvitationReadinessEvidence => ({
+        A7_NOTIFICATION_CONTRACT_PROVIDER: config.get<string>(
+          'ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256',
+        ),
+        A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF: config.get<string>(
+          'ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256',
+        ),
+        A8_COORDINATED_CUTOVER: config.get<string>(
+          'ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256',
+        ),
+      }),
     },
     {
       provide: ORGANIZATION_MEMBERSHIP_COMMAND_REPOSITORY,

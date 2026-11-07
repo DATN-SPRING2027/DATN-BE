@@ -86,6 +86,24 @@ spec:
             {{- end }}
             {{- end }}
             {{- if eq $name "iam" }}
+            - name: ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.existingSecretName }}
+                  key: invitation-a7-notification-evidence-sha256
+                  optional: true
+            - name: ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.existingSecretName }}
+                  key: invitation-a7-legacy-rights-evidence-sha256
+                  optional: true
+            - name: ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.existingSecretName }}
+                  key: invitation-a8-cutover-evidence-sha256
+                  optional: true
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:

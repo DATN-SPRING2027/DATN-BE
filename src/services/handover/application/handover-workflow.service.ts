@@ -4543,7 +4543,11 @@ export class HandoverWorkflowService {
     const handover = await this.loadHandoverOrNotFound(actor, handoverId);
     this.assertLeaderAuthority(actor);
 
-    const job = await this.aiService.getJob({ handover, jobId: cleanJobId });
+    const job = await this.aiService.getJob({
+      actor,
+      handover,
+      jobId: cleanJobId,
+    });
     return {
       body: job,
       etag: formatHandoverEtag(handover._id.toHexString(), handover.version),

@@ -58,21 +58,37 @@ The Organization Manager endpoints retain their separate membership checks.
 
 ## Readiness and operational prerequisite
 
-On 2026-10-23 the user chose the OpenAPI fail-closed behavior when no readiness
-adapter is configured. `UnconfiguredOrganizationInvitationReadiness` returns
-false. This also restores the shared Organization invitation/acceptance gates:
+The invitation lifecycle follows the fail-closed gate mapping approved on
+2026-10-23. IAM checks each required gate for new operations:
 
 - Invite/resend: `A7_NOTIFICATION_CONTRACT_PROVIDER` and `A8_COORDINATED_CUTOVER`.
 - Cancel: `A8_COORDINATED_CUTOVER`.
 - Acceptance: `A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF` and
   `A8_COORDINATED_CUTOVER`.
 
-A reviewed runtime adapter supplying actual evidence is still required before
-these operations can run in an environment; unconfigured requests return 503.
-Do not replace readiness evidence with a hardcoded true value. Membership reads
-and suspension are independent of these invitation gates. No authority is
-assigned and no live invitation/email or deployed data mutation is performed by
-this change.
+IAM reads three deployment attestations. Each setting accepts the 64-character
+hexadecimal SHA-256 digest of the corresponding approved evidence artifact.
+
+| Gate | IAM environment variable | Optional key in the Helm IAM auth Secret |
+| --- | --- | --- |
+| A7 Notification contract and provider | `ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256` | `invitation-a7-notification-evidence-sha256` |
+| A7 legacy or orphan rights activation proof | `ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256` | `invitation-a7-legacy-rights-evidence-sha256` |
+| A8 coordinated cutover | `ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256` | `invitation-a8-cutover-evidence-sha256` |
+
+The gate owners must verify and approve each artifact for the target environment
+and rollout before the deployment owner sets its digest. A digest records the
+deployment owner's attestation. IAM validates its format and does not retrieve
+the artifact or independently certify the underlying provider, rights proof,
+or cutover. Set these in trusted IAM deployment configuration only. For Compose,
+the IAM service passes them through from the operator environment. Helm reads
+the optional keys from the Secret named by `auth.existingSecretName`.
+
+An unset or blank value keeps that gate closed, and a malformed nonblank value
+fails runtime configuration validation. Missing required gates return 503 before
+new lifecycle writes. Membership reads and suspension are independent of these
+gates. Remove the affected digest and restart every IAM instance if its evidence
+expires, is withdrawn, or no longer matches the deployment. No provider evidence
+or cutover approval is supplied by these defaults.
 
 ## Verification
 

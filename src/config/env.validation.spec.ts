@@ -54,6 +54,20 @@ describe('validateEnvironment', () => {
     });
   });
 
+  it.each([
+    'ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256',
+    'ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256',
+    'ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256',
+  ])('only accepts a blank value or a SHA-256 digest in %s', (field) => {
+    const digest = '0123456789abcdef'.repeat(4);
+    expect(validateEnvironment({ [field]: '' })[field]).toBe('');
+    expect(validateEnvironment({ [field]: digest })[field]).toBe(digest);
+    expect(() => validateEnvironment({ [field]: 'true' })).toThrow(field);
+    expect(() => validateEnvironment({ [field]: 'g'.repeat(64) })).toThrow(
+      field,
+    );
+  });
+
   it('allows Google OAuth to remain disabled when all provider settings are blank', () => {
     expect(
       validateEnvironment({

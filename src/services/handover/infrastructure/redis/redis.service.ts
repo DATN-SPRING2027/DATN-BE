@@ -1,6 +1,8 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Command } from 'ioredis';
 import {
+  bullmqPrefix,
   createRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
@@ -8,9 +10,47 @@ import {
 @Injectable()
 export class RedisService implements OnModuleDestroy {
   private readonly client: RedisConnection;
+  private readonly cachePrefix: string;
 
   constructor(config: ConfigService) {
     this.client = createRedisConnection(config);
+    this.cachePrefix = `${bullmqPrefix(config)}:handover:cache:`;
+  }
+
+  async readOptionalCache(key: string): Promise<string | null> {
+    const value = await this.optionalCacheCommand('get', [
+      this.cachePrefix + key,
+    ]);
+    return typeof value === 'string' ? value : null;
+  }
+
+  async writeOptionalCache(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+  ): Promise<void> {
+    await this.optionalCacheCommand('set', [
+      this.cachePrefix + key,
+      value,
+      'EX',
+      ttlSeconds,
+    ]);
+  }
+
+  private async optionalCacheCommand(
+    name: 'get' | 'set',
+    args: Array<string | number>,
+  ): Promise<unknown> {
+    if (this.client.status !== 'ready' && this.client.status !== 'wait') {
+      return null;
+    }
+    const command = new Command(name, args);
+    command.setTimeout(500);
+    try {
+      return await this.client.sendCommand(command);
+    } catch {
+      return null;
+    }
   }
 
   async get(key: string): Promise<string | null> {

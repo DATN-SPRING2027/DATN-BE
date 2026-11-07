@@ -25,6 +25,7 @@ import {
   HandoverIamScopeService,
   type HandoverProjectActorContext,
 } from '../../iam/application/projects/handover-iam-scope.service';
+import { RedisService } from '../infrastructure/redis/redis.service';
 import {
   computeCommandFingerprint,
   computeDependencyFingerprint,
@@ -102,6 +103,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
   private static readonly RECOVERY_SWEEP_MS = 15_000;
   private static readonly MAX_AUTO_RECOVERY_ATTEMPTS = 3;
   private static readonly MAX_REASON_CACHE_ENTRIES = 200;
+  private static readonly JOB_COVERAGE_TTL_SECONDS = 24 * 60 * 60;
 
   private readonly logger = new Logger(HandoverAiService.name);
   private readonly inFlightJobs = new Set<Promise<void>>();
@@ -110,7 +112,6 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     string,
     Map<string, string>
   >();
-  private readonly jobCoverageCache = new Map<string, HandoverAiCoverageDto>();
   private recoveryTimer: ReturnType<typeof setInterval> | null = null;
   private isDestroyed = false;
 
@@ -121,6 +122,8 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(AI_ENGINE_CLIENT)
     private readonly aiEngine?: AiEngineClient,
+    @Optional()
+    private readonly redis?: RedisService,
   ) {}
 
   onModuleInit(): void {
@@ -166,23 +169,6 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       }
     }
     this.candidateReasonCache.set(jobHex, reasons);
-  }
-
-  private setJobCoverage(
-    jobHex: string,
-    coverage: HandoverAiCoverageDto,
-  ): void {
-    if (this.jobCoverageCache.has(jobHex)) {
-      this.jobCoverageCache.delete(jobHex);
-    } else if (
-      this.jobCoverageCache.size >= HandoverAiService.MAX_REASON_CACHE_ENTRIES
-    ) {
-      for (const oldestKey of this.jobCoverageCache.keys()) {
-        this.jobCoverageCache.delete(oldestKey);
-        break;
-      }
-    }
-    this.jobCoverageCache.set(jobHex, coverage);
   }
 
   async recoverStalledJobs(): Promise<void> {
@@ -250,21 +236,15 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private toJobDto(job: StoredJobDoc): JobDto {
-    const jobHex = job._id.toHexString();
+  private toJobDto(
+    job: StoredJobDoc,
+    coverage?: HandoverAiCoverageDto,
+  ): JobDto {
     const hasIncompleteWarning =
       job.state === 'SUCCEEDED' &&
       job.safeErrorCode === 'AI_EVIDENCE_INCOMPLETE';
-    const cachedCoverage = this.jobCoverageCache.get(jobHex);
-    const coverage =
-      job.state === 'SUCCEEDED'
-        ? (cachedCoverage ??
-          (hasIncompleteWarning
-            ? this.deriveFallbackJobCoverage(job)
-            : undefined))
-        : undefined;
     return {
-      id: jobHex,
+      id: job._id.toHexString(),
       handoverId: job.handoverId.toHexString(),
       kind: job.kind,
       state: job.state,
@@ -276,73 +256,69 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private deriveFallbackJobCoverage(job: StoredJobDoc): HandoverAiCoverageDto {
-    const selected = (job.selectedSources ?? []).map((ref) => ({
-      kind: ref.kind,
-      id: ref.id.toLowerCase(),
-      version: String(parseSourceVersionNumber(ref.version) ?? ref.version),
-    }));
-    const usedMap = new Map<string, SourceRefDto>();
-    for (const item of job.resultItems ?? []) {
-      for (const ref of item.sources ?? []) {
-        const normalized: SourceRefDto = {
-          kind: ref.kind,
-          id: ref.id.toLowerCase(),
-          version: String(parseSourceVersionNumber(ref.version) ?? ref.version),
-        };
-        usedMap.set(sourceRefKey(normalized), normalized);
-      }
-      for (const cit of item.citations ?? []) {
-        const normalized: SourceRefDto = {
-          kind: cit.source.kind,
-          id: cit.source.id.toLowerCase(),
-          version: String(
-            parseSourceVersionNumber(cit.source.version) ?? cit.source.version,
-          ),
-        };
-        usedMap.set(sourceRefKey(normalized), normalized);
-      }
-    }
-    for (const cand of job.candidates ?? []) {
-      const normalized: SourceRefDto = {
-        kind: cand.kind,
-        id: cand.id.toLowerCase(),
-        version: String(parseSourceVersionNumber(cand.version) ?? cand.version),
-      };
-      usedMap.set(sourceRefKey(normalized), normalized);
-    }
-    const includedSources =
-      usedMap.size > 0 ? [...usedMap.values()] : [...selected];
-    const includedKeys = new Set(includedSources.map((s) => sourceRefKey(s)));
-    const skippedSources = selected.filter(
-      (s) => !includedKeys.has(sourceRefKey(s)),
-    );
-    const truncatedSources =
-      skippedSources.length === 0 ? [...includedSources] : [];
-    return {
-      requestedSources: Math.max(selected.length, includedSources.length),
-      includedSources,
-      skippedSources,
-      truncatedSources,
-      truncated: true,
-    };
+  private jobCoverageKey(job: StoredJobDoc): string {
+    // A reclaimed lease increments the attempt, so a losing worker cannot
+    // publish coverage for the attempt that eventually commits.
+    return `ai-coverage:v1:${job.organizationId.toHexString()}:${job.projectId.toHexString()}:${job._id.toHexString()}:${job.attempt}`;
   }
 
-  private normalizeSagCoverage(
-    body: SagHandoverAssistResponse,
+  private async cacheJobCoverage(
+    job: StoredJobDoc,
+    raw: unknown,
     allowedKeys: ReadonlySet<string>,
-    requestedCount: number,
-  ): HandoverAiCoverageDto | undefined {
-    const raw = body.coverage;
-    if (!raw || typeof raw !== 'object') {
-      return undefined;
+  ): Promise<void> {
+    if (!this.redis) return;
+    const coverage = this.normalizeCoverage(raw, allowedKeys);
+    if (!coverage) return;
+    await this.redis.writeOptionalCache(
+      this.jobCoverageKey(job),
+      JSON.stringify(coverage),
+      HandoverAiService.JOB_COVERAGE_TTL_SECONDS,
+    );
+  }
+
+  private async toActorJobDto(
+    job: StoredJobDoc,
+    actor: HandoverProjectActorContext,
+  ): Promise<JobDto> {
+    if (job.state !== 'SUCCEEDED' || !this.redis) return this.toJobDto(job);
+    try {
+      const stored = await this.redis.readOptionalCache(
+        this.jobCoverageKey(job),
+      );
+      if (!stored) return this.toJobDto(job);
+      const raw: unknown = JSON.parse(stored);
+      const coverage = this.normalizeCoverage(raw);
+      if (!coverage) return this.toJobDto(job);
+      const refs = [...coverage.includedSources, ...coverage.skippedSources];
+      const evaluated = await this.sourcesService.evaluateSourceRefsMap(
+        actor,
+        refs,
+      );
+      const allReadable = refs.every((ref) => {
+        const source = evaluated.get(sourceRefKey(ref));
+        return source?.eligible && source.readable;
+      });
+      return this.toJobDto(job, allReadable ? coverage : undefined);
+    } catch {
+      // Coverage is optional and its source identities must stay private if
+      // the cache or an owning source's authorization check is unavailable.
+      return this.toJobDto(job);
     }
-    const parseRefs = (items: unknown[] | undefined): SourceRefDto[] => {
-      if (!Array.isArray(items)) return [];
+  }
+
+  private normalizeCoverage(
+    raw: unknown,
+    allowedKeys?: ReadonlySet<string>,
+  ): HandoverAiCoverageDto | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const data = raw as Record<string, unknown>;
+    const parseRefs = (items: unknown): SourceRefDto[] | null => {
+      if (!Array.isArray(items) || items.length > 100) return null;
       const seen = new Set<string>();
       const out: SourceRefDto[] = [];
       for (const item of items) {
-        if (!item || typeof item !== 'object') continue;
+        if (!item || typeof item !== 'object') return null;
         const candidate = item as Record<string, unknown>;
         const kind = candidate.kind;
         const id =
@@ -360,13 +336,14 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
             kind !== 'WORK_REPORT' &&
             kind !== 'TASK_NOTE' &&
             kind !== 'KNOWLEDGE_OBJECT') ||
-          !id ||
+          !/^[a-f0-9]{24}$/.test(id) ||
           !verNum
         ) {
-          continue;
+          return null;
         }
         const key = `${kind}:${id}:${verNum}`;
-        if (!allowedKeys.has(key) || seen.has(key)) continue;
+        if ((allowedKeys && !allowedKeys.has(key)) || seen.has(key))
+          return null;
         seen.add(key);
         out.push({
           kind,
@@ -377,28 +354,37 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       return out;
     };
 
-    const includedSources = parseRefs(raw.includedSources);
-    const skippedSources = parseRefs(raw.skippedSources);
-    const truncatedSources = parseRefs(raw.truncatedSources);
-    const truncated = Boolean(
-      raw.truncated || skippedSources.length > 0 || truncatedSources.length > 0,
+    const includedSources = parseRefs(data.includedSources);
+    const skippedSources = parseRefs(data.skippedSources);
+    const truncatedSources = parseRefs(data.truncatedSources);
+    if (!includedSources || !skippedSources || !truncatedSources)
+      return undefined;
+    const coveredKeys = new Set(
+      [...includedSources, ...skippedSources].map(sourceRefKey),
     );
+    if (
+      coveredKeys.size > 100 ||
+      coveredKeys.size !== includedSources.length + skippedSources.length ||
+      data.requestedSources !== coveredKeys.size ||
+      (allowedKeys && coveredKeys.size !== allowedKeys.size) ||
+      !truncatedSources.every((ref) => coveredKeys.has(sourceRefKey(ref)))
+    ) {
+      return undefined;
+    }
     return {
-      requestedSources:
-        typeof raw.requestedSources === 'number' &&
-        Number.isSafeInteger(raw.requestedSources) &&
-        raw.requestedSources >= 0
-          ? raw.requestedSources
-          : requestedCount,
+      requestedSources: coveredKeys.size,
       includedSources,
       skippedSources,
       truncatedSources,
-      ...(typeof raw.totalEvidenceUnits === 'number' &&
-      Number.isSafeInteger(raw.totalEvidenceUnits) &&
-      raw.totalEvidenceUnits >= 0
-        ? { totalEvidenceUnits: raw.totalEvidenceUnits }
+      ...(typeof data.totalEvidenceUnits === 'number' &&
+      Number.isSafeInteger(data.totalEvidenceUnits) &&
+      data.totalEvidenceUnits >= 0
+        ? { totalEvidenceUnits: data.totalEvidenceUnits }
         : {}),
-      truncated,
+      truncated:
+        data.truncated === true ||
+        skippedSources.length > 0 ||
+        truncatedSources.length > 0,
     };
   }
 
@@ -483,7 +469,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         });
       }
       return {
-        job: this.toJobDto(existingJob),
+        job: await this.toActorJobDto(existingJob, input.actor),
         version: existingOp.receipt.resourceVersion ?? input.handover.version,
         replayed: true,
       };
@@ -664,7 +650,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         });
       }
       return {
-        job: this.toJobDto(existingJob),
+        job: await this.toActorJobDto(existingJob, input.actor),
         version: existingOp.receipt.resourceVersion ?? input.handover.version,
         replayed: true,
       };
@@ -876,7 +862,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         });
       }
       return {
-        job: this.toJobDto(existingJob),
+        job: await this.toActorJobDto(existingJob, input.actor),
         version: existingOp.receipt.resourceVersion ?? input.handover.version,
         replayed: true,
       };
@@ -1095,6 +1081,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getJob(input: {
+    actor: HandoverProjectActorContext;
     handover: StoredHandoverDoc;
     jobId: string;
   }): Promise<JobDto> {
@@ -1116,7 +1103,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       });
     }
     const effectiveJob = await this.maybeNudgeStalledJob(job);
-    return this.toJobDto(effectiveJob);
+    return this.toActorJobDto(effectiveJob, input.actor);
   }
 
   async getCandidates(input: {
@@ -1400,11 +1387,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       }),
     );
     const coverage = allInputsStillReadable
-      ? this.normalizeSagCoverage(
-          sagRes.body,
-          readableAllowedKeys,
-          permittedSources.length,
-        )
+      ? this.normalizeCoverage(sagRes.body.coverage, readableAllowedKeys)
       : undefined;
 
     const verifiedSections = (sagRes.body.sections ?? []).flatMap((sec) => {
@@ -1789,6 +1772,13 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        // Stage coverage before publishing SUCCEEDED so another worker's first
+        // read can find it. A failed lease update makes this key unreachable.
+        await this.cacheJobCoverage(
+          claimedJob,
+          sagRes.body.coverage,
+          new Set(allowedDiscovered.keys()),
+        );
         // Candidate proposals NEVER mutate selectedSources or draft items automatically (A03)
         const propUpd = await this.repository.jobs.updateOne(
           { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
@@ -1809,14 +1799,6 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         );
         if (propUpd.matchedCount === 1) {
           this.setCandidateReasons(claimedJob._id.toHexString(), reasonMap);
-          const propCoverage = this.normalizeSagCoverage(
-            sagRes.body,
-            new Set(allowedDiscovered.keys()),
-            sagSources.length,
-          );
-          if (propCoverage) {
-            this.setJobCoverage(claimedJob._id.toHexString(), propCoverage);
-          }
         }
         return;
       }
@@ -1982,6 +1964,11 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      await this.cacheJobCoverage(
+        claimedJob,
+        sagRes.body.coverage,
+        allowedGenKeys,
+      );
       await this.repository.withTransaction(async (session) => {
         const freshJob = await this.repository.jobs
           .findOne({ _id: claimedJob._id, state: 'RUNNING', leaseOwner })
@@ -2069,15 +2056,6 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         if (jobUpd.matchedCount !== 1) {
           return;
         }
-        const genCoverage = this.normalizeSagCoverage(
-          sagRes.body,
-          allowedGenKeys,
-          sagGenSources.length,
-        );
-        if (genCoverage) {
-          this.setJobCoverage(claimedJob._id.toHexString(), genCoverage);
-        }
-
         const upd = await this.repository.handovers.updateOne(
           {
             _id: freshHandover._id,
