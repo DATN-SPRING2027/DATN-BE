@@ -25,6 +25,7 @@ import {
   HandoverIamScopeService,
   type HandoverProjectActorContext,
 } from '../../iam/application/projects/handover-iam-scope.service';
+import { RedisService } from '../infrastructure/redis/redis.service';
 import {
   computeCommandFingerprint,
   computeDependencyFingerprint,
@@ -39,6 +40,7 @@ import type {
   CitationDto,
   GenerateRequestDto,
   HandoverAnswerDto,
+  HandoverAiCoverageDto,
   HandoverAiWarning,
   JobDto,
   QuestionRequestDto,
@@ -82,9 +84,12 @@ interface SagHandoverAssistResponse {
   answerStatus?: 'ANSWERED' | 'INSUFFICIENT_EVIDENCE' | null;
   message?: string | null;
   coverage?: {
-    truncated?: boolean;
+    requestedSources?: number;
+    includedSources?: unknown[];
     skippedSources?: unknown[];
     truncatedSources?: unknown[];
+    totalEvidenceUnits?: number;
+    truncated?: boolean;
   } | null;
   sections?: Array<{
     text: string;
@@ -98,6 +103,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
   private static readonly RECOVERY_SWEEP_MS = 15_000;
   private static readonly MAX_AUTO_RECOVERY_ATTEMPTS = 3;
   private static readonly MAX_REASON_CACHE_ENTRIES = 200;
+  private static readonly JOB_COVERAGE_TTL_SECONDS = 24 * 60 * 60;
 
   private readonly logger = new Logger(HandoverAiService.name);
   private readonly inFlightJobs = new Set<Promise<void>>();
@@ -116,6 +122,8 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(AI_ENGINE_CLIENT)
     private readonly aiEngine?: AiEngineClient,
+    @Optional()
+    private readonly redis?: RedisService,
   ) {}
 
   onModuleInit(): void {
@@ -228,7 +236,13 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private toJobDto(job: StoredJobDoc): JobDto {
+  private toJobDto(
+    job: StoredJobDoc,
+    coverage?: HandoverAiCoverageDto,
+  ): JobDto {
+    const hasIncompleteWarning =
+      job.state === 'SUCCEEDED' &&
+      job.safeErrorCode === 'AI_EVIDENCE_INCOMPLETE';
     return {
       id: job._id.toHexString(),
       handoverId: job.handoverId.toHexString(),
@@ -236,12 +250,141 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       state: job.state,
       inputDraftVersion: job.inputDraftVersion,
       safeErrorCode: job.safeErrorCode ?? null,
-      warnings:
-        job.state === 'SUCCEEDED' &&
-        job.safeErrorCode === 'AI_EVIDENCE_INCOMPLETE'
-          ? ['AI_EVIDENCE_INCOMPLETE']
-          : [],
+      warnings: hasIncompleteWarning ? ['AI_EVIDENCE_INCOMPLETE'] : [],
+      ...(coverage ? { coverage } : {}),
       createdAt: job.createdAt.toISOString(),
+    };
+  }
+
+  private jobCoverageKey(job: StoredJobDoc): string {
+    // A reclaimed lease increments the attempt, so a losing worker cannot
+    // publish coverage for the attempt that eventually commits.
+    return `ai-coverage:v1:${job.organizationId.toHexString()}:${job.projectId.toHexString()}:${job._id.toHexString()}:${job.attempt}`;
+  }
+
+  private async cacheJobCoverage(
+    job: StoredJobDoc,
+    raw: unknown,
+    allowedKeys: ReadonlySet<string>,
+  ): Promise<void> {
+    if (!this.redis) return;
+    const coverage = this.normalizeCoverage(raw, allowedKeys);
+    if (!coverage) return;
+    await this.redis.writeOptionalCache(
+      this.jobCoverageKey(job),
+      JSON.stringify(coverage),
+      HandoverAiService.JOB_COVERAGE_TTL_SECONDS,
+    );
+  }
+
+  private async toActorJobDto(
+    job: StoredJobDoc,
+    actor: HandoverProjectActorContext,
+  ): Promise<JobDto> {
+    if (job.state !== 'SUCCEEDED' || !this.redis) return this.toJobDto(job);
+    try {
+      const stored = await this.redis.readOptionalCache(
+        this.jobCoverageKey(job),
+      );
+      if (!stored) return this.toJobDto(job);
+      const raw: unknown = JSON.parse(stored);
+      const coverage = this.normalizeCoverage(raw);
+      if (!coverage) return this.toJobDto(job);
+      const refs = [...coverage.includedSources, ...coverage.skippedSources];
+      const evaluated = await this.sourcesService.evaluateSourceRefsMap(
+        actor,
+        refs,
+      );
+      const allReadable = refs.every((ref) => {
+        const source = evaluated.get(sourceRefKey(ref));
+        return source?.eligible && source.readable;
+      });
+      return this.toJobDto(job, allReadable ? coverage : undefined);
+    } catch {
+      // Coverage is optional and its source identities must stay private if
+      // the cache or an owning source's authorization check is unavailable.
+      return this.toJobDto(job);
+    }
+  }
+
+  private normalizeCoverage(
+    raw: unknown,
+    allowedKeys?: ReadonlySet<string>,
+  ): HandoverAiCoverageDto | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const data = raw as Record<string, unknown>;
+    const parseRefs = (items: unknown): SourceRefDto[] | null => {
+      if (!Array.isArray(items) || items.length > 100) return null;
+      const seen = new Set<string>();
+      const out: SourceRefDto[] = [];
+      for (const item of items) {
+        if (!item || typeof item !== 'object') return null;
+        const candidate = item as Record<string, unknown>;
+        const kind = candidate.kind;
+        const id =
+          typeof candidate.id === 'string'
+            ? candidate.id.trim().toLowerCase()
+            : '';
+        const rawVer = candidate.version;
+        const verStr =
+          typeof rawVer === 'number' || typeof rawVer === 'string'
+            ? String(rawVer)
+            : '';
+        const verNum = parseSourceVersionNumber(verStr);
+        if (
+          (kind !== 'PROJECT_DOCUMENT' &&
+            kind !== 'WORK_REPORT' &&
+            kind !== 'TASK_NOTE' &&
+            kind !== 'KNOWLEDGE_OBJECT') ||
+          !/^[a-f0-9]{24}$/.test(id) ||
+          !verNum
+        ) {
+          return null;
+        }
+        const key = `${kind}:${id}:${verNum}`;
+        if ((allowedKeys && !allowedKeys.has(key)) || seen.has(key))
+          return null;
+        seen.add(key);
+        out.push({
+          kind,
+          id,
+          version: String(verNum),
+        });
+      }
+      return out;
+    };
+
+    const includedSources = parseRefs(data.includedSources);
+    const skippedSources = parseRefs(data.skippedSources);
+    const truncatedSources = parseRefs(data.truncatedSources);
+    if (!includedSources || !skippedSources || !truncatedSources)
+      return undefined;
+    const coveredKeys = new Set(
+      [...includedSources, ...skippedSources].map(sourceRefKey),
+    );
+    if (
+      coveredKeys.size > 100 ||
+      coveredKeys.size !== includedSources.length + skippedSources.length ||
+      data.requestedSources !== coveredKeys.size ||
+      (allowedKeys && coveredKeys.size !== allowedKeys.size) ||
+      !truncatedSources.every((ref) => coveredKeys.has(sourceRefKey(ref)))
+    ) {
+      return undefined;
+    }
+    return {
+      requestedSources: coveredKeys.size,
+      includedSources,
+      skippedSources,
+      truncatedSources,
+      ...(typeof data.totalEvidenceUnits === 'number' &&
+      Number.isSafeInteger(data.totalEvidenceUnits) &&
+      data.totalEvidenceUnits >= 0
+        ? { totalEvidenceUnits: data.totalEvidenceUnits }
+        : {}),
+      truncated:
+        data.truncated === true ||
+        skippedSources.length > 0 ||
+        truncatedSources.length > 0,
     };
   }
 
@@ -326,7 +469,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         });
       }
       return {
-        job: this.toJobDto(existingJob),
+        job: await this.toActorJobDto(existingJob, input.actor),
         version: existingOp.receipt.resourceVersion ?? input.handover.version,
         replayed: true,
       };
@@ -507,7 +650,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         });
       }
       return {
-        job: this.toJobDto(existingJob),
+        job: await this.toActorJobDto(existingJob, input.actor),
         version: existingOp.receipt.resourceVersion ?? input.handover.version,
         replayed: true,
       };
@@ -719,7 +862,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         });
       }
       return {
-        job: this.toJobDto(existingJob),
+        job: await this.toActorJobDto(existingJob, input.actor),
         version: existingOp.receipt.resourceVersion ?? input.handover.version,
         replayed: true,
       };
@@ -938,6 +1081,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getJob(input: {
+    actor: HandoverProjectActorContext;
     handover: StoredHandoverDoc;
     jobId: string;
   }): Promise<JobDto> {
@@ -959,7 +1103,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       });
     }
     const effectiveJob = await this.maybeNudgeStalledJob(job);
-    return this.toJobDto(effectiveJob);
+    return this.toActorJobDto(effectiveJob, input.actor);
   }
 
   async getCandidates(input: {
@@ -1236,6 +1380,15 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           this.sourceEvidenceIdentity(after)
       );
     });
+    const readableAllowedKeys = new Set(
+      [...allowedKeys].filter((key) => {
+        const postEv = postEvalMap.get(key);
+        return Boolean(postEv && postEv.eligible && postEv.readable);
+      }),
+    );
+    const coverage = allInputsStillReadable
+      ? this.normalizeCoverage(sagRes.body.coverage, readableAllowedKeys)
+      : undefined;
 
     const verifiedSections = (sagRes.body.sections ?? []).flatMap((sec) => {
       const validCitations: CitationDto[] = [];
@@ -1282,6 +1435,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           'Insufficient grounded evidence in the authorized published handover sources.',
         sections: [],
         warnings,
+        ...(coverage ? { coverage } : {}),
       };
     }
 
@@ -1291,6 +1445,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       message: 'Answered from authorized published handover sources.',
       sections: verifiedSections.slice(0, 20),
       warnings,
+      ...(coverage ? { coverage } : {}),
     };
   }
 
@@ -1617,6 +1772,13 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        // Stage coverage before publishing SUCCEEDED so another worker's first
+        // read can find it. A failed lease update makes this key unreachable.
+        await this.cacheJobCoverage(
+          claimedJob,
+          sagRes.body.coverage,
+          new Set(allowedDiscovered.keys()),
+        );
         // Candidate proposals NEVER mutate selectedSources or draft items automatically (A03)
         const propUpd = await this.repository.jobs.updateOne(
           { _id: claimedJob._id, state: 'RUNNING', leaseOwner },
@@ -1802,6 +1964,11 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      await this.cacheJobCoverage(
+        claimedJob,
+        sagRes.body.coverage,
+        allowedGenKeys,
+      );
       await this.repository.withTransaction(async (session) => {
         const freshJob = await this.repository.jobs
           .findOne({ _id: claimedJob._id, state: 'RUNNING', leaseOwner })
@@ -1889,7 +2056,6 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         if (jobUpd.matchedCount !== 1) {
           return;
         }
-
         const upd = await this.repository.handovers.updateOne(
           {
             _id: freshHandover._id,

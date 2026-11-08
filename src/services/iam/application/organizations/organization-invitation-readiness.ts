@@ -1,13 +1,22 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ORGANIZATION_INVITATION_EVIDENCE_SHA256 } from '../../../../config/env.validation';
 
 export const ORGANIZATION_INVITATION_READINESS = Symbol(
   'ORGANIZATION_INVITATION_READINESS',
+);
+
+export const ORGANIZATION_INVITATION_READINESS_EVIDENCE = Symbol(
+  'ORGANIZATION_INVITATION_READINESS_EVIDENCE',
 );
 
 export type OrganizationInvitationReadinessGate =
   | 'A7_NOTIFICATION_CONTRACT_PROVIDER'
   | 'A7_LEGACY_OR_ORPHAN_RIGHTS_ACTIVATION_PROOF'
   | 'A8_COORDINATED_CUTOVER';
+
+export type OrganizationInvitationReadinessEvidence = Partial<
+  Record<OrganizationInvitationReadinessGate, string>
+>;
 
 export interface OrganizationInvitationReadiness {
   isReady(gate: OrganizationInvitationReadinessGate): Promise<boolean>;
@@ -27,8 +36,18 @@ export class UnconfiguredOrganizationInvitationReadiness implements Organization
 
 @Injectable()
 export class ConfiguredOrganizationInvitationReadiness implements OrganizationInvitationReadiness {
-  isReady(): Promise<boolean> {
-    return Promise.resolve(true);
+  constructor(
+    @Optional()
+    @Inject(ORGANIZATION_INVITATION_READINESS_EVIDENCE)
+    private readonly evidence: OrganizationInvitationReadinessEvidence = {},
+  ) {}
+
+  isReady(gate: OrganizationInvitationReadinessGate): Promise<boolean> {
+    const digest = this.evidence[gate];
+    return Promise.resolve(
+      typeof digest === 'string' &&
+        ORGANIZATION_INVITATION_EVIDENCE_SHA256.test(digest),
+    );
   }
 }
 

@@ -7,11 +7,16 @@ import {
 
 export type NodeEnvironment = 'development' | 'test' | 'production';
 
+export const ORGANIZATION_INVITATION_EVIDENCE_SHA256 = /^[0-9a-f]{64}$/iu;
+
 export interface EnvironmentVariables {
   NODE_ENV: NodeEnvironment;
   JWT_SECRET?: string;
   PASSWORD_RESET_OUTBOX_KEY?: string;
   EMAIL_REGISTRATION_OUTBOX_KEY?: string;
+  ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256?: string;
+  ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256?: string;
+  ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_CALLBACK_URL?: string;
@@ -79,6 +84,11 @@ export interface EnvironmentVariables {
   [key: string]: unknown;
 }
 
+const invitationEvidenceSchema = Joi.string()
+  .pattern(ORGANIZATION_INVITATION_EVIDENCE_SHA256)
+  .allow('')
+  .optional();
+
 const environmentSchema = Joi.object<EnvironmentVariables>({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
@@ -86,6 +96,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   JWT_SECRET: Joi.string().min(32).optional(),
   PASSWORD_RESET_OUTBOX_KEY: Joi.string().min(32).optional(),
   EMAIL_REGISTRATION_OUTBOX_KEY: Joi.string().min(32).optional(),
+  ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256:
+    invitationEvidenceSchema,
+  ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256:
+    invitationEvidenceSchema,
+  ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256: invitationEvidenceSchema,
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
   GOOGLE_CALLBACK_URL: Joi.string()

@@ -8,10 +8,23 @@ const fold = (s: string) =>
     .replace(/\p{M}/gu, '')
     .replace(/[đĐ]/gu, 'd')
     .toLowerCase();
+const blockingAction =
+  'chan|tu choi|cam|khong cho phep|chi cho phep|block(?:ed|s|ing)?|reject(?:ed|s|ing)?|forbid(?:s|den)?|deny|denied|prevent(?:ed|s|ing)?';
+const clauseBoundaryWord =
+  'va|hoac|nhung|con|roi|tuy nhien|neu|vi|and|or|but|while|yet|if|because';
+// A blocking action can take the query directly or link it with “đối với”.
+// The link cannot cross punctuation, a clause boundary, or another action.
+const unregisteredQueryModifier = new RegExp(
+  String.raw`\b((?:${blockingAction})[ \t]+` +
+    String.raw`(?:(?:(?!(?:${blockingAction}|${clauseBoundaryWord})\b)[\p{L}\p{N}_-]+[ \t]+)*?doi voi[ \t]+)?` +
+    String.raw`(?:(?:tat ca(?: cac)?|toan bo(?: cac)?|moi|cac|all|every|any)[ \t]+)?` +
+    String.raw`(?:query|truy van)(?:[ \t]+tuy y)?)[ \t]+chua dang ky\b`,
+  'gu',
+);
 const withoutIdioms = (s: string) =>
   fold(s)
     .replace(/\bnot only\b|\bkhong chi\b/gu, '')
-    .replace(/\b((?:query|truy van)(?:\s+tuy\s+y)?)\s+chua dang ky\b/gu, '$1');
+    .replace(unregisteredQueryModifier, '$1');
 const pendingEpistemic = (s: string) =>
   /\b(?:(?:tests?|testing|verification|deployment)\s+(?:(?:is|are)\s+)?(?:still\s+)?pending|pending\s+(?:tests?|testing|verification|deployment))\b/iu.test(
     fold(s),

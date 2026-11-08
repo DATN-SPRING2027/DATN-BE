@@ -172,11 +172,21 @@ function fixture() {
       }),
     ),
   };
+  const cacheValues = new Map<string, string>();
+  const redis = {
+    readOptionalCache: (key: string) =>
+      Promise.resolve(cacheValues.get(key) ?? null),
+    writeOptionalCache: (key: string, value: string) => {
+      cacheValues.set(key, value);
+      return Promise.resolve();
+    },
+  };
   const service = new HandoverAiService(
     repo as never,
     iam as never,
     sources as never,
     ai as never,
+    redis as never,
   );
   const internal = service as unknown as {
     claimRunnableJob: (
@@ -201,10 +211,70 @@ function fixture() {
     iam,
     sources,
     ai,
+    redis,
   };
 }
 
 describe('Handover AI live authorization boundary (review round 2)', () => {
+  it('does not infer exact coverage from a legacy successful job', async () => {
+    const f = fixture();
+    f.job.state = 'SUCCEEDED';
+    f.job.safeErrorCode = 'AI_EVIDENCE_INCOMPLETE';
+
+    const dto = await f.service.getJob({
+      actor: f.actor,
+      handover: f.handover,
+      jobId: f.job._id.toHexString(),
+    });
+
+    expect(dto.warnings).toEqual(['AI_EVIDENCE_INCOMPLETE']);
+    expect(dto.coverage).toBeUndefined();
+  });
+
+  it('hides cached source references from a later caller who cannot read them', async () => {
+    const f = fixture();
+    await f.internal.runBackgroundJob(f.job._id);
+    const otherLeader = { ...f.actor, userId: oid().toHexString() };
+    f.sources.evaluateSourceRefsMap.mockResolvedValueOnce(
+      new Map([[sourceRefKey(f.ref), { ...f.ev, readable: false }]]),
+    );
+
+    const dto = await f.service.getJob({
+      actor: otherLeader,
+      handover: f.handover,
+      jobId: f.job._id.toHexString(),
+    });
+
+    expect(dto.warnings).toEqual(['AI_EVIDENCE_INCOMPLETE']);
+    expect(dto.coverage).toBeUndefined();
+    expect(JSON.stringify(dto)).not.toContain(f.ref.id);
+  });
+
+  it('reauthorizes coverage on a committed generation replay', async () => {
+    const f = fixture();
+    await f.internal.runBackgroundJob(f.job._id);
+    Object.assign(f.repo, {
+      findExistingOperation: () =>
+        Promise.resolve({ receipt: { jobId: f.job._id, resourceVersion: 2 } }),
+      assertIdempotencyMatchOrReplay: () => 'REPLAY_COMMITTED',
+    });
+    f.sources.evaluateSourceRefsMap.mockRejectedValueOnce(
+      new Error('Source ACL unavailable'),
+    );
+
+    const result = await f.service.generateDraft({
+      actor: f.actor,
+      handover: f.handover,
+      expectedVersion: 1,
+      idempotencyKey: 'replay-generation',
+      dto: { expectedDraftVersion: 0 },
+    });
+
+    expect(result.replayed).toBe(true);
+    expect(result.job.warnings).toEqual(['AI_EVIDENCE_INCOMPLETE']);
+    expect(result.job.coverage).toBeUndefined();
+  });
+
   it('discards all output if an uncited LLM input loses access while another citation remains valid', async () => {
     const f = fixture();
     const extra = { ...f.ref, id: oid().toHexString() };
@@ -284,6 +354,18 @@ describe('Handover AI live authorization boundary (review round 2)', () => {
       );
       expect(result.sections).toHaveLength(revoked ? 0 : 1);
       expect(result).toHaveProperty('warnings', ['AI_EVIDENCE_INCOMPLETE']);
+      if (revoked) {
+        expect(result.coverage).toBeUndefined();
+      } else {
+        expect(result.coverage).toEqual({
+          requestedSources: 1,
+          includedSources: [f.ref],
+          skippedSources: [],
+          truncatedSources: [f.ref],
+          totalEvidenceUnits: 25,
+          truncated: true,
+        });
+      }
     },
   );
 
@@ -324,12 +406,22 @@ describe('Handover AI live authorization boundary (review round 2)', () => {
           f.iam as never,
           f.sources as never,
           undefined,
+          f.redis as never,
         );
         const dto = await reloadedService.getJob({
+          actor: f.actor,
           handover: f.handover,
           jobId: f.job._id.toHexString(),
         });
         expect(dto.warnings).toEqual(['AI_EVIDENCE_INCOMPLETE']);
+        expect(dto.coverage).toEqual({
+          requestedSources: 1,
+          includedSources: [f.ref],
+          skippedSources: [],
+          truncatedSources: [f.ref],
+          totalEvidenceUnits: 25,
+          truncated: true,
+        });
       }
     },
   );

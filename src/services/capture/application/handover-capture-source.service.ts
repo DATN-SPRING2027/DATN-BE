@@ -155,97 +155,16 @@ export class HandoverCaptureSourceService {
       if (!report || report.status !== 'APPROVED') {
         return unavailable();
       }
-      const history = Array.isArray(report.reviewHistory)
-        ? report.reviewHistory
-        : [];
-      const approvals = history.filter(
-        (h: Record<string, unknown>) =>
-          h?.action === 'APPROVED' || h?.status === 'APPROVED',
-      ).length;
-      const currentVersion = Math.max(1, approvals);
-      // work_reports does not store historical text snapshots across re-approvals;
-      // only the current approved version has verifiable content matching ref.version.
+      const currentVersion = this.resolveWorkReportCurrentVersion(report);
       if (ref.version !== currentVersion) {
         return { ...unavailable(), exists: true, currentVersion };
       }
-
-      const authorId = String(report.memberUserId ?? '').toLowerCase();
-      const scope = report.reportScope === 'LEADER' ? 'LEADER' : 'MEMBER';
-      const isAuthor = authorId === viewer.userId.toLowerCase();
-      const canReadReport =
-        scope === 'LEADER' ? isAuthor : isAuthor || viewer.isProjectLeader;
-
-      if (!canReadReport) {
-        return {
-          kind: 'WORK_REPORT',
-          id: ref.id.toLowerCase(),
-          version: ref.version,
-          exists: true,
-          eligible: true,
-          readable: false,
-          isCurrent: ref.version === currentVersion,
-          currentVersion,
-          title: '',
-          excerpts: [],
-        };
-      }
-
-      const periodStr =
-        report.periodStart instanceof Date
-          ? report.periodStart.toISOString().slice(0, 10)
-          : 'period';
-      const rawReportTitle =
-        typeof report.title === 'string' ? report.title.trim() : '';
-      const title = (rawReportTitle || `Work Report (${periodStr})`).slice(
-        0,
-        255,
-      );
-      const excerpts: HandoverSourceExcerpt[] = [];
-      for (const [key, label] of [
-        ['accomplishments', 'Accomplishments'],
-        ['approach', 'Approach'],
-        ['reason', 'Decision Rationale'],
-        ['blockers', 'Blockers'],
-        ['nextSteps', 'Next Steps'],
-      ] as const) {
-        const val = typeof report[key] === 'string' ? report[key].trim() : '';
-        if (val) {
-          excerpts.push({
-            locatorKind: 'SECTION',
-            locatorValue: key,
-            heading: label,
-            content: val.slice(0, 15000),
-          });
-        }
-      }
-      if (excerpts.length === 0) {
-        const markdown =
-          typeof report.contentMarkdown === 'string'
-            ? report.contentMarkdown.trim()
-            : '';
-        if (markdown) {
-          excerpts.push(
-            ...this.chunkTextToExcerpts(
-              'SECTION',
-              'report-body',
-              title,
-              markdown,
-            ),
-          );
-        }
-      }
-      return {
-        kind: 'WORK_REPORT',
-        id: ref.id.toLowerCase(),
-        version: ref.version,
-        exists: true,
-        eligible: true,
-        readable: true,
-        isCurrent: ref.version === currentVersion,
+      return this.projectApprovedWorkReport(
+        viewer,
+        report,
+        ref.id,
         currentVersion,
-        title,
-        excerpts,
-      };
+      );
     }
 
     // TASK_NOTE
@@ -430,28 +349,124 @@ export class HandoverCaptureSourceService {
 
     for (const report of reports) {
       if (report.status !== 'APPROVED') continue;
-      const history = Array.isArray(report.reviewHistory)
-        ? report.reviewHistory
-        : [];
-      const currentVersion = Math.max(
-        1,
-        history.filter(
-          (h: Record<string, unknown>) =>
-            h?.action === 'APPROVED' || h?.status === 'APPROVED',
-        ).length,
+      const currentVersion = this.resolveWorkReportCurrentVersion(report);
+      const reportId = String(report._id);
+      if (currentVersion === null || !OBJECT_ID_RE.test(reportId)) continue;
+      const evaluated = this.projectApprovedWorkReport(
+        viewer,
+        report,
+        reportId,
+        currentVersion,
       );
-      const evaluated = await this.evaluateSource(viewer, {
-        kind: 'WORK_REPORT',
-        id: String(report._id),
-        version: currentVersion,
-      });
-      if (evaluated.eligible && evaluated.readable) {
+      if (evaluated.readable) {
         results.push(evaluated);
       }
       if (results.length >= limit) break;
     }
 
     return results;
+  }
+
+  private resolveWorkReportCurrentVersion(
+    report: Record<string, unknown>,
+  ): number | null {
+    const history = Array.isArray(report.reviewHistory)
+      ? report.reviewHistory
+      : [];
+    const approvals = history.filter(
+      (h: Record<string, unknown>) =>
+        h?.action === 'APPROVED' || h?.status === 'APPROVED',
+    ).length;
+    const legacyVersion = Math.max(1, approvals);
+    if (
+      report.contentSchemaVersion === undefined &&
+      report.currentVersionNumber === undefined
+    ) {
+      return legacyVersion;
+    }
+
+    // Capture writes canonical content and version together. Editor history can
+    // include drafts saved after this approved row was read.
+    const version = report.currentVersionNumber;
+    if (
+      report.contentSchemaVersion !== 2 ||
+      typeof version !== 'number' ||
+      !Number.isSafeInteger(version) ||
+      // A lower editor version could already identify a prior approval.
+      version < legacyVersion ||
+      typeof report.contentMarkdown !== 'string' ||
+      !report.contentMarkdown.trim()
+    ) {
+      return null;
+    }
+    return version;
+  }
+
+  private projectApprovedWorkReport(
+    viewer: HandoverSourceViewer,
+    report: Record<string, unknown>,
+    id: string,
+    version: number,
+  ): EvaluatedHandoverSource {
+    const memberUserId = report.memberUserId;
+    const authorId =
+      memberUserId instanceof Types.ObjectId
+        ? memberUserId.toHexString()
+        : typeof memberUserId === 'string'
+          ? memberUserId.toLowerCase()
+          : '';
+    const isAuthor = authorId === viewer.userId.toLowerCase();
+    const readable =
+      isAuthor || (report.reportScope !== 'LEADER' && viewer.isProjectLeader);
+    const source: EvaluatedHandoverSource = {
+      kind: 'WORK_REPORT',
+      id: id.toLowerCase(),
+      version,
+      exists: true,
+      eligible: true,
+      readable,
+      isCurrent: true,
+      currentVersion: version,
+      title: '',
+      excerpts: [],
+    };
+    if (!readable) return source;
+
+    const period =
+      report.periodStart instanceof Date
+        ? report.periodStart.toISOString().slice(0, 10)
+        : 'period';
+    const title = typeof report.title === 'string' ? report.title.trim() : '';
+    source.title = (title || `Work Report (${period})`).slice(0, 255);
+    for (const [key, heading] of [
+      ['accomplishments', 'Accomplishments'],
+      ['approach', 'Approach'],
+      ['reason', 'Decision Rationale'],
+      ['blockers', 'Blockers'],
+      ['nextSteps', 'Next Steps'],
+    ] as const) {
+      const content = typeof report[key] === 'string' ? report[key].trim() : '';
+      if (content) {
+        source.excerpts.push({
+          locatorKind: 'SECTION',
+          locatorValue: key,
+          heading,
+          content: content.slice(0, 15000),
+        });
+      }
+    }
+    if (
+      source.excerpts.length === 0 &&
+      typeof report.contentMarkdown === 'string'
+    ) {
+      source.excerpts = this.chunkTextToExcerpts(
+        'SECTION',
+        'report-body',
+        source.title,
+        report.contentMarkdown.trim(),
+      );
+    }
+    return source;
   }
 
   private chunkTextToExcerpts(
