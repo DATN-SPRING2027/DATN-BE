@@ -1294,21 +1294,41 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const sagRes = await this.aiEngine.request<SagHandoverAssistResponse>({
-      path: `/api/v1/projects/${encodeURIComponent(input.actor.projectId)}/handover/assist`,
-      method: 'POST',
-      headers: this.buildSagScopeHeaders(
-        input.actor.userId,
-        input.actor.organizationId,
-        input.actor.projectId,
-      ),
-      body: {
-        task: 'QUESTION_ANSWER',
-        query: input.dto.question,
-        maxItems: 10,
-        sources: permittedSources,
-      },
-    });
+    let sagBody: SagHandoverAssistResponse;
+    try {
+      const sagRes = await this.aiEngine.request<SagHandoverAssistResponse>({
+        path: `/api/v1/projects/${encodeURIComponent(input.actor.projectId)}/handover/assist`,
+        method: 'POST',
+        headers: this.buildSagScopeHeaders(
+          input.actor.userId,
+          input.actor.organizationId,
+          input.actor.projectId,
+        ),
+        body: {
+          task: 'QUESTION_ANSWER',
+          query: input.dto.question,
+          maxItems: 10,
+          sources: permittedSources,
+        },
+      });
+      sagBody = sagRes.body;
+    } catch (err) {
+      if (
+        err instanceof BadGatewayException ||
+        err instanceof ServiceUnavailableException ||
+        err instanceof HttpException
+      ) {
+        this.logger.warn(
+          `AI Engine question-answer call failed (${err.message}); falling back to grounded extractive answer from permitted sources.`,
+        );
+        sagBody = this.buildExtractiveQuestionFallback(
+          input.dto.question,
+          permittedSources,
+        );
+      } else {
+        throw err;
+      }
+    }
 
     const allowedKeys = new Set(
       permittedSources.map((s) => `${s.kind}:${s.id}:${s.version}`),
@@ -1366,7 +1386,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       })),
     );
 
-    const warnings = this.coverageWarnings(sagRes.body);
+    const warnings = this.coverageWarnings(sagBody);
     const allInputsStillReadable = permittedSources.every((source) => {
       const key = `${source.kind}:${source.id}:${source.version}`;
       const before = evalMap.get(key);
@@ -1387,10 +1407,10 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       }),
     );
     const coverage = allInputsStillReadable
-      ? this.normalizeCoverage(sagRes.body.coverage, readableAllowedKeys)
+      ? this.normalizeCoverage(sagBody.coverage, readableAllowedKeys)
       : undefined;
 
-    const verifiedSections = (sagRes.body.sections ?? []).flatMap((sec) => {
+    const verifiedSections = (sagBody.sections ?? []).flatMap((sec) => {
       const validCitations: CitationDto[] = [];
       for (const cit of sec.citations ?? []) {
         const key = `${cit.source.kind}:${cit.source.id.toLowerCase()}:${cit.source.version}`;
@@ -1425,7 +1445,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
 
     if (
       !allInputsStillReadable ||
-      sagRes.body.answerStatus !== 'ANSWERED' ||
+      sagBody.answerStatus !== 'ANSWERED' ||
       verifiedSections.length === 0
     ) {
       return {
@@ -1446,6 +1466,91 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       sections: verifiedSections.slice(0, 20),
       warnings,
       ...(coverage ? { coverage } : {}),
+    };
+  }
+
+  private buildExtractiveQuestionFallback(
+    question: string,
+    permittedSources: Array<{
+      kind: SourceRefDto['kind'];
+      id: string;
+      version: number;
+      title: string;
+      excerpts: Array<{
+        locatorKind: CitationDto['locator']['kind'];
+        locatorValue: string;
+        content: string;
+      }>;
+    }>,
+  ): SagHandoverAssistResponse {
+    const tokens = question
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((t) => t.length >= 2);
+
+    const scoredSections: Array<{
+      score: number;
+      text: string;
+      citations: SagCitationPayload[];
+    }> = [];
+
+    for (const src of permittedSources) {
+      for (const ex of src.excerpts) {
+        const text = ex.content.trim();
+        if (!text) continue;
+        const haystack = `${src.title} ${text}`.toLowerCase();
+        let score = 1;
+        for (const tok of tokens) {
+          if (haystack.includes(tok)) {
+            score += 3;
+          }
+        }
+        scoredSections.push({
+          score,
+          text: `[${src.title}] ${text}`,
+          citations: [
+            {
+              source: {
+                kind: src.kind,
+                id: src.id,
+                version: src.version,
+              },
+              locator: {
+                kind: ex.locatorKind,
+                value: ex.locatorValue,
+              },
+            },
+          ],
+        });
+      }
+    }
+
+    scoredSections.sort((a, b) => b.score - a.score);
+    const topSections = scoredSections
+      .slice(0, 4)
+      .map(({ text, citations }) => ({
+        text,
+        citations,
+      }));
+
+    return {
+      task: 'QUESTION_ANSWER',
+      answerStatus:
+        topSections.length > 0 ? 'ANSWERED' : 'INSUFFICIENT_EVIDENCE',
+      message: null,
+      coverage: {
+        requestedSources: permittedSources.length,
+        includedSources: permittedSources.map((s) => ({
+          kind: s.kind,
+          id: s.id,
+          version: s.version,
+        })),
+        skippedSources: [],
+        truncatedSources: [],
+        totalEvidenceUnits: scoredSections.length,
+        truncated: false,
+      },
+      sections: topSections,
     };
   }
 

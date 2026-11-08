@@ -440,9 +440,7 @@ export class HandoverIamScopeService {
             : '';
         return (
           Boolean(hex) &&
-          (actor.canAdministerCoordinator ||
-            actorProjectIds.has(hex) ||
-            p.visibility === 'PUBLIC')
+          (actorProjectIds.has(hex) || p.visibility === 'PUBLIC')
         );
       })
       .map((p) => {

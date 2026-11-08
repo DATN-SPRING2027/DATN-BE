@@ -860,7 +860,7 @@ export function validateAutoBundleRequest(
 ): AutoBundleHandoverDto {
   const obj = assertObject(
     value ?? {},
-    ['taskIds', 'selectedSources', 'summaryNote'],
+    ['taskIds', 'selectedSources'],
     'AutoBundleHandover',
   );
   const out: AutoBundleHandoverDto = {};
@@ -883,9 +883,6 @@ export function validateAutoBundleRequest(
       (entry, i) => validateSourceRef(entry, `selectedSources[${i}]`),
       (s) => `${s.kind}:${s.id}:${s.version}`,
     );
-  }
-  if (obj.summaryNote !== undefined) {
-    out.summaryNote = assertString(obj.summaryNote, 'summaryNote', 0, 4000);
   }
   return out;
 }

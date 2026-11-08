@@ -33,7 +33,18 @@ export interface HandoverTaskAssignmentInput {
   assignmentVersion: number;
   taskId: string;
   expectedTaskVersion: number;
+  expectedAssigneeId?: string | null;
   targetAssigneeId: string;
+}
+
+interface HandoverTaskReadState {
+  exists: boolean;
+  status: string | null;
+  version: number | null;
+  assigneeId: string | null;
+  key?: string;
+  title?: string;
+  dueDate?: string | null;
 }
 
 export interface HandoverTaskAssignmentOutcome {
@@ -85,6 +96,12 @@ export class HandoverTaskAssignmentService {
           assignmentVersion: input.assignmentVersion,
           taskId: input.taskId.toLowerCase(),
           expectedTaskVersion: input.expectedTaskVersion,
+          ...(input.expectedAssigneeId === undefined
+            ? {}
+            : {
+                expectedAssigneeId:
+                  input.expectedAssigneeId?.toLowerCase() ?? null,
+              }),
           targetAssigneeId: input.targetAssigneeId.toLowerCase(),
         }),
       )
@@ -110,6 +127,8 @@ export class HandoverTaskAssignmentService {
       });
     if (
       !row ||
+      row.isDeleted ||
+      row.deletedAt ||
       (row.organizationId &&
         row.organizationId.toHexString() !== organizationId.toLowerCase())
     ) {
@@ -127,26 +146,8 @@ export class HandoverTaskAssignmentService {
     organizationId: string,
     projectId: string,
     taskIds: readonly string[],
-  ): Promise<
-    Map<
-      string,
-      {
-        exists: boolean;
-        status: string | null;
-        version: number | null;
-        assigneeId: string | null;
-      }
-    >
-  > {
-    const out = new Map<
-      string,
-      {
-        exists: boolean;
-        status: string | null;
-        version: number | null;
-        assigneeId: string | null;
-      }
-    >();
+  ): Promise<Map<string, HandoverTaskReadState>> {
+    const out = new Map<string, HandoverTaskReadState>();
     const normalizedIds = [
       ...new Set(
         taskIds
@@ -164,6 +165,8 @@ export class HandoverTaskAssignmentService {
       .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
       .find({
         _id: { $in: normalizedIds.map((id) => new Types.ObjectId(id)) },
+        isDeleted: { $ne: true },
+        deletedAt: null,
         projectId: new Types.ObjectId(projectId.toLowerCase()),
       })
       .toArray();
@@ -188,6 +191,9 @@ export class HandoverTaskAssignmentService {
         exists: true,
         status: row.status,
         version: row.version,
+        key: row.key,
+        title: row.title,
+        dueDate: row.dueDate?.toISOString() ?? null,
         assigneeId: row.assigneeId
           ? row.assigneeId.toHexString().toLowerCase()
           : null,
@@ -466,6 +472,8 @@ export class HandoverTaskAssignmentService {
 
         if (
           !task ||
+          task.isDeleted ||
+          task.deletedAt ||
           (task.organizationId &&
             task.organizationId.toHexString() !==
               input.organizationId.toLowerCase())
@@ -484,53 +492,68 @@ export class HandoverTaskAssignmentService {
           return;
         }
 
-        const nextVersion = task.version + 1;
-        const updateRes = await tasksCol.updateOne(
-          {
-            _id: taskObjId,
-            projectId: projectObjId,
-            version: input.expectedTaskVersion,
-          },
-          {
-            $set: {
-              assigneeId: targetObjId,
-              updatedAt: now,
-            },
-            $unset: { subtaskCounts: '' },
-            $inc: { version: 1 },
-          },
-          { session },
-        );
-
-        if (updateRes.matchedCount !== 1) {
-          await writeRejected('CONFLICT', 'TASK_VERSION_CONFLICT');
+        const currentAssigneeId = task.assigneeId?.toHexString() ?? null;
+        if (
+          input.expectedAssigneeId !== undefined &&
+          currentAssigneeId !==
+            (input.expectedAssigneeId?.toLowerCase() ?? null)
+        ) {
+          await writeRejected('CONFLICT', 'TASK_ASSIGNEE_CHANGED');
           return;
         }
 
-        await eventsCol.insertOne(
-          {
-            _id: new Types.ObjectId(),
-            taskId: taskObjId,
-            projectId: projectObjId,
-            organizationId: orgObjId,
-            eventType: 'TASK_UPDATED',
-            actorType: 'USER',
-            actorId: actorObjId,
-            source: 'INTERNAL_SERVICE',
-            changedFields: ['assigneeId'],
-            taskVersion: nextVersion,
-            version: nextVersion,
-            occurredAt: now,
-            timestamp: now,
-            operationId,
-            correlationId: input.handoverId.toLowerCase(),
-            delta: {
-              type: 'FIELD_UPDATE',
-              changedFields: ['assigneeId'],
+        const alreadyAssigned =
+          input.expectedAssigneeId !== undefined &&
+          currentAssigneeId === targetObjId.toHexString();
+        const nextVersion = alreadyAssigned ? task.version : task.version + 1;
+        if (!alreadyAssigned) {
+          const updateRes = await tasksCol.updateOne(
+            {
+              _id: taskObjId,
+              projectId: projectObjId,
+              version: input.expectedTaskVersion,
             },
-          },
-          { session },
-        );
+            {
+              $set: {
+                assigneeId: targetObjId,
+                updatedAt: now,
+              },
+              $unset: { subtaskCounts: '' },
+              $inc: { version: 1 },
+            },
+            { session },
+          );
+
+          if (updateRes.matchedCount !== 1) {
+            await writeRejected('CONFLICT', 'TASK_VERSION_CONFLICT');
+            return;
+          }
+
+          await eventsCol.insertOne(
+            {
+              _id: new Types.ObjectId(),
+              taskId: taskObjId,
+              projectId: projectObjId,
+              organizationId: orgObjId,
+              eventType: 'TASK_UPDATED',
+              actorType: 'USER',
+              actorId: actorObjId,
+              source: 'INTERNAL_SERVICE',
+              changedFields: ['assigneeId'],
+              taskVersion: nextVersion,
+              version: nextVersion,
+              occurredAt: now,
+              timestamp: now,
+              operationId,
+              correlationId: input.handoverId.toLowerCase(),
+              delta: {
+                type: 'FIELD_UPDATE',
+                changedFields: ['assigneeId'],
+              },
+            },
+            { session },
+          );
+        }
 
         await opsCol.updateOne(
           {
@@ -576,6 +599,7 @@ export class HandoverTaskAssignmentService {
 
   async reconcileTaskForHandover(
     input: HandoverTaskAssignmentInput,
+    verifyOnly = false,
   ): Promise<HandoverTaskAssignmentOutcome> {
     const db = this.repository.db;
     const fp = this.fingerprint(input);
@@ -616,6 +640,8 @@ export class HandoverTaskAssignmentService {
           : null;
         if (
           !currentTask ||
+          currentTask.isDeleted ||
+          currentTask.deletedAt ||
           (currentTask.organizationId &&
             currentTask.organizationId.toHexString() !==
               input.organizationId.toLowerCase())
@@ -659,6 +685,8 @@ export class HandoverTaskAssignmentService {
     // No committed/rejected receipt exists yet:
     if (
       !currentTask ||
+      currentTask.isDeleted ||
+      currentTask.deletedAt ||
       (currentTask.organizationId &&
         currentTask.organizationId.toHexString() !==
           input.organizationId.toLowerCase())
@@ -676,7 +704,11 @@ export class HandoverTaskAssignmentService {
       : null;
 
     // 19:132 — Current assignee matches B without any operation receipt: cannot claim our operation succeeded!
-    if (currentAssignee === targetLower) {
+    if (
+      verifyOnly ||
+      (currentAssignee === targetLower &&
+        input.expectedAssigneeId?.toLowerCase() !== targetLower)
+    ) {
       return {
         state: 'CONFLICT',
         committedTaskVersion: null,

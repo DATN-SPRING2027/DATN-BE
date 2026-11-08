@@ -1,0 +1,206 @@
+openapi: 3.1.0
+info:
+  title: Continuum AI Project Handover streamlined contract
+  version: 1.0.0
+paths:
+  /api/v1/handover/projects/{projectId}/handovers/departing-preview:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+    get:
+      description: Active departing member or project leader previews scope. Related project names require read access and source counts describe bounded, authorized preview results.
+      parameters:
+        - in: query
+          name: departingUserId
+          required: true
+          schema: { $ref: '#/components/schemas/Id' }
+        - in: query
+          name: handoverId
+          schema: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Departing member tasks, readable sources and authorized related projects.
+        '403':
+          description: Caller cannot preview the departing member.
+        '404':
+          description: Handover is outside the caller's scope or does not match the departing member.
+  /api/v1/handover/projects/{projectId}/handovers:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+    get:
+      description: Project-scoped listing. Participant filters bind to the authenticated active member before cursor pagination.
+      parameters:
+        - in: query
+          name: participantRole
+          schema: { type: string, enum: [DEPARTING, SUCCESSOR] }
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        '200':
+          description: Existing handover summaries and nextCursor.
+        '400':
+          description: Invalid filter or cursor.
+        '403':
+          description: Active Project membership required for participant filters.
+  /api/v1/handover/projects/{projectId}/handovers/{handoverId}:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - $ref: '#/components/parameters/Handover'
+    get:
+      responses:
+        '200':
+          description: Existing Handover detail plus the participant projection for the active departing member or current successor.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  participantView:
+                    oneOf:
+                      - $ref: '#/components/schemas/ParticipantView'
+                      - type: 'null'
+                  taskTransfer:
+                    type: object
+                    required: [selectedCount, verifiedCount]
+                    properties:
+                      selectedCount: { type: integer, minimum: 0 }
+                      verifiedCount: { type: integer, minimum: 0 }
+        '404':
+          description: Handover outside readable scope.
+  /api/v1/handover/projects/{projectId}/handovers/{handoverId}/auto-bundle:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - $ref: '#/components/parameters/Handover'
+    post:
+      description: Project Leader publishes a snapshot. Omitted selections use discovery. Empty arrays explicitly select nothing.
+      parameters: &command
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Csrf'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taskIds: { $ref: '#/components/schemas/TaskIds' }
+                selectedSources:
+                  type: array
+                  maxItems: 100
+                  items: { $ref: '#/components/schemas/SourceRef' }
+      responses: &commandResponses
+        '200':
+          description: Authorized resource or transfer projection.
+        '403':
+          description: Role or CSRF check failed.
+        '409':
+          description: Version, state, or idempotency conflict.
+        '422':
+          description: Selection violates a workflow rule.
+        '428':
+          description: Missing If-Match.
+  /api/v1/handover/projects/{projectId}/handovers/{handoverId}/quick-transfer:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - $ref: '#/components/parameters/Handover'
+    post:
+      description: Transfers only pinned tasks before successor acceptance. An omitted selection uses the published selection. Task receipts distinguish reassignment and confirmed existing ownership.
+      parameters: *command
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taskIds: { $ref: '#/components/schemas/TaskIds' }
+      responses: *commandResponses
+  /api/v1/handover/projects/{projectId}/handovers/{handoverId}/quick-accept:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - $ref: '#/components/parameters/Handover'
+    post:
+      description: The current successor accepts the current package after task transfer is verified. Only a readable, current generated summary without an independent review requirement is eligible for combined acknowledgement.
+      parameters: *command
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 2000 }
+      responses: *commandResponses
+components:
+  parameters:
+    Project:
+      in: path
+      name: projectId
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    Handover:
+      in: path
+      name: handoverId
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    IfMatch:
+      in: header
+      name: If-Match
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, format: uuid }
+    Csrf:
+      in: header
+      name: X-CSRF-Token
+      required: true
+      schema: { type: string }
+  schemas:
+    Id:
+      type: string
+      pattern: '^[a-f0-9]{24}$'
+    TaskIds:
+      type: array
+      uniqueItems: true
+      maxItems: 100
+      items: { $ref: '#/components/schemas/Id' }
+    SourceRef:
+      type: object
+      required: [kind, id, version]
+      properties:
+        kind: { type: string, enum: [TASK_NOTE, PROJECT_DOCUMENT, WORK_REPORT, KNOWLEDGE_OBJECT] }
+        id: { $ref: '#/components/schemas/Id' }
+        version: { type: string }
+    ParticipantView:
+      type: object
+      required: [role, packageAccepted, canQuickAccept, tasks, sources]
+      properties:
+        role: { type: string, enum: [DEPARTING, SUCCESSOR] }
+        packageAccepted: { type: boolean }
+        canQuickAccept: { type: boolean }
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [id, key, title, status, dueDate, disposition, canAddNote]
+            properties:
+              id: { $ref: '#/components/schemas/Id' }
+              key: { type: string }
+              title: { type: string }
+              status: { type: string }
+              dueDate: { type: [string, 'null'], format: date-time }
+              disposition: { type: string, enum: [DEPARTING, TRANSFERRED, ALREADY_ASSIGNED] }
+              canAddNote: { type: boolean }
+        sources:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/SourceRef'
+              - type: object
+                required: [title]
+                properties:
+                  title: { type: string }

@@ -621,6 +621,25 @@ export function evaluateCompletionReadiness(input: {
     }
   }
 
+  const confirmedTaskIds = new Set(
+    input.transferChildOperations
+      .filter(
+        (child) =>
+          child.revisionId?.toHexString() === revHex &&
+          child.assignmentVersion === input.handover.assignmentVersion &&
+          succLower !== null &&
+          child.successorUserId?.toLowerCase() === succLower &&
+          child.state === 'COMMITTED' &&
+          child.taskOutcome?.state === 'COMMITTED' &&
+          child.taskIntent?.taskId,
+      )
+      .map((child) => child.taskIntent!.taskId.toHexString()),
+  );
+
+  const allSelectedTasksConfirmed = input.currentRevision.selectedTasks.every(
+    (task) => confirmedTaskIds.has(task.taskId.toHexString()),
+  );
+
   // Task transfer checks:
   // 1. Any in-flight / ambiguous transfer across any epoch/revision fences completion.
   // 2. Terminal PARTIAL / CONFLICT on the current revision + assignment epoch blocks completion
@@ -644,6 +663,7 @@ export function evaluateCompletionReadiness(input: {
       transferOp.successorUserId?.toLowerCase() === succLower;
     if (
       isCurrentRevisionBinding &&
+      !allSelectedTasksConfirmed &&
       (transferOp.state === 'PARTIAL' || transferOp.state === 'CONFLICT')
     ) {
       blockers.push({
@@ -654,21 +674,6 @@ export function evaluateCompletionReadiness(input: {
   }
 
   if (input.currentRevision.selectedTasks.length > 0) {
-    const confirmedTaskIds = new Set(
-      input.transferChildOperations
-        .filter(
-          (child) =>
-            child.revisionId?.toHexString() === revHex &&
-            child.assignmentVersion === input.handover.assignmentVersion &&
-            succLower !== null &&
-            child.successorUserId?.toLowerCase() === succLower &&
-            child.state === 'COMMITTED' &&
-            child.taskOutcome?.state === 'COMMITTED' &&
-            child.taskIntent?.taskId,
-        )
-        .map((child) => child.taskIntent!.taskId.toHexString()),
-    );
-
     for (const selectedTask of input.currentRevision.selectedTasks) {
       const taskHex = selectedTask.taskId.toHexString();
       if (!confirmedTaskIds.has(taskHex)) {

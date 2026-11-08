@@ -19,6 +19,20 @@ export class AuditService {
     @InjectConnection('audit') private readonly connection: Connection,
   ) {}
 
+  async isLegacyQuickTransfer(
+    projectId: string,
+    transferId: string,
+  ): Promise<boolean> {
+    return Boolean(
+      await this.connection.collection('audit_logs').findOne({
+        projectId,
+        action: 'handover.task_transfer.started',
+        targetResourceId: transferId,
+        'metadata.mode': 'quick_transfer',
+      }),
+    );
+  }
+
   async append(event: AuditEventInput, session?: ClientSession): Promise<void> {
     const record = {
       ...event,

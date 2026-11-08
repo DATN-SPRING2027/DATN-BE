@@ -7,6 +7,7 @@ import type { StoredFollowUpDoc, StoredHandoverDoc } from './handover.types';
 
 function query<T>(value: T) {
   const q = {
+    select: () => q,
     sort: () => q,
     limit: () => q,
     lean: () => q,
@@ -63,6 +64,8 @@ function setup(readable: boolean, replay = false, missingItem = false) {
       : [
           {
             itemId: doc.itemId,
+            body: 'Body',
+            requirement: 'Requirement',
             sources: [],
             citations: [
               { source: ref, locator: { kind: 'SECTION', value: 'private' } },
@@ -71,6 +74,7 @@ function setup(readable: boolean, replay = false, missingItem = false) {
         ],
   };
   const repo = {
+    operations: { find: jest.fn(() => query([])) },
     revisions: { findOne: jest.fn(() => query(revision)) },
     followUps: {
       countDocuments: jest.fn(() => Promise.resolve(1)),

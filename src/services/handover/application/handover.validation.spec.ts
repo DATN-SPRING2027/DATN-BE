@@ -117,7 +117,6 @@ describe('Handover Contract Validation & 21 Payload Oracles', () => {
             version: '1',
           },
         ],
-        summaryNote: 'Streamlined bundle',
       }),
     ).toEqual({
       taskIds: ['111111111111111111111111'],
@@ -128,8 +127,10 @@ describe('Handover Contract Validation & 21 Payload Oracles', () => {
           version: '1',
         },
       ],
-      summaryNote: 'Streamlined bundle',
     });
+    expect(() =>
+      validateAutoBundleRequest({ summaryNote: 'Uncited content' }),
+    ).toThrow(BadRequestException);
 
     expect(validateQuickAcceptRequest({ note: 'Đã nhận bàn giao' })).toEqual({
       note: 'Đã nhận bàn giao',

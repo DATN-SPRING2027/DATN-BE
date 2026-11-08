@@ -253,6 +253,24 @@ export interface HandoverDetailDto {
   capabilities: HandoverCapability[];
   requiredPendingCount: number;
   canComplete: boolean;
+  participantView?: HandoverParticipantView;
+  taskTransfer?: { selectedCount: number; verifiedCount: number };
+}
+
+export interface HandoverParticipantView {
+  role: 'DEPARTING' | 'SUCCESSOR';
+  packageAccepted: boolean;
+  canQuickAccept: boolean;
+  tasks: Array<{
+    id: string;
+    key: string;
+    title: string;
+    status: string;
+    dueDate: string | null;
+    disposition: 'DEPARTING' | 'TRANSFERRED' | 'ALREADY_ASSIGNED';
+    canAddNote: boolean;
+  }>;
+  sources: Array<SourceRefDto & { title: string }>;
 }
 
 export interface HandoverListDto {
@@ -353,6 +371,7 @@ export interface TaskTransferResultDto {
   state: TaskTransferChildResultState;
   expectedTaskVersion: number;
   committedTaskVersion: number | null;
+  disposition?: 'TRANSFERRED' | 'ALREADY_ASSIGNED';
   safeErrorCode: string | null;
 }
 
@@ -429,7 +448,6 @@ export interface DepartingMemberPreviewDto {
 export interface AutoBundleHandoverDto {
   taskIds?: string[];
   selectedSources?: SourceRefDto[];
-  summaryNote?: string;
 }
 
 export interface QuickAcceptHandoverDto {

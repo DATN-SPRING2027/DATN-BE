@@ -46,6 +46,7 @@ import type {
   HandoverAnswerDto,
   HandoverDetailDto,
   HandoverListDto,
+  HandoverParticipantView,
   HandoverRequestHeaders,
   HandoverSummaryDto,
   ItemEvidenceDetailDto,
@@ -97,6 +98,9 @@ import {
   validateSubmitEvidence,
   validateUpdateMetadata,
 } from './handover.validation';
+
+const LEGACY_AUTO_BUNDLE = 'AUTO_BUNDLED_AND_PUBLISHED';
+const SAFE_AUTO_BUNDLE = 'AUTO_BUNDLE_SAFE_V2';
 
 export interface HttpPayloadWithHeaders<TBody> {
   body: TBody;
@@ -208,7 +212,7 @@ export class HandoverWorkflowService {
       .exec();
     const item = revision?.items.find((row) => row.itemId.equals(doc.itemId));
     if (item) {
-      const refs = collectItemDependencyRefs(item);
+      const refs = await this.guardedItemDependencies(doc.handoverId, item);
       const evaluations = await this.sourcesService.evaluateSourceRefsMap(
         actor,
         refs,
@@ -333,7 +337,26 @@ export class HandoverWorkflowService {
       });
     }
 
-    const { cursor, limit } = parseListPagination(query);
+    const { participantRole, ...pagination } = query;
+    const { cursor, limit } = parseListPagination(pagination);
+    if (
+      participantRole !== undefined &&
+      participantRole !== 'DEPARTING' &&
+      participantRole !== 'SUCCESSOR'
+    ) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid participantRole.',
+        details: { field: 'participantRole' },
+      });
+    }
+    if (participantRole && !actor.isProjectMember) {
+      throw new ForbiddenException({
+        code: 'HANDOVER_FORBIDDEN',
+        message: 'Active project membership is required.',
+        details: {},
+      });
+    }
     const orgObj = new Types.ObjectId(actor.organizationId);
     const projObj = new Types.ObjectId(actor.projectId);
 
@@ -343,7 +366,11 @@ export class HandoverWorkflowService {
       projectId: projObj,
     };
 
-    if (!actor.isProjectLeader && !actor.canAdministerCoordinator) {
+    if (participantRole) {
+      mongoFilter[
+        participantRole === 'DEPARTING' ? 'departingUserId' : 'successorUserId'
+      ] = actor.userId;
+    } else if (!actor.isProjectLeader && !actor.canAdministerCoordinator) {
       const ownedFollowUps = await this.repository.followUps
         .find({
           schemaVersion: 2,
@@ -590,6 +617,91 @@ export class HandoverWorkflowService {
     };
   }
 
+  private async bindLegacyBundleDependencies<
+    T extends StoredHandoverItemSnapshot,
+  >(
+    handoverId: Types.ObjectId,
+    items: T[],
+  ): Promise<{ items: T[]; unverified: Set<string> }> {
+    const unverified = new Set<string>();
+    if (!items.length) return { items, unverified };
+    const receipts = await this.repository.operations
+      .find({
+        handoverId,
+        kind: 'COMMAND',
+        'receipt.outcome': { $in: [LEGACY_AUTO_BUNDLE, SAFE_AUTO_BUNDLE] },
+      })
+      .select({ receipt: 1 })
+      .lean<StoredOperationDoc[]>()
+      .exec();
+    const outcomes = new Map(
+      receipts.flatMap(({ receipt }) =>
+        receipt?.revisionId
+          ? [[receipt.revisionId.toHexString(), receipt.outcome] as const]
+          : [],
+      ),
+    );
+    const origins = outcomes.size
+      ? await this.repository.revisions
+          .find({
+            handoverId,
+            _id: {
+              $in: [...outcomes.keys()].map((id) => new Types.ObjectId(id)),
+            },
+            'items.itemId': { $in: items.map((item) => item.itemId) },
+          })
+          .select({ items: 1, selectedSources: 1 })
+          .lean<StoredRevisionDoc[]>()
+          .exec()
+      : [];
+    const originByItem = new Map(
+      origins.flatMap((revision) =>
+        revision.items.map(
+          (item) => [item.itemId.toHexString(), revision] as const,
+        ),
+      ),
+    );
+    const projected = items.map((item) => {
+      const id = item.itemId.toHexString();
+      const origin = originByItem.get(id);
+      if (!origin) {
+        if (
+          item.body.includes('Nguồn tài liệu & Tri thức liên quan (') &&
+          item.requirement.startsWith('Người tiếp nối (Successor) xác nhận')
+        )
+          unverified.add(id);
+        return item;
+      }
+      if (outcomes.get(origin._id.toHexString()) !== LEGACY_AUTO_BUNDLE)
+        return item;
+      const sources = new Map(
+        [...item.sources, ...origin.selectedSources].map((ref) => [
+          sourceRefKey(ref),
+          ref,
+        ]),
+      );
+      return { ...item, sources: [...sources.values()] };
+    });
+    return { items: projected, unverified };
+  }
+
+  private async guardedItemDependencies(
+    handoverId: Types.ObjectId,
+    item: StoredHandoverItemSnapshot,
+  ): Promise<SourceRefDto[]> {
+    const provenance = await this.bindLegacyBundleDependencies(handoverId, [
+      item,
+    ]);
+    if (provenance.unverified.size) {
+      throw new ForbiddenException({
+        code: 'ITEM_DEPENDENCY_UNAVAILABLE',
+        message: 'Item dependencies are restricted or unavailable.',
+        details: {},
+      });
+    }
+    return collectItemDependencyRefs(provenance.items[0]);
+  }
+
   private async buildRevisionProjectionAndReadiness(input: {
     viewer: HandoverProjectActorContext;
     handover: StoredHandoverDoc;
@@ -655,10 +767,14 @@ export class HandoverWorkflowService {
         .exec(),
     ]);
 
-    const allItemDeps: SourceRefDto[] = [];
-    for (const item of input.revision.items) {
-      allItemDeps.push(...collectItemDependencyRefs(item));
-    }
+    const provenance = await this.bindLegacyBundleDependencies(
+      input.handover._id,
+      input.revision.items,
+    );
+    const guardedRevision = { ...input.revision, items: provenance.items };
+    const allItemDeps = guardedRevision.items.flatMap(
+      collectItemDependencyRefs,
+    );
 
     const viewerLower = input.viewer.userId.toLowerCase();
     const hasContentReadAccess =
@@ -738,9 +854,9 @@ export class HandoverWorkflowService {
       input.revision.reviews.map((r) => [r.itemId.toHexString(), r]),
     );
 
-    const projectedItems = input.revision.items.map((item) => {
+    const projectedItems = guardedRevision.items.map((item) => {
       const itemHex = item.itemId.toHexString();
-      if (!hasContentReadAccess) {
+      if (!hasContentReadAccess || provenance.unverified.has(itemHex)) {
         return {
           itemId: itemHex,
           access: 'UNAVAILABLE' as const,
@@ -768,7 +884,7 @@ export class HandoverWorkflowService {
 
     const readiness = evaluateCompletionReadiness({
       handover: input.handover,
-      currentRevision: input.isCurrent ? input.revision : null,
+      currentRevision: input.isCurrent ? guardedRevision : null,
       acceptances,
       evidences,
       evidenceReviews,
@@ -791,8 +907,118 @@ export class HandoverWorkflowService {
         isCurrent: input.isCurrent,
       },
       requiredPendingCount: readiness.requiredPendingCount,
-      canComplete: successorMemberActive && readiness.canComplete,
+      canComplete:
+        successorMemberActive &&
+        readiness.canComplete &&
+        provenance.unverified.size === 0,
       packageAccepted: readiness.packageAccepted,
+    };
+  }
+
+  private async getParticipantView(
+    actor: HandoverProjectActorContext,
+    handover: StoredHandoverDoc,
+    revision: StoredRevisionDoc | null,
+    packageAccepted: boolean,
+    verified: Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>,
+  ): Promise<HandoverParticipantView | undefined> {
+    if (!actor.isProjectMember) return;
+    const isSuccessor = handover.successorUserId === actor.userId;
+    if (!isSuccessor && handover.departingUserId !== actor.userId) return;
+    const role = isSuccessor ? 'SUCCESSOR' : 'DEPARTING';
+    if (!revision && isSuccessor) {
+      return {
+        role,
+        packageAccepted,
+        canQuickAccept: false,
+        tasks: [],
+        sources: [],
+      };
+    }
+    const [departingTasks, sourceMap] = await Promise.all([
+      !revision
+        ? this.taskAssignmentService.listDepartingMemberTasksForHandover(
+            actor.organizationId,
+            actor.projectId,
+            actor.userId,
+          )
+        : Promise.resolve([]),
+      revision
+        ? this.sourcesService.evaluateSourceRefsMap(
+            actor,
+            revision.selectedSources,
+          )
+        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
+    ]);
+    const taskIds = isSuccessor
+      ? [...verified.keys()]
+      : (revision?.selectedTasks.map((task) => task.taskId.toHexString()) ??
+        departingTasks.map((task) => task.id));
+    const [liveTasks, draftSources] = await Promise.all([
+      this.taskAssignmentService.inspectTasksCurrentState(
+        actor.organizationId,
+        actor.projectId,
+        taskIds,
+      ),
+      revision
+        ? Promise.resolve([])
+        : this.sourcesService
+            .discoverDepartingMemberFullScope(actor, actor.userId, taskIds)
+            .then(({ sources }) =>
+              sources.map(({ kind, id, version, title }) => ({
+                kind,
+                id,
+                version,
+                title,
+              })),
+            ),
+    ]);
+    const tasks: HandoverParticipantView['tasks'] = taskIds.flatMap((id) => {
+      const task = liveTasks.get(id);
+      if (
+        !task?.exists ||
+        !task.status ||
+        !task.title ||
+        (isSuccessor && task.assigneeId !== actor.userId) ||
+        (!isSuccessor &&
+          (task.status === 'DONE' || task.status === 'CANCELLED'))
+      )
+        return [];
+      return [
+        {
+          id,
+          key: task.key ?? id.slice(-6).toUpperCase(),
+          title: task.title,
+          status: task.status,
+          dueDate: task.dueDate ?? null,
+          disposition:
+            (isSuccessor ? verified.get(id) : undefined) ?? 'DEPARTING',
+          canAddNote:
+            !isSuccessor &&
+            handover.status === 'OPEN' &&
+            task.assigneeId === actor.userId,
+        },
+      ];
+    });
+    const sources =
+      revision?.selectedSources.flatMap((ref) => {
+        const source = sourceMap.get(sourceRefKey(ref));
+        return source?.eligible && source.readable
+          ? [{ ...ref, title: source.title }]
+          : [];
+      }) ?? draftSources;
+    return {
+      role,
+      tasks,
+      sources,
+      packageAccepted,
+      canQuickAccept: Boolean(
+        isSuccessor &&
+        revision &&
+        handover.status === 'OPEN' &&
+        !packageAccepted &&
+        revision.selectedTasks.length === tasks.length,
+      ),
     };
   }
 
@@ -829,6 +1055,7 @@ export class HandoverWorkflowService {
       });
     }
 
+    let currentRevision: StoredRevisionDoc | null = null;
     let publishedRevision: RevisionProjectionDto | null = null;
     let requiredPendingCount = 0;
     let canComplete = false;
@@ -844,6 +1071,7 @@ export class HandoverWorkflowService {
         .exec();
 
       if (revDoc) {
+        currentRevision = revDoc;
         const built = await this.buildRevisionProjectionAndReadiness({
           viewer: actor,
           handover,
@@ -868,6 +1096,22 @@ export class HandoverWorkflowService {
       isFollowUpOwner,
     });
 
+    const verified =
+      currentRevision &&
+      actor.isProjectMember &&
+      (actor.isProjectLeader || actor.userId === handover.successorUserId)
+        ? await this.transferService.verifiedTaskDispositions(
+            handover,
+            currentRevision,
+          )
+        : new Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>();
+    const participantView = await this.getParticipantView(
+      actor,
+      handover,
+      currentRevision,
+      packageAccepted,
+      verified,
+    );
     return {
       body: {
         handover: this.toSummaryDto(handover),
@@ -875,6 +1119,15 @@ export class HandoverWorkflowService {
         capabilities,
         requiredPendingCount,
         canComplete,
+        ...(participantView ? { participantView } : {}),
+        ...(actor.isProjectLeader && currentRevision
+          ? {
+              taskTransfer: {
+                selectedCount: currentRevision.selectedTasks.length,
+                verifiedCount: verified.size,
+              },
+            }
+          : {}),
       },
       etag: formatHandoverEtag(handover._id.toHexString(), handover.version),
     };
@@ -1434,9 +1687,13 @@ export class HandoverWorkflowService {
       .lean<StoredDraftItemDoc[]>()
       .exec();
 
+    const provenance = await this.bindLegacyBundleDependencies(
+      handover._id,
+      draftDocs,
+    );
     const allSources = [
       ...handover.selectedSources,
-      ...draftDocs.flatMap((d) => collectItemDependencyRefs(d)),
+      ...provenance.items.flatMap((d) => collectItemDependencyRefs(d)),
     ];
     const viewer: HandoverSourceViewer = {
       organizationId: actor.organizationId,
@@ -1451,12 +1708,14 @@ export class HandoverWorkflowService {
     );
 
     // Filter out any item or source that the current Leader is not permitted to read
-    const visibleItems: DraftItemDto[] = draftDocs
-      .filter((d) =>
-        collectItemDependencyRefs(d).every((dep) => {
-          const ev = evalMap.get(sourceRefKey(dep));
-          return Boolean(ev && ev.eligible && ev.readable);
-        }),
+    const visibleItems: DraftItemDto[] = provenance.items
+      .filter(
+        (d) =>
+          !provenance.unverified.has(d.itemId.toHexString()) &&
+          collectItemDependencyRefs(d).every((dep) => {
+            const ev = evalMap.get(sourceRefKey(dep));
+            return Boolean(ev && ev.eligible && ev.readable);
+          }),
       )
       .map((d) => ({
         itemId: d.itemId.toHexString(),
@@ -2579,7 +2838,7 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = collectItemDependencyRefs(targetItem);
+    const deps = await this.guardedItemDependencies(handover._id, targetItem);
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -2789,7 +3048,7 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = collectItemDependencyRefs(targetItem);
+    const deps = await this.guardedItemDependencies(handover._id, targetItem);
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -2992,7 +3251,7 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = collectItemDependencyRefs(targetItem);
+    const deps = await this.guardedItemDependencies(handover._id, targetItem);
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -3276,7 +3535,7 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = collectItemDependencyRefs(targetItem);
+    const deps = await this.guardedItemDependencies(handover._id, targetItem);
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -4151,9 +4410,11 @@ export class HandoverWorkflowService {
         : Promise.resolve(undefined),
     ]);
 
-    const allDeps = revision.items.flatMap((it) =>
-      collectItemDependencyRefs(it),
+    const provenance = await this.bindLegacyBundleDependencies(
+      handover._id,
+      revision.items,
     );
+    const allDeps = provenance.items.flatMap(collectItemDependencyRefs);
     const [leaderSourceMap, successorSourceMap] = await Promise.all([
       this.sourcesService.evaluateSourceRefsMap(
         {
@@ -4181,7 +4442,7 @@ export class HandoverWorkflowService {
 
     const evaluation = evaluateCompletionReadiness({
       handover,
-      currentRevision: revision,
+      currentRevision: { ...revision, items: provenance.items },
       acceptances,
       evidences,
       evidenceReviews,
@@ -4194,6 +4455,9 @@ export class HandoverWorkflowService {
     });
 
     const blockers = [...evaluation.blockers];
+    if (provenance.unverified.size) {
+      blockers.push({ code: 'REQUIRED_ITEM_DEPENDENCY_UNAVAILABLE' });
+    }
     if (!successorScope.isProjectMember) {
       blockers.push({ code: 'SUCCESSOR_INACTIVE_IN_PROJECT' });
     }
@@ -4748,42 +5012,36 @@ export class HandoverWorkflowService {
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<DepartingMemberPreviewDto>> {
     const actor = await this.resolveActor(projectId, headers, false);
-    if (!actor.isProjectMember && !actor.canAdministerCoordinator) {
-      throw new ForbiddenException({
-        code: 'HANDOVER_FORBIDDEN',
-        message:
-          'Active project membership is required to preview handover scope.',
-        details: {},
-      });
-    }
-
     const departingUserId = assertHexId(
       query.departingUserId,
       'departingUserId',
     );
-    const handoverIdRaw =
-      typeof query.handoverId === 'string' &&
-      /^[a-f0-9]{24}$/i.test(query.handoverId)
-        ? query.handoverId.toLowerCase()
-        : null;
+    if (
+      !actor.isProjectMember ||
+      (!actor.isProjectLeader && actor.userId !== departingUserId)
+    ) {
+      throw new ForbiddenException({
+        code: 'HANDOVER_FORBIDDEN',
+        message:
+          'Only the departing member or an active Project Leader may preview scope.',
+        details: {},
+      });
+    }
 
     let extraTaskIds: string[] = [];
-    if (handoverIdRaw) {
-      const existingHandover = await this.repository.handovers
-        .findOne({
-          _id: new Types.ObjectId(handoverIdRaw),
-          organizationId: new Types.ObjectId(actor.organizationId),
-          projectId: new Types.ObjectId(actor.projectId),
-          schemaVersion: 2,
-        })
-        .select({ selectedTasks: 1 })
-        .lean<Pick<StoredHandoverDoc, 'selectedTasks'>>()
-        .exec();
-      if (existingHandover?.selectedTasks) {
-        extraTaskIds = existingHandover.selectedTasks.map((t) =>
-          t.taskId.toHexString().toLowerCase(),
-        );
+    if (query.handoverId !== undefined) {
+      const handoverId = assertHexId(query.handoverId, 'handoverId');
+      const handover = await this.loadHandoverOrNotFound(actor, handoverId);
+      if (handover.departingUserId !== departingUserId) {
+        throw new NotFoundException({
+          code: 'HANDOVER_NOT_FOUND',
+          message: 'Handover not found.',
+          details: {},
+        });
       }
+      extraTaskIds = handover.selectedTasks.map((task) =>
+        task.taskId.toHexString(),
+      );
     }
 
     const viewer: HandoverSourceViewer = {
@@ -4810,56 +5068,62 @@ export class HandoverWorkflowService {
     ]);
 
     const projectIds = relatedProjectsRaw.map((p) => p.projectId);
-    const [taskCountsMap, sourceCountsMap, scopeResult] = await Promise.all([
-      typeof this.taskAssignmentService
-        .countDepartingMemberActiveTasksByProjects === 'function'
-        ? this.taskAssignmentService.countDepartingMemberActiveTasksByProjects(
-            actor.organizationId,
-            projectIds,
-            departingUserId,
-          )
-        : Promise.resolve(new Map<string, number>()),
-      typeof this.sourcesService.countDepartingMemberSourcesByProjects ===
-      'function'
-        ? this.sourcesService.countDepartingMemberSourcesByProjects(
-            actor.organizationId,
-            projectIds,
-            departingUserId,
-          )
-        : Promise.resolve(
-            new Map<
-              string,
-              {
-                taskNoteCount: number;
-                documentCount: number;
-                workReportCount: number;
-              }
-            >(),
-          ),
-      typeof this.sourcesService.discoverDepartingMemberFullScope === 'function'
-        ? this.sourcesService.discoverDepartingMemberFullScope(
-            viewer,
-            departingUserId,
-            tasks.map((t) => t.id),
-            50,
-          )
-        : Promise.resolve({ sources: [], evaluatedMap: new Map() }),
+    const [taskCountsMap, scopeResult] = await Promise.all([
+      this.taskAssignmentService.countDepartingMemberActiveTasksByProjects(
+        actor.organizationId,
+        projectIds,
+        departingUserId,
+      ),
+      this.sourcesService.discoverDepartingMemberFullScope(
+        viewer,
+        departingUserId,
+        tasks.map((task) => task.id),
+        50,
+      ),
     ]);
 
-    const relatedProjects = relatedProjectsRaw.map((proj) => {
-      const pid = proj.projectId.toLowerCase();
-      const srcCounts = sourceCountsMap.get(pid);
-      return {
-        projectId: pid,
-        key: proj.key,
-        name: proj.name,
-        membershipStatus: proj.membershipStatus,
-        unfinishedTaskCount: taskCountsMap.get(pid) ?? 0,
-        taskNoteCount: srcCounts?.taskNoteCount ?? 0,
-        documentCount: srcCounts?.documentCount ?? 0,
-        workReportCount: srcCounts?.workReportCount ?? 0,
-      };
-    });
+    const relatedProjects = await Promise.all(
+      relatedProjectsRaw.map(async (project) => {
+        const pid = project.projectId;
+        const scope =
+          pid === actor.projectId
+            ? viewer
+            : {
+                ...viewer,
+                projectId: pid,
+                ...(await this.iamScope.resolveActiveProjectMemberScope(
+                  actor.organizationId,
+                  pid,
+                  actor.userId,
+                )),
+              };
+        const sources =
+          pid === actor.projectId
+            ? scopeResult.sources
+            : scope.isProjectMember
+              ? (
+                  await this.sourcesService.discoverDepartingMemberFullScope(
+                    scope,
+                    departingUserId,
+                  )
+                ).sources
+              : [];
+        return {
+          ...project,
+          unfinishedTaskCount: scope.isProjectMember
+            ? (taskCountsMap.get(pid) ?? 0)
+            : 0,
+          taskNoteCount: sources.filter((source) => source.kind === 'TASK_NOTE')
+            .length,
+          documentCount: sources.filter(
+            (source) => source.kind === 'PROJECT_DOCUMENT',
+          ).length,
+          workReportCount: sources.filter(
+            (source) => source.kind === 'WORK_REPORT',
+          ).length,
+        };
+      }),
+    );
 
     return {
       body: {
@@ -4885,9 +5149,11 @@ export class HandoverWorkflowService {
     this.assertLeaderAuthority(actor);
 
     const handover = await this.loadHandoverOrNotFound(actor, cleanHandoverId);
-    const expectedVersion = headers.ifMatch
-      ? parseRequiredIfMatch(headers.ifMatch, 'handover', cleanHandoverId)
-      : handover.version;
+    const expectedVersion = parseRequiredIfMatch(
+      headers.ifMatch,
+      'handover',
+      cleanHandoverId,
+    );
 
     const namespace = `handover:${handover._id.toHexString()}`;
     const fingerprint = computeCommandFingerprint({
@@ -4951,19 +5217,27 @@ export class HandoverWorkflowService {
             taskId,
           );
         if (
-          taskInfo.exists &&
-          taskInfo.version !== null &&
-          taskInfo.status !== 'CANCELLED'
+          !taskInfo.exists ||
+          taskInfo.version === null ||
+          taskInfo.assigneeId !== handover.departingUserId ||
+          taskInfo.status === 'DONE' ||
+          taskInfo.status === 'CANCELLED'
         ) {
-          selectedTasks.push({
-            taskId: new Types.ObjectId(taskId),
-            expectedVersion: taskInfo.version,
-            expectedAssigneeId: taskInfo.assigneeId,
+          throw new UnprocessableEntityException({
+            code: 'TASK_NOT_IN_HANDOVER_SELECTION',
+            message:
+              'Refresh the preview and select unfinished tasks of the departing member.',
+            details: { taskId },
           });
-          taskDescriptions.push(
-            `- Task \`${taskId.slice(-6).toUpperCase()}\` (${taskInfo.status})`,
-          );
         }
+        selectedTasks.push({
+          taskId: new Types.ObjectId(taskId),
+          expectedVersion: taskInfo.version,
+          expectedAssigneeId: taskInfo.assigneeId,
+        });
+        taskDescriptions.push(
+          `- Task ${taskId.slice(-6).toUpperCase()} (${taskInfo.status})`,
+        );
       }
     } else if (
       typeof this.taskAssignmentService.listDepartingMemberTasksForHandover ===
@@ -4999,7 +5273,6 @@ export class HandoverWorkflowService {
     };
 
     const normalizedSelectedSources: SourceRefDto[] = [];
-    const evalMap = new Map<string, EvaluatedHandoverSource>();
 
     if (dto.selectedSources !== undefined) {
       const map = await this.sourcesService.evaluateSourceRefsMap(
@@ -5016,7 +5289,6 @@ export class HandoverWorkflowService {
             version: String(verNum),
           };
           normalizedSelectedSources.push(ref);
-          evalMap.set(sourceRefKey(ref), ev);
         }
       }
     } else if (
@@ -5038,7 +5310,6 @@ export class HandoverWorkflowService {
         const ev = discovered.evaluatedMap.get(sourceRefKey(ref));
         if (ev && ev.eligible && ev.readable && ev.isCurrent) {
           normalizedSelectedSources.push(ref);
-          evalMap.set(sourceRefKey(ref), ev);
         }
       }
     }
@@ -5051,41 +5322,46 @@ export class HandoverWorkflowService {
         )
       : { isProjectMember: false, isProjectLeader: false };
 
-    // Only bind item dependencies that are readable by any project member (or WORK_REPORT if successor is a Project Leader)
+    const successorSourceMap =
+      handover.successorUserId && successorScope.isProjectMember
+        ? await this.sourcesService.evaluateSourceRefsMap(
+            {
+              ...viewer,
+              ...successorScope,
+              userId: handover.successorUserId,
+            },
+            normalizedSelectedSources,
+          )
+        : new Map<string, EvaluatedHandoverSource>();
     const itemSources: SourceRefDto[] = [];
     const itemCitations: CitationDto[] = [];
     const sourceLines: string[] = [];
 
     for (const ref of normalizedSelectedSources) {
-      const ev = evalMap.get(sourceRefKey(ref));
-      if (!ev) continue;
-      const firstEx = ev.excerpts[0];
-      const snippet = firstEx?.content
-        ? firstEx.content.replace(/\s+/g, ' ').trim().slice(0, 220)
-        : ev.title;
+      const source = successorSourceMap.get(sourceRefKey(ref));
+      const excerpt = source?.excerpts[0];
+      if (
+        !source?.eligible ||
+        !source.readable ||
+        !source.isCurrent ||
+        !excerpt ||
+        itemSources.length === 50
+      )
+        continue;
+      itemSources.push(ref);
+      itemCitations.push({
+        source: ref,
+        locator: { kind: excerpt.locatorKind, value: excerpt.locatorValue },
+      });
+      const snippet = excerpt.content.replace(/\s+/g, ' ').trim().slice(0, 220);
       sourceLines.push(
-        `- **[${ref.kind} v${ref.version}]** ${ev.title}: ${snippet}`,
+        `- **[${ref.kind} v${ref.version}]** ${source.title}: ${snippet}`,
       );
-
-      const bindableForSuccessor =
-        ref.kind !== 'WORK_REPORT' || successorScope.isProjectLeader;
-      if (bindableForSuccessor) {
-        itemSources.push(ref);
-        itemCitations.push({
-          source: ref,
-          locator: {
-            kind: firstEx?.locatorKind ?? 'SECTION',
-            value: firstEx?.locatorValue ?? 'body-1',
-          },
-        });
-      }
     }
 
     const bodySections: string[] = [
       `### Tổng hợp gói bàn giao: ${handover.title}`,
-      dto.summaryNote?.trim()
-        ? `\n${dto.summaryNote.trim()}`
-        : '\nGói bàn giao đã được hệ thống tự động tổng hợp từ các công việc chưa hoàn thành, ghi chú công việc, tài liệu dự án và báo cáo đã phê duyệt.',
+      '\nGói bàn giao được tổng hợp từ các nguồn hiện người nhận có quyền đọc.',
     ];
     if (taskDescriptions.length > 0) {
       bodySections.push(
@@ -5230,7 +5506,7 @@ export class HandoverWorkflowService {
             resourceId: handover._id,
             resourceVersion: nextVer,
             revisionId,
-            outcome: 'AUTO_BUNDLED_AND_PUBLISHED',
+            outcome: SAFE_AUTO_BUNDLE,
           },
         },
         session,
@@ -5293,9 +5569,11 @@ export class HandoverWorkflowService {
       });
     }
 
-    const expectedVersion = headers.ifMatch
-      ? parseRequiredIfMatch(headers.ifMatch, 'handover', cleanHandoverId)
-      : handover.version;
+    const expectedVersion = parseRequiredIfMatch(
+      headers.ifMatch,
+      'handover',
+      cleanHandoverId,
+    );
 
     const namespace = `handover:${handover._id.toHexString()}`;
     const fingerprint = computeCommandFingerprint({
@@ -5365,6 +5643,59 @@ export class HandoverWorkflowService {
       });
     }
 
+    await this.assertNoTaskTransferFence(handover._id);
+    const verified = await this.transferService.verifiedTaskDispositions(
+      handover,
+      revision,
+    );
+    if (verified.size !== revision.selectedTasks.length) {
+      throw new ConflictException({
+        code: 'TASK_TRANSFER_NOT_CONFIRMED',
+        message:
+          'The selected task transfer must be confirmed before accepting this package.',
+        details: {},
+      });
+    }
+    const [bundleReceipt, priorAcceptances] = await Promise.all([
+      this.repository.operations
+        .findOne({
+          handoverId: handover._id,
+          kind: 'COMMAND',
+          'receipt.revisionId': revision._id,
+          'receipt.outcome': SAFE_AUTO_BUNDLE,
+        })
+        .lean<StoredOperationDoc>()
+        .exec(),
+      this.repository.acceptances
+        .find({
+          handoverId: handover._id,
+          revisionId: revision._id,
+          assignmentVersion: handover.assignmentVersion,
+          successorUserId: actor.userId,
+        })
+        .lean<StoredAcceptanceDoc[]>()
+        .exec(),
+    ]);
+    const summary =
+      bundleReceipt && revision.items.length === 1 ? revision.items[0] : null;
+    const dependencies = summary ? collectItemDependencyRefs(summary) : [];
+    const sourceMap = await this.sourcesService.evaluateSourceRefsMap(
+      actor,
+      dependencies,
+    );
+    const canAcknowledgeSummary =
+      summary &&
+      !summary.evidenceRequired &&
+      priorAcceptances.every(
+        (acceptance) => acceptance.itemId?.equals(summary.itemId) !== true,
+      ) &&
+      dependencies.every((ref) => {
+        const source = sourceMap.get(sourceRefKey(ref));
+        return source?.eligible && source.readable && source.isCurrent;
+      });
+    const itemsToAcknowledge =
+      summary && canAcknowledgeSummary ? [summary] : [];
+
     const noteText =
       dto.note?.trim() || 'Đã tiếp nhận và nắm rõ nội dung bàn giao.';
 
@@ -5419,7 +5750,7 @@ export class HandoverWorkflowService {
         },
       ];
 
-      for (const item of revision.items) {
+      for (const item of itemsToAcknowledge) {
         const seqItem = await this.repository.nextSequence(
           'handover_acceptances',
           {
@@ -5488,7 +5819,7 @@ export class HandoverWorkflowService {
           metadata: {
             revisionId: revision._id.toHexString(),
             assignmentVersion: handover.assignmentVersion,
-            itemCount: revision.items.length,
+            itemCount: itemsToAcknowledge.length,
             mode: 'quick_accept',
           },
         },
@@ -5521,9 +5852,11 @@ export class HandoverWorkflowService {
     this.assertLeaderAuthority(actor);
 
     const handover = await this.loadHandoverOrNotFound(actor, cleanHandoverId);
-    const expectedVersion = headers.ifMatch
-      ? parseRequiredIfMatch(headers.ifMatch, 'handover', cleanHandoverId)
-      : handover.version;
+    const expectedVersion = parseRequiredIfMatch(
+      headers.ifMatch,
+      'handover',
+      cleanHandoverId,
+    );
 
     const res = await this.transferService.quickTransferTasks({
       actor,

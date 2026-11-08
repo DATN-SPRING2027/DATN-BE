@@ -3348,6 +3348,31 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
     });
 
     // Step 1 & 2: Preview departing member scope
+    const alreadyAssignedTaskId = new Types.ObjectId();
+    const template = await taskDb
+      .collection(WORKSPACE_TASKS_COLLECTION)
+      .findOne({ _id: task5StepId });
+    await taskDb.collection(WORKSPACE_TASKS_COLLECTION).insertOne({
+      ...template,
+      _id: alreadyAssignedTaskId,
+      key: '5STEP-102',
+      title: 'Task assigned before the handover transfer',
+    });
+    const privateProjectId = new Types.ObjectId();
+    await iamConn.db!.collection('projects').insertOne({
+      _id: privateProjectId,
+      organizationId: orgId,
+      status: 'ACTIVE',
+      visibility: 'PRIVATE',
+      key: 'PRIVATE',
+      name: 'Unrelated private project',
+    });
+    await iamConn.db!.collection('project_memberships').insertOne({
+      projectId: privateProjectId,
+      organizationId: orgId,
+      userId: departingAId,
+      status: 'ACTIVE',
+    });
     const previewRes = await request(server)
       .get(
         baseUrl(
@@ -3371,6 +3396,9 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       previewBody.tasks.some((t) => t.id === task5StepId.toHexString()),
     ).toBe(true);
     expect(previewBody.sources.length).toBeGreaterThan(0);
+    expect(
+      previewBody.relatedProjects.map((project) => project.projectId),
+    ).not.toContain(privateProjectId.toHexString());
 
     // Step 3: Create Handover & Auto-Bundle in 1 step
     const createRes = await request(server)
@@ -3391,6 +3419,14 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
     const h5Id = (createRes.body as { handoverId: string }).handoverId;
     let etag = createRes.headers['etag'];
 
+    await request(server)
+      .post(baseUrl(`/${h5Id}/auto-bundle`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('Idempotency-Key', randomUUID())
+      .send({ taskIds: [] })
+      .expect(428);
+
     const bundleRes = await request(server)
       .post(baseUrl(`/${h5Id}/auto-bundle`))
       .set('Cookie', cookieFor('leaderD'))
@@ -3398,7 +3434,20 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .set('If-Match', etag)
       .set('Idempotency-Key', randomUUID())
       .send({
-        taskIds: [task5StepId.toHexString()],
+        taskIds: [
+          task5StepId.toHexString(),
+          alreadyAssignedTaskId.toHexString(),
+        ],
+        selectedSources: [
+          ...previewBody.sources
+            .filter((source) => source.kind !== 'WORK_REPORT')
+            .map(({ kind, id, version }) => ({ kind, id, version })),
+          {
+            kind: 'WORK_REPORT',
+            id: reportConfidentialId.toHexString(),
+            version: '1',
+          },
+        ],
       })
       .expect(200);
 
@@ -3412,14 +3461,121 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
     };
     expect(bundledDetail.handover.publishedRevisionId).toBeTruthy();
     expect(bundledDetail.publishedRevision?.items.length).toBeGreaterThan(0);
+    const bundleId = new Types.ObjectId(bundledDetail.publishedRevision!.id);
+    const revisions = handoverConn.db!.collection('handover_revisions');
+    const pinnedRevision = await revisions.findOne({ _id: bundleId });
+    expect(JSON.stringify(pinnedRevision?.selectedSources)).toContain(
+      reportConfidentialId.toHexString(),
+    );
+    const memberDetailPath = baseUrl(`/${h5Id}`);
+    const safeDetail = await request(server)
+      .get(memberDetailPath)
+      .set('Cookie', cookieFor('successorB1'))
+      .expect(200);
+    expect(JSON.stringify(safeDetail.body)).not.toContain(
+      'CONFIDENTIAL_REPORT_SECRET_PAYLOAD_DO_NOT_LEAK',
+    );
+    expect(JSON.stringify(safeDetail.body)).not.toContain(
+      reportConfidentialId.toHexString(),
+    );
+    const operations = handoverConn.db!.collection('handover_operations');
+    const bundleFilter = {
+      handoverId: new Types.ObjectId(h5Id),
+      'receipt.revisionId': bundleId,
+    };
+    await operations.updateOne(bundleFilter, {
+      $set: { 'receipt.outcome': 'AUTO_BUNDLED_AND_PUBLISHED' },
+    });
+    await revisions.updateOne(
+      { _id: bundleId },
+      {
+        $set: {
+          'items.0.body': 'CONFIDENTIAL_REPORT_SECRET_PAYLOAD_DO_NOT_LEAK',
+        },
+      },
+    );
+    const legacyDetail = await request(server)
+      .get(memberDetailPath)
+      .set('Cookie', cookieFor('successorB1'))
+      .expect(200);
+    expect(legacyDetail.body).toMatchObject({
+      publishedRevision: { items: [{ access: 'UNAVAILABLE' }] },
+    });
+    expect(JSON.stringify(legacyDetail.body)).not.toContain(
+      'CONFIDENTIAL_REPORT_SECRET_PAYLOAD_DO_NOT_LEAK',
+    );
+    await revisions.replaceOne({ _id: bundleId }, pinnedRevision!);
+    await operations.updateOne(bundleFilter, {
+      $set: { 'receipt.outcome': 'AUTO_BUNDLE_SAFE_V2' },
+    });
 
-    // Step 5a: Manager 1-Click Quick Transfer of Unfinished Tasks
-    const quickTransferRes = await request(server)
+    const received = await request(server)
+      .get(baseUrl('?participantRole=SUCCESSOR&limit=1'))
+      .set('Cookie', cookieFor('successorB1'))
+      .expect(200);
+    expect(received.body).toMatchObject({ data: [{ id: h5Id }] });
+    const departing = await request(server)
+      .get(baseUrl('?participantRole=DEPARTING'))
+      .set('Cookie', cookieFor('successorB1'))
+      .expect(200);
+    expect(departing.body).toMatchObject({ data: [] });
+
+    await request(server)
       .post(baseUrl(`/${h5Id}/quick-transfer`))
       .set('Cookie', cookieFor('leaderD'))
       .set('x-csrf-token', csrfToken)
       .set('If-Match', etag)
       .set('Idempotency-Key', randomUUID())
+      .send({ taskIds: [taskActiveId.toHexString()] })
+      .expect(422);
+
+    await request(server)
+      .post(baseUrl(`/${h5Id}/quick-accept`))
+      .set('Cookie', cookieFor('successorB1'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({})
+      .expect(409);
+
+    // A pinned task reassigned to a third member must not be overwritten.
+    await taskDb
+      .collection(WORKSPACE_TASKS_COLLECTION)
+      .updateOne(
+        { _id: alreadyAssignedTaskId },
+        { $set: { assigneeId: memberCId }, $inc: { version: 1 } },
+      );
+    const conflict = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-transfer`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ taskIds: [alreadyAssignedTaskId.toHexString()] })
+      .expect(200);
+    expect(conflict.body).toMatchObject({ state: 'CONFLICT' });
+    expect(
+      await taskDb
+        .collection(WORKSPACE_TASKS_COLLECTION)
+        .findOne({ _id: alreadyAssignedTaskId }),
+    ).toMatchObject({ assigneeId: memberCId, version: 2 });
+    etag = conflict.headers['etag'];
+
+    // Step 5a: Leader verifies existing ownership and transfers the remaining task.
+    await taskDb
+      .collection(WORKSPACE_TASKS_COLLECTION)
+      .updateOne(
+        { _id: alreadyAssignedTaskId },
+        { $set: { assigneeId: successorB1Id }, $inc: { version: 1 } },
+      );
+    const transferKey = randomUUID();
+    const transferEtag = etag;
+    const quickTransferRes = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-transfer`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', transferKey)
       .send({})
       .expect(200);
 
@@ -3427,6 +3583,67 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
     expect((quickTransferRes.body as { state: string }).state).toBe(
       'CONFIRMED',
     );
+    const quickTransferTasks = (
+      quickTransferRes.body as {
+        tasks: Array<{ taskId: string; disposition?: string }>;
+      }
+    ).tasks;
+    expect(
+      quickTransferTasks.some(
+        (task) =>
+          task.taskId === alreadyAssignedTaskId.toHexString() &&
+          task.disposition === 'ALREADY_ASSIGNED',
+      ),
+    ).toBe(true);
+    expect(
+      await taskDb
+        .collection(WORKSPACE_TASKS_COLLECTION)
+        .findOne({ _id: alreadyAssignedTaskId }),
+    ).toMatchObject({ version: 3 });
+    expect(await revisions.findOne({ _id: bundleId })).toEqual(pinnedRevision);
+    const replay = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-transfer`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', transferEtag)
+      .set('Idempotency-Key', transferKey)
+      .send({})
+      .expect(200);
+    expect(replay.body).toEqual(quickTransferRes.body);
+
+    const successorView = await request(server)
+      .get(baseUrl(`/${h5Id}`))
+      .set('Cookie', cookieFor('successorB1'))
+      .expect(200);
+    const successorViewDto = successorView.body as {
+      participantView: {
+        role: string;
+        canQuickAccept: boolean;
+        tasks: Array<{
+          id: string;
+          disposition: string;
+          key: string;
+          title: string;
+          status: string;
+          dueDate: string | null;
+          canAddNote: boolean;
+        }>;
+      };
+    };
+    expect(successorViewDto.participantView.role).toBe('SUCCESSOR');
+    expect(successorViewDto.participantView.canQuickAccept).toBe(true);
+    expect(
+      successorViewDto.participantView.tasks.some(
+        (task) =>
+          task.id === task5StepId.toHexString() &&
+          task.disposition === 'TRANSFERRED' &&
+          task.key === '5STEP-101' &&
+          task.title === 'Streamlined 5-Step Task to Transfer' &&
+          task.status === 'IN_PROGRESS' &&
+          task.dueDate === null &&
+          !task.canAddNote,
+      ),
+    ).toBe(true);
 
     // Step 5b: Successor 1-Click Quick Accept
     const quickAcceptRes = await request(server)
