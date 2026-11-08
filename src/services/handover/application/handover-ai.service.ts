@@ -1469,6 +1469,24 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private cleanExtractiveExcerpt(raw: string, title: string): string {
+    const cleaned = raw
+      .replace(/```[a-zA-Z0-9_-]*|'''[a-zA-Z0-9_-]*/g, ' ')
+      .replace(/[#\s]*={3,}[#\s]*/g, ' ')
+      .replace(/[#\s]*-{4,}[#\s]*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned || cleaned.toLowerCase() === title.trim().toLowerCase()) {
+      return `Tài liệu chính thức trong gói bàn giao: ${title}`;
+    }
+    if (cleaned.length <= 320) {
+      return cleaned;
+    }
+    const sliced = cleaned.slice(0, 320);
+    const lastSpace = sliced.lastIndexOf(' ');
+    return `${(lastSpace > 200 ? sliced.slice(0, lastSpace) : sliced).trim()}…`;
+  }
+
   private buildExtractiveQuestionFallback(
     question: string,
     permittedSources: Array<{
@@ -1483,50 +1501,115 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       }>;
     }>,
   ): SagHandoverAssistResponse {
-    const tokens = question
+    const stopWords = new Set([
+      'những',
+      'các',
+      'của',
+      'và',
+      'cho',
+      'trong',
+      'với',
+      'nào',
+      'tôi',
+      'bạn',
+      'cần',
+      'khi',
+      'này',
+      'là',
+      'gì',
+      'the',
+      'and',
+      'for',
+      'what',
+      'which',
+      'how',
+      'are',
+      'with',
+      'from',
+      'this',
+      'that',
+    ]);
+    const rawTokens = question
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
       .filter((t) => t.length >= 2);
+    const tokens = rawTokens.filter((t) => !stopWords.has(t));
+    const effectiveTokens = tokens.length > 0 ? tokens : rawTokens;
+    const lowerQuestion = question.toLowerCase();
+    const asksForInfraConfig =
+      /(docker|k8s|kubernetes|yaml|yml|deploy|nginx|redis|mongo|vps|port)/i.test(
+        lowerQuestion,
+      );
 
-    const scoredSections: Array<{
-      score: number;
-      text: string;
-      citations: SagCitationPayload[];
-    }> = [];
+    const bestBySource = new Map<
+      string,
+      {
+        score: number;
+        text: string;
+        citations: SagCitationPayload[];
+      }
+    >();
 
     for (const src of permittedSources) {
+      const lowerTitle = src.title.toLowerCase();
+      const isConfigFile = /\.(ya?ml|json|env|conf)$/i.test(lowerTitle);
+      const isPlaceholderTitle = /^(slot\d+|test)$/i.test(src.title.trim());
+
       for (const ex of src.excerpts) {
-        const text = ex.content.trim();
-        if (!text) continue;
-        const haystack = `${src.title} ${text}`.toLowerCase();
+        const rawText = ex.content.trim();
+        if (!rawText) continue;
+        const haystack = `${src.title} ${rawText}`.toLowerCase();
         let score = 0;
-        for (const tok of tokens) {
-          if (haystack.includes(tok)) {
-            score += 3;
+        for (const tok of effectiveTokens) {
+          if (lowerTitle.includes(tok)) {
+            score += 5;
+          } else if (haystack.includes(tok)) {
+            score += 2;
           }
         }
         if (score === 0) continue;
-        scoredSections.push({
-          score,
-          text: `[${src.title}] ${text}`,
-          citations: [
-            {
-              source: {
-                kind: src.kind,
-                id: src.id,
-                version: src.version,
+
+        if (src.kind === 'TASK_NOTE' || src.kind === 'WORK_REPORT') {
+          score += 4;
+        }
+        if (/readme|member|overview|handover|kiến trúc|tổng quan/i.test(lowerTitle)) {
+          score += 5;
+        }
+        if (isConfigFile && !asksForInfraConfig) {
+          score = Math.max(1, score - 6);
+        }
+        if (isPlaceholderTitle || rawText.trim().toLowerCase() === lowerTitle) {
+          score = Math.max(1, score - 8);
+        }
+
+        const cleanedExcerpt = this.cleanExtractiveExcerpt(rawText, src.title);
+        const sourceKey = `${src.kind}:${src.id}`;
+        const existing = bestBySource.get(sourceKey);
+        if (!existing || score > existing.score) {
+          bestBySource.set(sourceKey, {
+            score,
+            text: `[${src.title}] ${cleanedExcerpt}`,
+            citations: [
+              {
+                source: {
+                  kind: src.kind,
+                  id: src.id,
+                  version: src.version,
+                },
+                locator: {
+                  kind: ex.locatorKind,
+                  value: ex.locatorValue,
+                },
               },
-              locator: {
-                kind: ex.locatorKind,
-                value: ex.locatorValue,
-              },
-            },
-          ],
-        });
+            ],
+          });
+        }
       }
     }
 
-    scoredSections.sort((a, b) => b.score - a.score);
+    const scoredSections = Array.from(bestBySource.values()).sort(
+      (a, b) => b.score - a.score,
+    );
     const topSections = scoredSections
       .slice(0, 4)
       .map(({ text, citations }) => ({
