@@ -924,4 +924,446 @@ export class HandoverTransferService {
     }
     return mutated;
   }
+
+  async quickTransferTasks(input: {
+    actor: HandoverProjectActorContext;
+    handover: StoredHandoverDoc;
+    expectedVersion: number;
+    idempotencyKey: string;
+    taskIds?: string[];
+  }): Promise<{ transfer: TransferDto; version: number; replayed: boolean }> {
+    const namespace = `handover:${input.handover._id.toHexString()}`;
+    const fingerprint = computeCommandFingerprint({
+      operation: 'quickTransferHandoverTasks',
+      organizationId: input.actor.organizationId,
+      projectId: input.actor.projectId,
+      resourceScope: namespace,
+      expectedVersion: input.expectedVersion,
+      payload: { taskIds: input.taskIds ?? null },
+    });
+
+    const existingOp = await this.repository.findExistingOperation({
+      organizationId: input.actor.organizationId,
+      projectId: input.actor.projectId,
+      actorUserId: input.actor.userId,
+      namespace,
+      key: input.idempotencyKey,
+    });
+
+    if (existingOp) {
+      if (existingOp.fingerprint !== fingerprint) {
+        throw new ConflictException({
+          code: 'IDEMPOTENCY_KEY_CONFLICT',
+          message:
+            'Idempotency-Key was already used with a different payload or version.',
+          details: {},
+        });
+      }
+      if (existingOp.kind === 'TASK_TRANSFER') {
+        const children = await this.repository.operations
+          .find({
+            parentOperationId: existingOp._id,
+            kind: 'TASK_TRANSFER_CHILD',
+          })
+          .sort({ _id: 1 })
+          .lean<StoredOperationDoc[]>()
+          .exec();
+        return {
+          transfer: this.buildTransferDto(existingOp, children),
+          version:
+            existingOp.receipt?.resourceVersion ?? input.handover.version,
+          replayed: true,
+        };
+      }
+    }
+
+    if (input.handover.status !== 'OPEN') {
+      throw new ConflictException({
+        code: 'HANDOVER_NOT_OPEN',
+        message: 'Task transfer requires an OPEN handover.',
+        details: {},
+      });
+    }
+    if (input.handover.version !== input.expectedVersion) {
+      throw new ConflictException({
+        code: 'VERSION_CONFLICT',
+        message: 'Handover aggregate version conflict.',
+        details: {},
+      });
+    }
+    if (!input.handover.successorUserId) {
+      throw new ConflictException({
+        code: 'SUCCESSOR_NOT_ASSIGNED',
+        message: 'Cannot transfer tasks before successor B is assigned.',
+        details: {},
+      });
+    }
+    if (!input.handover.publishedRevisionId) {
+      throw new ConflictException({
+        code: 'NO_PUBLISHED_REVISION',
+        message:
+          'A published handover package is required before task transfer.',
+        details: {},
+      });
+    }
+
+    const successorUserId = input.handover.successorUserId;
+    const revision = await this.repository.revisions
+      .findOne({
+        _id: input.handover.publishedRevisionId,
+        handoverId: input.handover._id,
+      })
+      .lean<StoredRevisionDoc>()
+      .exec();
+    if (!revision) {
+      throw new NotFoundException({
+        code: 'REVISION_NOT_FOUND',
+        message: 'Published revision not found.',
+        details: {},
+      });
+    }
+
+    let candidateTaskIds: string[] = [];
+    if (input.taskIds && input.taskIds.length > 0) {
+      candidateTaskIds = input.taskIds.map((id) => id.toLowerCase());
+    } else if (revision.selectedTasks.length > 0) {
+      candidateTaskIds = revision.selectedTasks.map((t) =>
+        t.taskId.toHexString().toLowerCase(),
+      );
+    } else if (
+      typeof this.taskAssignmentService.listDepartingMemberTasksForHandover ===
+      'function'
+    ) {
+      const discovered =
+        await this.taskAssignmentService.listDepartingMemberTasksForHandover(
+          input.actor.organizationId,
+          input.actor.projectId,
+          input.handover.departingUserId,
+        );
+      candidateTaskIds = discovered.map((t) => t.id.toLowerCase());
+    }
+
+    const liveStateMap =
+      await this.taskAssignmentService.inspectTasksCurrentState(
+        input.actor.organizationId,
+        input.actor.projectId,
+        candidateTaskIds,
+      );
+
+    const eligibleTasks: Array<{
+      taskId: string;
+      expectedTaskVersion: number;
+      expectedAssigneeId: string | null;
+    }> = [];
+
+    for (const tid of candidateTaskIds) {
+      const live = liveStateMap.get(tid);
+      if (
+        live &&
+        live.exists &&
+        live.version !== null &&
+        live.status !== 'DONE' &&
+        live.status !== 'CANCELLED'
+      ) {
+        eligibleTasks.push({
+          taskId: tid,
+          expectedTaskVersion: live.version,
+          expectedAssigneeId: live.assigneeId,
+        });
+      }
+    }
+
+    if (eligibleTasks.length === 0) {
+      throw new UnprocessableEntityException({
+        code: 'NO_ELIGIBLE_TASKS_TO_TRANSFER',
+        message: 'No unfinished tasks found to transfer.',
+        details: {},
+      });
+    }
+
+    const updatedSelectedTasks = eligibleTasks.map((t) => ({
+      taskId: new Types.ObjectId(t.taskId),
+      expectedVersion: t.expectedTaskVersion,
+      expectedAssigneeId: t.expectedAssigneeId,
+    }));
+
+    const { parentId, childDocs, nextVersion } =
+      await this.repository.withTransaction(async (session) => {
+        const nextVer = input.expectedVersion + 1;
+        const upd = await this.repository.handovers.updateOne(
+          {
+            _id: input.handover._id,
+            status: 'OPEN',
+            version: input.expectedVersion,
+          },
+          {
+            $set: {
+              version: nextVer,
+              selectedTasks: updatedSelectedTasks,
+            },
+          },
+          { session },
+        );
+        if (upd.matchedCount !== 1) {
+          throw new ConflictException({
+            code: 'VERSION_CONFLICT',
+            message: 'Concurrent handover version update detected.',
+            details: {},
+          });
+        }
+
+        await this.repository.revisions.updateOne(
+          { _id: revision._id },
+          { $set: { selectedTasks: updatedSelectedTasks } },
+          { session },
+        );
+
+        const pId = new Types.ObjectId();
+        const now = new Date();
+        await this.repository.operations.create(
+          [
+            {
+              _id: pId,
+              schemaVersion: 2,
+              organizationId: input.handover.organizationId,
+              projectId: input.handover.projectId,
+              handoverId: input.handover._id,
+              actorUserId: input.actor.userId,
+              namespace,
+              key: input.idempotencyKey,
+              fingerprint,
+              kind: 'TASK_TRANSFER',
+              state: 'DISPATCHED',
+              expectedVersion: input.expectedVersion,
+              assignmentVersion: input.handover.assignmentVersion,
+              revisionId: revision._id,
+              successorUserId,
+              receipt: {
+                resourceId: input.handover._id,
+                resourceVersion: nextVer,
+                transferId: pId,
+                outcome: 'DISPATCHED',
+              },
+              leaseOwner: 'handover-transfer',
+              leaseExpiresAt: new Date(now.getTime() + 60_000),
+              fence: 1,
+            },
+          ],
+          { session },
+        );
+
+        const createdChildren = await this.repository.operations.create(
+          eligibleTasks.map((reqTask) => {
+            const intentKey = deriveTaskIntentId(
+              pId.toHexString(),
+              reqTask.taskId,
+            );
+            return {
+              _id: new Types.ObjectId(),
+              schemaVersion: 2 as const,
+              organizationId: input.handover.organizationId,
+              projectId: input.handover.projectId,
+              handoverId: input.handover._id,
+              actorUserId: input.actor.userId,
+              namespace: `transfer-child:${pId.toHexString()}`,
+              key: intentKey,
+              fingerprint: computeCommandFingerprint({
+                operation: 'startHandoverTaskTransferChild',
+                organizationId: input.actor.organizationId,
+                projectId: input.actor.projectId,
+                resourceScope: `transfer-child:${pId.toHexString()}`,
+                expectedVersion: reqTask.expectedTaskVersion,
+                payload: {
+                  taskId: reqTask.taskId,
+                  expectedTaskVersion: reqTask.expectedTaskVersion,
+                },
+              }),
+              kind: 'TASK_TRANSFER_CHILD' as const,
+              state: 'DISPATCHED' as const,
+              expectedVersion: input.expectedVersion,
+              assignmentVersion: input.handover.assignmentVersion,
+              revisionId: revision._id,
+              successorUserId,
+              parentOperationId: pId,
+              taskIntent: {
+                taskId: new Types.ObjectId(reqTask.taskId),
+                expectedVersion: reqTask.expectedTaskVersion,
+                expectedAssigneeId: reqTask.expectedAssigneeId,
+                targetUserId: successorUserId,
+              },
+            };
+          }),
+          { session, ordered: true },
+        );
+
+        await this.repository.appendAuditAndOutbox(
+          {
+            organizationId: input.actor.organizationId,
+            projectId: input.actor.projectId,
+            actorUserId: input.actor.userId,
+            action: 'handover.task_transfer.started',
+            targetResource: 'handover_transfer',
+            targetResourceId: pId.toHexString(),
+            metadata: {
+              handoverId: input.handover._id.toHexString(),
+              taskCount: eligibleTasks.length,
+              mode: 'quick_transfer',
+            },
+          },
+          {
+            eventName: 'handover.task_transfer.started',
+            aggregateType: 'handover',
+            aggregateId: input.handover._id.toHexString(),
+            payload: {
+              transferId: pId.toHexString(),
+              revisionId: revision._id.toHexString(),
+            },
+          },
+          session,
+        );
+
+        return {
+          parentId: pId,
+          childDocs: createdChildren.map((c) => c.toObject()),
+          nextVersion: nextVer,
+        };
+      });
+
+    for (const child of childDocs) {
+      const taskIdHex = child.taskIntent!.taskId.toHexString();
+      try {
+        if (
+          child.taskIntent?.expectedAssigneeId?.toLowerCase() ===
+          successorUserId.toLowerCase()
+        ) {
+          await this.repository.operations.updateOne(
+            { _id: child._id },
+            {
+              $set: {
+                state: 'COMMITTED',
+                taskOutcome: {
+                  state: 'COMMITTED',
+                  taskVersion: child.taskIntent.expectedVersion,
+                  assigneeId: successorUserId,
+                  owningOperationId: `handover:${child.key}`,
+                },
+              },
+            },
+          );
+          continue;
+        }
+
+        const res = await this.taskAssignmentService.assignTaskForHandover({
+          organizationId: input.actor.organizationId,
+          projectId: input.actor.projectId,
+          actorId: input.actor.userId,
+          intentId: child.key,
+          handoverId: input.handover._id.toHexString(),
+          revisionId: revision._id.toHexString(),
+          assignmentVersion: input.handover.assignmentVersion,
+          taskId: taskIdHex,
+          expectedTaskVersion: child.taskIntent!.expectedVersion,
+          targetAssigneeId: successorUserId,
+        });
+
+        if (res.state === 'CONFIRMED') {
+          await this.repository.operations.updateOne(
+            { _id: child._id },
+            {
+              $set: {
+                state: 'COMMITTED',
+                taskOutcome: {
+                  state: 'COMMITTED',
+                  ...(res.committedTaskVersion !== null
+                    ? { taskVersion: res.committedTaskVersion }
+                    : {}),
+                  assigneeId: successorUserId,
+                  owningOperationId: `handover:${child.key}`,
+                },
+              },
+            },
+          );
+        } else if (res.state === 'CONFLICT') {
+          const code = res.safeErrorCode ?? 'TASK_VERSION_CONFLICT';
+          await this.repository.operations.updateOne(
+            { _id: child._id },
+            {
+              $set: {
+                state: 'CONFLICT',
+                safeErrorCode: code,
+                taskOutcome: {
+                  state: 'CONFLICT',
+                  safeErrorCode: code,
+                },
+              },
+            },
+          );
+        } else {
+          const code = res.safeErrorCode ?? 'TASK_TRANSFER_FAILED';
+          await this.repository.operations.updateOne(
+            { _id: child._id },
+            {
+              $set: {
+                state: 'FAILED',
+                safeErrorCode: code,
+                taskOutcome: {
+                  state: 'REJECTED',
+                  safeErrorCode: code,
+                },
+              },
+            },
+          );
+        }
+      } catch {
+        await this.repository.operations.updateOne(
+          { _id: child._id },
+          {
+            $set: {
+              state: 'UNKNOWN',
+              safeErrorCode: 'TASK_OUTCOME_UNKNOWN',
+              taskOutcome: {
+                state: 'UNKNOWN',
+                safeErrorCode: 'TASK_OUTCOME_UNKNOWN',
+              },
+            },
+          },
+        );
+      }
+    }
+
+    const updatedChildren = await this.repository.operations
+      .find({ parentOperationId: parentId, kind: 'TASK_TRANSFER_CHILD' })
+      .sort({ _id: 1 })
+      .lean<StoredOperationDoc[]>()
+      .exec();
+
+    const taskDtos = updatedChildren.map((c) => this.mapChildDocToDto(c));
+    const aggState = aggregateTaskTransferState(taskDtos);
+    const storedState = this.mapAggregateToStoredState(aggState);
+
+    const updatedParent = await this.repository.operations
+      .findOneAndUpdate(
+        { _id: parentId },
+        {
+          $set: {
+            state: storedState,
+            receipt: {
+              resourceId: input.handover._id,
+              resourceVersion: nextVersion,
+              transferId: parentId,
+              outcome: aggState,
+            },
+          },
+        },
+        { new: true },
+      )
+      .lean<StoredOperationDoc>()
+      .exec();
+
+    return {
+      transfer: this.buildTransferDto(updatedParent!, updatedChildren),
+      version: nextVersion,
+      replayed: false,
+    };
+  }
 }

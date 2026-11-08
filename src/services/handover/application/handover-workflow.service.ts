@@ -36,6 +36,8 @@ import { HandoverRepository } from './handover.repository';
 import { HandoverSourcesService } from './handover-sources.service';
 import { HandoverTransferService } from './handover-transfer.service';
 import type {
+  CitationDto,
+  DepartingMemberPreviewDto,
   DraftItemDto,
   DraftProjectionDto,
   EvidenceReceiptDto,
@@ -72,6 +74,7 @@ import {
   parseRequiredIfMatch,
   validateAcceptRequest,
   validateAcknowledgeRequest,
+  validateAutoBundleRequest,
   validateCancelRequest,
   validateCompleteRequest,
   validateCreateHandover,
@@ -81,6 +84,8 @@ import {
   validateOptionalException,
   validatePublishRequest,
   validateQuestionRequest,
+  validateQuickAcceptRequest,
+  validateQuickTransferRequest,
   validateReconcileTransfer,
   validateResolveFollowUp,
   validateRetryJob,
@@ -4727,6 +4732,805 @@ export class HandoverWorkflowService {
       expectedVersion,
       idempotencyKey,
       dto,
+    });
+    return {
+      body: res.transfer,
+      etag: formatHandoverEtag(handover._id.toHexString(), res.version),
+      replayed: res.replayed,
+    };
+  }
+
+  // --- Streamlined 5-Step Handover Workflow Endpoints ---
+
+  async previewDepartingMember(
+    projectId: string,
+    query: Record<string, unknown>,
+    headers: HandoverRequestHeaders,
+  ): Promise<HttpPayloadWithHeaders<DepartingMemberPreviewDto>> {
+    const actor = await this.resolveActor(projectId, headers, false);
+    if (!actor.isProjectMember && !actor.canAdministerCoordinator) {
+      throw new ForbiddenException({
+        code: 'HANDOVER_FORBIDDEN',
+        message:
+          'Active project membership is required to preview handover scope.',
+        details: {},
+      });
+    }
+
+    const departingUserId = assertHexId(
+      query.departingUserId,
+      'departingUserId',
+    );
+    const handoverIdRaw =
+      typeof query.handoverId === 'string' &&
+      /^[a-f0-9]{24}$/i.test(query.handoverId)
+        ? query.handoverId.toLowerCase()
+        : null;
+
+    let extraTaskIds: string[] = [];
+    if (handoverIdRaw) {
+      const existingHandover = await this.repository.handovers
+        .findOne({
+          _id: new Types.ObjectId(handoverIdRaw),
+          organizationId: new Types.ObjectId(actor.organizationId),
+          projectId: new Types.ObjectId(actor.projectId),
+          schemaVersion: 2,
+        })
+        .select({ selectedTasks: 1 })
+        .lean<Pick<StoredHandoverDoc, 'selectedTasks'>>()
+        .exec();
+      if (existingHandover?.selectedTasks) {
+        extraTaskIds = existingHandover.selectedTasks.map((t) =>
+          t.taskId.toHexString().toLowerCase(),
+        );
+      }
+    }
+
+    const viewer: HandoverSourceViewer = {
+      organizationId: actor.organizationId,
+      projectId: actor.projectId,
+      userId: actor.userId,
+      isProjectMember: actor.isProjectMember,
+      isProjectLeader: actor.isProjectLeader,
+    };
+
+    const [relatedProjectsRaw, tasks] = await Promise.all([
+      typeof this.iamScope.listDepartingMemberProjects === 'function'
+        ? this.iamScope.listDepartingMemberProjects(actor, departingUserId)
+        : Promise.resolve([]),
+      typeof this.taskAssignmentService.listDepartingMemberTasksForHandover ===
+      'function'
+        ? this.taskAssignmentService.listDepartingMemberTasksForHandover(
+            actor.organizationId,
+            actor.projectId,
+            departingUserId,
+            extraTaskIds,
+          )
+        : Promise.resolve([]),
+    ]);
+
+    const projectIds = relatedProjectsRaw.map((p) => p.projectId);
+    const [taskCountsMap, sourceCountsMap, scopeResult] = await Promise.all([
+      typeof this.taskAssignmentService
+        .countDepartingMemberActiveTasksByProjects === 'function'
+        ? this.taskAssignmentService.countDepartingMemberActiveTasksByProjects(
+            actor.organizationId,
+            projectIds,
+            departingUserId,
+          )
+        : Promise.resolve(new Map<string, number>()),
+      typeof this.sourcesService.countDepartingMemberSourcesByProjects ===
+      'function'
+        ? this.sourcesService.countDepartingMemberSourcesByProjects(
+            actor.organizationId,
+            projectIds,
+            departingUserId,
+          )
+        : Promise.resolve(
+            new Map<
+              string,
+              {
+                taskNoteCount: number;
+                documentCount: number;
+                workReportCount: number;
+              }
+            >(),
+          ),
+      typeof this.sourcesService.discoverDepartingMemberFullScope === 'function'
+        ? this.sourcesService.discoverDepartingMemberFullScope(
+            viewer,
+            departingUserId,
+            tasks.map((t) => t.id),
+            50,
+          )
+        : Promise.resolve({ sources: [], evaluatedMap: new Map() }),
+    ]);
+
+    const relatedProjects = relatedProjectsRaw.map((proj) => {
+      const pid = proj.projectId.toLowerCase();
+      const srcCounts = sourceCountsMap.get(pid);
+      return {
+        projectId: pid,
+        key: proj.key,
+        name: proj.name,
+        membershipStatus: proj.membershipStatus,
+        unfinishedTaskCount: taskCountsMap.get(pid) ?? 0,
+        taskNoteCount: srcCounts?.taskNoteCount ?? 0,
+        documentCount: srcCounts?.documentCount ?? 0,
+        workReportCount: srcCounts?.workReportCount ?? 0,
+      };
+    });
+
+    return {
+      body: {
+        departingUserId,
+        projectId: actor.projectId,
+        relatedProjects,
+        tasks,
+        sources: scopeResult.sources,
+      },
+    };
+  }
+
+  async autoBundleAndPublish(
+    projectId: string,
+    handoverId: string,
+    rawBody: unknown,
+    headers: HandoverRequestHeaders,
+  ): Promise<HttpPayloadWithHeaders<HandoverDetailDto>> {
+    const actor = await this.resolveActor(projectId, headers, true);
+    const idempotencyKey = validateIdempotencyKeyHeader(headers.idempotencyKey);
+    const cleanHandoverId = assertHexId(handoverId, 'handoverId');
+    const dto = validateAutoBundleRequest(rawBody);
+    this.assertLeaderAuthority(actor);
+
+    const handover = await this.loadHandoverOrNotFound(actor, cleanHandoverId);
+    const expectedVersion = headers.ifMatch
+      ? parseRequiredIfMatch(headers.ifMatch, 'handover', cleanHandoverId)
+      : handover.version;
+
+    const namespace = `handover:${handover._id.toHexString()}`;
+    const fingerprint = computeCommandFingerprint({
+      operation: 'autoBundleAndPublish',
+      organizationId: actor.organizationId,
+      projectId: actor.projectId,
+      resourceScope: namespace,
+      expectedVersion,
+      payload: dto,
+    });
+
+    const existingOp = await this.repository.findExistingOperation({
+      organizationId: actor.organizationId,
+      projectId: actor.projectId,
+      actorUserId: actor.userId,
+      namespace,
+      key: idempotencyKey,
+    });
+    if (
+      this.repository.assertIdempotencyMatchOrReplay(
+        existingOp,
+        fingerprint,
+      ) === 'REPLAY_COMMITTED'
+    ) {
+      const detail = await this.getHandover(
+        projectId,
+        cleanHandoverId,
+        headers,
+      );
+      return {
+        ...detail,
+        replayed: true,
+      };
+    }
+
+    if (handover.status !== 'OPEN') {
+      throw new ConflictException({
+        code: 'HANDOVER_NOT_OPEN',
+        message: 'Cannot auto-bundle a closed handover.',
+        details: {},
+      });
+    }
+    if (handover.version !== expectedVersion) {
+      throw new ConflictException({
+        code: 'VERSION_CONFLICT',
+        message: 'Handover aggregate version conflict.',
+        details: {},
+      });
+    }
+    await this.assertNoTaskTransferFence(handover._id);
+
+    // 1. Resolve tasks for handover
+    const selectedTasks: StoredHandoverTaskRef[] = [];
+    const taskDescriptions: string[] = [];
+    if (dto.taskIds !== undefined) {
+      for (const taskId of dto.taskIds) {
+        const taskInfo =
+          await this.taskAssignmentService.verifyProjectTaskExists(
+            actor.organizationId,
+            actor.projectId,
+            taskId,
+          );
+        if (
+          taskInfo.exists &&
+          taskInfo.version !== null &&
+          taskInfo.status !== 'CANCELLED'
+        ) {
+          selectedTasks.push({
+            taskId: new Types.ObjectId(taskId),
+            expectedVersion: taskInfo.version,
+            expectedAssigneeId: taskInfo.assigneeId,
+          });
+          taskDescriptions.push(
+            `- Task \`${taskId.slice(-6).toUpperCase()}\` (${taskInfo.status})`,
+          );
+        }
+      }
+    } else if (
+      typeof this.taskAssignmentService.listDepartingMemberTasksForHandover ===
+      'function'
+    ) {
+      const discoveredTasks =
+        await this.taskAssignmentService.listDepartingMemberTasksForHandover(
+          actor.organizationId,
+          actor.projectId,
+          handover.departingUserId,
+        );
+      for (const t of discoveredTasks) {
+        if (t.status !== 'DONE' && t.status !== 'CANCELLED') {
+          selectedTasks.push({
+            taskId: new Types.ObjectId(t.id),
+            expectedVersion: t.version,
+            expectedAssigneeId: t.assigneeId,
+          });
+          taskDescriptions.push(
+            `- **[${t.key}]** ${t.title} (\`${t.status}\` · ${t.priority})`,
+          );
+        }
+      }
+    }
+
+    // 2. Resolve sources for handover
+    const viewer: HandoverSourceViewer = {
+      organizationId: actor.organizationId,
+      projectId: actor.projectId,
+      userId: actor.userId,
+      isProjectMember: actor.isProjectMember,
+      isProjectLeader: actor.isProjectLeader,
+    };
+
+    const normalizedSelectedSources: SourceRefDto[] = [];
+    const evalMap = new Map<string, EvaluatedHandoverSource>();
+
+    if (dto.selectedSources !== undefined) {
+      const map = await this.sourcesService.evaluateSourceRefsMap(
+        viewer,
+        dto.selectedSources,
+      );
+      for (const src of dto.selectedSources) {
+        const verNum = parseSourceVersionNumber(src.version);
+        const ev = map.get(sourceRefKey(src));
+        if (verNum && ev && ev.eligible && ev.readable && ev.isCurrent) {
+          const ref: SourceRefDto = {
+            kind: src.kind,
+            id: src.id.toLowerCase(),
+            version: String(verNum),
+          };
+          normalizedSelectedSources.push(ref);
+          evalMap.set(sourceRefKey(ref), ev);
+        }
+      }
+    } else if (
+      typeof this.sourcesService.discoverDepartingMemberFullScope === 'function'
+    ) {
+      const discovered =
+        await this.sourcesService.discoverDepartingMemberFullScope(
+          viewer,
+          handover.departingUserId,
+          selectedTasks.map((t) => t.taskId.toHexString()),
+          50,
+        );
+      for (const src of discovered.sources) {
+        const ref: SourceRefDto = {
+          kind: src.kind,
+          id: src.id.toLowerCase(),
+          version: src.version,
+        };
+        const ev = discovered.evaluatedMap.get(sourceRefKey(ref));
+        if (ev && ev.eligible && ev.readable && ev.isCurrent) {
+          normalizedSelectedSources.push(ref);
+          evalMap.set(sourceRefKey(ref), ev);
+        }
+      }
+    }
+
+    const successorScope = handover.successorUserId
+      ? await this.iamScope.resolveActiveProjectMemberScope(
+          actor.organizationId,
+          actor.projectId,
+          handover.successorUserId,
+        )
+      : { isProjectMember: false, isProjectLeader: false };
+
+    // Only bind item dependencies that are readable by any project member (or WORK_REPORT if successor is a Project Leader)
+    const itemSources: SourceRefDto[] = [];
+    const itemCitations: CitationDto[] = [];
+    const sourceLines: string[] = [];
+
+    for (const ref of normalizedSelectedSources) {
+      const ev = evalMap.get(sourceRefKey(ref));
+      if (!ev) continue;
+      const firstEx = ev.excerpts[0];
+      const snippet = firstEx?.content
+        ? firstEx.content.replace(/\s+/g, ' ').trim().slice(0, 220)
+        : ev.title;
+      sourceLines.push(
+        `- **[${ref.kind} v${ref.version}]** ${ev.title}: ${snippet}`,
+      );
+
+      const bindableForSuccessor =
+        ref.kind !== 'WORK_REPORT' || successorScope.isProjectLeader;
+      if (bindableForSuccessor) {
+        itemSources.push(ref);
+        itemCitations.push({
+          source: ref,
+          locator: {
+            kind: firstEx?.locatorKind ?? 'SECTION',
+            value: firstEx?.locatorValue ?? 'body-1',
+          },
+        });
+      }
+    }
+
+    const bodySections: string[] = [
+      `### Tổng hợp gói bàn giao: ${handover.title}`,
+      dto.summaryNote?.trim()
+        ? `\n${dto.summaryNote.trim()}`
+        : '\nGói bàn giao đã được hệ thống tự động tổng hợp từ các công việc chưa hoàn thành, ghi chú công việc, tài liệu dự án và báo cáo đã phê duyệt.',
+    ];
+    if (taskDescriptions.length > 0) {
+      bodySections.push(
+        `\n#### Công việc cần tiếp nhận (${taskDescriptions.length})\n${taskDescriptions.join('\n')}`,
+      );
+    }
+    if (sourceLines.length > 0) {
+      bodySections.push(
+        `\n#### Nguồn tài liệu & Tri thức liên quan (${sourceLines.length})\n${sourceLines.join('\n')}`,
+      );
+    }
+
+    const itemId = new Types.ObjectId();
+    const itemSnapshot: StoredHandoverItemSnapshot = {
+      itemId,
+      contentVersion: 1,
+      dependencyFingerprint: computeDependencyFingerprint({
+        sources: itemSources,
+        citations: itemCitations,
+        isRequired: true,
+        evidenceRequired: false,
+      }),
+      title: `Tổng hợp công việc & tri thức bàn giao — ${handover.title}`.slice(
+        0,
+        255,
+      ),
+      body: bodySections.join('\n').slice(0, 19500),
+      requirement:
+        'Người tiếp nối (Successor) xác nhận đã nắm bắt danh sách công việc chưa hoàn thành và các nguồn tài liệu bàn giao.',
+      isRequired: true,
+      evidenceRequired: false,
+      sources: itemSources,
+      citations: itemCitations,
+    };
+
+    const latestRev = await this.repository.revisions
+      .findOne({ handoverId: handover._id })
+      .sort({ number: -1 })
+      .select({ number: 1 })
+      .lean<{ number: number }>()
+      .exec();
+    const nextRevisionNumber = (latestRev?.number ?? 0) + 1;
+    const now = new Date();
+    const revisionId = new Types.ObjectId();
+    const nextDraftVer = handover.draftVersion + 1;
+    const sourceFp = computeSourceSelectionFingerprint(
+      normalizedSelectedSources,
+    );
+
+    const revisionDocToInsert = {
+      _id: revisionId,
+      schemaVersion: 2 as const,
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+      handoverId: handover._id,
+      number: nextRevisionNumber,
+      draftVersion: nextDraftVer,
+      assignmentVersion: handover.assignmentVersion,
+      successorUserId: handover.successorUserId,
+      items: [itemSnapshot],
+      selectedSources: normalizedSelectedSources,
+      selectedTasks,
+      reviews: [
+        {
+          itemId,
+          contentVersion: 1,
+          decision: 'CONTENT_APPROVED' as const,
+          impact: 'CHANGED' as const,
+          reason: 'Tự động tổng hợp và xuất bản theo luồng bàn giao 5 bước.',
+        },
+      ],
+      gaps: [],
+      publishedBy: actor.userId,
+      publishedAt: now,
+      sourceFingerprint: sourceFp,
+      reviewNote: 'Tự động tổng hợp phạm vi công việc & tri thức bàn giao.',
+      createdAt: now,
+    };
+
+    this.repository.assertRevisionSnapshotWithinLimit(revisionDocToInsert);
+
+    await this.repository.withTransaction(async (session) => {
+      const nextVer = expectedVersion + 1;
+      const upd = await this.repository.handovers.updateOne(
+        {
+          _id: handover._id,
+          status: 'OPEN',
+          version: expectedVersion,
+        },
+        {
+          $set: {
+            version: nextVer,
+            draftVersion: nextDraftVer,
+            publishedRevisionId: revisionId,
+            selectedSources: normalizedSelectedSources,
+            selectedTasks,
+          },
+        },
+        { session },
+      );
+      if (upd.matchedCount !== 1) {
+        throw new ConflictException({
+          code: 'VERSION_CONFLICT',
+          message: 'Concurrent handover version update detected.',
+          details: {},
+        });
+      }
+
+      await this.repository.draftItems.deleteMany(
+        { handoverId: handover._id, schemaVersion: 2 },
+        { session },
+      );
+      await this.repository.draftItems.create(
+        [
+          {
+            ...itemSnapshot,
+            schemaVersion: 2 as const,
+            organizationId: handover.organizationId,
+            projectId: handover.projectId,
+            handoverId: handover._id,
+            updatedBy: actor.userId,
+          },
+        ],
+        { session },
+      );
+
+      await this.repository.revisions.create([revisionDocToInsert], {
+        session,
+      });
+
+      await this.repository.createOrClaimCommandOperation(
+        {
+          organizationId: actor.organizationId,
+          projectId: actor.projectId,
+          handoverId: handover._id,
+          actorUserId: actor.userId,
+          namespace,
+          key: idempotencyKey,
+          fingerprint,
+          expectedVersion,
+          receipt: {
+            resourceId: handover._id,
+            resourceVersion: nextVer,
+            revisionId,
+            outcome: 'AUTO_BUNDLED_AND_PUBLISHED',
+          },
+        },
+        session,
+      );
+
+      await this.repository.appendAuditAndOutbox(
+        {
+          organizationId: actor.organizationId,
+          projectId: actor.projectId,
+          actorUserId: actor.userId,
+          action: 'handover.revision.published',
+          targetResource: 'handover_revision',
+          targetResourceId: revisionId.toHexString(),
+          metadata: {
+            handoverId: handover._id.toHexString(),
+            revisionNumber: nextRevisionNumber,
+            taskCount: selectedTasks.length,
+            sourceCount: normalizedSelectedSources.length,
+            mode: 'auto_bundle',
+          },
+        },
+        {
+          eventName: 'handover.revision.published',
+          aggregateType: 'handover',
+          aggregateId: handover._id.toHexString(),
+          payload: {
+            revisionId: revisionId.toHexString(),
+            revisionNumber: nextRevisionNumber,
+          },
+        },
+        session,
+      );
+    });
+
+    return this.getHandover(projectId, cleanHandoverId, headers);
+  }
+
+  async quickAcceptHandover(
+    projectId: string,
+    handoverId: string,
+    rawBody: unknown,
+    headers: HandoverRequestHeaders,
+  ): Promise<HttpPayloadWithHeaders<HandoverDetailDto>> {
+    const actor = await this.resolveActor(projectId, headers, true);
+    const idempotencyKey = validateIdempotencyKeyHeader(headers.idempotencyKey);
+    const cleanHandoverId = assertHexId(handoverId, 'handoverId');
+    const dto = validateQuickAcceptRequest(rawBody);
+
+    const handover = await this.loadHandoverOrNotFound(actor, cleanHandoverId);
+    if (
+      !actor.isProjectMember ||
+      !handover.successorUserId ||
+      handover.successorUserId.toLowerCase() !== actor.userId
+    ) {
+      throw new ForbiddenException({
+        code: 'RECIPIENT_ONLY_OPERATION',
+        message:
+          'Only the currently assigned successor B may accept this handover package.',
+        details: {},
+      });
+    }
+
+    const expectedVersion = headers.ifMatch
+      ? parseRequiredIfMatch(headers.ifMatch, 'handover', cleanHandoverId)
+      : handover.version;
+
+    const namespace = `handover:${handover._id.toHexString()}`;
+    const fingerprint = computeCommandFingerprint({
+      operation: 'quickAcceptHandover',
+      organizationId: actor.organizationId,
+      projectId: actor.projectId,
+      resourceScope: namespace,
+      expectedVersion,
+      payload: dto,
+    });
+
+    const existingOp = await this.repository.findExistingOperation({
+      organizationId: actor.organizationId,
+      projectId: actor.projectId,
+      actorUserId: actor.userId,
+      namespace,
+      key: idempotencyKey,
+    });
+    if (
+      this.repository.assertIdempotencyMatchOrReplay(
+        existingOp,
+        fingerprint,
+      ) === 'REPLAY_COMMITTED'
+    ) {
+      const detail = await this.getHandover(
+        projectId,
+        cleanHandoverId,
+        headers,
+      );
+      return {
+        ...detail,
+        replayed: true,
+      };
+    }
+
+    if (handover.status !== 'OPEN') {
+      throw new ConflictException({
+        code: 'HANDOVER_NOT_OPEN',
+        message: 'Handover acceptance requires an OPEN handover.',
+        details: {},
+      });
+    }
+    if (handover.version !== expectedVersion) {
+      throw new ConflictException({
+        code: 'VERSION_CONFLICT',
+        message: 'Handover aggregate version conflict.',
+        details: {},
+      });
+    }
+    if (!handover.publishedRevisionId) {
+      throw new ConflictException({
+        code: 'NO_PUBLISHED_REVISION',
+        message: 'Handover does not have a published package yet.',
+        details: {},
+      });
+    }
+
+    const revision = await this.repository.revisions
+      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .lean<StoredRevisionDoc>()
+      .exec();
+    if (!revision) {
+      throw new NotFoundException({
+        code: 'REVISION_NOT_FOUND',
+        message: 'Published revision not found.',
+        details: {},
+      });
+    }
+
+    const noteText =
+      dto.note?.trim() || 'Đã tiếp nhận và nắm rõ nội dung bàn giao.';
+
+    await this.repository.withTransaction(async (session) => {
+      const nextVer = expectedVersion + 1;
+      const upd = await this.repository.handovers.updateOne(
+        {
+          _id: handover._id,
+          status: 'OPEN',
+          version: expectedVersion,
+          successorUserId: actor.userId,
+        },
+        { $set: { version: nextVer } },
+        { session },
+      );
+      if (upd.matchedCount !== 1) {
+        throw new ConflictException({
+          code: 'VERSION_CONFLICT',
+          message: 'Concurrent handover version update detected.',
+          details: {},
+        });
+      }
+
+      const seqPkg = await this.repository.nextSequence(
+        'handover_acceptances',
+        {
+          handoverId: handover._id,
+          revisionId: revision._id,
+          successorUserId: actor.userId,
+          assignmentVersion: handover.assignmentVersion,
+        },
+        session,
+      );
+
+      const now = new Date();
+      const acceptanceDocs: Array<Record<string, unknown>> = [
+        {
+          _id: new Types.ObjectId(),
+          schemaVersion: 2,
+          organizationId: handover.organizationId,
+          projectId: handover.projectId,
+          handoverId: handover._id,
+          revisionId: revision._id,
+          successorUserId: actor.userId,
+          assignmentVersion: handover.assignmentVersion,
+          kind: 'PACKAGE',
+          decision: 'ACCEPTED',
+          note: noteText,
+          commandId: new Types.ObjectId(),
+          sequence: seqPkg,
+          occurredAt: now,
+        },
+      ];
+
+      for (const item of revision.items) {
+        const seqItem = await this.repository.nextSequence(
+          'handover_acceptances',
+          {
+            handoverId: handover._id,
+            revisionId: revision._id,
+            successorUserId: actor.userId,
+            assignmentVersion: handover.assignmentVersion,
+            itemId: item.itemId,
+          },
+          session,
+        );
+        acceptanceDocs.push({
+          _id: new Types.ObjectId(),
+          schemaVersion: 2,
+          organizationId: handover.organizationId,
+          projectId: handover.projectId,
+          handoverId: handover._id,
+          revisionId: revision._id,
+          successorUserId: actor.userId,
+          assignmentVersion: handover.assignmentVersion,
+          kind: 'ITEM',
+          itemId: item.itemId,
+          contentVersion: item.contentVersion,
+          dependencyFingerprint: item.dependencyFingerprint,
+          decision: 'UNDERSTOOD',
+          note: noteText,
+          commandId: new Types.ObjectId(),
+          sequence: seqItem,
+          occurredAt: now,
+        });
+      }
+
+      await this.repository.acceptances.create(acceptanceDocs, {
+        session,
+        ordered: true,
+      });
+
+      await this.repository.createOrClaimCommandOperation(
+        {
+          organizationId: actor.organizationId,
+          projectId: actor.projectId,
+          handoverId: handover._id,
+          actorUserId: actor.userId,
+          namespace,
+          key: idempotencyKey,
+          fingerprint,
+          expectedVersion,
+          receipt: {
+            resourceId: handover._id,
+            resourceVersion: nextVer,
+            revisionId: revision._id,
+            outcome: 'QUICK_ACCEPTED',
+          },
+        },
+        session,
+      );
+
+      await this.repository.appendAuditAndOutbox(
+        {
+          organizationId: actor.organizationId,
+          projectId: actor.projectId,
+          actorUserId: actor.userId,
+          action: 'handover.package.accepted',
+          targetResource: 'handover',
+          targetResourceId: handover._id.toHexString(),
+          metadata: {
+            revisionId: revision._id.toHexString(),
+            assignmentVersion: handover.assignmentVersion,
+            itemCount: revision.items.length,
+            mode: 'quick_accept',
+          },
+        },
+        {
+          eventName: 'handover.package.accepted',
+          aggregateType: 'handover',
+          aggregateId: handover._id.toHexString(),
+          payload: {
+            revisionId: revision._id.toHexString(),
+            successorUserId: actor.userId,
+          },
+        },
+        session,
+      );
+    });
+
+    return this.getHandover(projectId, cleanHandoverId, headers);
+  }
+
+  async quickTransferHandoverTasks(
+    projectId: string,
+    handoverId: string,
+    rawBody: unknown,
+    headers: HandoverRequestHeaders,
+  ): Promise<HttpPayloadWithHeaders<TransferDto>> {
+    const actor = await this.resolveActor(projectId, headers, true);
+    const idempotencyKey = validateIdempotencyKeyHeader(headers.idempotencyKey);
+    const cleanHandoverId = assertHexId(handoverId, 'handoverId');
+    const dto = validateQuickTransferRequest(rawBody);
+    this.assertLeaderAuthority(actor);
+
+    const handover = await this.loadHandoverOrNotFound(actor, cleanHandoverId);
+    const expectedVersion = headers.ifMatch
+      ? parseRequiredIfMatch(headers.ifMatch, 'handover', cleanHandoverId)
+      : handover.version;
+
+    const res = await this.transferService.quickTransferTasks({
+      actor,
+      handover,
+      expectedVersion,
+      idempotencyKey,
+      taskIds: dto.taskIds,
     });
     return {
       body: res.transfer,

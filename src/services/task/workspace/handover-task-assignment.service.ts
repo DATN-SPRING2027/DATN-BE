@@ -196,6 +196,145 @@ export class HandoverTaskAssignmentService {
     return out;
   }
 
+  async listDepartingMemberTasksForHandover(
+    organizationId: string,
+    projectId: string,
+    departingUserId: string,
+    additionalTaskIds: readonly string[] = [],
+  ): Promise<
+    Array<{
+      id: string;
+      key: string;
+      title: string;
+      status: string;
+      priority: string;
+      type: string;
+      version: number;
+      assigneeId: string | null;
+      updatedAt: string;
+    }>
+  > {
+    if (
+      !/^[a-f0-9]{24}$/i.test(projectId) ||
+      !/^[a-f0-9]{24}$/i.test(departingUserId) ||
+      !this.repository?.db
+    ) {
+      return [];
+    }
+    const db = this.repository.db;
+    const orgLower = organizationId.toLowerCase();
+    const projectObjId = new Types.ObjectId(projectId.toLowerCase());
+    const departingObjId = new Types.ObjectId(departingUserId.toLowerCase());
+    const extraObjIds = additionalTaskIds
+      .filter((id) => /^[a-f0-9]{24}$/i.test(id))
+      .map((id) => new Types.ObjectId(id.toLowerCase()));
+
+    const filter: Record<string, unknown> = {
+      projectId: projectObjId,
+      isDeleted: { $ne: true },
+      deletedAt: { $in: [null, undefined] },
+      $or: [
+        {
+          assigneeId: departingObjId,
+          status: { $nin: ['DONE', 'CANCELLED'] },
+        },
+        ...(extraObjIds.length > 0 ? [{ _id: { $in: extraObjIds } }] : []),
+      ],
+    };
+
+    const rows = await db
+      .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
+      .find(filter)
+      .sort({ updatedAt: -1, _id: -1 })
+      .limit(100)
+      .toArray();
+
+    return rows
+      .filter(
+        (row) =>
+          !row.organizationId ||
+          row.organizationId.toHexString().toLowerCase() === orgLower,
+      )
+      .map((row) => {
+        const id = row._id.toHexString().toLowerCase();
+        return {
+          id,
+          key:
+            typeof row.key === 'string' && row.key
+              ? row.key
+              : `TSK-${id.slice(-4).toUpperCase()}`,
+          title:
+            typeof row.title === 'string' && row.title
+              ? row.title
+              : 'Untitled Task',
+          status: String(row.status || 'TODO'),
+          priority: String(row.priority || 'MEDIUM'),
+          type: String(row.type || 'TASK'),
+          version:
+            typeof row.version === 'number' && row.version >= 1
+              ? row.version
+              : 1,
+          assigneeId: row.assigneeId
+            ? row.assigneeId.toHexString().toLowerCase()
+            : null,
+          updatedAt:
+            row.updatedAt instanceof Date
+              ? row.updatedAt.toISOString()
+              : new Date().toISOString(),
+        };
+      });
+  }
+
+  async countDepartingMemberActiveTasksByProjects(
+    organizationId: string,
+    projectIds: readonly string[],
+    departingUserId: string,
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    const validProjectIds = projectIds
+      .map((p) => p.toLowerCase())
+      .filter((p) => /^[a-f0-9]{24}$/.test(p));
+    for (const pid of validProjectIds) {
+      out.set(pid, 0);
+    }
+    if (
+      validProjectIds.length === 0 ||
+      !/^[a-f0-9]{24}$/i.test(departingUserId) ||
+      !this.repository?.db
+    ) {
+      return out;
+    }
+
+    const db = this.repository.db;
+    const orgLower = organizationId.toLowerCase();
+    const departingObjId = new Types.ObjectId(departingUserId.toLowerCase());
+    const rows = await db
+      .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
+      .find({
+        projectId: { $in: validProjectIds.map((p) => new Types.ObjectId(p)) },
+        assigneeId: departingObjId,
+        status: { $nin: ['DONE', 'CANCELLED'] },
+        isDeleted: { $ne: true },
+        deletedAt: { $in: [null, undefined] },
+      })
+      .project({ projectId: 1, organizationId: 1 })
+      .toArray();
+
+    for (const row of rows) {
+      if (
+        row.organizationId instanceof Types.ObjectId &&
+        row.organizationId.toHexString().toLowerCase() !== orgLower
+      ) {
+        continue;
+      }
+      if (row.projectId instanceof Types.ObjectId) {
+        const pid = row.projectId.toHexString().toLowerCase();
+        out.set(pid, (out.get(pid) ?? 0) + 1);
+      }
+    }
+    return out;
+  }
+
   async assignTaskForHandover(
     input: HandoverTaskAssignmentInput,
   ): Promise<HandoverTaskAssignmentOutcome> {

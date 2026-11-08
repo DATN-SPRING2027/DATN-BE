@@ -3317,4 +3317,149 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       'COMPLETED',
     );
   });
+
+  it('executes the streamlined 5-step handover workflow (departing-preview -> auto-bundle -> quick-transfer -> quick-accept -> complete)', async () => {
+    const taskDb = iamConn.useDb(WORKSPACE_TASK_DATABASE_NAME, {
+      useCache: true,
+    }).db!;
+    const task5StepId = new Types.ObjectId();
+    await taskDb.collection(WORKSPACE_TASKS_COLLECTION).insertOne({
+      _id: task5StepId,
+      organizationId: orgId,
+      projectId,
+      key: '5STEP-101',
+      title: 'Streamlined 5-Step Task to Transfer',
+      description: 'Streamlined handover test task.',
+      status: 'IN_PROGRESS',
+      priority: 'HIGH',
+      type: 'TASK',
+      version: 1,
+      assigneeId: departingAId,
+      createdBy: leaderDId,
+      parentId: null,
+      sprintId: null,
+      labels: ['handover'],
+      steps: [],
+      dueDate: null,
+      startDate: null,
+      completedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Step 1 & 2: Preview departing member scope
+    const previewRes = await request(server)
+      .get(
+        baseUrl(
+          `/departing-preview?departingUserId=${departingAId.toHexString()}`,
+        ),
+      )
+      .set('Cookie', cookieFor('leaderD'))
+      .expect(200);
+
+    const previewBody = previewRes.body as {
+      departingUserId: string;
+      relatedProjects: Array<{
+        projectId: string;
+        unfinishedTaskCount: number;
+      }>;
+      tasks: Array<{ id: string; key: string }>;
+      sources: Array<{ kind: string; id: string; version: string }>;
+    };
+    expect(previewBody.departingUserId).toBe(departingAId.toHexString());
+    expect(
+      previewBody.tasks.some((t) => t.id === task5StepId.toHexString()),
+    ).toBe(true);
+    expect(previewBody.sources.length).toBeGreaterThan(0);
+
+    // Step 3: Create Handover & Auto-Bundle in 1 step
+    const createRes = await request(server)
+      .post(baseUrl())
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        departingUserId: departingAId.toHexString(),
+        assignedLeaderId: leaderDId.toHexString(),
+        successorUserId: successorB1Id.toHexString(),
+        teamId: null,
+        targetCompletionDate: '2026-12-31T00:00:00Z',
+        title: 'Streamlined 5-Step Handover Package',
+      })
+      .expect(201);
+
+    const h5Id = (createRes.body as { handoverId: string }).handoverId;
+    let etag = createRes.headers['etag'];
+
+    const bundleRes = await request(server)
+      .post(baseUrl(`/${h5Id}/auto-bundle`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        taskIds: [task5StepId.toHexString()],
+      })
+      .expect(200);
+
+    etag = bundleRes.headers['etag'];
+    const bundledDetail = bundleRes.body as {
+      handover: { publishedRevisionId: string | null };
+      publishedRevision: {
+        id: string;
+        items: Array<{ itemId: string }>;
+      } | null;
+    };
+    expect(bundledDetail.handover.publishedRevisionId).toBeTruthy();
+    expect(bundledDetail.publishedRevision?.items.length).toBeGreaterThan(0);
+
+    // Step 5a: Manager 1-Click Quick Transfer of Unfinished Tasks
+    const quickTransferRes = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-transfer`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({})
+      .expect(200);
+
+    etag = quickTransferRes.headers['etag'];
+    expect((quickTransferRes.body as { state: string }).state).toBe(
+      'CONFIRMED',
+    );
+
+    // Step 5b: Successor 1-Click Quick Accept
+    const quickAcceptRes = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-accept`))
+      .set('Cookie', cookieFor('successorB1'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ note: 'Đã tiếp nhận toàn bộ công việc và tài liệu bàn giao.' })
+      .expect(200);
+
+    etag = quickAcceptRes.headers['etag'];
+    const acceptedDetail = quickAcceptRes.body as {
+      canComplete: boolean;
+      requiredPendingCount: number;
+      publishedRevision: { id: string };
+    };
+    expect(acceptedDetail.requiredPendingCount).toBe(0);
+    expect(acceptedDetail.canComplete).toBe(true);
+
+    // Step 5c: Complete Handover
+    const completeRes = await request(server)
+      .post(baseUrl(`/${h5Id}/completion`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        revisionId: acceptedDetail.publishedRevision.id,
+        assignmentVersion: 1,
+        reviewNote: 'Hoàn tất bàn giao 5 bước.',
+      })
+      .expect(200);
+    expect((completeRes.body as { status: string }).status).toBe('COMPLETED');
+  });
 });

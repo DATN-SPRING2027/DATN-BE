@@ -90,6 +90,22 @@ export class HandoverWorkflowController {
     );
   }
 
+  @Get('departing-preview')
+  previewDepartingMember(
+    @Param('projectId') projectId: string,
+    @Query() query: Record<string, unknown>,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.respond(response, () =>
+      this.workflowService.previewDepartingMember(
+        projectId,
+        query,
+        this.extractHeaders(request),
+      ),
+    );
+  }
+
   @Get(':handoverId')
   getHandover(
     @Param('projectId') projectId: string,
@@ -617,6 +633,63 @@ export class HandoverWorkflowController {
         projectId,
         handoverId,
         followupId,
+        body,
+        this.extractHeaders(request),
+      ),
+    );
+  }
+
+  @Post(':handoverId/auto-bundle')
+  @HttpCode(HttpStatus.OK)
+  autoBundleHandover(
+    @Param('projectId') projectId: string,
+    @Param('handoverId') handoverId: string,
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.respond(response, () =>
+      this.workflowService.autoBundleAndPublish(
+        projectId,
+        handoverId,
+        body,
+        this.extractHeaders(request),
+      ),
+    );
+  }
+
+  @Post(':handoverId/quick-accept')
+  @HttpCode(HttpStatus.OK)
+  quickAcceptHandover(
+    @Param('projectId') projectId: string,
+    @Param('handoverId') handoverId: string,
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.respond(response, () =>
+      this.workflowService.quickAcceptHandover(
+        projectId,
+        handoverId,
+        body,
+        this.extractHeaders(request),
+      ),
+    );
+  }
+
+  @Post(':handoverId/quick-transfer')
+  @HttpCode(HttpStatus.OK)
+  quickTransferHandoverTasks(
+    @Param('projectId') projectId: string,
+    @Param('handoverId') handoverId: string,
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.respond(response, () =>
+      this.workflowService.quickTransferHandoverTasks(
+        projectId,
+        handoverId,
         body,
         this.extractHeaders(request),
       ),

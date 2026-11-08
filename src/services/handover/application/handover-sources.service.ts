@@ -6,7 +6,7 @@ import {
 } from '../../capture/application/handover-capture-source.service';
 import { HandoverLifecycleSourceService } from '../../lifecycle/application/handover-lifecycle-source.service';
 import { parseSourceVersionNumber, sourceRefKey } from './handover.domain';
-import type { SourceRefDto } from './handover.types';
+import type { DepartingMemberSourceDto, SourceRefDto } from './handover.types';
 
 @Injectable()
 export class HandoverSourcesService {
@@ -93,5 +93,105 @@ export class HandoverSourcesService {
     return [...captureCandidates, ...lifecycleCandidates]
       .filter((c) => c.kind !== 'TASK_NOTE' && c.eligible && c.readable)
       .slice(0, limit);
+  }
+
+  async discoverDepartingMemberFullScope(
+    viewer: HandoverSourceViewer,
+    departingUserId: string,
+    taskIds: readonly string[] = [],
+    limit = 50,
+  ): Promise<{
+    sources: DepartingMemberSourceDto[];
+    evaluatedMap: Map<string, EvaluatedHandoverSource>;
+  }> {
+    const [captureItems, lifecycleItems] = await Promise.all([
+      typeof this.captureSourceService.discoverDepartingMemberScopeSources ===
+      'function'
+        ? this.captureSourceService.discoverDepartingMemberScopeSources(
+            viewer,
+            departingUserId,
+            taskIds,
+            limit,
+          )
+        : Promise.resolve([]),
+      typeof this.lifecycleSourceService.discoverCandidateSources === 'function'
+        ? this.lifecycleSourceService.discoverCandidateSources(
+            viewer,
+            departingUserId,
+            '',
+            limit,
+          )
+        : Promise.resolve([]),
+    ]);
+
+    const combined = [
+      ...captureItems,
+      ...lifecycleItems
+        .filter((c) => c.eligible && c.readable && c.isCurrent)
+        .map((evaluated) => ({
+          evaluated,
+          isDepartingAuthor: true,
+        })),
+    ].slice(0, limit);
+
+    const evaluatedMap = new Map<string, EvaluatedHandoverSource>();
+    const sources: DepartingMemberSourceDto[] = [];
+
+    for (const { evaluated, isDepartingAuthor } of combined) {
+      const ref: SourceRefDto = {
+        kind: evaluated.kind,
+        id: evaluated.id.toLowerCase(),
+        version: String(evaluated.version),
+      };
+      const key = sourceRefKey(ref);
+      if (evaluatedMap.has(key)) continue;
+      evaluatedMap.set(key, evaluated);
+
+      const firstExcerpt = evaluated.excerpts[0];
+      const summaryText = firstExcerpt?.content
+        ? firstExcerpt.content.replace(/\s+/g, ' ').trim().slice(0, 280)
+        : evaluated.title;
+      sources.push({
+        kind: evaluated.kind,
+        id: evaluated.id.toLowerCase(),
+        version: String(evaluated.version),
+        title: evaluated.title || `${evaluated.kind} v${evaluated.version}`,
+        summary: summaryText,
+        locator: {
+          kind: firstExcerpt?.locatorKind ?? 'SECTION',
+          value: firstExcerpt?.locatorValue ?? 'body-1',
+        },
+        isDepartingAuthor,
+      });
+    }
+
+    return { sources, evaluatedMap };
+  }
+
+  async countDepartingMemberSourcesByProjects(
+    organizationId: string,
+    projectIds: readonly string[],
+    departingUserId: string,
+  ): Promise<
+    Map<
+      string,
+      {
+        taskNoteCount: number;
+        documentCount: number;
+        workReportCount: number;
+      }
+    >
+  > {
+    if (
+      typeof this.captureSourceService
+        .countDepartingMemberCaptureSourcesByProjects === 'function'
+    ) {
+      return this.captureSourceService.countDepartingMemberCaptureSourcesByProjects(
+        organizationId,
+        projectIds,
+        departingUserId,
+      );
+    }
+    return new Map();
   }
 }

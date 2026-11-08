@@ -382,6 +382,64 @@ export interface HandoverAnswerDto {
   coverage?: HandoverAiCoverageDto;
 }
 
+export interface DepartingMemberProjectSummaryDto {
+  projectId: string;
+  key: string;
+  name: string;
+  membershipStatus: string;
+  unfinishedTaskCount: number;
+  taskNoteCount: number;
+  documentCount: number;
+  workReportCount: number;
+}
+
+export interface DepartingMemberTaskDto {
+  id: string;
+  key: string;
+  title: string;
+  status: string;
+  priority: string;
+  type: string;
+  version: number;
+  assigneeId: string | null;
+  updatedAt: string;
+}
+
+export interface DepartingMemberSourceDto {
+  kind: SourceRefKind;
+  id: string;
+  version: string;
+  title: string;
+  summary: string;
+  locator: {
+    kind: CitationLocatorKind;
+    value: string;
+  };
+  isDepartingAuthor: boolean;
+}
+
+export interface DepartingMemberPreviewDto {
+  departingUserId: string;
+  projectId: string;
+  relatedProjects: DepartingMemberProjectSummaryDto[];
+  tasks: DepartingMemberTaskDto[];
+  sources: DepartingMemberSourceDto[];
+}
+
+export interface AutoBundleHandoverDto {
+  taskIds?: string[];
+  selectedSources?: SourceRefDto[];
+  summaryNote?: string;
+}
+
+export interface QuickAcceptHandoverDto {
+  note?: string;
+}
+
+export interface QuickTransferTasksDto {
+  taskIds?: string[];
+}
+
 export interface HandoverRequestHeaders {
   authorization?: string;
   cookie?: string;
