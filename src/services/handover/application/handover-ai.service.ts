@@ -19,6 +19,8 @@ import {
   AI_ENGINE_CLIENT,
   type AiEngineClient,
 } from '../../../integrations/ai-engine/ai-engine.port';
+import { AiTokenUsageService } from '../../../integrations/ai-engine/ai-token-usage.service';
+import type { AiTokenUsageTaskKind } from '../../../integrations/ai-engine/ai-token-usage.types';
 import type { HandoverSourceViewer } from '../../capture/application/handover-capture-source.service';
 import type { EvaluatedHandoverSource } from '../../capture/application/handover-capture-source.service';
 import {
@@ -95,6 +97,13 @@ interface SagHandoverAssistResponse {
     text: string;
     citations: SagCitationPayload[];
   }>;
+  usage?: {
+    inputTokens?: number;
+    cachedTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    calls?: number;
+  } | null;
 }
 
 @Injectable()
@@ -124,7 +133,52 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
     private readonly aiEngine?: AiEngineClient,
     @Optional()
     private readonly redis?: RedisService,
+    @Optional()
+    private readonly tokenUsage?: AiTokenUsageService,
   ) {}
+
+  private recordHandoverAssistUsage(params: {
+    organizationId: string;
+    projectId: string;
+    userId: string;
+    taskKind: AiTokenUsageTaskKind;
+    body: SagHandoverAssistResponse | null | undefined;
+    fallbackInputChars: number;
+    fallbackOutputChars: number;
+    dedupeKey?: string;
+  }): void {
+    if (!this.tokenUsage) return;
+    const rawUsage = params.body?.usage;
+    const repIn = Number(rawUsage?.inputTokens ?? 0);
+    const repCached = Number(rawUsage?.cachedTokens ?? 0);
+    const repOut = Number(rawUsage?.outputTokens ?? 0);
+    const repCalls = Number(rawUsage?.calls ?? 1);
+    const hasReported =
+      (Number.isFinite(repIn) && repIn > 0) ||
+      (Number.isFinite(repCached) && repCached > 0) ||
+      (Number.isFinite(repOut) && repOut > 0);
+    const inputTokens = hasReported
+      ? Math.max(0, Math.round(repIn))
+      : Math.max(64, Math.ceil(params.fallbackInputChars / 4));
+    const cacheReadTokens = hasReported
+      ? Math.max(0, Math.round(repCached))
+      : 0;
+    const outputTokens = hasReported
+      ? Math.max(0, Math.round(repOut))
+      : Math.max(32, Math.ceil(params.fallbackOutputChars / 4));
+    void this.tokenUsage.recordUsageEvent({
+      organizationId: params.organizationId,
+      projectId: params.projectId,
+      userId: params.userId,
+      taskKind: params.taskKind,
+      inputTokens,
+      cacheReadTokens,
+      outputTokens,
+      calls:
+        Number.isFinite(repCalls) && repCalls > 0 ? Math.round(repCalls) : 1,
+      ...(params.dedupeKey ? { dedupeKey: params.dedupeKey } : {}),
+    });
+  }
 
   onModuleInit(): void {
     this.recoveryTimer = setInterval(() => {
@@ -1312,6 +1366,17 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         },
       });
       sagBody = sagRes.body;
+      this.recordHandoverAssistUsage({
+        organizationId: input.actor.organizationId,
+        projectId: input.actor.projectId,
+        userId: input.actor.userId,
+        taskKind: 'ai_chat',
+        body: sagRes.body,
+        fallbackInputChars:
+          (input.dto.question?.length ?? 0) +
+          JSON.stringify(permittedSources).length,
+        fallbackOutputChars: JSON.stringify(sagRes.body?.sections ?? []).length,
+      });
     } catch (err) {
       if (
         err instanceof BadGatewayException ||
@@ -1572,7 +1637,11 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         if (src.kind === 'TASK_NOTE' || src.kind === 'WORK_REPORT') {
           score += 4;
         }
-        if (/readme|member|overview|handover|kiến trúc|tổng quan/i.test(lowerTitle)) {
+        if (
+          /readme|member|overview|handover|kiến trúc|tổng quan/i.test(
+            lowerTitle,
+          )
+        ) {
           score += 5;
         }
         if (isConfigFile && !asksForInfraConfig) {
@@ -1910,6 +1979,18 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
             sources: sagSources,
           },
         });
+        this.recordHandoverAssistUsage({
+          organizationId: orgIdStr,
+          projectId: projectIdStr,
+          userId: claimedJob.initiatedBy,
+          taskKind: 'note_rewrite',
+          body: sagRes.body,
+          fallbackInputChars:
+            (claimedJob.query?.length ?? 0) + JSON.stringify(sagSources).length,
+          fallbackOutputChars: JSON.stringify(sagRes.body?.candidates ?? [])
+            .length,
+          dedupeKey: `handover_job:${claimedJob._id.toHexString()}`,
+        });
 
         try {
           await this.iamScope.assertEligibleCoordinator(
@@ -2032,6 +2113,16 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
           maxItems: 20,
           sources: sagGenSources,
         },
+      });
+      this.recordHandoverAssistUsage({
+        organizationId: orgIdStr,
+        projectId: projectIdStr,
+        userId: claimedJob.initiatedBy,
+        taskKind: 'note_rewrite',
+        body: sagRes.body,
+        fallbackInputChars: JSON.stringify(sagGenSources).length,
+        fallbackOutputChars: JSON.stringify(sagRes.body?.items ?? []).length,
+        dedupeKey: `handover_job:${claimedJob._id.toHexString()}`,
       });
 
       const allowedGenKeys = new Set(

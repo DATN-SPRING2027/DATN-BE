@@ -27,6 +27,7 @@ import {
 } from '../infrastructure/audit/audit.service';
 import {
   SAG_KNOWLEDGE_SYNC_TRANSPORT,
+  recordKnowledgeSyncTokenUsageLog,
   type SagKnowledgeSyncTransport,
   type SagProjectDocumentUploadReceipt,
 } from '../infrastructure/outbox/knowledge-outbox.consumer';
@@ -5201,6 +5202,16 @@ export class WorkNotesService {
             : {}),
           error: live.error ?? null,
         };
+        if (typeof live.tokenUsage === 'number' && live.tokenUsage > 0) {
+          void recordKnowledgeSyncTokenUsageLog(db, {
+            organizationId: actor.organizationId,
+            projectId,
+            userId: actor.userId,
+            sagDocumentId: storedSync.sagDocumentId,
+            sagVersionNo: storedSync.sagVersionNo ?? versionNumber,
+            tokenUsage: live.tokenUsage,
+          });
+        }
         if (JSON.stringify(merged) !== JSON.stringify(storedSync)) {
           await db
             .collection('project_document_versions')
@@ -5328,6 +5339,16 @@ export class WorkNotesService {
                 : {}),
               error: live.error ?? null,
             };
+            if (typeof live.tokenUsage === 'number' && live.tokenUsage > 0) {
+              void recordKnowledgeSyncTokenUsageLog(db, {
+                organizationId: actor.organizationId,
+                projectId,
+                userId: actor.userId,
+                sagDocumentId: deliveryReceipt.documentId,
+                sagVersionNo: deliveryReceipt.versionNo,
+                tokenUsage: live.tokenUsage,
+              });
+            }
           } catch {
             // Fall back to recovered outbox receipt
           }
@@ -10920,6 +10941,16 @@ export class WorkNotesService {
             : {}),
           error: live.error ?? null,
         };
+        if (typeof live.tokenUsage === 'number' && live.tokenUsage > 0) {
+          void recordKnowledgeSyncTokenUsageLog(this.database(), {
+            organizationId: actor.organizationId,
+            projectId,
+            userId: actor.userId,
+            sagDocumentId: storedSync.sagDocumentId,
+            sagVersionNo: storedSync.sagVersionNo ?? versionNumber,
+            tokenUsage: live.tokenUsage,
+          });
+        }
         if (JSON.stringify(merged) !== JSON.stringify(storedSync)) {
           await persistSync(merged);
         }
@@ -11040,6 +11071,16 @@ export class WorkNotesService {
                 : {}),
               error: live.error ?? null,
             };
+            if (typeof live.tokenUsage === 'number' && live.tokenUsage > 0) {
+              void recordKnowledgeSyncTokenUsageLog(this.database(), {
+                organizationId: actor.organizationId,
+                projectId,
+                userId: actor.userId,
+                sagDocumentId: deliveryReceipt.documentId,
+                sagVersionNo: deliveryReceipt.versionNo,
+                tokenUsage: live.tokenUsage,
+              });
+            }
           } catch {
             // Fall back to recovered outbox receipt
           }

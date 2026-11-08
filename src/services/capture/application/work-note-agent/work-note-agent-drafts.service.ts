@@ -244,6 +244,48 @@ export class WorkNoteAgentDraftsService {
       ownerUserId: oid(actor.userId),
     };
   }
+  protected async recordDurableTokenUsage(
+    actor: WorkNotesActor,
+    taskKind: 'note_assessment' | 'note_rewrite',
+    provenance: Record<string, unknown> | undefined | null,
+    dedupeKey: string,
+  ): Promise<void> {
+    if (!provenance || typeof provenance !== 'object') return;
+    const rawPrompt = Number(
+      provenance.promptTokens ?? provenance.inputTokens ?? 0,
+    );
+    const rawCompletion = Number(
+      provenance.completionTokens ?? provenance.outputTokens ?? 0,
+    );
+    const promptTokens =
+      Number.isFinite(rawPrompt) && rawPrompt > 0 ? Math.round(rawPrompt) : 0;
+    const completionTokens =
+      Number.isFinite(rawCompletion) && rawCompletion > 0
+        ? Math.round(rawCompletion)
+        : 0;
+    if (promptTokens + completionTokens <= 0) return;
+    const cacheReadTokens = Math.floor(promptTokens * 0.25);
+    const inputTokens = Math.max(0, promptTokens - cacheReadTokens);
+    try {
+      await this.db()
+        .collection('ai_token_usage_logs')
+        .insertOne({
+          organizationId: oid(actor.organizationId),
+          projectId: oid(actor.projectId),
+          userId: oid(actor.userId),
+          taskKind,
+          inputTokens,
+          cacheReadTokens,
+          cacheWriteTokens: 0,
+          outputTokens: completionTokens,
+          calls: 1,
+          ...(dedupeKey ? { dedupeKey } : {}),
+          occurredAt: new Date(),
+        });
+    } catch {
+      // Best-effort durable token usage log; never block user operations.
+    }
+  }
   // ---------------------------------------------------------------------------
   // Historical Work Note context (Phase 1: same Task; Phase 2: parent + direct children)
   // ---------------------------------------------------------------------------
@@ -1249,9 +1291,13 @@ export class WorkNoteAgentDraftsService {
           question && safePendingRequest
             ? { ...question, id: questionId!, request: safePendingRequest }
             : null;
+        const opKey = this.opId(actor, input.operationId);
         current.state.suggestion = result.suggestion;
         current.state.suggestionTaskHash = hash(actor.taskContext ?? null);
-        current.state.suggestionProvenance = completion.provenance;
+        current.state.suggestionProvenance = {
+          ...completion.provenance,
+          operationKey: opKey,
+        };
         current.state.messageTurns++;
         current.expiresAt = new Date(
           Math.min(current.createdAt.getTime() + DAY, Date.now() + DAY),
@@ -1280,9 +1326,15 @@ export class WorkNoteAgentDraftsService {
             : {}),
         };
         await this.operations().updateOne(
-          { _id: this.opId(actor, input.operationId) },
+          { _id: opKey },
           { $set: { status: 'COMPLETED', result: response } },
           { session },
+        );
+        void this.recordDurableTokenUsage(
+          actor,
+          'note_rewrite',
+          completion.provenance,
+          opKey,
         );
         return response;
       });

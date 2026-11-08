@@ -239,6 +239,24 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
         ),
       ],
     },
+    {
+      name: 'ai_token_usage_logs',
+      indexes: [
+        index(
+          { organizationId: 1, projectId: 1, occurredAt: -1 },
+          { name: 'ai_token_usage_logs_org_project_occurred_at' },
+        ),
+        index(
+          { organizationId: 1, userId: 1, occurredAt: -1 },
+          { name: 'ai_token_usage_logs_org_user_occurred_at' },
+        ),
+        index(
+          { organizationId: 1, taskKind: 1, occurredAt: -1 },
+          { name: 'ai_token_usage_logs_org_task_occurred_at' },
+        ),
+        index({ dedupeKey: 1 }, { name: 'ai_token_usage_logs_dedupe_key' }),
+      ],
+    },
   ],
 };
 

@@ -721,6 +721,32 @@ const captureSchemas: Record<string, Schema> = {
     },
     { collection: 'work_note_assessment_feedback', strict: true },
   ),
+  ai_token_usage_logs: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      projectId: { type: Schema.Types.ObjectId, required: true },
+      userId: { type: Schema.Types.ObjectId, required: true },
+      taskKind: {
+        type: String,
+        enum: [
+          'ai_chat',
+          'mind_map',
+          'knowledge_sync',
+          'note_assessment',
+          'note_rewrite',
+        ],
+        required: true,
+      },
+      inputTokens: { type: Number, min: 0, required: true },
+      cacheReadTokens: { type: Number, min: 0, default: 0, required: true },
+      cacheWriteTokens: { type: Number, min: 0, default: 0, required: true },
+      outputTokens: { type: Number, min: 0, required: true },
+      calls: { type: Number, min: 1, default: 1, required: true },
+      dedupeKey: { type: String, maxlength: 200 },
+      occurredAt: { type: Date, required: true },
+    },
+    { collection: 'ai_token_usage_logs', timestamps: true, strict: true },
+  ),
 };
 
 export function createCollectionSchema(

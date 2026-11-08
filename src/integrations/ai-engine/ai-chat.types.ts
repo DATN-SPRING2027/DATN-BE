@@ -85,6 +85,15 @@ export type AiChatDeltaEventData = Readonly<{
   text: string;
 }>;
 
+export type AiChatProviderUsageDto = Readonly<{
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}>;
+
 export type AiChatCompletedEventData = Readonly<{
   messageId: string;
   replyToMessageId?: string;
@@ -94,6 +103,7 @@ export type AiChatCompletedEventData = Readonly<{
   citations: readonly AiChatCitationDto[];
   sessionCitations: readonly AiChatSessionCitationDto[];
   retrievalSteps: readonly AiChatRetrievalStepDto[];
+  usage?: AiChatProviderUsageDto;
 }>;
 
 export type AiChatFailedEventData = Readonly<{

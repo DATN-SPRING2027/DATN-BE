@@ -2420,6 +2420,20 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
       lastStatus = statusReceipt.searchStatus;
 
       if (
+        typeof statusReceipt.tokenUsage === 'number' &&
+        statusReceipt.tokenUsage > 0
+      ) {
+        void recordKnowledgeSyncTokenUsageLog(this.connection.db, {
+          organizationId,
+          projectId,
+          userId: actorUserId,
+          sagDocumentId: receipt.documentId,
+          sagVersionNo: receipt.versionNo,
+          tokenUsage: statusReceipt.tokenUsage,
+        });
+      }
+
+      if (
         statusReceipt.searchReady ||
         statusReceipt.searchStatus === 'SEARCH_READY'
       ) {
@@ -2655,6 +2669,68 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
     } finally {
       this.running = false;
     }
+  }
+}
+
+export async function recordKnowledgeSyncTokenUsageLog(
+  db: Connection['db'] | undefined,
+  params: {
+    organizationId: string;
+    projectId: string;
+    userId: string;
+    sagDocumentId: string;
+    sagVersionNo: number;
+    tokenUsage: number;
+  },
+): Promise<void> {
+  if (!db || typeof db.collection !== 'function') return;
+  const safeTokens = Math.max(0, Math.round(Number(params.tokenUsage) || 0));
+  if (safeTokens <= 0) return;
+  if (
+    !isValidObjectIdHex(params.organizationId) ||
+    !isValidObjectIdHex(params.projectId) ||
+    !isValidObjectIdHex(params.userId)
+  ) {
+    return;
+  }
+  const sagDocId = String(params.sagDocumentId ?? '').trim();
+  const sagVer = Math.max(1, Math.trunc(Number(params.sagVersionNo) || 1));
+  if (!sagDocId) return;
+
+  const dedupeKey = `knowledge_sync:${sagDocId}:v${sagVer}`.slice(0, 180);
+  const orgObjId = new Types.ObjectId(params.organizationId.toLowerCase());
+  const projObjId = new Types.ObjectId(params.projectId.toLowerCase());
+  const userObjId = new Types.ObjectId(params.userId.toLowerCase());
+
+  try {
+    const col = db.collection('ai_token_usage_logs');
+    if (typeof col?.updateOne === 'function') {
+      await col.updateOne(
+        {
+          organizationId: orgObjId,
+          projectId: projObjId,
+          dedupeKey,
+        },
+        {
+          $max: { inputTokens: safeTokens },
+          $setOnInsert: {
+            organizationId: orgObjId,
+            projectId: projObjId,
+            userId: userObjId,
+            taskKind: 'knowledge_sync',
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            outputTokens: 0,
+            calls: 1,
+            dedupeKey,
+            occurredAt: new Date(),
+          },
+        },
+        { upsert: true },
+      );
+    }
+  } catch {
+    // Telemetry logging must never interrupt outbox or status flows.
   }
 }
 
