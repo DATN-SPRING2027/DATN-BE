@@ -8,6 +8,8 @@ import { AiEngineAuthController } from './ai-engine-auth.controller';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import { HttpAiEngineClient } from './http-ai-engine.client';
 import { PlatformAiFeedbackController } from './platform-ai-feedback.controller';
+import { AiTokenUsageController } from './ai-token-usage.controller';
+import { AiTokenUsageService } from './ai-token-usage.service';
 
 @Module({
   imports: [IamModule, CaptureModule],
@@ -16,11 +18,13 @@ import { PlatformAiFeedbackController } from './platform-ai-feedback.controller'
     AiEngineAuthController,
     AiChatController,
     PlatformAiFeedbackController,
+    AiTokenUsageController,
   ],
   providers: [
     { provide: AI_ENGINE_CLIENT, useClass: HttpAiEngineClient },
     AiChatService,
+    AiTokenUsageService,
   ],
-  exports: [AI_ENGINE_CLIENT],
+  exports: [AI_ENGINE_CLIENT, AiTokenUsageService],
 })
 export class AiEngineModule {}

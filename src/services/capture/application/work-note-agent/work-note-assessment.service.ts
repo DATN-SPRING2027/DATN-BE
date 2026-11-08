@@ -550,10 +550,17 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
           { session },
         );
         if (changed.modifiedCount !== 1) throw stale();
+        const opKey = this.opId(actor, input.operationId);
         await this.operations().updateOne(
-          { _id: this.opId(actor, input.operationId) },
+          { _id: opKey },
           { $set: { status: 'COMPLETED', result: v } },
           { session },
+        );
+        void this.recordDurableTokenUsage(
+          actor,
+          'note_assessment',
+          completion.provenance,
+          opKey,
         );
         return v;
       });
@@ -703,6 +710,7 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
             },
           ].slice(-40),
         };
+        const opKey = this.opId(actor, input.operationId);
         const changed = await this.drafts().updateOne(
           {
             _id: id,
@@ -720,7 +728,10 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
               'state.suggestionTaskHash': this.legacyTaskHash(
                 actor.taskContext,
               ),
-              'state.suggestionProvenance': completion.provenance,
+              'state.suggestionProvenance': {
+                ...completion.provenance,
+                operationKey: opKey,
+              },
               'state.assessment': next,
             },
             $unset: { inferenceOperationId: '', inferenceLeaseUntil: '' },
@@ -729,9 +740,15 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         );
         if (changed.modifiedCount !== 1) throw stale();
         await this.operations().updateOne(
-          { _id: this.opId(actor, input.operationId) },
+          { _id: opKey },
           { $set: { status: 'COMPLETED', result: response } },
           { session },
+        );
+        void this.recordDurableTokenUsage(
+          actor,
+          'note_rewrite',
+          completion.provenance,
+          opKey,
         );
       });
       return response;

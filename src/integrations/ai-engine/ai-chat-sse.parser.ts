@@ -21,6 +21,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function nonNegativeInt(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.round(value);
+  }
+  return 0;
+}
+
 function sanitizeFailureEvent(
   eventType: string,
   payload: Record<string, unknown>,
@@ -448,6 +455,39 @@ export async function* transformSagSseStream(
       const extracted = Array.isArray(payload.steps)
         ? extractSanitizedStepsAndSessionCitations(payload.steps)
         : null;
+      const rawUsage = isRecord(payload.usage) ? payload.usage : null;
+      const usageInputTokens = rawUsage
+        ? nonNegativeInt(rawUsage.input_tokens ?? rawUsage.inputTokens)
+        : 0;
+      const usageOutputTokens = rawUsage
+        ? nonNegativeInt(rawUsage.output_tokens ?? rawUsage.outputTokens)
+        : 0;
+      const usageCachedTokens = rawUsage
+        ? nonNegativeInt(rawUsage.cached_tokens ?? rawUsage.cachedTokens)
+        : 0;
+      const usageReasoningTokens = rawUsage
+        ? nonNegativeInt(rawUsage.reasoning_tokens ?? rawUsage.reasoningTokens)
+        : 0;
+      const usageTotalTokens = rawUsage
+        ? Math.max(
+            nonNegativeInt(rawUsage.total_tokens ?? rawUsage.totalTokens),
+            usageInputTokens + usageOutputTokens,
+          )
+        : 0;
+      const usageRequests = rawUsage
+        ? Math.max(1, nonNegativeInt(rawUsage.requests) || 1)
+        : 1;
+      const usage =
+        usageTotalTokens > 0
+          ? {
+              requests: usageRequests,
+              inputTokens: usageInputTokens,
+              outputTokens: usageOutputTokens,
+              cachedTokens: usageCachedTokens,
+              reasoningTokens: usageReasoningTokens,
+              totalTokens: usageTotalTokens,
+            }
+          : undefined;
       yield {
         event: 'completed',
         data: {
@@ -462,6 +502,7 @@ export async function* transformSagSseStream(
             extracted && extracted.retrievalSteps.length > 0
               ? extracted.retrievalSteps
               : [...collectedSteps],
+          ...(usage ? { usage } : {}),
         },
       };
       return;

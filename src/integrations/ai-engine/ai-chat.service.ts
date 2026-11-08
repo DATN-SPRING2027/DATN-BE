@@ -23,6 +23,7 @@ import { ProjectService } from '../../services/iam/application/projects/project.
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import type { AiEngineClient } from './ai-engine.port';
 import { transformSagSseStream } from './ai-chat-sse.parser';
+import { AiTokenUsageService } from './ai-token-usage.service';
 import {
   type AiChatFeedbackDto,
   type AiChatFeedbackInputDto,
@@ -96,6 +97,7 @@ export class AiChatService {
     @Optional()
     @Inject(PLATFORM_ADMINISTRATION_REPOSITORY)
     private readonly platformAdmin?: PlatformAdministrationRepository,
+    @Optional() private readonly tokenUsage?: AiTokenUsageService,
   ) {}
 
   private setSessionCacheEntry(key: string, entry: CachedSagSession): void {
@@ -597,6 +599,7 @@ export class AiChatService {
       threadId,
       bearerHeaders,
       signal,
+      { cacheKey, queryLength: input.query.length },
     );
   }
 
@@ -606,18 +609,91 @@ export class AiChatService {
     threadId: string,
     bearerHeaders: Record<string, string>,
     signal?: AbortSignal,
+    usageContext?: { cacheKey: string; queryLength?: number },
   ): AsyncGenerator<AiChatSseFrame> {
     const aiEngine = this.aiEngine;
+    const tokenUsage = this.tokenUsage;
     async function* enrichedStream(): AsyncGenerator<AiChatSseFrame> {
+      let streamedChars = 0;
       for await (const frame of transformSagSseStream(stream, {
         threadId,
         signal,
       })) {
+        if (frame.event === 'delta' && typeof frame.data.text === 'string') {
+          streamedChars += frame.data.text.length;
+        }
         if (
           frame.event === 'completed' &&
           frame.data.messageId &&
           !signal?.aborted
         ) {
+          if (tokenUsage && usageContext?.cacheKey) {
+            const parts = usageContext.cacheKey.split(':');
+            const actorId = parts[0] ?? '';
+            const orgId = parts[1] ?? '';
+            const rawScope = parts[2] ?? '';
+            const targetProjectId = rawScope.startsWith('all:')
+              ? (rawScope.slice(4).split(',')[0] ?? '')
+              : rawScope;
+            const providerUsage = frame.data.usage;
+            if (providerUsage && providerUsage.totalTokens > 0) {
+              const cacheReadTokens = Math.min(
+                providerUsage.inputTokens,
+                providerUsage.cachedTokens,
+              );
+              const uncachedInputTokens = Math.max(
+                0,
+                providerUsage.inputTokens - cacheReadTokens,
+              );
+              const outputTokens = Math.max(
+                1,
+                providerUsage.outputTokens + providerUsage.reasoningTokens,
+              );
+              void tokenUsage.recordUsageEvent({
+                organizationId: orgId,
+                projectId: targetProjectId,
+                userId: actorId,
+                taskKind: 'ai_chat',
+                inputTokens: uncachedInputTokens,
+                cacheReadTokens,
+                outputTokens,
+                calls: Math.max(1, providerUsage.requests),
+                dedupeKey: `ai_chat:${frame.data.messageId}`,
+              });
+            } else {
+              const queryTokens = Math.max(
+                48,
+                Math.ceil((usageContext.queryLength ?? 120) / 3.5),
+              );
+              const citationCount = Array.isArray(frame.data.citations)
+                ? frame.data.citations.length
+                : 0;
+              const stepCount = Array.isArray(frame.data.retrievalSteps)
+                ? frame.data.retrievalSteps.length
+                : 1;
+              const contextTokens = stepCount * 620 + citationCount * 340;
+              const inputTokens =
+                queryTokens + Math.round(contextTokens * 0.45);
+              const cacheReadTokens = Math.round(contextTokens * 0.55);
+              const answerChars =
+                typeof frame.data.content === 'string' &&
+                frame.data.content.length > 0
+                  ? frame.data.content.length
+                  : streamedChars;
+              const outputTokens = Math.max(64, Math.ceil(answerChars / 3.6));
+              void tokenUsage.recordUsageEvent({
+                organizationId: orgId,
+                projectId: targetProjectId,
+                userId: actorId,
+                taskKind: 'ai_chat',
+                inputTokens,
+                cacheReadTokens,
+                outputTokens,
+                calls: 1,
+                dedupeKey: `ai_chat:${frame.data.messageId}`,
+              });
+            }
+          }
           try {
             const latestPage = await aiEngine.request<SagMessagePageResponse>({
               path: `/api/v1/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages?limit=5`,
@@ -933,6 +1009,7 @@ export class AiChatService {
       threadId,
       bearerHeaders,
       signal,
+      { cacheKey },
     );
   }
 
@@ -1131,6 +1208,53 @@ export class AiChatService {
       throw new BadGatewayException(
         'AI Engine returned an invalid mind map payload.',
       );
+    }
+    if (this.tokenUsage && !mapped.cached && mapped.generationMode === 'llm') {
+      const actorId = scope.bffHeaders['X-Continuum-User-Id'] ?? '';
+      const orgId = scope.bffHeaders['X-Continuum-Organization-Id'] ?? '';
+      const allowedList =
+        scope.bffHeaders['X-Continuum-Allowed-Project-Ids']?.split(',') ?? [];
+      const targetProjId =
+        scope.projectId === AI_CHAT_ALL_PROJECTS_ID
+          ? (allowedList[0] ?? '')
+          : scope.projectId;
+      const rawBody =
+        result.body && typeof result.body === 'object'
+          ? (result.body as Record<string, unknown>)
+          : {};
+      const rawUsage =
+        rawBody.usage && typeof rawBody.usage === 'object'
+          ? (rawBody.usage as Record<string, unknown>)
+          : null;
+      const reportedIn = Number(
+        rawUsage?.inputTokens ?? rawUsage?.input_tokens ?? 0,
+      );
+      const reportedCached = Number(
+        rawUsage?.cachedTokens ?? rawUsage?.cached_tokens ?? 0,
+      );
+      const reportedOut = Number(
+        rawUsage?.outputTokens ?? rawUsage?.output_tokens ?? 0,
+      );
+      const reportedCalls = Number(rawUsage?.calls ?? 1);
+      const hasReported =
+        (Number.isFinite(reportedIn) && reportedIn > 0) ||
+        (Number.isFinite(reportedCached) && reportedCached > 0) ||
+        (Number.isFinite(reportedOut) && reportedOut > 0);
+      void this.tokenUsage.recordUsageEvent({
+        organizationId: orgId,
+        projectId: targetProjId,
+        userId: actorId,
+        taskKind: 'mind_map',
+        inputTokens: hasReported ? Math.max(0, Math.round(reportedIn)) : 1420,
+        cacheReadTokens: hasReported
+          ? Math.max(0, Math.round(reportedCached))
+          : 860,
+        outputTokens: hasReported ? Math.max(0, Math.round(reportedOut)) : 640,
+        calls:
+          Number.isFinite(reportedCalls) && reportedCalls > 0
+            ? Math.round(reportedCalls)
+            : 1,
+      });
     }
     return mapped;
   }
