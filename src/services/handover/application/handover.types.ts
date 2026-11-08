@@ -253,6 +253,24 @@ export interface HandoverDetailDto {
   capabilities: HandoverCapability[];
   requiredPendingCount: number;
   canComplete: boolean;
+  participantView?: HandoverParticipantView;
+  taskTransfer?: { selectedCount: number; verifiedCount: number };
+}
+
+export interface HandoverParticipantView {
+  role: 'DEPARTING' | 'SUCCESSOR';
+  packageAccepted: boolean;
+  canQuickAccept: boolean;
+  tasks: Array<{
+    id: string;
+    key: string;
+    title: string;
+    status: string;
+    dueDate: string | null;
+    disposition: 'DEPARTING' | 'TRANSFERRED' | 'ALREADY_ASSIGNED';
+    canAddNote: boolean;
+  }>;
+  sources: Array<SourceRefDto & { title: string }>;
 }
 
 export interface HandoverListDto {
@@ -353,6 +371,7 @@ export interface TaskTransferResultDto {
   state: TaskTransferChildResultState;
   expectedTaskVersion: number;
   committedTaskVersion: number | null;
+  disposition?: 'TRANSFERRED' | 'ALREADY_ASSIGNED';
   safeErrorCode: string | null;
 }
 
@@ -380,6 +399,63 @@ export interface HandoverAnswerDto {
   sections: AnswerSectionDto[];
   warnings?: HandoverAiWarning[];
   coverage?: HandoverAiCoverageDto;
+}
+
+export interface DepartingMemberProjectSummaryDto {
+  projectId: string;
+  key: string;
+  name: string;
+  membershipStatus: string;
+  unfinishedTaskCount: number;
+  taskNoteCount: number;
+  documentCount: number;
+  workReportCount: number;
+}
+
+export interface DepartingMemberTaskDto {
+  id: string;
+  key: string;
+  title: string;
+  status: string;
+  priority: string;
+  type: string;
+  version: number;
+  assigneeId: string | null;
+  updatedAt: string;
+}
+
+export interface DepartingMemberSourceDto {
+  kind: SourceRefKind;
+  id: string;
+  version: string;
+  title: string;
+  summary: string;
+  locator: {
+    kind: CitationLocatorKind;
+    value: string;
+  };
+  isDepartingAuthor: boolean;
+}
+
+export interface DepartingMemberPreviewDto {
+  departingUserId: string;
+  projectId: string;
+  relatedProjects: DepartingMemberProjectSummaryDto[];
+  tasks: DepartingMemberTaskDto[];
+  sources: DepartingMemberSourceDto[];
+}
+
+export interface AutoBundleHandoverDto {
+  taskIds?: string[];
+  selectedSources?: SourceRefDto[];
+}
+
+export interface QuickAcceptHandoverDto {
+  note?: string;
+}
+
+export interface QuickTransferTasksDto {
+  taskIds?: string[];
 }
 
 export interface HandoverRequestHeaders {

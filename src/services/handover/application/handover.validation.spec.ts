@@ -9,8 +9,11 @@ import {
   formatFollowUpEtag,
   formatHandoverEtag,
   parseRequiredIfMatch,
+  validateAutoBundleRequest,
   validateIdempotencyKeyHeader,
   validateNamedContractSchema,
+  validateQuickAcceptRequest,
+  validateQuickTransferRequest,
 } from './handover.validation';
 
 interface PayloadScenarioCase {
@@ -100,5 +103,44 @@ describe('Handover Contract Validation & 21 Payload Oracles', () => {
       // UUIDv1 rejected (version nibble 1 instead of 4)
       validateIdempotencyKeyHeader('550e8400-e29b-11d4-a716-446655440000'),
     ).toThrow(BadRequestException);
+  });
+
+  it('validates streamlined 5-step handover request payloads (AutoBundle, QuickAccept, QuickTransfer)', () => {
+    expect(validateAutoBundleRequest({})).toEqual({});
+    expect(
+      validateAutoBundleRequest({
+        taskIds: ['111111111111111111111111'],
+        selectedSources: [
+          {
+            kind: 'PROJECT_DOCUMENT',
+            id: '222222222222222222222222',
+            version: '1',
+          },
+        ],
+      }),
+    ).toEqual({
+      taskIds: ['111111111111111111111111'],
+      selectedSources: [
+        {
+          kind: 'PROJECT_DOCUMENT',
+          id: '222222222222222222222222',
+          version: '1',
+        },
+      ],
+    });
+    expect(() =>
+      validateAutoBundleRequest({ summaryNote: 'Uncited content' }),
+    ).toThrow(BadRequestException);
+
+    expect(validateQuickAcceptRequest({ note: 'Đã nhận bàn giao' })).toEqual({
+      note: 'Đã nhận bàn giao',
+    });
+    expect(
+      validateQuickTransferRequest({
+        taskIds: ['333333333333333333333333'],
+      }),
+    ).toEqual({
+      taskIds: ['333333333333333333333333'],
+    });
   });
 });

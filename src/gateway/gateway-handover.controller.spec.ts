@@ -132,4 +132,59 @@ describe('GatewayHandoverController forwarding', () => {
       ),
     ).rejects.toThrow(ServiceUnavailableException);
   });
+
+  it('forwards 5-step departing-preview, auto-bundle, quick-accept, and quick-transfer routes', async () => {
+    const controller = new GatewayHandoverController(config as never);
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new globalThis.Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const responseState = createResponse();
+
+    await controller.previewDepartingMember(
+      {
+        method: 'GET',
+        originalUrl:
+          '/api/v1/handover/projects/111111111111111111111111/handovers/departing-preview?departingUserId=222222222222222222222222',
+        headers: {},
+      } as Request,
+      responseState.response,
+    );
+    await controller.autoBundleHandover(
+      {
+        method: 'POST',
+        originalUrl:
+          '/api/v1/handover/projects/111111111111111111111111/handovers/333333333333333333333333/auto-bundle',
+        headers: {},
+        body: {},
+      } as Request,
+      responseState.response,
+    );
+    await controller.quickAcceptHandover(
+      {
+        method: 'POST',
+        originalUrl:
+          '/api/v1/handover/projects/111111111111111111111111/handovers/333333333333333333333333/quick-accept',
+        headers: {},
+        body: {},
+      } as Request,
+      responseState.response,
+    );
+    await controller.quickTransferHandoverTasks(
+      {
+        method: 'POST',
+        originalUrl:
+          '/api/v1/handover/projects/111111111111111111111111/handovers/333333333333333333333333/quick-transfer',
+        headers: {},
+        body: {},
+      } as Request,
+      responseState.response,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
 });

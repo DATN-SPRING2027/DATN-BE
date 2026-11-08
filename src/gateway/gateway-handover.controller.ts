@@ -49,6 +49,11 @@ export class GatewayHandoverController {
     return this.forward(request, response);
   }
 
+  @Get('departing-preview')
+  previewDepartingMember(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Get(':handoverId')
   getHandover(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
@@ -198,6 +203,24 @@ export class GatewayHandoverController {
 
   @Post(':handoverId/follow-ups/:followupId/resolution')
   resolveHandoverFollowUp(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post(':handoverId/auto-bundle')
+  autoBundleHandover(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post(':handoverId/quick-accept')
+  quickAcceptHandover(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post(':handoverId/quick-transfer')
+  quickTransferHandoverTasks(
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
     return this.forward(request, response);
   }
 

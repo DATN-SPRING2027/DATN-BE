@@ -360,4 +360,97 @@ export class HandoverIamScopeService {
       isProjectLeader: isProjectMember && Boolean(leaderRole),
     };
   }
+
+  async listDepartingMemberProjects(
+    actor: HandoverProjectActorContext,
+    departingUserId: string,
+  ): Promise<
+    Array<{
+      projectId: string;
+      key: string;
+      name: string;
+      membershipStatus: string;
+    }>
+  > {
+    if (!OBJECT_ID_RE.test(departingUserId)) {
+      return [];
+    }
+    const db = this.db();
+    const orgObjId = new Types.ObjectId(actor.organizationId.toLowerCase());
+    const departingObjId = new Types.ObjectId(departingUserId.toLowerCase());
+    const actorObjId = new Types.ObjectId(actor.userId.toLowerCase());
+
+    const [departingMemberships, actorMemberships] = await Promise.all([
+      db
+        .collection('project_memberships')
+        .find({
+          organizationId: orgObjId,
+          userId: departingObjId,
+          status: { $in: ['ACTIVE', 'INACTIVE'] },
+        })
+        .toArray(),
+      db
+        .collection('project_memberships')
+        .find({
+          organizationId: orgObjId,
+          userId: actorObjId,
+          status: 'ACTIVE',
+        })
+        .toArray(),
+    ]);
+
+    if (departingMemberships.length === 0) {
+      return [];
+    }
+
+    const statusByProjectId = new Map<string, string>();
+    const projectObjIds: Types.ObjectId[] = [];
+    for (const row of departingMemberships) {
+      if (row.projectId instanceof Types.ObjectId) {
+        const hex = row.projectId.toHexString().toLowerCase();
+        statusByProjectId.set(hex, String(row.status || 'ACTIVE'));
+        projectObjIds.push(row.projectId);
+      }
+    }
+
+    const actorProjectIds = new Set(
+      actorMemberships
+        .map((m) =>
+          m.projectId instanceof Types.ObjectId
+            ? m.projectId.toHexString().toLowerCase()
+            : '',
+        )
+        .filter(Boolean),
+    );
+
+    const projects = await db
+      .collection('projects')
+      .find({
+        _id: { $in: projectObjIds },
+        organizationId: orgObjId,
+        status: 'ACTIVE',
+      })
+      .toArray();
+
+    return projects
+      .filter((p) => {
+        const hex =
+          p._id instanceof Types.ObjectId
+            ? p._id.toHexString().toLowerCase()
+            : '';
+        return (
+          Boolean(hex) &&
+          (actorProjectIds.has(hex) || p.visibility === 'PUBLIC')
+        );
+      })
+      .map((p) => {
+        const projectId = p._id.toHexString().toLowerCase();
+        return {
+          projectId,
+          key: typeof p.key === 'string' && p.key ? p.key : 'PRJ',
+          name: typeof p.name === 'string' && p.name ? p.name : 'Project',
+          membershipStatus: statusByProjectId.get(projectId) ?? 'ACTIVE',
+        };
+      });
+  }
 }

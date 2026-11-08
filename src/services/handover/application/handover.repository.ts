@@ -208,6 +208,14 @@ export class HandoverRepository {
     }
   }
 
+  async isLegacyQuickTransfer(transfer: StoredOperationDoc): Promise<boolean> {
+    if (!this.auditService) return true;
+    return this.auditService.isLegacyQuickTransfer(
+      transfer.projectId.toHexString(),
+      transfer._id.toHexString(),
+    );
+  }
+
   async appendAuditAndOutbox(
     audit: AuditEventInput,
     outbox: OutboxEventInput | null,

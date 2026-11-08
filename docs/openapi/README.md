@@ -1,5 +1,8 @@
 # IAM OpenAPI v1
 
+The [streamlined Handover contract](handover-streamlined.openapi.yaml) covers
+participant views, source projections and the three quick commands.
+
 The [Chat v1 contract](chat-v1.openapi.json) covers human one-to-one and room
 chat through the Gateway, plus the event envelope and delivery rules for the
 Chat WebSocket. It is the implementation contract requested for this work; the

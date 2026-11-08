@@ -6,12 +6,19 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
-import type { HandoverProjectActorContext } from '../../iam/application/projects/handover-iam-scope.service';
-import { HandoverTaskAssignmentService } from '../../task/workspace/handover-task-assignment.service';
+import {
+  HandoverIamScopeService,
+  type HandoverProjectActorContext,
+} from '../../iam/application/projects/handover-iam-scope.service';
+import {
+  HandoverTaskAssignmentService,
+  type HandoverTaskAssignmentInput,
+} from '../../task/workspace/handover-task-assignment.service';
 import {
   aggregateTaskTransferState,
   computeCommandFingerprint,
   deriveTaskIntentId,
+  hasUnresolvedTaskTransferFence,
 } from './handover.domain';
 import { HandoverRepository } from './handover.repository';
 import type {
@@ -32,6 +39,7 @@ export class HandoverTransferService {
   constructor(
     private readonly repository: HandoverRepository,
     private readonly taskAssignmentService: HandoverTaskAssignmentService,
+    private readonly iamScope: HandoverIamScopeService,
   ) {}
 
   private mapChildDocToDto(child: StoredOperationDoc): TaskTransferResultDto {
@@ -42,6 +50,11 @@ export class HandoverTransferService {
     else if (child.state === 'CONFLICT') state = 'CONFLICT';
     else if (child.state === 'FAILED' || child.state === 'REJECTED')
       state = 'FAILED';
+    const syntheticReceipt =
+      state === 'CONFIRMED' &&
+      !child.namespace.startsWith('verified-transfer-child:') &&
+      child.taskOutcome?.taskVersion === child.taskIntent?.expectedVersion;
+    if (syntheticReceipt) state = 'CONFLICT';
 
     return {
       taskId,
@@ -50,8 +63,18 @@ export class HandoverTransferService {
       expectedTaskVersion: child.taskIntent?.expectedVersion ?? 1,
       committedTaskVersion:
         state === 'CONFIRMED' ? (child.taskOutcome?.taskVersion ?? null) : null,
-      safeErrorCode:
-        child.safeErrorCode ?? child.taskOutcome?.safeErrorCode ?? null,
+      ...(state === 'CONFIRMED'
+        ? {
+            disposition:
+              child.taskOutcome?.taskVersion ===
+              child.taskIntent?.expectedVersion
+                ? ('ALREADY_ASSIGNED' as const)
+                : ('TRANSFERRED' as const),
+          }
+        : {}),
+      safeErrorCode: syntheticReceipt
+        ? 'UNVERIFIED_ASSIGNMENT_WITHOUT_RECEIPT'
+        : (child.safeErrorCode ?? child.taskOutcome?.safeErrorCode ?? null),
     };
   }
 
@@ -160,16 +183,20 @@ export class HandoverTransferService {
     handover: StoredHandoverDoc;
     expectedVersion: number;
     idempotencyKey: string;
-    dto: StartTransferDto;
+    dto: StartTransferDto | { quick: true; taskIds?: string[] };
   }): Promise<{ transfer: TransferDto; version: number; replayed: boolean }> {
+    const quick = 'quick' in input.dto ? input.dto : null;
+    const legacy = 'quick' in input.dto ? null : input.dto;
     const namespace = `handover:${input.handover._id.toHexString()}`;
     const fingerprint = computeCommandFingerprint({
-      operation: 'startHandoverTaskTransfer',
+      operation: quick
+        ? 'quickTransferHandoverTasks'
+        : 'startHandoverTaskTransfer',
       organizationId: input.actor.organizationId,
       projectId: input.actor.projectId,
       resourceScope: namespace,
       expectedVersion: input.expectedVersion,
-      payload: input.dto,
+      payload: quick ? { taskIds: quick.taskIds ?? null } : input.dto,
     });
 
     const existingOp = await this.repository.findExistingOperation({
@@ -230,7 +257,8 @@ export class HandoverTransferService {
     }
     if (
       !input.handover.publishedRevisionId ||
-      input.handover.publishedRevisionId.toHexString() !== input.dto.revisionId
+      (legacy &&
+        input.handover.publishedRevisionId.toHexString() !== legacy.revisionId)
     ) {
       throw new ConflictException({
         code: 'STALE_REVISION_REFERENCE',
@@ -238,7 +266,10 @@ export class HandoverTransferService {
         details: {},
       });
     }
-    if (input.handover.assignmentVersion !== input.dto.assignmentVersion) {
+    if (
+      legacy &&
+      input.handover.assignmentVersion !== legacy.assignmentVersion
+    ) {
       throw new ConflictException({
         code: 'ASSIGNMENT_EPOCH_MISMATCH',
         message: 'assignmentVersion does not match the current handover epoch.',
@@ -247,6 +278,12 @@ export class HandoverTransferService {
     }
 
     const successorUserId = input.handover.successorUserId;
+    await this.iamScope.assertEligibleActiveProjectMember(
+      input.actor.organizationId,
+      input.actor.projectId,
+      successorUserId,
+      'SUCCESSOR_NOT_ELIGIBLE',
+    );
     const revision = await this.repository.revisions
       .findOne({
         _id: input.handover.publishedRevisionId,
@@ -262,41 +299,103 @@ export class HandoverTransferService {
       });
     }
 
-    // Verify B has accepted the current published package before transferring tasks!
-    const pkgAcc = await this.repository.acceptances
-      .findOne({
-        handoverId: input.handover._id,
-        revisionId: revision._id,
-        successorUserId: successorUserId.toLowerCase(),
-        assignmentVersion: input.handover.assignmentVersion,
-        kind: 'PACKAGE',
-        decision: 'ACCEPTED',
-      })
-      .lean<StoredAcceptanceDoc>()
-      .exec();
+    if (legacy) {
+      // Verify B has accepted the current published package before transferring tasks!
+      const pkgAcc = await this.repository.acceptances
+        .findOne({
+          handoverId: input.handover._id,
+          revisionId: revision._id,
+          successorUserId: successorUserId.toLowerCase(),
+          assignmentVersion: input.handover.assignmentVersion,
+          kind: 'PACKAGE',
+          decision: 'ACCEPTED',
+        })
+        .lean<StoredAcceptanceDoc>()
+        .exec();
 
-    if (!pkgAcc) {
-      throw new ConflictException({
-        code: 'PACKAGE_NOT_ACCEPTED',
-        message:
-          'Successor B must accept the current published package before task transfer.',
-        details: {},
-      });
+      if (!pkgAcc) {
+        throw new ConflictException({
+          code: 'PACKAGE_NOT_ACCEPTED',
+          message:
+            'Successor B must accept the current published package before task transfer.',
+          details: {},
+        });
+      }
+    } else {
+      const active = await this.repository.operations
+        .find({
+          handoverId: input.handover._id,
+          kind: { $in: ['TASK_TRANSFER', 'TASK_TRANSFER_CHILD'] },
+          state: { $in: ['PENDING', 'DISPATCHED', 'UNKNOWN'] },
+        })
+        .lean<StoredOperationDoc[]>()
+        .exec();
+      if (hasUnresolvedTaskTransferFence(active)) {
+        throw new ConflictException({
+          code: 'UNRESOLVED_TASK_TRANSFER_FENCE',
+          message: 'Reconcile the pending transfer before starting another.',
+          details: {},
+        });
+      }
     }
 
     const selectedByTaskId = new Map(
       revision.selectedTasks.map((t) => [t.taskId.toHexString(), t]),
     );
-    for (const reqTask of input.dto.tasks) {
-      if (!selectedByTaskId.has(reqTask.taskId.toLowerCase())) {
+    const taskIds = quick
+      ? (quick.taskIds ?? [...selectedByTaskId.keys()])
+      : legacy!.tasks.map((task) => task.taskId);
+    for (const taskId of taskIds) {
+      if (!selectedByTaskId.has(taskId.toLowerCase())) {
         throw new UnprocessableEntityException({
           code: 'TASK_NOT_IN_HANDOVER_SELECTION',
           message:
             'All transferred tasks must belong to the published handover task selection.',
-          details: { taskId: reqTask.taskId },
+          details: { taskId },
         });
       }
     }
+
+    if (taskIds.length === 0 && !quick) {
+      throw new UnprocessableEntityException({
+        code: 'NO_ELIGIBLE_TASKS_TO_TRANSFER',
+        message: 'Select at least one published task to transfer.',
+        details: {},
+      });
+    }
+
+    const departingId = input.handover.departingUserId.toLowerCase();
+    const successorId = successorUserId.toLowerCase();
+    const liveTasks =
+      taskIds.length > 0
+        ? await this.taskAssignmentService.inspectTasksCurrentState(
+            input.actor.organizationId,
+            input.actor.projectId,
+            taskIds,
+          )
+        : null;
+    const requestedTasks = taskIds.map((taskId, index) => {
+      const pinned = selectedByTaskId.get(taskId.toLowerCase())!;
+      const priorOwner = pinned.expectedAssigneeId?.toLowerCase() ?? null;
+      const live = liveTasks?.get(taskId.toLowerCase());
+      if (quick && priorOwner !== departingId && priorOwner !== successorId) {
+        throw new UnprocessableEntityException({
+          code: 'TASK_NOT_IN_HANDOVER_SELECTION',
+          message:
+            'The task was not pinned to the departing member or successor.',
+          details: { taskId },
+        });
+      }
+      const alreadyAssigned = live?.assigneeId === successorId;
+      return {
+        taskId,
+        expectedTaskVersion: alreadyAssigned
+          ? live.version!
+          : (legacy?.tasks[index].expectedTaskVersion ??
+            pinned.expectedVersion),
+        expectedAssigneeId: alreadyAssigned ? successorId : priorOwner,
+      };
+    });
 
     // Phase 1: Durable intent creation inside Handover DB transaction
     const { parentId, childDocs, nextVersion } =
@@ -353,47 +452,49 @@ export class HandoverTransferService {
           { session },
         );
 
-        const createdChildren = await this.repository.operations.create(
-          input.dto.tasks.map((reqTask) => {
-            const sel = selectedByTaskId.get(reqTask.taskId.toLowerCase());
-            const intentKey = deriveTaskIntentId(
-              pId.toHexString(),
-              reqTask.taskId,
-            );
-            return {
-              _id: new Types.ObjectId(),
-              schemaVersion: 2 as const,
-              organizationId: input.handover.organizationId,
-              projectId: input.handover.projectId,
-              handoverId: input.handover._id,
-              actorUserId: input.actor.userId,
-              namespace: `transfer-child:${pId.toHexString()}`,
-              key: intentKey,
-              fingerprint: computeCommandFingerprint({
-                operation: 'startHandoverTaskTransferChild',
-                organizationId: input.actor.organizationId,
-                projectId: input.actor.projectId,
-                resourceScope: `transfer-child:${pId.toHexString()}`,
-                expectedVersion: reqTask.expectedTaskVersion,
-                payload: reqTask,
-              }),
-              kind: 'TASK_TRANSFER_CHILD' as const,
-              state: 'DISPATCHED' as const,
-              expectedVersion: input.expectedVersion,
-              assignmentVersion: input.handover.assignmentVersion,
-              revisionId: revision._id,
-              successorUserId,
-              parentOperationId: pId,
-              taskIntent: {
-                taskId: new Types.ObjectId(reqTask.taskId),
-                expectedVersion: reqTask.expectedTaskVersion,
-                expectedAssigneeId: sel?.expectedAssigneeId ?? null,
-                targetUserId: successorUserId,
-              },
-            };
-          }),
-          { session, ordered: true },
-        );
+        const createdChildren =
+          requestedTasks.length > 0
+            ? await this.repository.operations.create(
+                requestedTasks.map((reqTask) => {
+                  const intentKey = deriveTaskIntentId(
+                    pId.toHexString(),
+                    reqTask.taskId,
+                  );
+                  return {
+                    _id: new Types.ObjectId(),
+                    schemaVersion: 2 as const,
+                    organizationId: input.handover.organizationId,
+                    projectId: input.handover.projectId,
+                    handoverId: input.handover._id,
+                    actorUserId: input.actor.userId,
+                    namespace: `verified-transfer-child:${pId.toHexString()}`,
+                    key: intentKey,
+                    fingerprint: computeCommandFingerprint({
+                      operation: 'startHandoverTaskTransferChild',
+                      organizationId: input.actor.organizationId,
+                      projectId: input.actor.projectId,
+                      resourceScope: `transfer-child:${pId.toHexString()}`,
+                      expectedVersion: reqTask.expectedTaskVersion,
+                      payload: reqTask,
+                    }),
+                    kind: 'TASK_TRANSFER_CHILD' as const,
+                    state: 'DISPATCHED' as const,
+                    expectedVersion: input.expectedVersion,
+                    assignmentVersion: input.handover.assignmentVersion,
+                    revisionId: revision._id,
+                    successorUserId,
+                    parentOperationId: pId,
+                    taskIntent: {
+                      taskId: new Types.ObjectId(reqTask.taskId),
+                      expectedVersion: reqTask.expectedTaskVersion,
+                      expectedAssigneeId: reqTask.expectedAssigneeId,
+                      targetUserId: successorUserId,
+                    },
+                  };
+                }),
+                { session, ordered: true },
+              )
+            : [];
 
         await this.repository.appendAuditAndOutbox(
           {
@@ -405,7 +506,8 @@ export class HandoverTransferService {
             targetResourceId: pId.toHexString(),
             metadata: {
               handoverId: input.handover._id.toHexString(),
-              taskCount: input.dto.tasks.length,
+              taskCount: requestedTasks.length,
+              ...(quick ? { mode: 'quick_transfer_verified' } : {}),
             },
           },
           {
@@ -429,20 +531,10 @@ export class HandoverTransferService {
 
     // Phase 2: Dispatch each durable child intent through the owning Task application service
     for (const child of childDocs) {
-      const taskIdHex = child.taskIntent!.taskId.toHexString();
       try {
-        const res = await this.taskAssignmentService.assignTaskForHandover({
-          organizationId: input.actor.organizationId,
-          projectId: input.actor.projectId,
-          actorId: input.actor.userId,
-          intentId: child.key,
-          handoverId: input.handover._id.toHexString(),
-          revisionId: revision._id.toHexString(),
-          assignmentVersion: input.handover.assignmentVersion,
-          taskId: taskIdHex,
-          expectedTaskVersion: child.taskIntent!.expectedVersion,
-          targetAssigneeId: successorUserId,
-        });
+        const res = await this.taskAssignmentService.assignTaskForHandover(
+          this.assignmentInput(child),
+        );
 
         if (res.state === 'CONFIRMED') {
           await this.repository.operations.updateOne(
@@ -637,6 +729,15 @@ export class HandoverTransferService {
       .lean<StoredOperationDoc[]>()
       .exec();
 
+    const legacyQuickTransfer =
+      await this.repository.isLegacyQuickTransfer(parent);
+    const successorScope = parent.successorUserId
+      ? await this.iamScope.resolveActiveProjectMemberScope(
+          input.actor.organizationId,
+          input.actor.projectId,
+          parent.successorUserId,
+        )
+      : null;
     // Reconcile PENDING / DISPATCHED / UNKNOWN / COMMITTED child intents against owning Task receipt + current Task state (A10).
     // Checking COMMITTED children detects post-transfer reassignment to C without ever overwriting C.
     for (const child of children) {
@@ -649,18 +750,10 @@ export class HandoverTransferService {
         continue;
       }
       const outcome = await this.taskAssignmentService.reconcileTaskForHandover(
-        {
-          organizationId: input.actor.organizationId,
-          projectId: input.actor.projectId,
-          actorId: parent.actorUserId,
-          intentId: child.key,
-          handoverId: input.handover._id.toHexString(),
-          revisionId: parent.revisionId!.toHexString(),
-          assignmentVersion: parent.assignmentVersion!,
-          taskId: child.taskIntent!.taskId.toHexString(),
-          expectedTaskVersion: child.taskIntent!.expectedVersion,
-          targetAssigneeId: child.taskIntent!.targetUserId,
-        },
+        this.assignmentInput(child),
+        child.state === 'COMMITTED' ||
+          legacyQuickTransfer ||
+          !successorScope?.isProjectMember,
       );
 
       if (outcome.state === 'CONFIRMED') {
@@ -845,18 +938,10 @@ export class HandoverTransferService {
           continue;
         }
         const outcome =
-          await this.taskAssignmentService.reconcileTaskForHandover({
-            organizationId: input.organizationId,
-            projectId: input.projectId,
-            actorId: parent.actorUserId,
-            intentId: child.key,
-            handoverId: input.handover._id.toHexString(),
-            revisionId: input.revisionId.toHexString(),
-            assignmentVersion: input.handover.assignmentVersion,
-            taskId: child.taskIntent.taskId.toHexString(),
-            expectedTaskVersion: child.taskIntent.expectedVersion,
-            targetAssigneeId: child.taskIntent.targetUserId,
-          });
+          await this.taskAssignmentService.reconcileTaskForHandover(
+            this.assignmentInput(child),
+            true,
+          );
         if (outcome.state === 'CONFLICT') {
           const code =
             outcome.safeErrorCode ?? 'TASK_REASSIGNED_AFTER_DISPATCH';
@@ -923,5 +1008,83 @@ export class HandoverTransferService {
       }
     }
     return mutated;
+  }
+
+  async quickTransferTasks(input: {
+    actor: HandoverProjectActorContext;
+    handover: StoredHandoverDoc;
+    expectedVersion: number;
+    idempotencyKey: string;
+    taskIds?: string[];
+  }): Promise<{ transfer: TransferDto; version: number; replayed: boolean }> {
+    return this.startTransfer({
+      ...input,
+      dto: { quick: true, taskIds: input.taskIds },
+    });
+  }
+
+  private assignmentInput(
+    child: StoredOperationDoc,
+  ): HandoverTaskAssignmentInput {
+    const intent = child.taskIntent!;
+    return {
+      organizationId: child.organizationId.toHexString(),
+      projectId: child.projectId.toHexString(),
+      actorId: child.actorUserId,
+      intentId: child.key,
+      handoverId: child.handoverId!.toHexString(),
+      revisionId: child.revisionId!.toHexString(),
+      assignmentVersion: child.assignmentVersion!,
+      taskId: intent.taskId.toHexString(),
+      expectedTaskVersion: intent.expectedVersion,
+      targetAssigneeId: intent.targetUserId,
+      ...(child.namespace.startsWith('verified-transfer-child:')
+        ? { expectedAssigneeId: intent.expectedAssigneeId }
+        : {}),
+    };
+  }
+
+  async verifiedTaskDispositions(
+    handover: StoredHandoverDoc,
+    revision: StoredRevisionDoc,
+    children?: StoredOperationDoc[],
+  ): Promise<Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>> {
+    const dispositions = new Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>();
+    if (!handover.successorUserId || revision.selectedTasks.length === 0) {
+      return dispositions;
+    }
+    const rows =
+      children ??
+      (await this.repository.operations
+        .find({ handoverId: handover._id, kind: 'TASK_TRANSFER_CHILD' })
+        .lean<StoredOperationDoc[]>()
+        .exec());
+    const selected = new Set(
+      revision.selectedTasks.map((task) => task.taskId.toHexString()),
+    );
+    const candidates = rows.filter(
+      (child) =>
+        child.state === 'COMMITTED' &&
+        child.revisionId?.equals(revision._id) &&
+        child.assignmentVersion === handover.assignmentVersion &&
+        child.taskIntent?.targetUserId === handover.successorUserId &&
+        selected.has(child.taskIntent.taskId.toHexString()),
+    );
+    await Promise.all(
+      candidates.map(async (child) => {
+        const intent = this.assignmentInput(child);
+        const proof = await this.taskAssignmentService.reconcileTaskForHandover(
+          intent,
+          true,
+        );
+        if (proof.state !== 'CONFIRMED') return;
+        if (proof.committedTaskVersion !== intent.expectedTaskVersion) {
+          dispositions.set(intent.taskId, 'TRANSFERRED');
+        } else if (!dispositions.has(intent.taskId)) {
+          dispositions.set(intent.taskId, 'ALREADY_ASSIGNED');
+        }
+      }),
+    );
+    return dispositions;
   }
 }

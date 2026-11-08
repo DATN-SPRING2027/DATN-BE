@@ -1294,21 +1294,41 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const sagRes = await this.aiEngine.request<SagHandoverAssistResponse>({
-      path: `/api/v1/projects/${encodeURIComponent(input.actor.projectId)}/handover/assist`,
-      method: 'POST',
-      headers: this.buildSagScopeHeaders(
-        input.actor.userId,
-        input.actor.organizationId,
-        input.actor.projectId,
-      ),
-      body: {
-        task: 'QUESTION_ANSWER',
-        query: input.dto.question,
-        maxItems: 10,
-        sources: permittedSources,
-      },
-    });
+    let sagBody: SagHandoverAssistResponse;
+    try {
+      const sagRes = await this.aiEngine.request<SagHandoverAssistResponse>({
+        path: `/api/v1/projects/${encodeURIComponent(input.actor.projectId)}/handover/assist`,
+        method: 'POST',
+        headers: this.buildSagScopeHeaders(
+          input.actor.userId,
+          input.actor.organizationId,
+          input.actor.projectId,
+        ),
+        body: {
+          task: 'QUESTION_ANSWER',
+          query: input.dto.question,
+          maxItems: 10,
+          sources: permittedSources,
+        },
+      });
+      sagBody = sagRes.body;
+    } catch (err) {
+      if (
+        err instanceof BadGatewayException ||
+        err instanceof ServiceUnavailableException ||
+        err instanceof HttpException
+      ) {
+        this.logger.warn(
+          `AI Engine question-answer call failed (${err.message}); falling back to grounded extractive answer from permitted sources.`,
+        );
+        sagBody = this.buildExtractiveQuestionFallback(
+          input.dto.question,
+          permittedSources,
+        );
+      } else {
+        throw err;
+      }
+    }
 
     const allowedKeys = new Set(
       permittedSources.map((s) => `${s.kind}:${s.id}:${s.version}`),
@@ -1366,7 +1386,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       })),
     );
 
-    const warnings = this.coverageWarnings(sagRes.body);
+    const warnings = this.coverageWarnings(sagBody);
     const allInputsStillReadable = permittedSources.every((source) => {
       const key = `${source.kind}:${source.id}:${source.version}`;
       const before = evalMap.get(key);
@@ -1387,10 +1407,10 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       }),
     );
     const coverage = allInputsStillReadable
-      ? this.normalizeCoverage(sagRes.body.coverage, readableAllowedKeys)
+      ? this.normalizeCoverage(sagBody.coverage, readableAllowedKeys)
       : undefined;
 
-    const verifiedSections = (sagRes.body.sections ?? []).flatMap((sec) => {
+    const verifiedSections = (sagBody.sections ?? []).flatMap((sec) => {
       const validCitations: CitationDto[] = [];
       for (const cit of sec.citations ?? []) {
         const key = `${cit.source.kind}:${cit.source.id.toLowerCase()}:${cit.source.version}`;
@@ -1425,7 +1445,7 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
 
     if (
       !allInputsStillReadable ||
-      sagRes.body.answerStatus !== 'ANSWERED' ||
+      sagBody.answerStatus !== 'ANSWERED' ||
       verifiedSections.length === 0
     ) {
       return {
@@ -1446,6 +1466,175 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
       sections: verifiedSections.slice(0, 20),
       warnings,
       ...(coverage ? { coverage } : {}),
+    };
+  }
+
+  private cleanExtractiveExcerpt(raw: string, title: string): string {
+    const cleaned = raw
+      .replace(/```[a-zA-Z0-9_-]*|'''[a-zA-Z0-9_-]*/g, ' ')
+      .replace(/[#\s]*={3,}[#\s]*/g, ' ')
+      .replace(/[#\s]*-{4,}[#\s]*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned || cleaned.toLowerCase() === title.trim().toLowerCase()) {
+      return `Tài liệu chính thức trong gói bàn giao: ${title}`;
+    }
+    if (cleaned.length <= 320) {
+      return cleaned;
+    }
+    const sliced = cleaned.slice(0, 320);
+    const lastSpace = sliced.lastIndexOf(' ');
+    return `${(lastSpace > 200 ? sliced.slice(0, lastSpace) : sliced).trim()}…`;
+  }
+
+  private buildExtractiveQuestionFallback(
+    question: string,
+    permittedSources: Array<{
+      kind: SourceRefDto['kind'];
+      id: string;
+      version: number;
+      title: string;
+      excerpts: Array<{
+        locatorKind: CitationDto['locator']['kind'];
+        locatorValue: string;
+        content: string;
+      }>;
+    }>,
+  ): SagHandoverAssistResponse {
+    const stopWords = new Set([
+      'những',
+      'các',
+      'của',
+      'và',
+      'cho',
+      'trong',
+      'với',
+      'nào',
+      'tôi',
+      'bạn',
+      'cần',
+      'khi',
+      'này',
+      'là',
+      'gì',
+      'the',
+      'and',
+      'for',
+      'what',
+      'which',
+      'how',
+      'are',
+      'with',
+      'from',
+      'this',
+      'that',
+    ]);
+    const rawTokens = question
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((t) => t.length >= 2);
+    const tokens = rawTokens.filter((t) => !stopWords.has(t));
+    const effectiveTokens = tokens.length > 0 ? tokens : rawTokens;
+    const lowerQuestion = question.toLowerCase();
+    const asksForInfraConfig =
+      /(docker|k8s|kubernetes|yaml|yml|deploy|nginx|redis|mongo|vps|port)/i.test(
+        lowerQuestion,
+      );
+
+    const bestBySource = new Map<
+      string,
+      {
+        score: number;
+        text: string;
+        citations: SagCitationPayload[];
+      }
+    >();
+
+    for (const src of permittedSources) {
+      const lowerTitle = src.title.toLowerCase();
+      const isConfigFile = /\.(ya?ml|json|env|conf)$/i.test(lowerTitle);
+      const isPlaceholderTitle = /^(slot\d+|test)$/i.test(src.title.trim());
+
+      for (const ex of src.excerpts) {
+        const rawText = ex.content.trim();
+        if (!rawText) continue;
+        const haystack = `${src.title} ${rawText}`.toLowerCase();
+        let score = 0;
+        for (const tok of effectiveTokens) {
+          if (lowerTitle.includes(tok)) {
+            score += 5;
+          } else if (haystack.includes(tok)) {
+            score += 2;
+          }
+        }
+        if (score === 0) continue;
+
+        if (src.kind === 'TASK_NOTE' || src.kind === 'WORK_REPORT') {
+          score += 4;
+        }
+        if (/readme|member|overview|handover|kiến trúc|tổng quan/i.test(lowerTitle)) {
+          score += 5;
+        }
+        if (isConfigFile && !asksForInfraConfig) {
+          score = Math.max(1, score - 6);
+        }
+        if (isPlaceholderTitle || rawText.trim().toLowerCase() === lowerTitle) {
+          score = Math.max(1, score - 8);
+        }
+
+        const cleanedExcerpt = this.cleanExtractiveExcerpt(rawText, src.title);
+        const sourceKey = `${src.kind}:${src.id}`;
+        const existing = bestBySource.get(sourceKey);
+        if (!existing || score > existing.score) {
+          bestBySource.set(sourceKey, {
+            score,
+            text: `[${src.title}] ${cleanedExcerpt}`,
+            citations: [
+              {
+                source: {
+                  kind: src.kind,
+                  id: src.id,
+                  version: src.version,
+                },
+                locator: {
+                  kind: ex.locatorKind,
+                  value: ex.locatorValue,
+                },
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    const scoredSections = Array.from(bestBySource.values()).sort(
+      (a, b) => b.score - a.score,
+    );
+    const topSections = scoredSections
+      .slice(0, 4)
+      .map(({ text, citations }) => ({
+        text,
+        citations,
+      }));
+
+    return {
+      task: 'QUESTION_ANSWER',
+      answerStatus:
+        topSections.length > 0 ? 'ANSWERED' : 'INSUFFICIENT_EVIDENCE',
+      message: null,
+      coverage: {
+        requestedSources: permittedSources.length,
+        includedSources: permittedSources.map((s) => ({
+          kind: s.kind,
+          id: s.id,
+          version: s.version,
+        })),
+        skippedSources: [],
+        truncatedSources: [],
+        totalEvidenceUnits: scoredSections.length,
+        truncated: false,
+      },
+      sections: topSections,
     };
   }
 

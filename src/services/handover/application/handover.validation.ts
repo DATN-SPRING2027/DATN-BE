@@ -7,6 +7,7 @@ import {
 import type {
   AcceptRequestDto,
   AcknowledgeRequestDto,
+  AutoBundleHandoverDto,
   CancelRequestDto,
   CitationDto,
   CompleteRequestDto,
@@ -21,6 +22,8 @@ import type {
   PublishRequestDto,
   PublishReviewDto,
   QuestionRequestDto,
+  QuickAcceptHandoverDto,
+  QuickTransferTasksDto,
   ReconcileTransferDto,
   ResolveFollowUpDto,
   RetryJobDto,
@@ -850,6 +853,67 @@ export function validateQuestionRequest(value: unknown): QuestionRequestDto {
     assignmentVersion: assertInt(obj.assignmentVersion, 'assignmentVersion', 1),
     question: assertString(obj.question, 'question', 1, 4000),
   };
+}
+
+export function validateAutoBundleRequest(
+  value: unknown,
+): AutoBundleHandoverDto {
+  const obj = assertObject(
+    value ?? {},
+    ['taskIds', 'selectedSources'],
+    'AutoBundleHandover',
+  );
+  const out: AutoBundleHandoverDto = {};
+  if (obj.taskIds !== undefined) {
+    out.taskIds = assertUniqueArray(
+      obj.taskIds,
+      'taskIds',
+      0,
+      100,
+      (entry, i) => assertHexId(entry, `taskIds[${i}]`),
+      (id) => id,
+    );
+  }
+  if (obj.selectedSources !== undefined) {
+    out.selectedSources = assertUniqueArray(
+      obj.selectedSources,
+      'selectedSources',
+      0,
+      100,
+      (entry, i) => validateSourceRef(entry, `selectedSources[${i}]`),
+      (s) => `${s.kind}:${s.id}:${s.version}`,
+    );
+  }
+  return out;
+}
+
+export function validateQuickAcceptRequest(
+  value: unknown,
+): QuickAcceptHandoverDto {
+  const obj = assertObject(value ?? {}, ['note'], 'QuickAcceptHandover');
+  const out: QuickAcceptHandoverDto = {};
+  if (obj.note !== undefined) {
+    out.note = assertString(obj.note, 'note', 0, 2000);
+  }
+  return out;
+}
+
+export function validateQuickTransferRequest(
+  value: unknown,
+): QuickTransferTasksDto {
+  const obj = assertObject(value ?? {}, ['taskIds'], 'QuickTransferTasks');
+  const out: QuickTransferTasksDto = {};
+  if (obj.taskIds !== undefined) {
+    out.taskIds = assertUniqueArray(
+      obj.taskIds,
+      'taskIds',
+      0,
+      100,
+      (entry, i) => assertHexId(entry, `taskIds[${i}]`),
+      (id) => id,
+    );
+  }
+  return out;
 }
 
 export function validateItemProjection(value: unknown): ItemProjectionDto {
