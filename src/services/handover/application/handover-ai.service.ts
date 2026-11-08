@@ -1499,12 +1499,13 @@ export class HandoverAiService implements OnModuleInit, OnModuleDestroy {
         const text = ex.content.trim();
         if (!text) continue;
         const haystack = `${src.title} ${text}`.toLowerCase();
-        let score = 1;
+        let score = 0;
         for (const tok of tokens) {
           if (haystack.includes(tok)) {
             score += 3;
           }
         }
+        if (score === 0) continue;
         scoredSections.push({
           score,
           text: `[${src.title}] ${text}`,

@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { ServiceUnavailableException } from '@nestjs/common';
 import type { HandoverProjectActorContext } from '../../iam/application/projects/handover-iam-scope.service';
 import type { EvaluatedHandoverSource } from '../../capture/application/handover-capture-source.service';
 import { HandoverAiService } from './handover-ai.service';
@@ -368,6 +369,26 @@ describe('Handover AI live authorization boundary (review round 2)', () => {
       }
     },
   );
+
+  it('returns insufficient evidence when AI is unavailable and no authorized excerpt matches the question', async () => {
+    const f = fixture();
+    f.ai.request.mockRejectedValue(
+      new ServiceUnavailableException('AI Engine unavailable'),
+    );
+
+    const result = await f.service.askQuestion({
+      actor: f.actor,
+      handover: f.handover,
+      dto: {
+        revisionId: f.handover.publishedRevisionId!.toHexString(),
+        assignmentVersion: 1,
+        question: 'quasar nebula',
+      },
+    });
+
+    expect(result.answerStatus).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.sections).toEqual([]);
+  });
 
   it.each(['revoked', 'version', 'content', 'unchanged'] as const)(
     'rechecks sources after generation before draft replacement: %s',
