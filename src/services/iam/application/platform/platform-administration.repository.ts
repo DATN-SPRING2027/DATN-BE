@@ -167,6 +167,20 @@ export interface PlatformUserOrganizationsPage {
   pagination: PlatformOrganizationPage['pagination'];
 }
 
+export interface PlatformProjectCreator {
+  id: string;
+  email: string;
+  fullName: string;
+}
+
+export interface PlatformProjectTeamSummary {
+  id: string;
+  name: string;
+  code: string;
+  status: 'ACTIVE' | 'ARCHIVED';
+  memberCount: number;
+}
+
 export interface PlatformProjectSummary {
   id: string;
   organization: { id: string; name: string; slug: string };
@@ -174,9 +188,13 @@ export interface PlatformProjectSummary {
   code: string;
   visibility: 'PRIVATE' | 'PUBLIC';
   status: 'ACTIVE' | 'ARCHIVED';
+  createdBy: PlatformProjectCreator | null;
   memberCount: number;
   leaders: Array<{ id: string; email: string; fullName: string }>;
   leadersTruncated: boolean;
+  teamCount: number;
+  teams: PlatformProjectTeamSummary[];
+  teamsTruncated: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -195,6 +213,8 @@ export interface PlatformProjectPage {
   pagination: PlatformOrganizationPage['pagination'];
 }
 
+export type PlatformProjectMemberRoleCode = 'TEAM_LEADER' | 'MEMBER';
+
 export interface PlatformProjectMembershipListInput {
   projectId: string;
   organizationId: string;
@@ -202,6 +222,7 @@ export interface PlatformProjectMembershipListInput {
   pageSize: number;
   search?: string;
   status?: 'ACTIVE' | 'INACTIVE';
+  roleCode?: PlatformProjectMemberRoleCode;
 }
 
 export interface PlatformProjectMemberSummary {
@@ -210,6 +231,7 @@ export interface PlatformProjectMemberSummary {
   organizationId: string;
   userId: string;
   status: 'ACTIVE' | 'INACTIVE';
+  roleCode: PlatformProjectMemberRoleCode;
   joinedAt: string;
   user: {
     id: string;
@@ -231,6 +253,56 @@ export interface PlatformProjectMetadataChangeInput {
   name?: string;
   code?: string;
   visibility?: 'PRIVATE' | 'PUBLIC';
+  status?: 'ACTIVE' | 'ARCHIVED';
+  reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
+  correlationId?: string;
+  now: Date;
+}
+
+export interface PlatformProjectMemberCandidatesInput {
+  projectId: string;
+  organizationId?: string;
+  search?: string;
+  limit: number;
+}
+
+export interface PlatformProjectMemberCandidate {
+  userId: string;
+  email: string;
+  fullName: string;
+  accountStatus: string;
+}
+
+export interface PlatformProjectMemberCandidatesResult {
+  items: PlatformProjectMemberCandidate[];
+  total: number;
+}
+
+export interface PlatformProjectMemberAddInput {
+  actorUserId: string;
+  projectId: string;
+  organizationId?: string;
+  userId: string;
+  roleCode: PlatformProjectMemberRoleCode;
+  reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
+  correlationId?: string;
+  now: Date;
+}
+
+export interface PlatformProjectMemberRoleChangeInput {
+  actorUserId: string;
+  projectId: string;
+  membershipId: string;
+  roleCode: PlatformProjectMemberRoleCode;
+  reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
+  correlationId?: string;
+  now: Date;
+}
+
+export interface PlatformProjectMemberRemoveInput {
+  actorUserId: string;
+  projectId: string;
+  membershipId: string;
   reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
   correlationId?: string;
   now: Date;
@@ -339,6 +411,18 @@ export interface PlatformAdministrationRepository {
   changeProjectMetadata(
     input: PlatformProjectMetadataChangeInput,
   ): Promise<PlatformProjectSummary | null>;
+  listProjectMemberCandidates(
+    input: PlatformProjectMemberCandidatesInput,
+  ): Promise<PlatformProjectMemberCandidatesResult | null>;
+  addProjectMember(
+    input: PlatformProjectMemberAddInput,
+  ): Promise<PlatformProjectMemberSummary | null>;
+  changeProjectMemberRole(
+    input: PlatformProjectMemberRoleChangeInput,
+  ): Promise<PlatformProjectMemberSummary | null>;
+  removeProjectMember(
+    input: PlatformProjectMemberRemoveInput,
+  ): Promise<PlatformProjectMemberSummary | null>;
   changeOrganizationMetadata(
     input: PlatformOrganizationMetadataChangeInput,
   ): Promise<PlatformOrganizationSummary | null>;

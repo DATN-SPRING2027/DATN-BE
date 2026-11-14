@@ -84,6 +84,8 @@ describe('Platform administration Mongo projections and membership lifecycle', (
       'refresh_sessions',
       'projects',
       'project_memberships',
+      'teams',
+      'team_memberships',
     ]) {
       await connection.createCollection(name);
       const definition = IAM_PERSISTENCE.collections.find(
@@ -122,6 +124,8 @@ describe('Platform administration Mongo projections and membership lifecycle', (
       'refresh_sessions',
       'projects',
       'project_memberships',
+      'teams',
+      'team_memberships',
     ])
       await connection.collection(name).deleteMany({});
     await audit().deleteMany({});
@@ -899,6 +903,432 @@ describe('Platform administration Mongo projections and membership lifecycle', (
         action: 'platform.project.metadata.changed',
       }),
     ).toBe(1);
+  });
+
+  it('supports project lock/unlock, safe creator & team summaries, and transactional project member governance with audit', async () => {
+    const teamId = new Types.ObjectId();
+    const candidateUserId = new Types.ObjectId();
+    const teamLeaderRoleId = new Types.ObjectId();
+    const initialUpdatedAt = new Date('2026-10-06T00:00:00.000Z');
+    const lockAt = new Date('2026-10-16T08:00:00.000Z');
+    const unlockAt = new Date('2026-10-16T08:05:00.000Z');
+    const memberOpAt = new Date('2026-10-16T08:10:00.000Z');
+
+    await connection.collection('roles').insertOne({
+      _id: teamLeaderRoleId,
+      code: 'TEAM_LEADER',
+      name: 'Team Leader',
+      isSystem: true,
+      permissions: ['project.read', 'project.members.add'],
+    });
+    await connection.collection('project_memberships').insertOne({
+      organizationId,
+      projectId,
+      userId: adminId,
+      status: 'ACTIVE',
+      joinedAt: new Date('2026-10-05T00:00:00.000Z'),
+    });
+    await connection.collection('users').insertOne({
+      _id: candidateUserId,
+      email: 'candidate@example.test',
+      fullName: 'Candidate Member',
+      passwordHash: 'candidate-secret',
+      status: 'ACTIVE',
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-10-01T00:00:00.000Z'),
+    });
+    await connection.collection('organization_memberships').insertOne({
+      _id: new Types.ObjectId(),
+      organizationId,
+      userId: candidateUserId,
+      status: 'ACTIVE',
+      version: 1,
+      mutationFence: 0,
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
+      updatedAt: new Date('2026-10-02T00:00:00.000Z'),
+    });
+    await connection.collection('teams').insertOne({
+      _id: teamId,
+      organizationId,
+      projectId,
+      name: 'Core Platform Team',
+      code: 'CORE_TEAM',
+      description: 'secret team content must never leak',
+      status: 'ACTIVE',
+      version: 1,
+      createdAt: new Date('2026-10-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-10-05T00:00:00.000Z'),
+    });
+    await connection.collection('team_memberships').insertOne({
+      organizationId,
+      projectId,
+      teamId,
+      userId: memberId,
+      joinedAt: new Date('2026-10-05T00:00:00.000Z'),
+    });
+
+    const summary = await administration.findProject(projectId.toHexString());
+    expect(summary).toMatchObject({
+      id: projectId.toHexString(),
+      createdBy: {
+        id: adminId.toHexString(),
+        email: 'admin@example.test',
+        fullName: 'Organization Admin',
+      },
+      teamCount: 1,
+      teams: [
+        {
+          id: teamId.toHexString(),
+          name: 'Core Platform Team',
+          code: 'CORE_TEAM',
+          status: 'ACTIVE',
+          memberCount: 1,
+        },
+      ],
+      teamsTruncated: false,
+    });
+    expect(JSON.stringify(summary)).not.toContain('secret team content');
+    expect(JSON.stringify(summary)).not.toContain('private tenant content');
+
+    const locked = await administration.changeProjectMetadata({
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      expectedUpdatedAt: initialUpdatedAt,
+      status: 'ARCHIVED',
+      reasonCode: 'SECURITY_INCIDENT',
+      now: lockAt,
+    });
+    expect(locked?.status).toBe('ARCHIVED');
+
+    await expect(
+      administration.addProjectMember({
+        actorUserId: actorId.toHexString(),
+        projectId: projectId.toHexString(),
+        userId: candidateUserId.toHexString(),
+        roleCode: 'MEMBER',
+        reasonCode: 'ACCESS_REVIEW',
+        now: memberOpAt,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'PROJECT_LOCKED' } });
+
+    const unlocked = await administration.changeProjectMetadata({
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      expectedUpdatedAt: lockAt,
+      status: 'ACTIVE',
+      reasonCode: 'ACCESS_REVIEW',
+      now: unlockAt,
+    });
+    expect(unlocked?.status).toBe('ACTIVE');
+
+    const candidates = await administration.listProjectMemberCandidates({
+      projectId: projectId.toHexString(),
+      search: 'candidate',
+      limit: 25,
+    });
+    expect(candidates).toEqual({
+      items: [
+        {
+          userId: candidateUserId.toHexString(),
+          email: 'candidate@example.test',
+          fullName: 'Candidate Member',
+          accountStatus: 'ACTIVE',
+        },
+      ],
+      total: 1,
+    });
+
+    const added = await administration.addProjectMember({
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      userId: candidateUserId.toHexString(),
+      roleCode: 'MEMBER',
+      reasonCode: 'ACCESS_REVIEW',
+      correlationId: 'project-member-add-001',
+      now: memberOpAt,
+    });
+    expect(added).toMatchObject({
+      projectId: projectId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      userId: candidateUserId.toHexString(),
+      status: 'ACTIVE',
+      roleCode: 'MEMBER',
+    });
+    expect(JSON.stringify(added)).not.toContain('roleId');
+
+    const memberOnlyPage = await administration.listProjectMemberships({
+      projectId: projectId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      page: 1,
+      pageSize: 10,
+      roleCode: 'MEMBER',
+    });
+    expect(memberOnlyPage.data.map((row) => row.userId).sort()).toEqual(
+      [memberId.toHexString(), candidateUserId.toHexString()].sort(),
+    );
+
+    const promoted = await administration.changeProjectMemberRole({
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      membershipId: added!.id,
+      roleCode: 'TEAM_LEADER',
+      reasonCode: 'ACCESS_REVIEW',
+      correlationId: 'project-member-role-001',
+      now: new Date(memberOpAt.getTime() + 1000),
+    });
+    expect(promoted?.roleCode).toBe('TEAM_LEADER');
+
+    const leaderPage = await administration.listProjectMemberships({
+      projectId: projectId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      page: 1,
+      pageSize: 10,
+      roleCode: 'TEAM_LEADER',
+    });
+    const adminProjMembership = leaderPage.data.find(
+      (row) => row.userId === adminId.toHexString(),
+    );
+    expect(adminProjMembership).toBeDefined();
+
+    const demotedAdmin = await administration.changeProjectMemberRole({
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      membershipId: adminProjMembership!.id,
+      roleCode: 'MEMBER',
+      reasonCode: 'ACCESS_REVIEW',
+      now: new Date(memberOpAt.getTime() + 2000),
+    });
+    expect(demotedAdmin?.roleCode).toBe('MEMBER');
+
+    await expect(
+      administration.changeProjectMemberRole({
+        actorUserId: actorId.toHexString(),
+        projectId: projectId.toHexString(),
+        membershipId: added!.id,
+        roleCode: 'MEMBER',
+        reasonCode: 'ACCESS_REVIEW',
+        now: new Date(memberOpAt.getTime() + 3000),
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'LAST_PROJECT_LEADER_REQUIRED' },
+    });
+
+    await expect(
+      administration.removeProjectMember({
+        actorUserId: actorId.toHexString(),
+        projectId: projectId.toHexString(),
+        membershipId: added!.id,
+        reasonCode: 'ACCESS_REVIEW',
+        now: new Date(memberOpAt.getTime() + 3500),
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'LAST_PROJECT_LEADER_REQUIRED' },
+    });
+
+    const memberProjRow = memberOnlyPage.data.find(
+      (row) => row.userId === memberId.toHexString(),
+    );
+    expect(memberProjRow).toBeDefined();
+    const removed = await administration.removeProjectMember({
+      actorUserId: actorId.toHexString(),
+      projectId: projectId.toHexString(),
+      membershipId: memberProjRow!.id,
+      reasonCode: 'SECURITY_INCIDENT',
+      correlationId: 'project-member-remove-001',
+      now: new Date(memberOpAt.getTime() + 4000),
+    });
+    expect(removed).toMatchObject({
+      id: memberProjRow!.id,
+      status: 'INACTIVE',
+      roleCode: 'MEMBER',
+    });
+
+    const refreshedProject = await administration.findProject(
+      projectId.toHexString(),
+    );
+    expect(refreshedProject?.teams[0]?.memberCount).toBe(0);
+
+    const auditReader = new MongoPlatformAuditRepository(
+      connection,
+      AUDIT_DATABASE_NAME,
+    );
+    const memberAuditEvents = await auditReader.listEvents({
+      page: 1,
+      pageSize: 20,
+      resourceType: 'PROJECT',
+      resourceId: projectId.toHexString(),
+    });
+    expect(memberAuditEvents.data.map((event) => event.action)).toEqual(
+      expect.arrayContaining([
+        'platform.project.member.added',
+        'platform.project.member.role_changed',
+        'platform.project.member.removed',
+      ]),
+    );
+  });
+
+  it('lists, updates role, and removes project_memberships documents that store addedAt/createdAt without joinedAt', async () => {
+    const legacyProjectId = new Types.ObjectId();
+    const leaderUserId = new Types.ObjectId();
+    const addedAtOnlyUserId = new Types.ObjectId();
+    const teamLeaderRoleId = new Types.ObjectId();
+    const addedAt = new Date('2026-10-12T08:30:00.000Z');
+    const createdAt = new Date('2026-10-12T08:25:00.000Z');
+    await connection.collection('roles').updateOne(
+      { code: 'TEAM_LEADER' },
+      {
+        $setOnInsert: {
+          _id: teamLeaderRoleId,
+          code: 'TEAM_LEADER',
+          name: 'Team Leader',
+          isSystem: true,
+          permissions: ['project.read', 'project.members.add'],
+        },
+      },
+      { upsert: true },
+    );
+    await connection.collection('users').insertMany([
+      {
+        _id: leaderUserId,
+        email: 'legacy-leader@example.test',
+        fullName: 'Legacy Project Leader',
+        passwordHash: 'leader-secret',
+        status: 'ACTIVE',
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        _id: addedAtOnlyUserId,
+        email: 'legacy-member@example.test',
+        fullName: 'Legacy AddedAt Member',
+        passwordHash: 'member-secret',
+        status: 'ACTIVE',
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+    await connection.collection('organization_memberships').insertMany([
+      {
+        _id: new Types.ObjectId(),
+        organizationId,
+        userId: leaderUserId,
+        status: 'ACTIVE',
+        version: 1,
+        mutationFence: 0,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        _id: new Types.ObjectId(),
+        organizationId,
+        userId: addedAtOnlyUserId,
+        status: 'ACTIVE',
+        version: 1,
+        mutationFence: 0,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+    await connection.collection('projects').insertOne({
+      _id: legacyProjectId,
+      organizationId,
+      name: 'Legacy JoinedAt Fallback Project',
+      code: 'LEGACY-JOINED',
+      visibility: 'PRIVATE',
+      status: 'ACTIVE',
+      createdBy: adminId,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const leaderRole = await connection
+      .collection('roles')
+      .findOne({ code: 'TEAM_LEADER' });
+    const memberRole = await connection
+      .collection('roles')
+      .findOne({ code: 'MEMBER' });
+    const leaderMembershipId = new Types.ObjectId();
+    const legacyMembershipId = new Types.ObjectId();
+    await connection.collection('project_memberships').insertMany([
+      {
+        _id: leaderMembershipId,
+        organizationId,
+        projectId: legacyProjectId,
+        userId: leaderUserId,
+        status: 'ACTIVE',
+        joinedAt: createdAt,
+      },
+      {
+        _id: legacyMembershipId,
+        organizationId,
+        projectId: legacyProjectId,
+        userId: addedAtOnlyUserId,
+        status: 'ACTIVE',
+        addedAt,
+        createdAt,
+      },
+    ]);
+    await connection.collection('role_assignments').insertMany([
+      {
+        organizationId,
+        projectId: legacyProjectId,
+        userId: leaderUserId,
+        roleId: leaderRole!._id,
+        roleCode: 'TEAM_LEADER',
+        assignedBy: adminId,
+      },
+      {
+        organizationId,
+        projectId: legacyProjectId,
+        userId: addedAtOnlyUserId,
+        roleId: memberRole!._id,
+        roleCode: 'MEMBER',
+        assignedBy: adminId,
+      },
+    ]);
+
+    const listed = await administration.listProjectMemberships({
+      projectId: legacyProjectId.toHexString(),
+      organizationId: organizationId.toHexString(),
+      page: 1,
+      pageSize: 10,
+    });
+    const legacyRow = listed.data.find(
+      (row) => row.id === legacyMembershipId.toHexString(),
+    );
+    expect(legacyRow).toMatchObject({
+      id: legacyMembershipId.toHexString(),
+      userId: addedAtOnlyUserId.toHexString(),
+      status: 'ACTIVE',
+      roleCode: 'MEMBER',
+      joinedAt: addedAt.toISOString(),
+    });
+
+    const roleUpdated = await administration.changeProjectMemberRole({
+      actorUserId: actorId.toHexString(),
+      projectId: legacyProjectId.toHexString(),
+      membershipId: legacyMembershipId.toHexString(),
+      roleCode: 'TEAM_LEADER',
+      reasonCode: 'ACCESS_REVIEW',
+      now: new Date('2026-10-18T00:00:00.000Z'),
+    });
+    expect(roleUpdated).toMatchObject({
+      id: legacyMembershipId.toHexString(),
+      roleCode: 'TEAM_LEADER',
+      joinedAt: addedAt.toISOString(),
+    });
+
+    const removed = await administration.removeProjectMember({
+      actorUserId: actorId.toHexString(),
+      projectId: legacyProjectId.toHexString(),
+      membershipId: legacyMembershipId.toHexString(),
+      reasonCode: 'ACCESS_REVIEW',
+      now: new Date('2026-10-18T01:00:00.000Z'),
+    });
+    expect(removed).toMatchObject({
+      id: legacyMembershipId.toHexString(),
+      status: 'INACTIVE',
+      joinedAt: addedAt.toISOString(),
+    });
   });
 
   it('changes a User account status with fresh Platform authority, last-admin protection, session revocation and atomic audit', async () => {

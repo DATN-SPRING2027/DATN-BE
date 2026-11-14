@@ -64,6 +64,7 @@ import type {
 import type {
   PlatformMembershipListInput,
   PlatformProjectListInput,
+  PlatformProjectMemberRoleCode,
   PlatformUserListInput,
   PlatformUserProfileChangeInput,
   PlatformUserArchiveInput,
@@ -440,7 +441,8 @@ function parsePlatformProjectMembershipQuery(
 ) {
   if (
     Object.keys(query).some(
-      (key) => !['page', 'pageSize', 'search', 'status'].includes(key),
+      (key) =>
+        !['page', 'pageSize', 'search', 'status', 'roleCode'].includes(key),
     )
   )
     invalid();
@@ -461,6 +463,12 @@ function parsePlatformProjectMembershipQuery(
       !['ACTIVE', 'INACTIVE'].includes(query.status))
   )
     invalid();
+  if (
+    query.roleCode !== undefined &&
+    (typeof query.roleCode !== 'string' ||
+      !['TEAM_LEADER', 'MEMBER'].includes(query.roleCode))
+  )
+    invalid();
   return {
     projectId,
     page,
@@ -470,6 +478,38 @@ function parsePlatformProjectMembershipQuery(
       : {}),
     ...(typeof query.status === 'string'
       ? { status: query.status as 'ACTIVE' | 'INACTIVE' }
+      : {}),
+    ...(typeof query.roleCode === 'string'
+      ? { roleCode: query.roleCode as PlatformProjectMemberRoleCode }
+      : {}),
+  };
+}
+
+function parsePlatformProjectMemberCandidatesQuery(
+  projectId: string,
+  query: Record<string, unknown>,
+) {
+  if (Object.keys(query).some((key) => !['search', 'limit'].includes(key)))
+    invalid();
+  if (
+    query.search !== undefined &&
+    (typeof query.search !== 'string' ||
+      query.search.trim().length < 1 ||
+      query.search.trim().length > 100)
+  )
+    invalid();
+  let limit = 25;
+  if (query.limit !== undefined) {
+    if (typeof query.limit !== 'string' || !/^[1-9]\d{0,2}$/.test(query.limit))
+      invalid();
+    limit = Number(query.limit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) invalid();
+  }
+  return {
+    projectId,
+    limit,
+    ...(typeof query.search === 'string'
+      ? { search: query.search.trim() }
       : {}),
   };
 }
@@ -926,6 +966,7 @@ function parsePlatformProjectMetadata(body: unknown): {
   name?: string;
   code?: string;
   visibility?: 'PRIVATE' | 'PUBLIC';
+  status?: 'ACTIVE' | 'ARCHIVED';
   expectedUpdatedAt: Date;
   reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
 } {
@@ -939,11 +980,12 @@ function parsePlatformProjectMetadata(body: unknown): {
           'name',
           'code',
           'visibility',
+          'status',
           'expectedUpdatedAt',
           'reasonCode',
         ].includes(key),
     ) ||
-    !['name', 'code', 'visibility'].some((key) => key in record) ||
+    !['name', 'code', 'visibility', 'status'].some((key) => key in record) ||
     typeof record.expectedUpdatedAt !== 'string' ||
     !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(String(record.reasonCode))
   )
@@ -961,7 +1003,10 @@ function parsePlatformProjectMetadata(body: unknown): {
         !/^[A-Z][A-Z0-9_-]{1,31}$/.test(record.code))) ||
     ('visibility' in record &&
       (typeof record.visibility !== 'string' ||
-        !['PRIVATE', 'PUBLIC'].includes(record.visibility)))
+        !['PRIVATE', 'PUBLIC'].includes(record.visibility))) ||
+    ('status' in record &&
+      (typeof record.status !== 'string' ||
+        !['ACTIVE', 'ARCHIVED'].includes(record.status)))
   )
     return invalid();
   return {
@@ -970,7 +1015,74 @@ function parsePlatformProjectMetadata(body: unknown): {
     ...('visibility' in record
       ? { visibility: record.visibility as 'PRIVATE' | 'PUBLIC' }
       : {}),
+    ...('status' in record
+      ? { status: record.status as 'ACTIVE' | 'ARCHIVED' }
+      : {}),
     expectedUpdatedAt,
+    reasonCode: record.reasonCode as 'ACCESS_REVIEW' | 'SECURITY_INCIDENT',
+  };
+}
+
+function parsePlatformProjectMemberAdd(body: unknown): {
+  userId: string;
+  roleCode: PlatformProjectMemberRoleCode;
+  reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
+} {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    return invalid();
+  const record = body as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) => !['userId', 'roleCode', 'reasonCode'].includes(key),
+    ) ||
+    typeof record.userId !== 'string' ||
+    !/^[a-fA-F0-9]{24}$/.test(record.userId) ||
+    typeof record.roleCode !== 'string' ||
+    !['TEAM_LEADER', 'MEMBER'].includes(record.roleCode) ||
+    !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(String(record.reasonCode))
+  )
+    return invalid();
+  return {
+    userId: record.userId,
+    roleCode: record.roleCode as PlatformProjectMemberRoleCode,
+    reasonCode: record.reasonCode as 'ACCESS_REVIEW' | 'SECURITY_INCIDENT',
+  };
+}
+
+function parsePlatformProjectMemberRoleChange(body: unknown): {
+  roleCode: PlatformProjectMemberRoleCode;
+  reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
+} {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    return invalid();
+  const record = body as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) => !['roleCode', 'reasonCode'].includes(key),
+    ) ||
+    typeof record.roleCode !== 'string' ||
+    !['TEAM_LEADER', 'MEMBER'].includes(record.roleCode) ||
+    !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(String(record.reasonCode))
+  )
+    return invalid();
+  return {
+    roleCode: record.roleCode as PlatformProjectMemberRoleCode,
+    reasonCode: record.reasonCode as 'ACCESS_REVIEW' | 'SECURITY_INCIDENT',
+  };
+}
+
+function parsePlatformProjectMemberRemove(body: unknown): {
+  reasonCode: 'ACCESS_REVIEW' | 'SECURITY_INCIDENT';
+} {
+  if (typeof body !== 'object' || body === null || Array.isArray(body))
+    return invalid();
+  const record = body as Record<string, unknown>;
+  if (
+    Object.keys(record).some((key) => key !== 'reasonCode') ||
+    !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(String(record.reasonCode))
+  )
+    return invalid();
+  return {
     reasonCode: record.reasonCode as 'ACCESS_REVIEW' | 'SECURITY_INCIDENT',
   };
 }
@@ -1026,6 +1138,9 @@ function parsePlatformAuditQuery(
         'ORGANIZATION_MEMBERSHIP_SUSPENDED',
         'platform.organization.metadata.changed',
         'platform.project.metadata.changed',
+        'platform.project.member.added',
+        'platform.project.member.role_changed',
+        'platform.project.member.removed',
         'platform.job.retry',
         'platform.job.cancel',
       ].includes(query.action))
@@ -1362,6 +1477,130 @@ export class PlatformController {
     return this.administration.listProjectMemberships(
       parsePlatformProjectMembershipQuery(projectId, query),
     );
+  }
+
+  @Get('projects/:projectId/member-candidates')
+  @RequirePlatformPermission('platform.projects.project.read')
+  listPlatformProjectMemberCandidates(
+    @Param('projectId') projectId: string,
+    @Query() query: Record<string, unknown>,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.administration.listProjectMemberCandidates(
+      parsePlatformProjectMemberCandidatesQuery(projectId, query),
+    );
+  }
+
+  @Post('projects/:projectId/memberships')
+  @HttpCode(201)
+  @RequirePlatformPermission('platform.projects.project.manage')
+  async addPlatformProjectMember(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('projectId') projectId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    if (
+      correlationId !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)
+    )
+      invalid();
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    return this.administration.addProjectMember({
+      actorUserId: actor.id,
+      projectId,
+      ...parsePlatformProjectMemberAdd(body),
+      ...(correlationId ? { correlationId } : {}),
+      now: new Date(),
+    });
+  }
+
+  @Patch('projects/:projectId/memberships/:membershipId/role')
+  @RequirePlatformPermission('platform.projects.project.manage')
+  async changePlatformProjectMemberRole(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('projectId') projectId: string,
+    @Param('membershipId') membershipId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    if (
+      correlationId !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)
+    )
+      invalid();
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    return this.administration.changeProjectMemberRole({
+      actorUserId: actor.id,
+      projectId,
+      membershipId,
+      ...parsePlatformProjectMemberRoleChange(body),
+      ...(correlationId ? { correlationId } : {}),
+      now: new Date(),
+    });
+  }
+
+  @Post('projects/:projectId/memberships/:membershipId/remove')
+  @HttpCode(200)
+  @RequirePlatformPermission('platform.projects.project.manage')
+  async removePlatformProjectMember(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-csrf-token') csrfHeader: string | undefined,
+    @Headers('x-request-id') correlationId: string | undefined,
+    @Param('projectId') projectId: string,
+    @Param('membershipId') membershipId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader)
+    )
+      throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
+    if (
+      correlationId !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)
+    )
+      invalid();
+    const actor = await this.authentication.getCurrentPlatformSubject(
+      authorization,
+      cookie,
+    );
+    return this.administration.removeProjectMember({
+      actorUserId: actor.id,
+      projectId,
+      membershipId,
+      ...parsePlatformProjectMemberRemove(body),
+      ...(correlationId ? { correlationId } : {}),
+      now: new Date(),
+    });
   }
 
   @Patch('projects/:projectId')

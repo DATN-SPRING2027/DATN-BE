@@ -2910,7 +2910,7 @@
       "get": {
         "tags": ["Platform", "Projects"],
         "summary": "List safe membership metadata for one Platform project",
-        "description": "Requires platform.projects.project.read at PLATFORM scope. The server resolves the persisted Project-to-Organization association and fences membership rows to both identifiers. Only membership status, join time, and safe account identity are returned; project content and role assignment internals are excluded.",
+        "description": "Requires platform.projects.project.read at PLATFORM scope. The server resolves the persisted Project-to-Organization association and fences membership rows to both identifiers. Only membership status, effective project role code, join time, and safe account identity are returned; project content and role assignment internals are excluded.",
         "operationId": "listPlatformProjectMemberships",
         "x-platform-permission": "platform.projects.project.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -2932,6 +2932,11 @@
             "name": "status",
             "in": "query",
             "schema": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] }
+          },
+          {
+            "name": "roleCode",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["TEAM_LEADER", "MEMBER"] }
           }
         ],
         "responses": {
@@ -2950,6 +2955,242 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "post": {
+        "tags": ["Platform", "Projects"],
+        "summary": "Add an eligible organization member to a Platform project",
+        "description": "Requires platform.projects.project.manage at PLATFORM scope. Fails when the project is locked or the user does not hold an active organization membership.",
+        "operationId": "addPlatformProjectMember",
+        "x-platform-permission": "platform.projects.project.manage",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformProjectMemberAddRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "201": {
+            "description": "Project membership added or reactivated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformProjectMemberSummary"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/projects/{projectId}/member-candidates": {
+      "get": {
+        "tags": ["Platform", "Projects"],
+        "summary": "List eligible organization members who are not active members of this project",
+        "description": "Requires platform.projects.project.read at PLATFORM scope. Returns safe identity metadata only; tenant project items are excluded.",
+        "operationId": "listPlatformProjectMemberCandidates",
+        "x-platform-permission": "platform.projects.project.read",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 100 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        ],
+        "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "200": {
+            "description": "Bounded list of eligible organization member candidates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformProjectMemberCandidatesResponse"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/projects/{projectId}/memberships/{membershipId}/role": {
+      "patch": {
+        "tags": ["Platform", "Projects"],
+        "summary": "Change the project role of an active project member",
+        "description": "Requires platform.projects.project.manage at PLATFORM scope. Enforces the last active Project Leader safeguard and locked project protection.",
+        "operationId": "changePlatformProjectMemberRole",
+        "x-platform-permission": "platform.projects.project.manage",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformProjectMemberRoleChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "200": {
+            "description": "Updated project membership summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformProjectMemberSummary"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/iam/platform/projects/{projectId}/memberships/{membershipId}/remove": {
+      "post": {
+        "tags": ["Platform", "Projects"],
+        "summary": "Remove an active member from a Platform project",
+        "description": "Requires platform.projects.project.manage at PLATFORM scope. Deactivates project membership, removes project/team role bindings, and enforces the last active Project Leader safeguard.",
+        "operationId": "removePlatformProjectMember",
+        "x-platform-permission": "platform.projects.project.manage",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ResourceId" }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformProjectMemberRemoveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "200": {
+            "description": "Deactivated project membership summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformProjectMemberSummary"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "500": { "$ref": "#/components/responses/InternalError" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -6389,6 +6630,28 @@
           }
         }
       },
+      "PlatformProjectCreator": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "fullName"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "email": { "type": "string", "format": "email" },
+          "fullName": { "type": "string" }
+        }
+      },
+      "PlatformProjectTeamSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "code", "status", "memberCount"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ResourceId" },
+          "name": { "type": "string" },
+          "code": { "type": "string" },
+          "status": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
+          "memberCount": { "type": "integer", "minimum": 0 }
+        }
+      },
       "PlatformProjectLeader": {
         "type": "object",
         "additionalProperties": false,
@@ -6409,9 +6672,13 @@
           "code",
           "visibility",
           "status",
+          "createdBy",
           "memberCount",
           "leaders",
           "leadersTruncated",
+          "teamCount",
+          "teams",
+          "teamsTruncated",
           "createdAt",
           "updatedAt"
         ],
@@ -6424,6 +6691,12 @@
           "code": { "type": "string" },
           "visibility": { "$ref": "#/components/schemas/ProjectVisibility" },
           "status": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
+          "createdBy": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/PlatformProjectCreator" },
+              { "type": "null" }
+            ]
+          },
           "memberCount": { "type": "integer", "minimum": 0 },
           "leaders": {
             "type": "array",
@@ -6431,6 +6704,13 @@
             "items": { "$ref": "#/components/schemas/PlatformProjectLeader" }
           },
           "leadersTruncated": { "type": "boolean" },
+          "teamCount": { "type": "integer", "minimum": 0 },
+          "teams": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "$ref": "#/components/schemas/PlatformProjectTeamSummary" }
+          },
+          "teamsTruncated": { "type": "boolean" },
           "createdAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "updatedAt": { "$ref": "#/components/schemas/UtcTimestamp" }
         }
@@ -6442,12 +6722,14 @@
         "anyOf": [
           { "required": ["name"] },
           { "required": ["code"] },
-          { "required": ["visibility"] }
+          { "required": ["visibility"] },
+          { "required": ["status"] }
         ],
         "properties": {
           "name": { "type": "string", "minLength": 1, "maxLength": 200 },
           "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{1,31}$" },
           "visibility": { "$ref": "#/components/schemas/ProjectVisibility" },
+          "status": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
           "expectedUpdatedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "reasonCode": {
             "type": "string",
@@ -6486,6 +6768,7 @@
           "organizationId",
           "userId",
           "status",
+          "roleCode",
           "joinedAt",
           "user"
         ],
@@ -6495,12 +6778,75 @@
           "organizationId": { "$ref": "#/components/schemas/ResourceId" },
           "userId": { "$ref": "#/components/schemas/ResourceId" },
           "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] },
+          "roleCode": { "type": "string", "enum": ["TEAM_LEADER", "MEMBER"] },
           "joinedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "user": {
             "oneOf": [
               { "$ref": "#/components/schemas/C02MemberUser" },
               { "type": "null" }
             ]
+          }
+        }
+      },
+      "PlatformProjectMemberCandidate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId", "email", "fullName", "accountStatus"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "email": { "type": "string", "format": "email" },
+          "fullName": { "type": "string" },
+          "accountStatus": { "type": "string" }
+        }
+      },
+      "PlatformProjectMemberCandidatesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "total"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PlatformProjectMemberCandidate"
+            }
+          },
+          "total": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "PlatformProjectMemberAddRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["userId", "roleCode", "reasonCode"],
+        "properties": {
+          "userId": { "$ref": "#/components/schemas/ResourceId" },
+          "roleCode": { "type": "string", "enum": ["TEAM_LEADER", "MEMBER"] },
+          "reasonCode": {
+            "type": "string",
+            "enum": ["ACCESS_REVIEW", "SECURITY_INCIDENT"]
+          }
+        }
+      },
+      "PlatformProjectMemberRoleChangeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["roleCode", "reasonCode"],
+        "properties": {
+          "roleCode": { "type": "string", "enum": ["TEAM_LEADER", "MEMBER"] },
+          "reasonCode": {
+            "type": "string",
+            "enum": ["ACCESS_REVIEW", "SECURITY_INCIDENT"]
+          }
+        }
+      },
+      "PlatformProjectMemberRemoveRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reasonCode"],
+        "properties": {
+          "reasonCode": {
+            "type": "string",
+            "enum": ["ACCESS_REVIEW", "SECURITY_INCIDENT"]
           }
         }
       },
@@ -7778,6 +8124,9 @@
           "ORGANIZATION_MEMBERSHIP_SUSPENDED",
           "platform.organization.metadata.changed",
           "platform.project.metadata.changed",
+          "platform.project.member.added",
+          "platform.project.member.role_changed",
+          "platform.project.member.removed",
           "platform.incident.created",
           "platform.incident.acknowledged",
           "platform.incident.resolved",

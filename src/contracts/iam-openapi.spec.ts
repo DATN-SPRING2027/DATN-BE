@@ -369,11 +369,50 @@ describe('IAM OpenAPI contract', () => {
         'organizationId',
         'userId',
         'status',
+        'roleCode',
         'joinedAt',
       ]),
     });
     expect(JSON.stringify(schema)).not.toMatch(
       /description|document|chunk|prompt|content|roleId/i,
+    );
+    expect(
+      contract.paths[
+        '/api/v1/iam/platform/projects/{projectId}/member-candidates'
+      ].get,
+    ).toMatchObject({
+      operationId: 'listPlatformProjectMemberCandidates',
+      'x-platform-permission': 'platform.projects.project.read',
+    });
+    expect(
+      contract.paths['/api/v1/iam/platform/projects/{projectId}/memberships']
+        .post,
+    ).toMatchObject({
+      operationId: 'addPlatformProjectMember',
+      'x-platform-permission': 'platform.projects.project.manage',
+    });
+    expect(
+      contract.paths[
+        '/api/v1/iam/platform/projects/{projectId}/memberships/{membershipId}/role'
+      ].patch,
+    ).toMatchObject({
+      operationId: 'changePlatformProjectMemberRole',
+      'x-platform-permission': 'platform.projects.project.manage',
+    });
+    expect(
+      contract.paths[
+        '/api/v1/iam/platform/projects/{projectId}/memberships/{membershipId}/remove'
+      ].post,
+    ).toMatchObject({
+      operationId: 'removePlatformProjectMember',
+      'x-platform-permission': 'platform.projects.project.manage',
+    });
+    expect(contract.components.schemas.PlatformAuditAction.enum).toEqual(
+      expect.arrayContaining([
+        'platform.project.member.added',
+        'platform.project.member.role_changed',
+        'platform.project.member.removed',
+      ]),
     );
   });
 

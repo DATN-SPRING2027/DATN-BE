@@ -35,6 +35,11 @@ import {
   type PlatformProjectListInput,
   type PlatformProjectMembershipListInput,
   type PlatformProjectMetadataChangeInput,
+  type PlatformProjectMemberCandidatesInput,
+  type PlatformProjectMemberAddInput,
+  type PlatformProjectMemberRoleChangeInput,
+  type PlatformProjectMemberRemoveInput,
+  type PlatformProjectMemberRoleCode,
   type PlatformOrganizationMetadataChangeInput,
   type PlatformMembershipListInput,
   type PlatformSessionListInput,
@@ -55,6 +60,10 @@ const userListStatuses = [...userStatuses, 'ARCHIVED'] as const;
 const roleCodes: readonly RoleCode[] = ['ADMIN', 'TEAM_LEADER', 'MEMBER'];
 const projectVisibilities = ['PRIVATE', 'PUBLIC'] as const;
 const projectStatuses = ['ACTIVE', 'ARCHIVED'] as const;
+const projectMemberRoleCodes: readonly PlatformProjectMemberRoleCode[] = [
+  'TEAM_LEADER',
+  'MEMBER',
+];
 const sessionStatuses = ['ACTIVE', 'REVOKED', 'EXPIRED'] as const;
 const sessionIdPattern =
   /^(?:[a-f\d]{24}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
@@ -247,7 +256,9 @@ export class PlatformAdministrationService {
           input.search.trim().length < 1 ||
           input.search.trim().length > 100)) ||
       (input.status !== undefined &&
-        !['ACTIVE', 'INACTIVE'].includes(input.status))
+        !['ACTIVE', 'INACTIVE'].includes(input.status)) ||
+      (input.roleCode !== undefined &&
+        !projectMemberRoleCodes.includes(input.roleCode))
     )
       validationFailed();
     const project = await this.findProject(input.projectId);
@@ -269,7 +280,8 @@ export class PlatformAdministrationService {
       !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(input.reasonCode) ||
       (input.name === undefined &&
         input.code === undefined &&
-        input.visibility === undefined) ||
+        input.visibility === undefined &&
+        input.status === undefined) ||
       (input.name !== undefined &&
         (typeof input.name !== 'string' ||
           input.name.trim().length < 1 ||
@@ -278,7 +290,8 @@ export class PlatformAdministrationService {
         (typeof input.code !== 'string' ||
           !/^[A-Z][A-Z0-9_-]{1,31}$/.test(input.code))) ||
       (input.visibility !== undefined &&
-        !projectVisibilities.includes(input.visibility))
+        !projectVisibilities.includes(input.visibility)) ||
+      (input.status !== undefined && !projectStatuses.includes(input.status))
     )
       validationFailed();
     const project = await this.repository.changeProjectMetadata({
@@ -287,6 +300,142 @@ export class PlatformAdministrationService {
     });
     if (!project) throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
     return project;
+  }
+
+  async listProjectMemberCandidates(
+    input: Omit<PlatformProjectMemberCandidatesInput, 'limit'> & {
+      limit?: number;
+    },
+  ) {
+    const limit = input.limit ?? 25;
+    if (
+      !resourceIdPattern.test(input.projectId) ||
+      (input.organizationId !== undefined &&
+        !resourceIdPattern.test(input.organizationId)) ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      (input.search !== undefined &&
+        (typeof input.search !== 'string' ||
+          input.search.trim().length < 1 ||
+          input.search.trim().length > 100))
+    )
+      validationFailed();
+    const result = await this.repository.listProjectMemberCandidates({
+      ...input,
+      limit,
+      ...(input.search === undefined ? {} : { search: input.search.trim() }),
+    });
+    if (!result) throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
+    return result;
+  }
+
+  async addProjectMember(input: PlatformProjectMemberAddInput) {
+    if (
+      !resourceIdPattern.test(input.actorUserId) ||
+      !resourceIdPattern.test(input.projectId) ||
+      !resourceIdPattern.test(input.userId) ||
+      (input.organizationId !== undefined &&
+        !resourceIdPattern.test(input.organizationId)) ||
+      !projectMemberRoleCodes.includes(input.roleCode) ||
+      !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(input.reasonCode) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      validationFailed();
+    const member = await this.repository.addProjectMember(input);
+    if (!member) throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
+    if (this.notificationService) {
+      try {
+        await this.notificationService.notifyProjectMemberAdded({
+          actorId: input.actorUserId,
+          recipientUserIds: [member.userId],
+          organizationId: member.organizationId,
+          projectId: member.projectId,
+          eventId: `platform_project_add:${member.id}:${input.now.getTime()}`,
+        });
+        if (member.roleCode === 'TEAM_LEADER') {
+          await this.notificationService.notifyProjectLeaderAssigned({
+            actorId: input.actorUserId,
+            recipientUserIds: [member.userId],
+            organizationId: member.organizationId,
+            projectId: member.projectId,
+            eventId: `platform_project_leader_assign:${member.id}:${input.now.getTime()}`,
+          });
+        }
+      } catch {
+        // Notification dispatch is best-effort once the transaction has committed.
+      }
+    }
+    return member;
+  }
+
+  async changeProjectMemberRole(input: PlatformProjectMemberRoleChangeInput) {
+    if (
+      !resourceIdPattern.test(input.actorUserId) ||
+      !resourceIdPattern.test(input.projectId) ||
+      !resourceIdPattern.test(input.membershipId) ||
+      !projectMemberRoleCodes.includes(input.roleCode) ||
+      !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(input.reasonCode) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      validationFailed();
+    const member = await this.repository.changeProjectMemberRole(input);
+    if (!member) throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
+    if (this.notificationService) {
+      try {
+        if (member.roleCode === 'TEAM_LEADER') {
+          await this.notificationService.notifyProjectLeaderAssigned({
+            actorId: input.actorUserId,
+            recipientUserIds: [member.userId],
+            organizationId: member.organizationId,
+            projectId: member.projectId,
+            eventId: `platform_project_leader_assign:${member.id}:${input.now.getTime()}`,
+          });
+        } else {
+          await this.notificationService.notifyProjectLeaderRevoked({
+            actorId: input.actorUserId,
+            recipientUserId: member.userId,
+            organizationId: member.organizationId,
+            projectId: member.projectId,
+            eventId: `platform_project_leader_revoke:${member.id}:${input.now.getTime()}`,
+          });
+        }
+      } catch {
+        // Notification dispatch is best-effort once the transaction has committed.
+      }
+    }
+    return member;
+  }
+
+  async removeProjectMember(input: PlatformProjectMemberRemoveInput) {
+    if (
+      !resourceIdPattern.test(input.actorUserId) ||
+      !resourceIdPattern.test(input.projectId) ||
+      !resourceIdPattern.test(input.membershipId) ||
+      !['ACCESS_REVIEW', 'SECURITY_INCIDENT'].includes(input.reasonCode) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      validationFailed();
+    const member = await this.repository.removeProjectMember(input);
+    if (!member) throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
+    if (this.notificationService) {
+      try {
+        await this.notificationService.notifyProjectMemberRemoved({
+          actorId: input.actorUserId,
+          recipientUserId: member.userId,
+          membershipId: member.id,
+          organizationId: member.organizationId,
+          projectId: member.projectId,
+          eventId: `platform_project_remove:${member.id}:${input.now.getTime()}`,
+        });
+      } catch {
+        // Notification dispatch is best-effort once the transaction has committed.
+      }
+    }
+    return member;
   }
 
   getDashboardSummary(now = new Date()) {
