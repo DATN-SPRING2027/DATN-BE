@@ -34,6 +34,12 @@ export interface PlatformPermissionEvidence {
 }
 
 export interface AuthorizationEvidenceProvider {
+  activeSagGrant?(
+    userId: string,
+    permission: string,
+    scope: { instance: string; environment: string },
+    now: Date,
+  ): Promise<{ expiresAt?: Date | null } | null>;
   loadProjectCreate(
     userId: string,
     organizationId: string,

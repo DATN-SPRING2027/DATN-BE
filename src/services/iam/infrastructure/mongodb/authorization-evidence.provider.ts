@@ -228,6 +228,36 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
     };
   }
 
+  async activeSagGrant(
+    userId: string,
+    permission: string,
+    scope: { instance: string; environment: string },
+    now: Date,
+  ) {
+    if (!validId(userId)) return null;
+    const subject = new Types.ObjectId(userId);
+    const grants = await this.model<{ expiresAt?: Date | null }>(
+      'sag_operator_grants',
+    )
+      .find(
+        {
+          subjectUserId: subject,
+          permission,
+          ...scope,
+          status: 'ACTIVE',
+          grantedAt: { $lte: now },
+          grantedBy: { $type: 'objectId', $ne: subject },
+          revokedAt: null,
+          $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+        },
+        { expiresAt: 1 },
+      )
+      .limit(2)
+      .lean()
+      .exec();
+    return grants.length === 1 ? grants[0] : null;
+  }
+
   async loadPlatformPermission(
     userId: string,
     permission: PlatformPermission,
