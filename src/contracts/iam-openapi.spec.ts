@@ -597,9 +597,12 @@ describe('IAM OpenAPI contract', () => {
     });
   });
 
-  it('documents SAG as an external operational owner with explicit safe unavailable fields', () => {
+  it('documents SAG as an external operational owner with explicit safe telemetry fields', () => {
     const operation = contract.paths['/api/v1/iam/platform/ai/operations'].get;
     const schema = contract.components.schemas.PlatformAiOperationsSummary;
+    const runtimeSchema = contract.components.schemas.PlatformAiRuntimeProfile;
+    const jobSchema = contract.components.schemas.PlatformAiJobSummary;
+    const corpusSchema = contract.components.schemas.PlatformAiCorpusSummary;
     expect(operation?.['x-platform-permission']).toBe(
       'platform.ai.operations.read',
     );
@@ -610,12 +613,23 @@ describe('IAM OpenAPI contract', () => {
         'liveness',
         'readiness',
         'dependencies',
+        'runtimeProfile',
+        'jobSummary',
+        'corpusSummary',
         'lastCheckedAt',
       ]),
     });
-    expect(JSON.stringify(schema)).not.toMatch(
-      /apiKey|credential|token|prompt|document|chunk|embedding/i,
-    );
+    const properties = schema.properties as Record<string, unknown>;
+    expect(properties.dependencies).toMatchObject({
+      properties: {
+        modelProvider: {
+          enum: ['CONFIGURED', 'UNCONFIGURED', 'UNKNOWN', 'NOT_EXPOSED'],
+        },
+      },
+    });
+    expect(
+      JSON.stringify([schema, runtimeSchema, jobSchema, corpusSchema]),
+    ).not.toMatch(/apiKey|credential|token|prompt|document|chunk|embedding/i);
   });
 
   it('documents Jira-owned integration metadata without credential fields', () => {

@@ -1918,7 +1918,7 @@ export class PlatformController {
   @ApiOperation({
     summary: 'Read external SAG and RAG operational status',
     description:
-      'Probes SAG health and readiness through its service boundary. It returns safe process, database, and knowledge runtime status only; model/provider and processing job details are not exposed by the current SAG operational API.',
+      'Probes SAG health, readiness, and service-authenticated operational telemetry when configured, returning safe deployment runtime, job, and corpus status without tenant content or credentials.',
   })
   @ApiOkResponse({ description: 'Safe SAG and RAG operational projection.' })
   getAiOperations(@Res({ passthrough: true }) response: Response) {

@@ -4120,7 +4120,7 @@
       "get": {
         "tags": ["Platform", "AI Operations"],
         "summary": "Read SAG and RAG service operational status",
-        "description": "Requires platform.ai.operations.read at PLATFORM scope. Probes SAG /api/v1/system/health and /api/v1/system/ready with bounded timeouts and returns only safe process, database, and knowledge runtime status. The current SAG operational API does not expose provider connectivity, processing job lists, or failed processing summaries through an unauthenticated service endpoint; those fields are explicitly reported as NOT_EXPOSED.",
+        "description": "Requires platform.ai.operations.read at PLATFORM scope. Probes SAG /api/v1/system/health and /api/v1/system/ready and, when service authentication is configured, reads safe runtime, job, and corpus telemetry from the current SAG operational API without exposing tenant content, secrets, or unconfigured fields (reported as NOT_EXPOSED or UNKNOWN).",
         "operationId": "readPlatformAiOperations",
         "x-platform-permission": "platform.ai.operations.read",
         "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
@@ -7122,6 +7122,51 @@
         "type": "string",
         "enum": ["AVAILABLE", "UNAVAILABLE"]
       },
+      "PlatformAiRuntimeProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "llmConfigured",
+          "llmProvider",
+          "llmModel",
+          "retrievalModel",
+          "vectorStore",
+          "parserProvider",
+          "workerConcurrency"
+        ],
+        "properties": {
+          "llmConfigured": { "type": "boolean" },
+          "llmProvider": { "type": ["string", "null"], "maxLength": 128 },
+          "llmModel": { "type": ["string", "null"], "maxLength": 128 },
+          "retrievalModel": { "type": ["string", "null"], "maxLength": 128 },
+          "vectorStore": { "type": ["string", "null"], "maxLength": 128 },
+          "parserProvider": { "type": ["string", "null"], "maxLength": 128 },
+          "workerConcurrency": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "PlatformAiJobSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["queued", "running", "paused", "succeeded", "failed"],
+        "properties": {
+          "queued": { "type": "integer", "minimum": 0 },
+          "running": { "type": "integer", "minimum": 0 },
+          "paused": { "type": "integer", "minimum": 0 },
+          "succeeded": { "type": "integer", "minimum": 0 },
+          "failed": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "PlatformAiCorpusSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ready", "processing", "paused", "failed"],
+        "properties": {
+          "ready": { "type": "integer", "minimum": 0 },
+          "processing": { "type": "integer", "minimum": 0 },
+          "paused": { "type": "integer", "minimum": 0 },
+          "failed": { "type": "integer", "minimum": 0 }
+        }
+      },
       "PlatformAiOperationsSummary": {
         "type": "object",
         "additionalProperties": false,
@@ -7133,6 +7178,9 @@
           "liveness",
           "readiness",
           "dependencies",
+          "runtimeProfile",
+          "jobSummary",
+          "corpusSummary",
           "lastCheckedAt",
           "diagnosticsSummary"
         ],
@@ -7172,13 +7220,37 @@
                 "type": "string",
                 "enum": ["READY", "UNAVAILABLE", "UNKNOWN"]
               },
-              "modelProvider": { "type": "string", "enum": ["NOT_EXPOSED"] },
-              "processingJobs": { "type": "string", "enum": ["NOT_EXPOSED"] },
+              "modelProvider": {
+                "type": "string",
+                "enum": ["CONFIGURED", "UNCONFIGURED", "UNKNOWN", "NOT_EXPOSED"]
+              },
+              "processingJobs": {
+                "type": "string",
+                "enum": ["ACTIVE", "IDLE", "UNKNOWN", "NOT_EXPOSED"]
+              },
               "failedProcessingSummary": {
                 "type": "string",
-                "enum": ["NOT_EXPOSED"]
+                "enum": ["NONE", "HAS_FAILURES", "UNKNOWN", "NOT_EXPOSED"]
               }
             }
+          },
+          "runtimeProfile": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/PlatformAiRuntimeProfile" },
+              { "type": "null" }
+            ]
+          },
+          "jobSummary": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/PlatformAiJobSummary" },
+              { "type": "null" }
+            ]
+          },
+          "corpusSummary": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/PlatformAiCorpusSummary" },
+              { "type": "null" }
+            ]
           },
           "lastCheckedAt": { "$ref": "#/components/schemas/UtcTimestamp" },
           "diagnosticsSummary": { "type": "string", "maxLength": 200 }
