@@ -57,6 +57,24 @@ describe('Continuum operator delegation', () => {
       controller.execute('dsh-export', 'Bearer fixture', {}, response),
     ).rejects.toThrow();
     expect(upstream).not.toHaveBeenCalled();
+    await expect(
+      controller.execute(
+        'model-update',
+        undefined,
+        {},
+        response,
+        'continuum_access=fixture; __Host-csrf=token',
+        'wrong',
+      ),
+    ).rejects.toThrow();
+    await controller.execute(
+      'model-update',
+      undefined,
+      {},
+      response,
+      'continuum_access=fixture; __Host-csrf=token',
+      'token',
+    );
     const proof = sign(
       {
         sub: session.sub,

@@ -16,7 +16,12 @@ import type { Response } from 'express';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { sign, verify, type JwtPayload } from 'jsonwebtoken';
-import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
+import {
+  AuthenticationApplicationService,
+  extractAccessToken,
+  readCookie,
+  validCsrfPair,
+} from '../application/authentication/authentication.application.service';
 import { sagOperation } from '../application/platform/sag-operator';
 
 function digest(value: string) {
@@ -101,13 +106,21 @@ export class SagOperatorController {
     @Headers('authorization') authorization: string | undefined,
     @Body() body: { input?: unknown; stepUp?: string } | undefined,
     @Res({ passthrough: true }) response: Response,
+    @Headers('cookie') cookie?: string,
+    @Headers('x-csrf-token') csrf?: string,
   ) {
     response.setHeader('Cache-Control', 'no-store');
-    if (!authorization) throw new UnauthorizedException();
+    const access = extractAccessToken(authorization, cookie);
+    if (!access) throw new UnauthorizedException();
+    if (
+      !authorization &&
+      !validCsrfPair(readCookie(cookie, '__Host-csrf'), csrf)
+    )
+      throw new ForbiddenException();
     const op = sagOperation(action);
     const scope = this.scope();
     const session = await this.auth.authorizeSagOperation(
-      authorization,
+      'Bearer ' + access,
       op.permission,
       scope,
     );
