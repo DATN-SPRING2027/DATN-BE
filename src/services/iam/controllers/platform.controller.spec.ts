@@ -264,8 +264,28 @@ describe('PlatformController Platform Operations route contract', () => {
       },
       {
         method: RequestMethod.GET,
+        path: 'projects/:projectId/member-candidates',
+        permission: 'platform.projects.project.read',
+      },
+      {
+        method: RequestMethod.GET,
         path: 'projects/:projectId/memberships',
         permission: 'platform.projects.project.read',
+      },
+      {
+        method: RequestMethod.POST,
+        path: 'projects/:projectId/memberships',
+        permission: 'platform.projects.project.manage',
+      },
+      {
+        method: RequestMethod.POST,
+        path: 'projects/:projectId/memberships/:membershipId/remove',
+        permission: 'platform.projects.project.manage',
+      },
+      {
+        method: RequestMethod.PATCH,
+        path: 'projects/:projectId/memberships/:membershipId/role',
+        permission: 'platform.projects.project.manage',
       },
       {
         method: RequestMethod.GET,

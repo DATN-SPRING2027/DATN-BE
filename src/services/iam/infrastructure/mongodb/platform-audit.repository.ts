@@ -55,6 +55,9 @@ const PLATFORM_OPERATIONAL_ACTIONS = [
   'ORGANIZATION_MEMBERSHIP_SUSPENDED',
   'platform.organization.metadata.changed',
   'platform.project.metadata.changed',
+  'platform.project.member.added',
+  'platform.project.member.role_changed',
+  'platform.project.member.removed',
   'platform.incident.created',
   'platform.incident.acknowledged',
   'platform.incident.resolved',
@@ -367,7 +370,13 @@ export class MongoPlatformAuditRepository implements PlatformAuditRepository {
     if (action === 'platform.sessions.revoked_all') return 'USER';
     if (action === 'ORGANIZATION_MEMBERSHIP_SUSPENDED')
       return 'ORGANIZATION_MEMBERSHIP';
-    if (action === 'platform.project.metadata.changed') return 'PROJECT';
+    if (
+      action === 'platform.project.metadata.changed' ||
+      action === 'platform.project.member.added' ||
+      action === 'platform.project.member.role_changed' ||
+      action === 'platform.project.member.removed'
+    )
+      return 'PROJECT';
     if (action.startsWith('platform.incident.')) return 'INCIDENT';
     if (action === 'platform.job.retry' || action === 'platform.job.cancel')
       return 'JOB';
@@ -395,6 +404,7 @@ export class MongoPlatformAuditRepository implements PlatformAuditRepository {
       'visibility',
       'severity',
       'status',
+      'roleCode',
       'membershipStatus',
       'membershipVersion',
       'invitationStatus',

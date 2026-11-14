@@ -55,6 +55,10 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       | 'findProject'
       | 'listProjectMemberships'
       | 'changeProjectMetadata'
+      | 'listProjectMemberCandidates'
+      | 'addProjectMember'
+      | 'changeProjectMemberRole'
+      | 'removeProjectMember'
       | 'listOrganizations'
       | 'findOrganization'
       | 'lookupActiveUser'
@@ -137,6 +141,12 @@ describe('Platform Operator login and provisioning (e2e)', () => {
         pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
       }),
       changeProjectMetadata: jest.fn(),
+      listProjectMemberCandidates: jest
+        .fn()
+        .mockResolvedValue({ items: [], total: 0 }),
+      addProjectMember: jest.fn(),
+      changeProjectMemberRole: jest.fn(),
+      removeProjectMember: jest.fn(),
       executePlatformInvitationCommand: jest.fn().mockResolvedValue({
         httpStatus: 201,
         replayed: false,
@@ -269,6 +279,10 @@ describe('Platform Operator login and provisioning (e2e)', () => {
     administration.listOrganizations.mockResolvedValue({
       data: [],
       pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
+    });
+    administration.listProjectMemberCandidates.mockResolvedValue({
+      items: [],
+      total: 0,
     });
     administration.lookupActiveUser.mockReset();
     administration.listOrganizationMemberships.mockResolvedValue({
@@ -787,7 +801,12 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       reasonCode: 'ACCESS_REVIEW',
     };
 
-    it.each(['', `/${projectId}`, `/${projectId}/memberships`])(
+    it.each([
+      '',
+      `/${projectId}`,
+      `/${projectId}/memberships`,
+      `/${projectId}/member-candidates`,
+    ])(
       'requires authentication and exact read authority for GET %s',
       async (suffix) => {
         const server = app.getHttpServer() as App;
@@ -836,7 +855,11 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       });
       await request(server)
         .get(`${base}/${projectId}/memberships`)
-        .query({ status: 'INACTIVE', search: ' member ' })
+        .query({
+          status: 'INACTIVE',
+          roleCode: 'TEAM_LEADER',
+          search: ' member ',
+        })
         .set('Authorization', `Bearer ${operatorToken()}`)
         .expect(200);
       expect(administration.listProjectMemberships).toHaveBeenCalledWith({
@@ -844,7 +867,18 @@ describe('Platform Operator login and provisioning (e2e)', () => {
         page: 1,
         pageSize: 20,
         status: 'INACTIVE',
+        roleCode: 'TEAM_LEADER',
         search: 'member',
+      });
+      await request(server)
+        .get(`${base}/${projectId}/member-candidates`)
+        .query({ limit: 15, search: ' alice ' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.listProjectMemberCandidates).toHaveBeenCalledWith({
+        projectId,
+        limit: 15,
+        search: 'alice',
       });
     });
 
@@ -903,10 +937,169 @@ describe('Platform Operator login and provisioning (e2e)', () => {
       );
     });
 
+    it('allows Project lock and unlock status transitions', async () => {
+      assignedPermission = 'platform.projects.project.manage';
+      const server = app.getHttpServer() as App;
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send({
+          status: 'ARCHIVED',
+          expectedUpdatedAt: body.expectedUpdatedAt,
+          reasonCode: 'SECURITY_INCIDENT',
+        })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.changeProjectMetadata).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          status: 'ARCHIVED',
+          expectedUpdatedAt: new Date(body.expectedUpdatedAt),
+          reasonCode: 'SECURITY_INCIDENT',
+        }),
+      );
+      await request(server)
+        .patch(`${base}/${projectId}`)
+        .send({
+          status: 'ACTIVE',
+          expectedUpdatedAt: body.expectedUpdatedAt,
+          reasonCode: 'ACCESS_REVIEW',
+        })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.changeProjectMetadata).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          status: 'ACTIVE',
+          expectedUpdatedAt: new Date(body.expectedUpdatedAt),
+          reasonCode: 'ACCESS_REVIEW',
+        }),
+      );
+    });
+
+    it('enforces manage authority, CSRF, and strict payload schemas on Project membership mutations', async () => {
+      const server = app.getHttpServer() as App;
+      const membershipId = '951a2b3c4d5e6f7a8b9c0d21';
+      assignedPermission = 'platform.projects.project.read';
+      await request(server)
+        .post(`${base}/${projectId}/memberships`)
+        .send({
+          userId: ADMIN_ID,
+          roleCode: 'MEMBER',
+          reasonCode: 'ACCESS_REVIEW',
+        })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(403);
+      await request(server)
+        .patch(`${base}/${projectId}/memberships/${membershipId}/role`)
+        .send({ roleCode: 'TEAM_LEADER', reasonCode: 'ACCESS_REVIEW' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(403);
+      await request(server)
+        .post(`${base}/${projectId}/memberships/${membershipId}/remove`)
+        .send({ reasonCode: 'SECURITY_INCIDENT' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(403);
+
+      assignedPermission = 'platform.projects.project.manage';
+      await request(server)
+        .post(`${base}/${projectId}/memberships`)
+        .send({
+          userId: ADMIN_ID,
+          roleCode: 'MEMBER',
+          reasonCode: 'ACCESS_REVIEW',
+        })
+        .set('Cookie', `continuum_access=${operatorToken()}`)
+        .expect(403);
+
+      await request(server)
+        .post(`${base}/${projectId}/memberships`)
+        .send({
+          userId: 'bad',
+          roleCode: 'MEMBER',
+          reasonCode: 'ACCESS_REVIEW',
+        })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      await request(server)
+        .patch(`${base}/${projectId}/memberships/${membershipId}/role`)
+        .send({ roleCode: 'OWNER', reasonCode: 'ACCESS_REVIEW' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      await request(server)
+        .post(`${base}/${projectId}/memberships/${membershipId}/remove`)
+        .send({ reasonCode: 'UNKNOWN' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      await request(server)
+        .post(`${base}/${projectId}/memberships/${membershipId}/remove`)
+        .send({ reasonCode: 'ACCESS_REVIEW', extra: true })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(422);
+      expect(administration.addProjectMember).not.toHaveBeenCalled();
+      expect(administration.changeProjectMemberRole).not.toHaveBeenCalled();
+      expect(administration.removeProjectMember).not.toHaveBeenCalled();
+
+      await request(server)
+        .post(`${base}/${projectId}/memberships`)
+        .send({
+          userId: ADMIN_ID,
+          roleCode: 'MEMBER',
+          reasonCode: 'ACCESS_REVIEW',
+        })
+        .set(
+          'Cookie',
+          `continuum_access=${operatorToken()}; __Host-csrf=fixture`,
+        )
+        .set('X-CSRF-Token', 'fixture')
+        .set('X-Request-Id', 'project-member-add-1')
+        .expect(201);
+      expect(administration.addProjectMember).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          userId: ADMIN_ID,
+          roleCode: 'MEMBER',
+          reasonCode: 'ACCESS_REVIEW',
+          correlationId: 'project-member-add-1',
+        }),
+      );
+
+      await request(server)
+        .patch(`${base}/${projectId}/memberships/${membershipId}/role`)
+        .send({ roleCode: 'TEAM_LEADER', reasonCode: 'ACCESS_REVIEW' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.changeProjectMemberRole).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          membershipId,
+          roleCode: 'TEAM_LEADER',
+          reasonCode: 'ACCESS_REVIEW',
+        }),
+      );
+
+      await request(server)
+        .post(`${base}/${projectId}/memberships/${membershipId}/remove`)
+        .send({ reasonCode: 'SECURITY_INCIDENT' })
+        .set('Authorization', `Bearer ${operatorToken()}`)
+        .expect(200);
+      expect(administration.removeProjectMember).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER_ID,
+          projectId,
+          membershipId,
+          reasonCode: 'SECURITY_INCIDENT',
+        }),
+      );
+    });
+
     it.each([
       { description: 'tenant content' },
       { organizationId: ADMIN_ID },
-      { status: 'ARCHIVED' },
+      { status: 'DELETED' },
       { code: 'bad code' },
       { visibility: 'UNKNOWN' },
       { name: '' },

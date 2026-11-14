@@ -22,9 +22,13 @@ const project: PlatformProjectSummary = {
   code: 'PROJ',
   visibility: 'PRIVATE',
   status: 'ACTIVE',
+  createdBy: null,
   memberCount: 0,
   leaders: [],
   leadersTruncated: false,
+  teamCount: 0,
+  teams: [],
+  teamsTruncated: false,
   createdAt: '2026-10-01T00:00:00.000Z',
   updatedAt: '2026-10-01T00:00:00.000Z',
 };
@@ -35,11 +39,22 @@ describe('Platform Project application boundary', () => {
     listProjects: jest.fn(),
     listProjectMemberships: jest.fn(),
     changeProjectMetadata: jest.fn(),
+    listProjectMemberCandidates: jest.fn(),
+    addProjectMember: jest.fn(),
+    changeProjectMemberRole: jest.fn(),
+    removeProjectMember: jest.fn(),
+  };
+  const notificationService = {
+    notifyProjectMemberAdded: jest.fn(),
+    notifyProjectLeaderAssigned: jest.fn(),
+    notifyProjectLeaderRevoked: jest.fn(),
+    notifyProjectMemberRemoved: jest.fn(),
   };
   const service = new PlatformAdministrationService(
     repository as unknown as PlatformAdministrationRepository,
     {} as OrganizationMembershipCommandRepository,
     { isReady: jest.fn() },
+    notificationService as never,
   );
   beforeEach(() => {
     jest.resetAllMocks();
@@ -109,5 +124,108 @@ describe('Platform Project application boundary', () => {
     await expect(service.changeProjectMetadata(input)).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+
+  it('supports locking/unlocking project status and notifies project member governance changes', async () => {
+    await service.changeProjectMetadata({
+      actorUserId: organizationId,
+      projectId,
+      status: 'ARCHIVED',
+      expectedUpdatedAt: new Date(project.updatedAt),
+      now: new Date(),
+      reasonCode: 'SECURITY_INCIDENT',
+    });
+    expect(repository.changeProjectMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'ARCHIVED' }),
+    );
+
+    const membershipId = 'cccccccccccccccccccccccc';
+    const userId = 'dddddddddddddddddddddddd';
+    const now = new Date('2026-11-14T00:00:00.000Z');
+    repository.listProjectMemberCandidates.mockResolvedValue({
+      items: [],
+      total: 0,
+    });
+    await expect(
+      service.listProjectMemberCandidates({ projectId, search: ' alice ' }),
+    ).resolves.toEqual({ items: [], total: 0 });
+    expect(repository.listProjectMemberCandidates).toHaveBeenCalledWith({
+      projectId,
+      search: 'alice',
+      limit: 25,
+    });
+
+    repository.addProjectMember.mockResolvedValue({
+      id: membershipId,
+      projectId,
+      organizationId,
+      userId,
+      status: 'ACTIVE',
+      roleCode: 'TEAM_LEADER',
+      joinedAt: now.toISOString(),
+      user: {
+        id: userId,
+        email: 'alice@example.com',
+        fullName: 'Alice',
+        accountStatus: 'ACTIVE',
+      },
+    });
+    await service.addProjectMember({
+      actorUserId: organizationId,
+      projectId,
+      userId,
+      roleCode: 'TEAM_LEADER',
+      reasonCode: 'ACCESS_REVIEW',
+      now,
+    });
+    expect(notificationService.notifyProjectMemberAdded).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(
+      notificationService.notifyProjectLeaderAssigned,
+    ).toHaveBeenCalledTimes(1);
+
+    repository.changeProjectMemberRole.mockResolvedValue({
+      id: membershipId,
+      projectId,
+      organizationId,
+      userId,
+      status: 'ACTIVE',
+      roleCode: 'MEMBER',
+      joinedAt: now.toISOString(),
+      user: null,
+    });
+    await service.changeProjectMemberRole({
+      actorUserId: organizationId,
+      projectId,
+      membershipId,
+      roleCode: 'MEMBER',
+      reasonCode: 'ACCESS_REVIEW',
+      now,
+    });
+    expect(
+      notificationService.notifyProjectLeaderRevoked,
+    ).toHaveBeenCalledTimes(1);
+
+    repository.removeProjectMember.mockResolvedValue({
+      id: membershipId,
+      projectId,
+      organizationId,
+      userId,
+      status: 'INACTIVE',
+      roleCode: 'MEMBER',
+      joinedAt: now.toISOString(),
+      user: null,
+    });
+    await service.removeProjectMember({
+      actorUserId: organizationId,
+      projectId,
+      membershipId,
+      reasonCode: 'SECURITY_INCIDENT',
+      now,
+    });
+    expect(
+      notificationService.notifyProjectMemberRemoved,
+    ).toHaveBeenCalledTimes(1);
   });
 });

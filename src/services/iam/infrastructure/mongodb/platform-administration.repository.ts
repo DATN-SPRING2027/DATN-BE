@@ -41,6 +41,13 @@ import type {
   PlatformProjectMembershipListInput,
   PlatformProjectMemberPage,
   PlatformProjectMemberSummary,
+  PlatformProjectMemberRoleCode,
+  PlatformProjectMemberCandidatesInput,
+  PlatformProjectMemberCandidatesResult,
+  PlatformProjectMemberCandidate,
+  PlatformProjectMemberAddInput,
+  PlatformProjectMemberRoleChangeInput,
+  PlatformProjectMemberRemoveInput,
   PlatformProjectPage,
   PlatformProjectSummary,
   PlatformDashboardSummary,
@@ -116,8 +123,22 @@ interface PlatformAuthorityDocument {
 }
 
 interface PlatformRoleAssignmentDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  projectId?: Types.ObjectId | null;
   userId: Types.ObjectId;
   roleId: Types.ObjectId;
+  roleCode: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER';
+  assignedBy: Types.ObjectId;
+}
+
+interface PlatformProjectTeamMembershipDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  teamId: Types.ObjectId;
+  userId: Types.ObjectId;
+  joinedAt: Date;
 }
 
 interface PlatformRoleDocument {
@@ -201,12 +222,22 @@ interface PlatformProjectDocument {
   code: string;
   visibility: 'PRIVATE' | 'PUBLIC';
   status: 'ACTIVE' | 'ARCHIVED';
+  createdBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
   organization?: { _id: Types.ObjectId; name: string; slug: string } | null;
+  creator?: { _id: Types.ObjectId; email: string; fullName: string } | null;
   memberStats?: { count: number }[];
   leaders?: Array<{
     user?: { _id: Types.ObjectId; email: string; fullName: string } | null;
+  }>;
+  teamStats?: { count: number }[];
+  teams?: Array<{
+    _id: Types.ObjectId;
+    name: string;
+    code: string;
+    status: 'ACTIVE' | 'ARCHIVED';
+    memberStats?: { count: number }[];
   }>;
 }
 
@@ -216,13 +247,19 @@ interface PlatformProjectMembershipDocument {
   projectId: Types.ObjectId;
   userId: Types.ObjectId;
   status: 'ACTIVE' | 'INACTIVE';
-  joinedAt: Date;
+  joinedAt?: Date | null;
+  addedAt?: Date | null;
+  createdAt?: Date | null;
+  effectiveJoinedAt?: Date | null;
   user?: {
     _id: Types.ObjectId;
     email: string;
     fullName: string;
     status: string;
   } | null;
+  roleAssignments?: Array<{
+    roleCode?: string;
+  }>;
 }
 
 interface PlatformProjectMembershipFacet {
@@ -344,17 +381,39 @@ function mapMembership(row: MembershipDocument): PlatformMembershipSummary {
   };
 }
 
+function resolveEffectiveJoinedAt(
+  row: PlatformProjectMembershipDocument,
+): Date | null {
+  for (const candidate of [
+    row.joinedAt,
+    row.addedAt,
+    row.createdAt,
+    row.effectiveJoinedAt,
+  ]) {
+    if (candidate instanceof Date && Number.isFinite(candidate.getTime())) {
+      return candidate;
+    }
+  }
+  if (row._id instanceof Types.ObjectId) {
+    const fallback = row._id.getTimestamp();
+    if (fallback instanceof Date && Number.isFinite(fallback.getTime())) {
+      return fallback;
+    }
+  }
+  return null;
+}
+
 function mapPlatformProjectMember(
   row: PlatformProjectMembershipDocument,
 ): PlatformProjectMemberSummary {
+  const effectiveJoinedAt = resolveEffectiveJoinedAt(row);
   if (
     !(row._id instanceof Types.ObjectId) ||
     !(row.organizationId instanceof Types.ObjectId) ||
     !(row.projectId instanceof Types.ObjectId) ||
     !(row.userId instanceof Types.ObjectId) ||
     !['ACTIVE', 'INACTIVE'].includes(row.status) ||
-    !(row.joinedAt instanceof Date) ||
-    !Number.isFinite(row.joinedAt.getTime())
+    !(effectiveJoinedAt instanceof Date)
   )
     unavailable();
   const user = row.user;
@@ -363,7 +422,9 @@ function mapPlatformProjectMember(
     (!(user._id instanceof Types.ObjectId) ||
       typeof user.email !== 'string' ||
       typeof user.fullName !== 'string' ||
-      !['ACTIVE', 'SUSPENDED', 'PENDING_INVITE'].includes(user.status))
+      !['ACTIVE', 'SUSPENDED', 'PENDING_INVITE', 'ARCHIVED'].includes(
+        user.status,
+      ))
   )
     unavailable();
   return {
@@ -372,7 +433,12 @@ function mapPlatformProjectMember(
     projectId: row.projectId.toHexString(),
     userId: row.userId.toHexString(),
     status: row.status,
-    joinedAt: row.joinedAt.toISOString(),
+    roleCode: row.roleAssignments?.some(
+      (assignment) => assignment.roleCode === 'TEAM_LEADER',
+    )
+      ? 'TEAM_LEADER'
+      : 'MEMBER',
+    joinedAt: effectiveJoinedAt.toISOString(),
     user: user
       ? {
           id: user._id.toHexString(),
@@ -592,6 +658,44 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           },
         },
         { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'role_assignments',
+            let: {
+              memberUserId: '$userId',
+              memberProjectId: '$projectId',
+              memberOrganizationId: '$organizationId',
+            },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$userId', '$$memberUserId'] },
+                      { $eq: ['$projectId', '$$memberProjectId'] },
+                      { $eq: ['$organizationId', '$$memberOrganizationId'] },
+                    ],
+                  },
+                },
+              },
+              { $project: { _id: 0, roleCode: 1 } },
+            ],
+            as: 'roleAssignments',
+          },
+        },
+        ...(input.roleCode === 'TEAM_LEADER'
+          ? ([
+              { $match: { 'roleAssignments.roleCode': 'TEAM_LEADER' } },
+            ] as PipelineStage[])
+          : input.roleCode === 'MEMBER'
+            ? ([
+                {
+                  $match: {
+                    'roleAssignments.roleCode': { $ne: 'TEAM_LEADER' },
+                  },
+                },
+              ] as PipelineStage[])
+            : []),
         ...(search
           ? ([
               {
@@ -601,7 +705,14 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
               },
             ] as PipelineStage[])
           : []),
-        { $sort: { joinedAt: -1, _id: 1 } },
+        {
+          $addFields: {
+            effectiveJoinedAt: {
+              $ifNull: ['$joinedAt', { $ifNull: ['$addedAt', '$createdAt'] }],
+            },
+          },
+        },
+        { $sort: { effectiveJoinedAt: -1, _id: 1 } },
         {
           $facet: {
             data: [
@@ -669,6 +780,7 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
         if (input.name !== undefined) set.name = input.name;
         if (input.code !== undefined) set.code = input.code;
         if (input.visibility !== undefined) set.visibility = input.visibility;
+        if (input.status !== undefined) set.status = input.status;
         const noChange = Object.entries(set).every(
           ([key, value]) => project[key as keyof typeof project] === value,
         );
@@ -725,6 +837,834 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       await session.endSession();
     }
     return this.findProject(input.projectId);
+  }
+
+  async listProjectMemberCandidates(
+    input: PlatformProjectMemberCandidatesInput,
+  ): Promise<PlatformProjectMemberCandidatesResult | null> {
+    if (
+      !validId(input.projectId) ||
+      (input.organizationId !== undefined && !validId(input.organizationId)) ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > maxPageSize
+    )
+      unavailable();
+    const project = await this.projects()
+      .findById(new Types.ObjectId(input.projectId), {
+        _id: 1,
+        organizationId: 1,
+      })
+      .lean()
+      .exec();
+    if (!project) return null;
+    if (
+      input.organizationId &&
+      project.organizationId.toHexString() !== input.organizationId
+    )
+      return null;
+    const search = input.search
+      ? new RegExp(escapeRegex(input.search), 'i')
+      : undefined;
+    const [facet] = await this.memberships()
+      .aggregate<{
+        items: Array<{
+          userId: Types.ObjectId;
+          email: string;
+          fullName: string;
+          accountStatus: string;
+        }>;
+        total: { count: number }[];
+      }>([
+        {
+          $match: {
+            organizationId: project.organizationId,
+            status: 'ACTIVE',
+          },
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'userId',
+            foreignField: '_id',
+            pipeline: [
+              {
+                $match: {
+                  status: 'ACTIVE',
+                  $or: [
+                    { archivedAt: { $exists: false } },
+                    { archivedAt: null },
+                  ],
+                },
+              },
+              { $project: { _id: 1, email: 1, fullName: 1, status: 1 } },
+            ],
+            as: 'user',
+          },
+        },
+        { $unwind: '$user' },
+        ...(search
+          ? ([
+              {
+                $match: {
+                  $or: [{ 'user.email': search }, { 'user.fullName': search }],
+                },
+              },
+            ] as PipelineStage[])
+          : []),
+        {
+          $lookup: {
+            from: 'project_memberships',
+            let: { candidateUserId: '$userId' },
+            pipeline: [
+              {
+                $match: {
+                  projectId: project._id,
+                  organizationId: project.organizationId,
+                  status: 'ACTIVE',
+                  $expr: { $eq: ['$userId', '$$candidateUserId'] },
+                },
+              },
+              { $project: { _id: 1 } },
+            ],
+            as: 'existingMembership',
+          },
+        },
+        { $match: { 'existingMembership.0': { $exists: false } } },
+        { $sort: { 'user.fullName': 1, 'user.email': 1, _id: 1 } },
+        {
+          $facet: {
+            items: [
+              { $limit: input.limit },
+              {
+                $project: {
+                  _id: 0,
+                  userId: '$user._id',
+                  email: '$user.email',
+                  fullName: '$user.fullName',
+                  accountStatus: '$user.status',
+                },
+              },
+            ],
+            total: [{ $count: 'count' }],
+          },
+        },
+      ])
+      .allowDiskUse(true)
+      .exec();
+    const items: PlatformProjectMemberCandidate[] = (facet?.items ?? []).map(
+      (item) => {
+        if (
+          !(item.userId instanceof Types.ObjectId) ||
+          typeof item.email !== 'string' ||
+          typeof item.fullName !== 'string' ||
+          typeof item.accountStatus !== 'string'
+        )
+          unavailable();
+        return {
+          userId: item.userId.toHexString(),
+          email: item.email,
+          fullName: item.fullName,
+          accountStatus: item.accountStatus,
+        };
+      },
+    );
+    return {
+      items,
+      total: facet?.total[0]?.count ?? 0,
+    };
+  }
+
+  async addProjectMember(
+    input: PlatformProjectMemberAddInput,
+  ): Promise<PlatformProjectMemberSummary | null> {
+    if (
+      !validId(input.actorUserId) ||
+      !validId(input.projectId) ||
+      !validId(input.userId) ||
+      (input.organizationId !== undefined && !validId(input.organizationId)) ||
+      !['TEAM_LEADER', 'MEMBER'].includes(input.roleCode) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      unavailable();
+    const connection = this.connection;
+    if (!connection) unavailable();
+    const projectId = new Types.ObjectId(input.projectId);
+    const userId = new Types.ObjectId(input.userId);
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    let organizationId: Types.ObjectId | null = null;
+    let membershipId: Types.ObjectId | null = null;
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.requirePlatformMutationAuthority(
+          actorUserId,
+          'platform.projects.project.manage',
+          input.now,
+          session,
+        );
+        const project = await this.projects()
+          .findById(projectId)
+          .session(session)
+          .lean()
+          .exec();
+        if (!project) return;
+        if (
+          input.organizationId &&
+          project.organizationId.toHexString() !== input.organizationId
+        )
+          return;
+        const organization = await this.organizations()
+          .exists({ _id: project.organizationId })
+          .session(session)
+          .exec();
+        if (!organization) return;
+        if (project.status !== 'ACTIVE')
+          throw new ConflictException({ code: 'PROJECT_LOCKED' });
+        const targetUser = await this.platformUsers()
+          .findOne(
+            {
+              _id: userId,
+              status: 'ACTIVE',
+              $or: [{ archivedAt: { $exists: false } }, { archivedAt: null }],
+            },
+            { _id: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec();
+        const orgMembership = await this.memberships()
+          .findOne(
+            {
+              organizationId: project.organizationId,
+              userId,
+              status: 'ACTIVE',
+            },
+            { _id: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec();
+        if (!targetUser || !orgMembership)
+          throw new ConflictException({
+            code: 'PROJECT_MEMBER_ELIGIBILITY_REQUIRED',
+          });
+        const targetRole = await this.roles()
+          .findOne({ code: input.roleCode })
+          .session(session)
+          .lean()
+          .exec();
+        if (!targetRole)
+          throw new ConflictException({ code: 'PROJECT_ROLE_UNAVAILABLE' });
+        const projectMemberships =
+          this.model<PlatformProjectMembershipDocument>('project_memberships');
+        const existingMembership = await projectMemberships
+          .findOne({
+            organizationId: project.organizationId,
+            projectId,
+            userId,
+          })
+          .session(session)
+          .lean()
+          .exec();
+        if (existingMembership?.status === 'ACTIVE')
+          throw new ConflictException({
+            code: 'PROJECT_MEMBER_ALREADY_EXISTS',
+          });
+        let resolvedMembershipId: Types.ObjectId;
+        if (existingMembership?.status === 'INACTIVE') {
+          await projectMemberships.updateOne(
+            { _id: existingMembership._id },
+            { $set: { status: 'ACTIVE', joinedAt: input.now } },
+            { session },
+          );
+          resolvedMembershipId = existingMembership._id;
+        } else {
+          const [created] = await projectMemberships.create(
+            [
+              {
+                organizationId: project.organizationId,
+                projectId,
+                userId,
+                status: 'ACTIVE',
+                joinedAt: input.now,
+              },
+            ],
+            { session },
+          );
+          if (!created?._id) unavailable();
+          resolvedMembershipId = created._id;
+        }
+        const existingAssignment = await this.roleAssignments()
+          .findOne({
+            organizationId: project.organizationId,
+            projectId,
+            userId,
+          })
+          .session(session)
+          .lean()
+          .exec();
+        if (existingAssignment) {
+          await this.roleAssignments().updateOne(
+            { _id: existingAssignment._id },
+            {
+              $set: {
+                roleId: targetRole._id,
+                roleCode: input.roleCode,
+                assignedBy: actorUserId,
+              },
+            },
+            { session },
+          );
+        } else {
+          await this.roleAssignments().create(
+            [
+              {
+                organizationId: project.organizationId,
+                projectId,
+                userId,
+                roleId: targetRole._id,
+                roleCode: input.roleCode,
+                assignedBy: actorUserId,
+              },
+            ],
+            { session },
+          );
+        }
+        await this.writePlatformMetadataAudit(
+          {
+            eventId: randomUUID(),
+            action: 'platform.project.member.added',
+            targetResource: 'PROJECT',
+            targetResourceId: input.projectId,
+            organizationId: project.organizationId.toHexString(),
+            projectId: input.projectId,
+            targetUserId: input.userId,
+            actorUserId: input.actorUserId,
+            scope: 'PLATFORM',
+            result: 'SUCCESS',
+            reasonCode: input.reasonCode,
+            previous: {
+              membershipStatus: existingMembership ? 'INACTIVE' : null,
+              roleCode: null,
+            },
+            next: {
+              membershipStatus: 'ACTIVE',
+              roleCode: input.roleCode,
+            },
+            ...(input.correlationId ? { requestId: input.correlationId } : {}),
+            occurredAt: input.now,
+          },
+          session,
+        );
+        organizationId = project.organizationId;
+        membershipId = resolvedMembershipId;
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      if (this.isDuplicateKey(error))
+        throw new ConflictException({ code: 'PROJECT_MEMBER_ALREADY_EXISTS' });
+      throw new InternalServerErrorException({
+        code: 'IAM_PLATFORM_PROJECT_UPDATE_FAILED',
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (!organizationId || !membershipId) return null;
+    return this.findProjectMemberById(projectId, organizationId, membershipId);
+  }
+
+  async changeProjectMemberRole(
+    input: PlatformProjectMemberRoleChangeInput,
+  ): Promise<PlatformProjectMemberSummary | null> {
+    if (
+      !validId(input.actorUserId) ||
+      !validId(input.projectId) ||
+      !validId(input.membershipId) ||
+      !['TEAM_LEADER', 'MEMBER'].includes(input.roleCode) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      unavailable();
+    const connection = this.connection;
+    if (!connection) unavailable();
+    const projectId = new Types.ObjectId(input.projectId);
+    const membershipId = new Types.ObjectId(input.membershipId);
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    let organizationId: Types.ObjectId | null = null;
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.requirePlatformMutationAuthority(
+          actorUserId,
+          'platform.projects.project.manage',
+          input.now,
+          session,
+        );
+        const project = await this.projects()
+          .findById(projectId)
+          .session(session)
+          .lean()
+          .exec();
+        if (!project) return;
+        const organization = await this.organizations()
+          .exists({ _id: project.organizationId })
+          .session(session)
+          .exec();
+        if (!organization) return;
+        if (project.status !== 'ACTIVE')
+          throw new ConflictException({ code: 'PROJECT_LOCKED' });
+        const projectMemberships =
+          this.model<PlatformProjectMembershipDocument>('project_memberships');
+        const membership = await projectMemberships
+          .findOne({
+            _id: membershipId,
+            projectId,
+            organizationId: project.organizationId,
+          })
+          .session(session)
+          .lean()
+          .exec();
+        if (!membership || membership.status !== 'ACTIVE')
+          throw new NotFoundException({
+            code: 'PROJECT_MEMBERSHIP_NOT_FOUND',
+          });
+        if (input.roleCode === 'TEAM_LEADER') {
+          const targetUser = await this.platformUsers()
+            .findOne(
+              {
+                _id: membership.userId,
+                status: 'ACTIVE',
+                $or: [{ archivedAt: { $exists: false } }, { archivedAt: null }],
+              },
+              { _id: 1 },
+            )
+            .session(session)
+            .lean()
+            .exec();
+          const orgMembership = await this.memberships()
+            .findOne(
+              {
+                organizationId: project.organizationId,
+                userId: membership.userId,
+                status: 'ACTIVE',
+              },
+              { _id: 1 },
+            )
+            .session(session)
+            .lean()
+            .exec();
+          if (!targetUser || !orgMembership)
+            throw new ConflictException({
+              code: 'PROJECT_MEMBER_ELIGIBILITY_REQUIRED',
+            });
+        }
+        const existingAssignment = await this.roleAssignments()
+          .findOne({
+            organizationId: project.organizationId,
+            projectId,
+            userId: membership.userId,
+          })
+          .session(session)
+          .lean()
+          .exec();
+        const previousRoleCode: PlatformProjectMemberRoleCode =
+          existingAssignment?.roleCode === 'TEAM_LEADER'
+            ? 'TEAM_LEADER'
+            : 'MEMBER';
+        organizationId = project.organizationId;
+        if (previousRoleCode === input.roleCode) return;
+        const targetRole = await this.roles()
+          .findOne({ code: input.roleCode })
+          .session(session)
+          .lean()
+          .exec();
+        if (!targetRole)
+          throw new ConflictException({ code: 'PROJECT_ROLE_UNAVAILABLE' });
+        if (previousRoleCode === 'TEAM_LEADER' && input.roleCode === 'MEMBER') {
+          const survivors = await this.findEffectiveProjectLeaders(
+            project.organizationId,
+            projectId,
+            membership.userId,
+            session,
+          );
+          const survivor = survivors[0];
+          if (!survivor)
+            throw new ConflictException({
+              code: 'LAST_PROJECT_LEADER_REQUIRED',
+            });
+          const projectFence = await this.projects().updateOne(
+            { _id: projectId, status: 'ACTIVE' },
+            { $inc: { __v: 1 } },
+            { session, timestamps: false },
+          );
+          if (projectFence.matchedCount !== 1)
+            throw new ConflictException({ code: 'PROJECT_LOCKED' });
+          const survivorFence = await this.roleAssignments().updateOne(
+            { _id: survivor._id, roleCode: 'TEAM_LEADER' },
+            { $inc: { __v: 1 } },
+            { session, timestamps: false },
+          );
+          if (survivorFence.modifiedCount !== 1)
+            throw new ConflictException({
+              code: 'LAST_PROJECT_LEADER_REQUIRED',
+            });
+        }
+        if (existingAssignment) {
+          await this.roleAssignments().updateOne(
+            { _id: existingAssignment._id },
+            {
+              $set: {
+                roleId: targetRole._id,
+                roleCode: input.roleCode,
+                assignedBy: actorUserId,
+              },
+            },
+            { session },
+          );
+        } else {
+          await this.roleAssignments().create(
+            [
+              {
+                organizationId: project.organizationId,
+                projectId,
+                userId: membership.userId,
+                roleId: targetRole._id,
+                roleCode: input.roleCode,
+                assignedBy: actorUserId,
+              },
+            ],
+            { session },
+          );
+        }
+        await this.writePlatformMetadataAudit(
+          {
+            eventId: randomUUID(),
+            action: 'platform.project.member.role_changed',
+            targetResource: 'PROJECT',
+            targetResourceId: input.projectId,
+            organizationId: project.organizationId.toHexString(),
+            projectId: input.projectId,
+            targetUserId: membership.userId.toHexString(),
+            actorUserId: input.actorUserId,
+            scope: 'PLATFORM',
+            result: 'SUCCESS',
+            reasonCode: input.reasonCode,
+            previous: { roleCode: previousRoleCode },
+            next: { roleCode: input.roleCode },
+            ...(input.correlationId ? { requestId: input.correlationId } : {}),
+            occurredAt: input.now,
+          },
+          session,
+        );
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException({
+        code: 'IAM_PLATFORM_PROJECT_UPDATE_FAILED',
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (!organizationId) return null;
+    return this.findProjectMemberById(projectId, organizationId, membershipId);
+  }
+
+  async removeProjectMember(
+    input: PlatformProjectMemberRemoveInput,
+  ): Promise<PlatformProjectMemberSummary | null> {
+    if (
+      !validId(input.actorUserId) ||
+      !validId(input.projectId) ||
+      !validId(input.membershipId) ||
+      !(input.now instanceof Date) ||
+      !Number.isFinite(input.now.getTime())
+    )
+      unavailable();
+    const connection = this.connection;
+    if (!connection) unavailable();
+    const projectId = new Types.ObjectId(input.projectId);
+    const membershipId = new Types.ObjectId(input.membershipId);
+    const actorUserId = new Types.ObjectId(input.actorUserId);
+    let organizationId: Types.ObjectId | null = null;
+    const session = await connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await this.requirePlatformMutationAuthority(
+          actorUserId,
+          'platform.projects.project.manage',
+          input.now,
+          session,
+        );
+        const project = await this.projects()
+          .findById(projectId)
+          .session(session)
+          .lean()
+          .exec();
+        if (!project) return;
+        const organization = await this.organizations()
+          .exists({ _id: project.organizationId })
+          .session(session)
+          .exec();
+        if (!organization) return;
+        if (project.status !== 'ACTIVE')
+          throw new ConflictException({ code: 'PROJECT_LOCKED' });
+        const projectMemberships =
+          this.model<PlatformProjectMembershipDocument>('project_memberships');
+        const membership = await projectMemberships
+          .findOne({
+            _id: membershipId,
+            projectId,
+            organizationId: project.organizationId,
+          })
+          .session(session)
+          .lean()
+          .exec();
+        if (!membership || membership.status !== 'ACTIVE')
+          throw new NotFoundException({
+            code: 'PROJECT_MEMBERSHIP_NOT_FOUND',
+          });
+        const existingAssignment = await this.roleAssignments()
+          .findOne({
+            organizationId: project.organizationId,
+            projectId,
+            userId: membership.userId,
+          })
+          .session(session)
+          .lean()
+          .exec();
+        const previousRoleCode: PlatformProjectMemberRoleCode =
+          existingAssignment?.roleCode === 'TEAM_LEADER'
+            ? 'TEAM_LEADER'
+            : 'MEMBER';
+        if (previousRoleCode === 'TEAM_LEADER') {
+          const survivors = await this.findEffectiveProjectLeaders(
+            project.organizationId,
+            projectId,
+            membership.userId,
+            session,
+          );
+          const survivor = survivors[0];
+          if (!survivor)
+            throw new ConflictException({
+              code: 'LAST_PROJECT_LEADER_REQUIRED',
+            });
+          const projectFence = await this.projects().updateOne(
+            { _id: projectId, status: 'ACTIVE' },
+            { $inc: { __v: 1 } },
+            { session, timestamps: false },
+          );
+          if (projectFence.matchedCount !== 1)
+            throw new ConflictException({ code: 'PROJECT_LOCKED' });
+          const survivorFence = await this.roleAssignments().updateOne(
+            { _id: survivor._id, roleCode: 'TEAM_LEADER' },
+            { $inc: { __v: 1 } },
+            { session, timestamps: false },
+          );
+          if (survivorFence.modifiedCount !== 1)
+            throw new ConflictException({
+              code: 'LAST_PROJECT_LEADER_REQUIRED',
+            });
+        }
+        await projectMemberships.updateOne(
+          { _id: membership._id, status: 'ACTIVE' },
+          { $set: { status: 'INACTIVE' } },
+          { session },
+        );
+        await this.roleAssignments()
+          .deleteMany({
+            organizationId: project.organizationId,
+            projectId,
+            userId: membership.userId,
+          })
+          .session(session)
+          .exec();
+        await this.model<PlatformProjectTeamMembershipDocument>(
+          'team_memberships',
+        )
+          .deleteMany({
+            organizationId: project.organizationId,
+            projectId,
+            userId: membership.userId,
+          })
+          .session(session)
+          .exec();
+        await this.writePlatformMetadataAudit(
+          {
+            eventId: randomUUID(),
+            action: 'platform.project.member.removed',
+            targetResource: 'PROJECT',
+            targetResourceId: input.projectId,
+            organizationId: project.organizationId.toHexString(),
+            projectId: input.projectId,
+            targetUserId: membership.userId.toHexString(),
+            actorUserId: input.actorUserId,
+            scope: 'PLATFORM',
+            result: 'SUCCESS',
+            reasonCode: input.reasonCode,
+            previous: {
+              membershipStatus: 'ACTIVE',
+              roleCode: previousRoleCode,
+            },
+            next: {
+              membershipStatus: 'INACTIVE',
+              roleCode: null,
+            },
+            ...(input.correlationId ? { requestId: input.correlationId } : {}),
+            occurredAt: input.now,
+          },
+          session,
+        );
+        organizationId = project.organizationId;
+      });
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException({
+        code: 'IAM_PLATFORM_PROJECT_UPDATE_FAILED',
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (!organizationId) return null;
+    return this.findProjectMemberById(projectId, organizationId, membershipId);
+  }
+
+  private async findEffectiveProjectLeaders(
+    organizationId: Types.ObjectId,
+    projectId: Types.ObjectId,
+    excludedUserId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<PlatformRoleAssignmentDocument[]> {
+    const assignments = await this.roleAssignments()
+      .find({
+        organizationId,
+        projectId,
+        roleCode: 'TEAM_LEADER',
+        userId: { $ne: excludedUserId },
+      })
+      .session(session)
+      .lean()
+      .exec();
+    if (assignments.length === 0) return [];
+    const candidateIds = assignments.map((assignment) => assignment.userId);
+    const [activeProjectMembers, activeOrgMembers, activeUsers] =
+      await Promise.all([
+        this.model<PlatformProjectMembershipDocument>('project_memberships')
+          .find(
+            {
+              organizationId,
+              projectId,
+              userId: { $in: candidateIds },
+              status: 'ACTIVE',
+            },
+            { userId: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec(),
+        this.memberships()
+          .find(
+            {
+              organizationId,
+              userId: { $in: candidateIds },
+              status: 'ACTIVE',
+            },
+            { userId: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec(),
+        this.platformUsers()
+          .find(
+            {
+              _id: { $in: candidateIds },
+              status: 'ACTIVE',
+              $or: [{ archivedAt: { $exists: false } }, { archivedAt: null }],
+            },
+            { _id: 1 },
+          )
+          .session(session)
+          .lean()
+          .exec(),
+      ]);
+    const activeProjectSet = new Set(
+      activeProjectMembers.map((doc) => doc.userId.toHexString()),
+    );
+    const activeOrgSet = new Set(
+      activeOrgMembers.map((doc) => doc.userId.toHexString()),
+    );
+    const activeUserSet = new Set(
+      activeUsers.map((doc) => doc._id.toHexString()),
+    );
+    return assignments.filter((assignment) => {
+      const uid = assignment.userId.toHexString();
+      return (
+        activeProjectSet.has(uid) &&
+        activeOrgSet.has(uid) &&
+        activeUserSet.has(uid)
+      );
+    });
+  }
+
+  private async findProjectMemberById(
+    projectId: Types.ObjectId,
+    organizationId: Types.ObjectId,
+    membershipId: Types.ObjectId,
+  ): Promise<PlatformProjectMemberSummary> {
+    const [row] = await this.model<PlatformProjectMembershipDocument>(
+      'project_memberships',
+    )
+      .aggregate<PlatformProjectMembershipDocument>([
+        {
+          $match: {
+            _id: membershipId,
+            projectId,
+            organizationId,
+          },
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'userId',
+            foreignField: '_id',
+            pipeline: [
+              { $project: { _id: 1, email: 1, fullName: 1, status: 1 } },
+            ],
+            as: 'user',
+          },
+        },
+        { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'role_assignments',
+            let: {
+              memberUserId: '$userId',
+              memberProjectId: '$projectId',
+              memberOrganizationId: '$organizationId',
+            },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$userId', '$$memberUserId'] },
+                      { $eq: ['$projectId', '$$memberProjectId'] },
+                      { $eq: ['$organizationId', '$$memberOrganizationId'] },
+                    ],
+                  },
+                },
+              },
+              { $project: { _id: 0, roleCode: 1 } },
+            ],
+            as: 'roleAssignments',
+          },
+        },
+        { $limit: 1 },
+      ])
+      .exec();
+    if (!row) unavailable();
+    return mapPlatformProjectMember(row);
   }
 
   async changeOrganizationMetadata(
@@ -2727,6 +3667,16 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     return [
       {
         $lookup: {
+          from: 'users',
+          localField: 'createdBy',
+          foreignField: '_id',
+          pipeline: [{ $project: { _id: 1, email: 1, fullName: 1 } }],
+          as: 'creator',
+        },
+      },
+      { $unwind: { path: '$creator', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
           from: 'project_memberships',
           let: { projectId: '$_id', organizationId: '$organizationId' },
           pipeline: [
@@ -2780,6 +3730,81 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
         },
       },
       {
+        $lookup: {
+          from: 'teams',
+          let: { projectId: '$_id', organizationId: '$organizationId' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$projectId', '$$projectId'] },
+                    { $eq: ['$organizationId', '$$organizationId'] },
+                  ],
+                },
+              },
+            },
+            { $count: 'count' },
+          ],
+          as: 'teamStats',
+        },
+      },
+      {
+        $lookup: {
+          from: 'teams',
+          let: { projectId: '$_id', organizationId: '$organizationId' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$projectId', '$$projectId'] },
+                    { $eq: ['$organizationId', '$$organizationId'] },
+                  ],
+                },
+              },
+            },
+            { $sort: { name: 1, _id: 1 } },
+            { $limit: 21 },
+            {
+              $lookup: {
+                from: 'team_memberships',
+                let: {
+                  teamId: '$_id',
+                  projectId: '$projectId',
+                  organizationId: '$organizationId',
+                },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $and: [
+                          { $eq: ['$teamId', '$$teamId'] },
+                          { $eq: ['$projectId', '$$projectId'] },
+                          { $eq: ['$organizationId', '$$organizationId'] },
+                        ],
+                      },
+                    },
+                  },
+                  { $count: 'count' },
+                ],
+                as: 'memberStats',
+              },
+            },
+            {
+              $project: {
+                _id: 1,
+                name: 1,
+                code: 1,
+                status: 1,
+                memberStats: 1,
+              },
+            },
+          ],
+          as: 'teams',
+        },
+      },
+      {
         $project: {
           _id: 1,
           organizationId: 1,
@@ -2788,10 +3813,13 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           code: 1,
           visibility: 1,
           status: 1,
+          creator: 1,
           createdAt: 1,
           updatedAt: 1,
           memberStats: 1,
           leaders: 1,
+          teamStats: 1,
+          teams: 1,
         },
       },
     ];
@@ -2817,7 +3845,22 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
     )
       unavailable();
     const memberCount = row.memberStats?.[0]?.count ?? 0;
-    if (!Number.isSafeInteger(memberCount) || memberCount < 0) unavailable();
+    const teamCount = row.teamStats?.[0]?.count ?? 0;
+    if (
+      !Number.isSafeInteger(memberCount) ||
+      memberCount < 0 ||
+      !Number.isSafeInteger(teamCount) ||
+      teamCount < 0
+    )
+      unavailable();
+    const creator = row.creator;
+    if (
+      creator &&
+      (!(creator._id instanceof Types.ObjectId) ||
+        typeof creator.email !== 'string' ||
+        typeof creator.fullName !== 'string')
+    )
+      unavailable();
     return {
       id: row._id.toHexString(),
       organization: {
@@ -2829,6 +3872,13 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       code: row.code,
       visibility: row.visibility,
       status: row.status,
+      createdBy: creator
+        ? {
+            id: creator._id.toHexString(),
+            email: creator.email,
+            fullName: creator.fullName,
+          }
+        : null,
       memberCount,
       leaders: (row.leaders ?? [])
         .flatMap(({ user }) => {
@@ -2849,6 +3899,29 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
         })
         .slice(0, 20),
       leadersTruncated: (row.leaders?.length ?? 0) > 20,
+      teamCount,
+      teams: (row.teams ?? [])
+        .map((team) => {
+          const teamMembers = team.memberStats?.[0]?.count ?? 0;
+          if (
+            !(team._id instanceof Types.ObjectId) ||
+            typeof team.name !== 'string' ||
+            typeof team.code !== 'string' ||
+            !['ACTIVE', 'ARCHIVED'].includes(team.status) ||
+            !Number.isSafeInteger(teamMembers) ||
+            teamMembers < 0
+          )
+            unavailable();
+          return {
+            id: team._id.toHexString(),
+            name: team.name,
+            code: team.code,
+            status: team.status,
+            memberCount: teamMembers,
+          };
+        })
+        .slice(0, 20),
+      teamsTruncated: (row.teams?.length ?? 0) > 20,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

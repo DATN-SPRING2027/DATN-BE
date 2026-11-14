@@ -19,6 +19,9 @@ export interface PlatformOperationalAuditRecord {
     | 'platform.job.cancel'
     | 'platform.organization.metadata.changed'
     | 'platform.project.metadata.changed'
+    | 'platform.project.member.added'
+    | 'platform.project.member.role_changed'
+    | 'platform.project.member.removed'
     | 'ORGANIZATION_MEMBERSHIP_SUSPENDED';
   targetResource:
     | 'ORGANIZATION'
@@ -37,7 +40,10 @@ export interface PlatformOperationalAuditRecord {
 export type PlatformAuditAction =
   | PlatformOperationalAuditRecord['action']
   | 'platform.organization.metadata.changed'
-  | 'platform.project.metadata.changed';
+  | 'platform.project.metadata.changed'
+  | 'platform.project.member.added'
+  | 'platform.project.member.role_changed'
+  | 'platform.project.member.removed';
 export type PlatformAuditResourceType =
   | 'ORGANIZATION'
   | 'PLATFORM_AUTHORITY'

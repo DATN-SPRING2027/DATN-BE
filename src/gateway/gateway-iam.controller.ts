@@ -454,6 +454,38 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/platform/projects/:projectId/member-candidates')
+  listPlatformProjectMemberCandidates(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/platform/projects/:projectId/memberships')
+  addPlatformProjectMember(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Patch('iam/platform/projects/:projectId/memberships/:membershipId/role')
+  changePlatformProjectMemberRole(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/platform/projects/:projectId/memberships/:membershipId/remove')
+  removePlatformProjectMember(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Patch('iam/platform/projects/:projectId')
   updatePlatformProject(
     @Req() request: Request,
