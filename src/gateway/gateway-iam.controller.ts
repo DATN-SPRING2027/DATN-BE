@@ -390,6 +390,14 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Post('iam/platform/sag/operations/:action')
+  executeSagOperation(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   @Get('iam/platform/ai/operations')
   getPlatformAiOperations(
     @Req() request: Request,
