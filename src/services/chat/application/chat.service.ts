@@ -915,7 +915,13 @@ export class ChatApplicationService {
         60,
       );
       return result;
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        throw new NotFoundException({
+          code: 'CHAT_ATTACHMENT_NOT_FOUND',
+          message: 'Attachment not found.',
+        });
+      }
       throw new ServiceUnavailableException({
         code: 'CHAT_STORAGE_UNAVAILABLE',
         message: 'File storage is unavailable.',

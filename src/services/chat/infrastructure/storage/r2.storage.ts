@@ -152,6 +152,37 @@ export class R2Storage implements ChatObjectStorage {
     );
   }
 
+  private hasCloudCredentials(): boolean {
+    return Boolean(
+      this.endpoint && this.accessKeyId && this.secretAccessKey && this.bucket,
+    );
+  }
+
+  private async createCloudDownloadUrl(
+    key: string,
+    expiresInSeconds: number,
+    response?: {
+      contentType: string;
+      contentDisposition: 'inline' | 'attachment';
+      filename: string;
+    },
+  ): Promise<string> {
+    return getSignedUrl(
+      this.client(),
+      new GetObjectCommand({
+        Bucket: this.bucketName(),
+        Key: key,
+        ...(response
+          ? {
+              ResponseContentType: response.contentType,
+              ResponseContentDisposition: `${response.contentDisposition}; filename*=UTF-8''${encodeURIComponent(response.filename)}`,
+            }
+          : {}),
+      }),
+      { expiresIn: expiresInSeconds },
+    );
+  }
+
   async createDownloadUrl(
     key: string,
     expiresInSeconds = 900,
@@ -162,28 +193,46 @@ export class R2Storage implements ChatObjectStorage {
     },
   ): Promise<string> {
     if (!this.useLocal()) {
-      return getSignedUrl(
-        this.client(),
-        new GetObjectCommand({
-          Bucket: this.bucketName(),
-          Key: key,
-          ...(response
-            ? {
-                ResponseContentType: response.contentType,
-                ResponseContentDisposition: `${response.contentDisposition}; filename*=UTF-8''${encodeURIComponent(response.filename)}`,
-              }
-            : {}),
-        }),
-        { expiresIn: expiresInSeconds },
-      );
+      return this.createCloudDownloadUrl(key, expiresInSeconds, response);
     }
 
     const path = this.localPath(key);
-    const bytes = await readFile(path);
-    const meta = await this.headObject(key);
-    const mime =
-      response?.contentType || meta.contentType || 'application/octet-stream';
-    return `data:${mime};base64,${bytes.toString('base64')}`;
+    try {
+      const bytes = await readFile(path);
+      const meta = await this.headObject(key);
+      const mime =
+        response?.contentType || meta.contentType || 'application/octet-stream';
+      return `data:${mime};base64,${bytes.toString('base64')}`;
+    } catch (localError) {
+      const isMissingLocal =
+        (localError as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+      if (!isMissingLocal || !this.hasCloudCredentials()) {
+        throw localError;
+      }
+      try {
+        await this.client().send(
+          new HeadObjectCommand({ Bucket: this.bucketName(), Key: key }),
+        );
+        return await this.createCloudDownloadUrl(
+          key,
+          expiresInSeconds,
+          response,
+        );
+      } catch (cloudError) {
+        const statusCode = (
+          cloudError as { $metadata?: { httpStatusCode?: number } } | undefined
+        )?.$metadata?.httpStatusCode;
+        const errName = (cloudError as { name?: string } | undefined)?.name;
+        if (
+          statusCode === 404 ||
+          errName === 'NotFound' ||
+          errName === 'NoSuchKey'
+        ) {
+          throw localError;
+        }
+        throw cloudError;
+      }
+    }
   }
 
   async headObject(key: string): Promise<StoredObjectMetadata> {

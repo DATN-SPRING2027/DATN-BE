@@ -107,14 +107,6 @@ export function validateProjectDocumentInput(
 
 export function validateWorkReportInput(value: unknown): WorkReportInput {
   const record = objectRecord(value);
-  assertKeys(record, [
-    'accomplishments',
-    'approach',
-    'reason',
-    'blockers',
-    'nextSteps',
-    'documentIds',
-  ]);
   let documentIds: string[] | undefined;
   if (record.documentIds !== undefined) {
     if (!Array.isArray(record.documentIds) || record.documentIds.length > 20)
@@ -127,6 +119,22 @@ export function validateWorkReportInput(value: unknown): WorkReportInput {
       if (!documentIds.includes(normalized)) documentIds.push(normalized);
     }
   }
+  if ('title' in record || 'content' in record) {
+    assertKeys(record, ['title', 'content', 'documentIds']);
+    return {
+      title: requiredText(record.title, 300),
+      content: requiredText(record.content, 30_000),
+      ...(documentIds === undefined ? {} : { documentIds }),
+    };
+  }
+  assertKeys(record, [
+    'accomplishments',
+    'approach',
+    'reason',
+    'blockers',
+    'nextSteps',
+    'documentIds',
+  ]);
   return {
     accomplishments: requiredText(record.accomplishments, 10_000),
     approach: requiredText(record.approach, 10_000),

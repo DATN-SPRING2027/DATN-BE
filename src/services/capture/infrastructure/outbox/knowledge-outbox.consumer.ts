@@ -2659,10 +2659,52 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private lastTransientRecoveryAt = 0;
+
+  private async recoverTransientFailedEvents(): Promise<void> {
+    const nowMs = Date.now();
+    if (nowMs - this.lastTransientRecoveryAt < 60_000) return;
+    this.lastTransientRecoveryAt = nowMs;
+    const now = new Date(nowMs);
+    const cooldownCutoff = new Date(nowMs - 30_000);
+    await this.connection.collection('outbox_events').updateMany(
+      {
+        aggregateType: { $in: [...KNOWLEDGE_AGGREGATE_TYPES] },
+        eventName: { $in: [...KNOWLEDGE_EVENT_NAMES] },
+        status: 'FAILED',
+        updatedAt: { $lte: cooldownCutoff },
+        lastError: {
+          $regex:
+            /(fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|AbortError|SAG_.*_FAILED_5\d\d)/i,
+        },
+        $or: [
+          { 'payload.delivery.recoveryCycles': { $exists: false } },
+          { 'payload.delivery.recoveryCycles': { $lt: 20 } },
+        ],
+      },
+      {
+        $set: {
+          status: 'PENDING',
+          'payload.delivery.attemptCount': 0,
+          updatedAt: now,
+        },
+        $inc: {
+          'payload.delivery.recoveryCycles': 1,
+        },
+        $unset: {
+          'payload.delivery.leaseId': '',
+          'payload.delivery.leaseUntil': '',
+          'payload.delivery.nextAttemptAt': '',
+        },
+      },
+    );
+  }
+
   private async poll(): Promise<void> {
     if (this.running) return;
     this.running = true;
     try {
+      await this.recoverTransientFailedEvents();
       await this.runOnce();
     } catch {
       this.logger.warn('knowledge_outbox_poll_failed');

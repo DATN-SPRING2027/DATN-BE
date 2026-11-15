@@ -71,6 +71,33 @@ describe('Work Notes request validation', () => {
     expect(validateReportFrequency('WEEKLY')).toBe('WEEKLY');
   });
 
+  it('accepts freeform Work Report title and content payloads while rejecting unknown keys', () => {
+    expect(
+      validateWorkReportInput({
+        title: '  Weekly Sprint Report  ',
+        content:
+          '  Completed Redis BullMQ retry backoff and handover verification.  ',
+      }),
+    ).toEqual({
+      title: 'Weekly Sprint Report',
+      content:
+        'Completed Redis BullMQ retry backoff and handover verification.',
+    });
+    expect(() =>
+      validateWorkReportInput({
+        title: '',
+        content: 'Body only',
+      }),
+    ).toThrow();
+    expect(() =>
+      validateWorkReportInput({
+        title: 'Title',
+        content: 'Body',
+        accomplishments: 'Mixed schema',
+      }),
+    ).toThrow();
+  });
+
   it('requires a reason for change requests and rejections', () => {
     expect(() => validateReviewInput({}, true)).toThrow();
     expect(

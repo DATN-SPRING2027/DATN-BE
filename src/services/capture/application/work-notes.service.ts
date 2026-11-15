@@ -6791,20 +6791,27 @@ export class WorkNotesService {
       const currentScope: WorkReportScope =
         text(current.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
       this.assertCanAuthorScope(actor, currentScope);
+      const hasFreeformBody =
+        Boolean(text(current.title).trim()) &&
+        Boolean(text(current.contentMarkdown).trim());
+      const hasStructuredBody =
+        Boolean(text(current.accomplishments).trim()) &&
+        Boolean(text(current.approach).trim()) &&
+        Boolean(text(current.reason).trim());
       if (
         current.contentSchemaVersion === 2
-          ? !text(current.title).trim() || !text(current.contentMarkdown).trim()
-          : !text(current.accomplishments).trim() ||
-            !text(current.approach).trim() ||
-            !text(current.reason).trim()
+          ? !hasFreeformBody
+          : !hasFreeformBody && !hasStructuredBody
       )
         throw conflict(
-          current.contentSchemaVersion === 2
+          current.contentSchemaVersion === 2 ||
+            Boolean(text(current.title).trim()) ||
+            Boolean(text(current.contentMarkdown).trim())
             ? 'Complete title and content before submitting.'
             : 'Complete the three required report fields before submitting.',
         );
       const reportBodyCharCount =
-        current.contentSchemaVersion === 2
+        current.contentSchemaVersion === 2 || hasFreeformBody
           ? text(current.contentMarkdown).trim().length
           : text(current.accomplishments).trim().length +
             text(current.approach).trim().length +
@@ -7843,6 +7850,7 @@ export class WorkNotesService {
       throw conflict(
         'NOTE_EDITOR_UPGRADE_REQUIRED: use the freeform editor to preserve canonical content.',
       );
+    const isFreeformInput = 'content' in input;
     const now = new Date();
     await this.transaction(async (db, session) => {
       const txReports = db.collection('work_reports');
@@ -7856,17 +7864,26 @@ export class WorkNotesService {
           status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
         },
         {
-          $set: {
-            accomplishments: input.accomplishments,
-            approach: input.approach,
-            reason: input.reason,
-            blockers: input.blockers ?? '',
-            nextSteps: input.nextSteps ?? '',
-            ...(input.documentIds !== undefined
-              ? { documentIds: input.documentIds }
-              : {}),
-            updatedAt: now,
-          },
+          $set: isFreeformInput
+            ? {
+                title: input.title,
+                contentMarkdown: input.content,
+                ...(input.documentIds !== undefined
+                  ? { documentIds: input.documentIds }
+                  : {}),
+                updatedAt: now,
+              }
+            : {
+                accomplishments: input.accomplishments,
+                approach: input.approach,
+                reason: input.reason,
+                blockers: input.blockers ?? '',
+                nextSteps: input.nextSteps ?? '',
+                ...(input.documentIds !== undefined
+                  ? { documentIds: input.documentIds }
+                  : {}),
+                updatedAt: now,
+              },
         },
         { session },
       );
@@ -8782,7 +8799,18 @@ export class WorkNotesService {
             contentSchemaVersion: 2 as const,
             currentVersionNumber: Number(value.currentVersionNumber),
           }
-        : {}),
+        : {
+            ...(typeof value.title === 'string' && value.title.length > 0
+              ? { title: value.title }
+              : {}),
+            ...(typeof value.contentMarkdown === 'string' &&
+            value.contentMarkdown.length > 0
+              ? {
+                  content: value.contentMarkdown,
+                  contentMarkdown: value.contentMarkdown,
+                }
+              : {}),
+          }),
       approach: text(value.approach),
       reason: text(value.reason),
       blockers: text(value.blockers),
