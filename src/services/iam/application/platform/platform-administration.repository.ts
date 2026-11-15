@@ -20,6 +20,7 @@ export interface PlatformUserLookupResult {
   email: string;
   fullName: string;
   status: 'ACTIVE';
+  isPlatformOperator?: boolean;
 }
 
 export interface PlatformMembershipSummary {

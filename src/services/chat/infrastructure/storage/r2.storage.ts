@@ -54,6 +54,7 @@ export class R2Storage implements ChatObjectStorage {
   private readonly localRoot: string;
   private readonly forceLocal: boolean;
   private readonly localDisabled: boolean;
+  private readonly cloudFallbackEnabled: boolean;
   private clientInstance?: S3Client;
 
   constructor(config: ConfigService) {
@@ -70,6 +71,10 @@ export class R2Storage implements ChatObjectStorage {
     this.forceLocal = true;
     this.localDisabled =
       String(config.get<string>('LOCAL_STORAGE_DISABLED') ?? '')
+        .trim()
+        .toLowerCase() === 'true';
+    this.cloudFallbackEnabled =
+      String(config.get<string>('CHAT_STORAGE_CLOUD_FALLBACK_ENABLED') ?? '')
         .trim()
         .toLowerCase() === 'true';
   }
@@ -206,7 +211,11 @@ export class R2Storage implements ChatObjectStorage {
     } catch (localError) {
       const isMissingLocal =
         (localError as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-      if (!isMissingLocal || !this.hasCloudCredentials()) {
+      if (
+        !isMissingLocal ||
+        !this.cloudFallbackEnabled ||
+        !this.hasCloudCredentials()
+      ) {
         throw localError;
       }
       try {
@@ -225,8 +234,10 @@ export class R2Storage implements ChatObjectStorage {
         const errName = (cloudError as { name?: string } | undefined)?.name;
         if (
           statusCode === 404 ||
+          statusCode === 403 ||
           errName === 'NotFound' ||
-          errName === 'NoSuchKey'
+          errName === 'NoSuchKey' ||
+          errName === 'AccessDenied'
         ) {
           throw localError;
         }
@@ -267,6 +278,11 @@ export class R2Storage implements ChatObjectStorage {
     const path = this.localPath(key);
     await rm(path, { force: true });
     await rm(`${path}.meta.json`, { force: true }).catch(() => undefined);
+    if (this.cloudFallbackEnabled && this.hasCloudCredentials()) {
+      await this.client()
+        .send(new DeleteObjectCommand({ Bucket: this.bucketName(), Key: key }))
+        .catch(() => undefined);
+    }
   }
 
   private client(): S3Client {

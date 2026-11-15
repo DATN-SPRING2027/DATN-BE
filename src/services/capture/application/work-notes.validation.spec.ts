@@ -83,10 +83,28 @@ describe('Work Notes request validation', () => {
       content:
         'Completed Redis BullMQ retry backoff and handover verification.',
     });
-    expect(() =>
+    expect(
       validateWorkReportInput({
         title: '',
         content: 'Body only',
+      }),
+    ).toEqual({
+      title: '',
+      content: 'Body only',
+    });
+    expect(
+      validateWorkReportInput({
+        title: 'Title only draft',
+        content: '',
+      }),
+    ).toEqual({
+      title: 'Title only draft',
+      content: '',
+    });
+    expect(() =>
+      validateWorkReportInput({
+        title: '   ',
+        content: '   ',
       }),
     ).toThrow();
     expect(() =>

@@ -383,8 +383,18 @@ describe('Platform administration Mongo projections and membership lifecycle', (
       email: 'member@example.test',
       fullName: 'Organization Member',
       status: 'ACTIVE',
+      isPlatformOperator: true,
     });
     expect(JSON.stringify(user)).not.toContain('passwordHash');
+
+    const nonOperatorUser =
+      await administration.findActiveUserByExactEmail('admin@example.test');
+    expect(nonOperatorUser).toEqual({
+      id: adminId.toHexString(),
+      email: 'admin@example.test',
+      fullName: 'Organization Admin',
+      status: 'ACTIVE',
+    });
     const memberships = await administration.listOrganizationMemberships({
       organizationId: organizationId.toHexString(),
       page: 1,

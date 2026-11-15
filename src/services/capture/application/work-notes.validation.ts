@@ -121,9 +121,17 @@ export function validateWorkReportInput(value: unknown): WorkReportInput {
   }
   if ('title' in record || 'content' in record) {
     assertKeys(record, ['title', 'content', 'documentIds']);
+    if (record.title === undefined || record.content === undefined) {
+      return invalid();
+    }
+    const title = optionalText(record.title, 300) ?? '';
+    const content = optionalText(record.content, 30_000) ?? '';
+    if (title.length === 0 && content.length === 0) {
+      return invalid();
+    }
     return {
-      title: requiredText(record.title, 300),
-      content: requiredText(record.content, 30_000),
+      title,
+      content,
       ...(documentIds === undefined ? {} : { documentIds }),
     };
   }

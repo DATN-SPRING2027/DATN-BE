@@ -3375,11 +3375,40 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       row.status !== 'ACTIVE'
     )
       unavailable();
+    const authorityModel = this.connection?.models[
+      modelName('platform_authority_assignments')
+    ] as Model<{ _id: Types.ObjectId }> | undefined;
+    const now = new Date();
+    const activePlatformAuthority = authorityModel
+      ? await authorityModel
+          .exists({
+            subjectUserId: row._id,
+            permission: { $in: [...PLATFORM_PERMISSIONS] },
+            scope: 'PLATFORM',
+            status: 'ACTIVE',
+            grantedBy: { $ne: row._id },
+            grantedAt: { $lte: now },
+            $and: [
+              {
+                $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }],
+              },
+              {
+                $or: [
+                  { expiresAt: null },
+                  { expiresAt: { $exists: false } },
+                  { expiresAt: { $gt: now } },
+                ],
+              },
+            ],
+          })
+          .exec()
+      : null;
     return {
       id: row._id.toHexString(),
       email: row.email,
       fullName: row.fullName,
       status: 'ACTIVE',
+      ...(activePlatformAuthority ? { isPlatformOperator: true } : {}),
     };
   }
 

@@ -2587,7 +2587,13 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
       {
         $set: {
           ...(terminal
-            ? { status: 'FAILED', lastError: errorMessage, updatedAt: now }
+            ? {
+                status: 'FAILED',
+                lastError: errorMessage,
+                updatedAt: now,
+                'payload.delivery.transientFailure':
+                  isTransientKnowledgeOutboxError(errorMessage),
+              }
             : {
                 lastError: errorMessage,
                 updatedAt: now,
@@ -2595,6 +2601,9 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
                   now.getTime() + delay,
                 ),
               }),
+        },
+        $inc: {
+          'payload.delivery.totalAttempts': 1,
         },
         $unset: {
           'payload.delivery.leaseId': '',
@@ -2626,6 +2635,8 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
           status: 'FAILED',
           lastError: errorCode,
           updatedAt: new Date(),
+          'payload.delivery.transientFailure':
+            isTransientKnowledgeOutboxError(errorCode),
         },
         $unset: {
           'payload.delivery.leaseId': '',
@@ -2667,25 +2678,39 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
     this.lastTransientRecoveryAt = nowMs;
     const now = new Date(nowMs);
     const cooldownCutoff = new Date(nowMs - 30_000);
+    const nextAttemptAt = new Date(nowMs + 30_000);
     await this.connection.collection('outbox_events').updateMany(
       {
         aggregateType: { $in: [...KNOWLEDGE_AGGREGATE_TYPES] },
         eventName: { $in: [...KNOWLEDGE_EVENT_NAMES] },
         status: 'FAILED',
         updatedAt: { $lte: cooldownCutoff },
-        lastError: {
-          $regex:
-            /(fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|AbortError|SAG_.*_FAILED_5\d\d)/i,
-        },
-        $or: [
-          { 'payload.delivery.recoveryCycles': { $exists: false } },
-          { 'payload.delivery.recoveryCycles': { $lt: 20 } },
+        $and: [
+          {
+            $or: [
+              { 'payload.delivery.transientFailure': true },
+              {
+                'payload.delivery.transientFailure': { $exists: false },
+                lastError: {
+                  $regex:
+                    /^(?!SAG_[A-Z0-9_]+_FAILED_4(?!29)\d\d)(?:SAG_[A-Z0-9_]+_FAILED_(?:5\d\d|429)\b|SAG_SEARCH_READY_TIMEOUT\b|.*\b(?:fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR_SOCKET|AbortError)\b)/i,
+                },
+              },
+            ],
+          },
+          {
+            $or: [
+              { 'payload.delivery.recoveryCycles': { $exists: false } },
+              { 'payload.delivery.recoveryCycles': { $lt: 20 } },
+            ],
+          },
         ],
       },
       {
         $set: {
           status: 'PENDING',
           'payload.delivery.attemptCount': 0,
+          'payload.delivery.nextAttemptAt': nextAttemptAt,
           updatedAt: now,
         },
         $inc: {
@@ -2694,7 +2719,6 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
         $unset: {
           'payload.delivery.leaseId': '',
           'payload.delivery.leaseUntil': '',
-          'payload.delivery.nextAttemptAt': '',
         },
       },
     );
@@ -2774,6 +2798,22 @@ export async function recordKnowledgeSyncTokenUsageLog(
   } catch {
     // Telemetry logging must never interrupt outbox or status flows.
   }
+}
+
+export function isTransientKnowledgeOutboxError(errorMessage: string): boolean {
+  const trimmed = String(errorMessage ?? '').trim();
+  if (!trimmed) return false;
+  const sagStatusMatch = /^SAG_[A-Z0-9_]+_FAILED_(\d{3})\b/i.exec(trimmed);
+  if (sagStatusMatch) {
+    const statusCode = Number(sagStatusMatch[1]);
+    return statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
+  }
+  if (/^SAG_SEARCH_READY_TIMEOUT\b/i.test(trimmed)) {
+    return true;
+  }
+  return /\b(fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR_SOCKET|AbortError)\b/i.test(
+    trimmed,
+  );
 }
 
 function isValidObjectIdHex(value: string): boolean {

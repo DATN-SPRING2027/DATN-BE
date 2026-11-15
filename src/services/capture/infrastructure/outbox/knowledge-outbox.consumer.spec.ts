@@ -9,6 +9,7 @@ import type { Connection } from 'mongoose';
 import type { ProjectDocumentStorage } from '../storage/project-document.storage';
 import {
   HttpSagKnowledgeSyncTransport,
+  isTransientKnowledgeOutboxError,
   KnowledgeOutboxConsumer,
   type SagKnowledgeSyncTransport,
   type SagProjectDocumentRevokeInput,
@@ -1836,5 +1837,36 @@ describe('HttpSagKnowledgeSyncTransport (Real HTTP Contract)', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it('classifies transient SAG/network outbox errors without matching permanent 4xx errors', () => {
+    expect(
+      isTransientKnowledgeOutboxError('SAG_UPLOAD_FAILED_503:service down'),
+    ).toBe(true);
+    expect(
+      isTransientKnowledgeOutboxError('SAG_UPLOAD_FAILED_429:rate limited'),
+    ).toBe(true);
+    expect(
+      isTransientKnowledgeOutboxError(
+        'SAG_SEARCH_READY_TIMEOUT:version did not settle',
+      ),
+    ).toBe(true);
+    expect(
+      isTransientKnowledgeOutboxError('TypeError: fetch failed (ECONNREFUSED)'),
+    ).toBe(true);
+    expect(
+      isTransientKnowledgeOutboxError('getaddrinfo ENOTFOUND sag.internal'),
+    ).toBe(true);
+    expect(
+      isTransientKnowledgeOutboxError(
+        'SAG_UPLOAD_FAILED_400:upstream fetch failed validation',
+      ),
+    ).toBe(false);
+    expect(
+      isTransientKnowledgeOutboxError('SAG_UPLOAD_FAILED_422:invalid schema'),
+    ).toBe(false);
+    expect(isTransientKnowledgeOutboxError('DOCUMENT_FILE_MISSING')).toBe(
+      false,
+    );
   });
 });

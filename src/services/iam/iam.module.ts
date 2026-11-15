@@ -248,11 +248,26 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
       useFactory: (
         config: ConfigService,
       ): OrganizationInvitationReadinessEvidence => {
-        const devFallbackDigest =
-          config.get<string>('NODE_ENV') === 'development' &&
-          process.env.NODE_ENV !== 'test'
-            ? 'd'.repeat(64)
-            : undefined;
+        const configuredNodeEnv = config.get<string>('NODE_ENV');
+        const rawFlag = config.get<boolean | string>(
+          'IAM_DEV_SYNTHETIC_INVITATION_READINESS',
+        );
+        const explicitSyntheticFlag =
+          rawFlag === true || rawFlag === 'true'
+            ? true
+            : rawFlag === false || rawFlag === 'false'
+              ? false
+              : undefined;
+        const allowSyntheticDevFallback =
+          configuredNodeEnv !== 'production' &&
+          process.env.NODE_ENV !== 'production' &&
+          process.env.NODE_ENV !== 'test' &&
+          (explicitSyntheticFlag === true ||
+            (explicitSyntheticFlag !== false &&
+              process.env.NODE_ENV === 'development'));
+        const devFallbackDigest = allowSyntheticDevFallback
+          ? 'd'.repeat(64)
+          : undefined;
         const resolveDigest = (key: string): string | undefined => {
           const configured = config.get<string>(key);
           if (configured !== undefined && configured !== '') {

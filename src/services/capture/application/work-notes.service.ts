@@ -6300,6 +6300,11 @@ export class WorkNotesService {
       await this.markOverdue(actor, projectId, now, activeLeaderIds, 'LEADER');
 
       const canViewAllLeaders = isActorManager(actor);
+      const extraDirectoryMembers = canViewAllLeaders
+        ? await this.authorization
+            .listActiveMembers(actor, headers)
+            .catch(() => [])
+        : [];
       const visibleRosterPeople = canViewAllLeaders
         ? leaders
         : leaders.filter(
@@ -6318,7 +6323,7 @@ export class WorkNotesService {
         scope: 'LEADER',
         scopeRows: timelines.leaderRows,
         rosterPeople: visibleRosterPeople,
-        allDirectoryPeople: leaders,
+        allDirectoryPeople: [...leaders, ...extraDirectoryMembers],
         canViewAllInScope: canViewAllLeaders,
         hasActiveLeaders,
         baseVisibilityFilter,
@@ -6331,12 +6336,17 @@ export class WorkNotesService {
     }
 
     const canViewAllMembers = isActorLeader(actor) || isActorManager(actor);
-    const [members, hasActiveLeaders] = await Promise.all([
-      canViewAllMembers
-        ? this.authorization.listActiveMembers(actor, headers)
-        : Promise.resolve([this.resolveActorMemberObligation(actor)]),
-      this.resolveHasActiveLeaders(actor, headers),
-    ]);
+    const [members, extraDirectoryLeaders, hasActiveLeaders] =
+      await Promise.all([
+        canViewAllMembers
+          ? this.authorization.listActiveMembers(actor, headers)
+          : Promise.resolve([this.resolveActorMemberObligation(actor)]),
+        canViewAllMembers &&
+        typeof this.authorization.listActiveLeaders === 'function'
+          ? this.authorization.listActiveLeaders(actor, headers).catch(() => [])
+          : Promise.resolve([]),
+        this.resolveHasActiveLeaders(actor, headers),
+      ]);
     const activeMemberIds = new Set(
       members.map((member) => member.userId.toLowerCase()),
     );
@@ -6361,7 +6371,7 @@ export class WorkNotesService {
       scope: 'MEMBER',
       scopeRows: timelines.memberRows,
       rosterPeople: members,
-      allDirectoryPeople: members,
+      allDirectoryPeople: [...members, ...extraDirectoryLeaders],
       canViewAllInScope: canViewAllMembers,
       hasActiveLeaders,
       baseVisibilityFilter,
@@ -6698,25 +6708,33 @@ export class WorkNotesService {
       memberId.toLowerCase() === actor.userId.toLowerCase()
         ? Promise.resolve(actor.userName)
         : isActorLeader(actor) || isActorManager(actor)
-          ? isLeaderReport &&
-            typeof this.authorization.listActiveLeaders === 'function'
-            ? this.authorization
-                .listActiveLeaders(actor, headers)
-                .then(
-                  (leaders) =>
-                    leaders.find(
-                      (leader) => leader.userId === memberId.toLowerCase(),
-                    )?.fullName,
-                )
-            : this.authorization
-                .listActiveMembers(actor, headers)
-                .then(
-                  (members) =>
-                    members.find(
-                      (member) =>
-                        member.userId.toLowerCase() === memberId.toLowerCase(),
-                    )?.fullName,
-                )
+          ? (async () => {
+              const normalizedMemberId = memberId.toLowerCase();
+              const [members, leaders] = await Promise.all([
+                isLeaderReport
+                  ? this.authorization
+                      .listActiveMembers(actor, headers)
+                      .catch(() => [])
+                  : this.authorization.listActiveMembers(actor, headers),
+                typeof this.authorization.listActiveLeaders === 'function'
+                  ? this.authorization
+                      .listActiveLeaders(actor, headers)
+                      .catch(() => [])
+                  : Promise.resolve([]),
+              ]);
+              const primary = isLeaderReport ? leaders : members;
+              const secondary = isLeaderReport ? members : leaders;
+              return (
+                primary.find(
+                  (person) =>
+                    person.userId.toLowerCase() === normalizedMemberId,
+                )?.fullName ??
+                secondary.find(
+                  (person) =>
+                    person.userId.toLowerCase() === normalizedMemberId,
+                )?.fullName
+              );
+            })()
           : Promise.resolve(undefined),
       this.resolveHasActiveLeaders(actor, headers),
     ]);
@@ -7846,11 +7864,11 @@ export class WorkNotesService {
       (text(existingReport?.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER');
     this.assertCanAuthorScope(actor, resolvedScope);
     if (!existingReport) throw reportNotFound();
-    if (existingReport.contentSchemaVersion === 2)
+    const isFreeformInput = 'content' in input;
+    if (existingReport.contentSchemaVersion === 2 && !isFreeformInput)
       throw conflict(
         'NOTE_EDITOR_UPGRADE_REQUIRED: use the freeform editor to preserve canonical content.',
       );
-    const isFreeformInput = 'content' in input;
     const now = new Date();
     await this.transaction(async (db, session) => {
       const txReports = db.collection('work_reports');
@@ -7860,7 +7878,7 @@ export class WorkNotesService {
           organizationId: objectId(actor.organizationId),
           projectId: objectId(actor.projectId),
           memberUserId: objectId(actor.userId),
-          contentSchemaVersion: { $ne: 2 },
+          ...(isFreeformInput ? {} : { contentSchemaVersion: { $ne: 2 } }),
           status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
         },
         {
@@ -7868,12 +7886,19 @@ export class WorkNotesService {
             ? {
                 title: input.title,
                 contentMarkdown: input.content,
+                accomplishments: '',
+                approach: '',
+                reason: '',
+                blockers: '',
+                nextSteps: '',
                 ...(input.documentIds !== undefined
                   ? { documentIds: input.documentIds }
                   : {}),
                 updatedAt: now,
               }
             : {
+                title: '',
+                contentMarkdown: '',
                 accomplishments: input.accomplishments,
                 approach: input.approach,
                 reason: input.reason,
@@ -7884,6 +7909,9 @@ export class WorkNotesService {
                   : {}),
                 updatedAt: now,
               },
+          ...(isFreeformInput && existingReport.contentSchemaVersion === 2
+            ? { $inc: { currentVersionNumber: 1 } }
+            : {}),
         },
         { session },
       );
@@ -7897,7 +7925,7 @@ export class WorkNotesService {
           { session },
         );
         if (!exists) throw reportNotFound();
-        if (exists.contentSchemaVersion === 2)
+        if (exists.contentSchemaVersion === 2 && !isFreeformInput)
           throw conflict(
             'NOTE_EDITOR_UPGRADE_REQUIRED: use the freeform editor to preserve canonical content.',
           );
@@ -10520,6 +10548,7 @@ export class WorkNotesService {
               size: artifact.size,
             },
             'provenance.fileSha256': artifact.sha256,
+            'provenance.mdFileVersion': versionNumber,
           },
         },
       );
