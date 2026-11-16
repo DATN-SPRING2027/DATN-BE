@@ -18,6 +18,7 @@ import type {
   OrganizationProvisioningRepository,
   ProvisionedOrganization,
 } from '../../application/organizations/organization-provisioning.repository';
+import { PLATFORM_PERMISSIONS } from '../../application/authorization/authorization.policy';
 import { IAM_PERSISTENCE } from '../persistence';
 
 interface UserDocument {
@@ -96,6 +97,44 @@ export class MongoOrganizationProvisioningRepository implements OrganizationProv
             code: 'ORGANIZATION_ADMIN_UNAVAILABLE',
             message: 'The first Organization ADMIN is unavailable.',
           });
+        const isSelfService =
+          actorUserId.toLowerCase() === input.firstAdminUserId.toLowerCase();
+        const authorityModel = this.connection?.models[
+          modelName('platform_authority_assignments')
+        ] as Model<{ _id: Types.ObjectId }> | undefined;
+        if (!isSelfService && authorityModel) {
+          const now = new Date();
+          const targetHasPlatformAuthority = await authorityModel
+            .exists({
+              subjectUserId: firstAdmin._id,
+              permission: { $in: [...PLATFORM_PERMISSIONS] },
+              scope: 'PLATFORM',
+              status: 'ACTIVE',
+              grantedBy: { $ne: firstAdmin._id },
+              grantedAt: { $lte: now },
+              $and: [
+                {
+                  $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }],
+                },
+                {
+                  $or: [
+                    { expiresAt: null },
+                    { expiresAt: { $exists: false } },
+                    { expiresAt: { $gt: now } },
+                  ],
+                },
+              ],
+            })
+            .session(session)
+            .exec();
+          if (targetHasPlatformAuthority) {
+            throw new ConflictException({
+              code: 'PLATFORM_OPERATOR_CANNOT_BE_FIRST_ADMIN',
+              message:
+                'The Platform Operator cannot be the first Organization ADMIN.',
+            });
+          }
+        }
         if (!adminRole || adminRole.code !== 'ADMIN')
           throw new Error('Organization bootstrap requires the ADMIN Role');
 
@@ -158,8 +197,6 @@ export class MongoOrganizationProvisioningRepository implements OrganizationProv
           { session },
         );
 
-        const isSelfService =
-          actorUserId.toLowerCase() === input.firstAdminUserId.toLowerCase();
         await this.connection!.useDb(this.auditDatabaseName, { useCache: true })
           .collection(IAM_AUDIT_COLLECTION_NAME)
           .insertOne(

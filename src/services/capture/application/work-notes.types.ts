@@ -236,7 +236,7 @@ export interface ReviewInput {
   comment?: string;
 }
 
-export interface WorkReportInput {
+export interface WorkReportStructuredInput {
   accomplishments: string;
   approach: string;
   reason: string;
@@ -244,6 +244,15 @@ export interface WorkReportInput {
   nextSteps?: string;
   documentIds?: string[];
 }
+
+export interface WorkReportFreeformInput {
+  title: string;
+  content: string;
+  documentIds?: string[];
+}
+
+export type WorkReportInput =
+  WorkReportStructuredInput | WorkReportFreeformInput;
 
 export interface WorkNotesPagination {
   page: number;
@@ -471,8 +480,9 @@ export interface ProjectDocumentRecord extends ProjectDocumentSummaryRecord {
   activityHistory?: DocumentActivityEvent[];
 }
 
-export interface WorkReportRecord extends WorkReportInput {
+export interface WorkReportRecord extends WorkReportStructuredInput {
   title?: string;
+  content?: string;
   contentMarkdown?: string;
   contentSchemaVersion?: 2;
   currentVersionNumber?: number;

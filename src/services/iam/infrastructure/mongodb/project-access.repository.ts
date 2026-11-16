@@ -756,6 +756,15 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           'project.members.add',
           session,
         );
+        if (role === 'TEAM_LEADER') {
+          await this.authorizeMutation(
+            organizationId,
+            actorId,
+            projectId,
+            'project.leader.manage',
+            session,
+          );
+        }
         const target = await this.model<UserDocument>('users')
           .findOne({ _id: new Types.ObjectId(userId), status: 'ACTIVE' })
           .session(session)
@@ -896,6 +905,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
               message:
                 'The existing Project RoleAssignment is not a current MEMBER assignment.',
             });
+          let leaderAssignmentId: string | undefined;
           await this.model<RoleAssignmentDocument>(
             'role_assignments',
           ).updateOne(
@@ -909,8 +919,33 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
             },
             { session },
           );
+          if (role === 'TEAM_LEADER') {
+            leaderAssignmentId = String(existingAssignment._id);
+          }
+          await this.audit(session, {
+            organizationId,
+            projectId,
+            actorId,
+            action: 'PROJECT_MEMBER_ADDED',
+            targetResource: 'PROJECT_MEMBERSHIP',
+            targetResourceId: String(membership._id),
+          });
+          if (leaderAssignmentId) {
+            await this.audit(session, {
+              organizationId,
+              projectId,
+              actorId,
+              action: 'PROJECT_LEADER_ASSIGNED',
+              targetResource: 'ROLE_ASSIGNMENT',
+              targetResourceId: leaderAssignmentId,
+            });
+          }
+          result = this.membershipRecord(membership);
+          return;
         } else {
-          await this.model<RoleAssignmentDocument>('role_assignments').create(
+          const [createdAssignment] = await this.model<RoleAssignmentDocument>(
+            'role_assignments',
+          ).create(
             [
               {
                 organizationId: organization,
@@ -923,17 +958,27 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
             ],
             { session },
           );
+          await this.audit(session, {
+            organizationId,
+            projectId,
+            actorId,
+            action: 'PROJECT_MEMBER_ADDED',
+            targetResource: 'PROJECT_MEMBERSHIP',
+            targetResourceId: String(membership._id),
+          });
+          if (role === 'TEAM_LEADER' && createdAssignment?._id) {
+            await this.audit(session, {
+              organizationId,
+              projectId,
+              actorId,
+              action: 'PROJECT_LEADER_ASSIGNED',
+              targetResource: 'ROLE_ASSIGNMENT',
+              targetResourceId: String(createdAssignment._id),
+            });
+          }
+          result = this.membershipRecord(membership);
+          return;
         }
-
-        await this.audit(session, {
-          organizationId,
-          projectId,
-          actorId,
-          action: 'PROJECT_MEMBER_ADDED',
-          targetResource: 'PROJECT_MEMBERSHIP',
-          targetResourceId: String(membership._id),
-        });
-        result = this.membershipRecord(membership);
       });
       if (!result)
         throw new Error('Membership transaction did not create a record');

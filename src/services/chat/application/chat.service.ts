@@ -845,9 +845,15 @@ export class ChatApplicationService {
       }
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
-      throw new BadRequestException({
-        code: 'CHAT_UPLOAD_INCOMPLETE',
-        message: 'The file has not been uploaded or could not be verified.',
+      if (this.isMissingStoredObjectError(error)) {
+        throw new BadRequestException({
+          code: 'CHAT_UPLOAD_INCOMPLETE',
+          message: 'The file has not been uploaded or could not be verified.',
+        });
+      }
+      throw new ServiceUnavailableException({
+        code: 'CHAT_STORAGE_UNAVAILABLE',
+        message: 'File storage is unavailable.',
       });
     }
     const ready = await this.repository.completeUpload(
@@ -909,18 +915,40 @@ export class ChatApplicationService {
         ),
         expiresInSeconds: 300,
       };
-      await this.redis.set(
-        cacheKey,
-        JSON.stringify({ url: result.url, expiresAt: Date.now() + 300000 }),
-        60,
-      );
+      if (!result.url.startsWith('data:')) {
+        await this.redis.set(
+          cacheKey,
+          JSON.stringify({ url: result.url, expiresAt: Date.now() + 300000 }),
+          60,
+        );
+      }
       return result;
-    } catch {
+    } catch (error) {
+      if (this.isMissingStoredObjectError(error)) {
+        throw new NotFoundException({
+          code: 'CHAT_ATTACHMENT_NOT_FOUND',
+          message: 'Attachment not found.',
+        });
+      }
       throw new ServiceUnavailableException({
         code: 'CHAT_STORAGE_UNAVAILABLE',
         message: 'File storage is unavailable.',
       });
     }
+  }
+
+  private isMissingStoredObjectError(error: unknown): boolean {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    const name = (error as { name?: string } | undefined)?.name;
+    const statusCode = (
+      error as { $metadata?: { httpStatusCode?: number } } | undefined
+    )?.$metadata?.httpStatusCode;
+    return (
+      code === 'ENOENT' ||
+      statusCode === 404 ||
+      name === 'NotFound' ||
+      name === 'NoSuchKey'
+    );
   }
 
   async sendMessage(

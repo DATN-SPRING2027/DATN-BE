@@ -727,6 +727,18 @@ export class HandoverCaptureSourceService {
         : 'period';
     const title = typeof report.title === 'string' ? report.title.trim() : '';
     source.title = (title || `Work Report (${period})`).slice(0, 255);
+    if (
+      typeof report.contentMarkdown === 'string' &&
+      report.contentMarkdown.trim().length > 0
+    ) {
+      source.excerpts = this.chunkTextToExcerpts(
+        'SECTION',
+        'report-body',
+        source.title,
+        report.contentMarkdown.trim(),
+      );
+      return source;
+    }
     for (const [key, heading] of [
       ['accomplishments', 'Accomplishments'],
       ['approach', 'Approach'],
@@ -743,17 +755,6 @@ export class HandoverCaptureSourceService {
           content: content.slice(0, 15000),
         });
       }
-    }
-    if (
-      source.excerpts.length === 0 &&
-      typeof report.contentMarkdown === 'string'
-    ) {
-      source.excerpts = this.chunkTextToExcerpts(
-        'SECTION',
-        'report-body',
-        source.title,
-        report.contentMarkdown.trim(),
-      );
     }
     return source;
   }

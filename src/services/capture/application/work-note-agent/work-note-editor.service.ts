@@ -74,24 +74,26 @@ const invalid = () =>
 const reportBody = (r: Document) =>
   r.contentSchemaVersion === 2
     ? String(r.contentMarkdown ?? '')
-    : [
-          ['Accomplishments', r.accomplishments],
-          ['Approach', r.approach],
-          ['Reason', r.reason],
-          ['Blockers', r.blockers],
-          ['Next steps', r.nextSteps],
-        ].some(([, v]) => typeof v === 'string' && v.trim())
-      ? [
-          ['Accomplishments', r.accomplishments],
-          ['Approach', r.approach],
-          ['Reason', r.reason],
-          ['Blockers', r.blockers],
-          ['Next steps', r.nextSteps],
-        ]
-          .filter(([, v]) => typeof v === 'string' && v.length)
-          .map(([k, v]) => `## ${k}\n${v}`)
-          .join('\n\n')
-      : '';
+    : typeof r.contentMarkdown === 'string' && r.contentMarkdown.trim()
+      ? r.contentMarkdown
+      : [
+            ['Accomplishments', r.accomplishments],
+            ['Approach', r.approach],
+            ['Reason', r.reason],
+            ['Blockers', r.blockers],
+            ['Next steps', r.nextSteps],
+          ].some(([, v]) => typeof v === 'string' && v.trim())
+        ? [
+            ['Accomplishments', r.accomplishments],
+            ['Approach', r.approach],
+            ['Reason', r.reason],
+            ['Blockers', r.blockers],
+            ['Next steps', r.nextSteps],
+          ]
+            .filter(([, v]) => typeof v === 'string' && v.length)
+            .map(([k, v]) => `## ${k}\n${v}`)
+            .join('\n\n')
+        : '';
 const documentTypes = [
   'MVP',
   'DATABASE_DESIGN',

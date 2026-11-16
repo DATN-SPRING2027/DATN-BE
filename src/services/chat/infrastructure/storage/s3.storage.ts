@@ -54,6 +54,7 @@ export class S3Storage implements ChatObjectStorage {
   private readonly localRoot: string;
   private readonly forceLocal: boolean;
   private readonly localDisabled: boolean;
+  private readonly cloudFallbackEnabled: boolean;
   private clientInstance?: S3Client;
 
   constructor(config: ConfigService) {
@@ -70,6 +71,10 @@ export class S3Storage implements ChatObjectStorage {
     this.forceLocal = true;
     this.localDisabled =
       String(config.get<string>('LOCAL_STORAGE_DISABLED') ?? '')
+        .trim()
+        .toLowerCase() === 'true';
+    this.cloudFallbackEnabled =
+      String(config.get<string>('CHAT_STORAGE_CLOUD_FALLBACK_ENABLED') ?? '')
         .trim()
         .toLowerCase() === 'true';
   }
@@ -150,6 +155,35 @@ export class S3Storage implements ChatObjectStorage {
     );
   }
 
+  private hasCloudCredentials(): boolean {
+    return Boolean(this.region && this.bucket);
+  }
+
+  private async createCloudDownloadUrl(
+    key: string,
+    expiresInSeconds: number,
+    response?: {
+      contentType: string;
+      contentDisposition: 'inline' | 'attachment';
+      filename: string;
+    },
+  ): Promise<string> {
+    return getSignedUrl(
+      this.client(),
+      new GetObjectCommand({
+        Bucket: this.bucketName(),
+        Key: key,
+        ...(response
+          ? {
+              ResponseContentType: response.contentType,
+              ResponseContentDisposition: `${response.contentDisposition}; filename*=UTF-8''${encodeURIComponent(response.filename)}`,
+            }
+          : {}),
+      }),
+      { expiresIn: expiresInSeconds },
+    );
+  }
+
   async createDownloadUrl(
     key: string,
     expiresInSeconds = 900,
@@ -160,28 +194,52 @@ export class S3Storage implements ChatObjectStorage {
     },
   ): Promise<string> {
     if (!this.useLocal()) {
-      return getSignedUrl(
-        this.client(),
-        new GetObjectCommand({
-          Bucket: this.bucketName(),
-          Key: key,
-          ...(response
-            ? {
-                ResponseContentType: response.contentType,
-                ResponseContentDisposition: `${response.contentDisposition}; filename*=UTF-8''${encodeURIComponent(response.filename)}`,
-              }
-            : {}),
-        }),
-        { expiresIn: expiresInSeconds },
-      );
+      return this.createCloudDownloadUrl(key, expiresInSeconds, response);
     }
 
     const path = this.localPath(key);
-    const bytes = await readFile(path);
-    const meta = await this.headObject(key);
-    const mime =
-      response?.contentType || meta.contentType || 'application/octet-stream';
-    return `data:${mime};base64,${bytes.toString('base64')}`;
+    try {
+      const bytes = await readFile(path);
+      const meta = await this.headObject(key);
+      const mime =
+        response?.contentType || meta.contentType || 'application/octet-stream';
+      return `data:${mime};base64,${bytes.toString('base64')}`;
+    } catch (localError) {
+      const isMissingLocal =
+        (localError as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+      if (
+        !isMissingLocal ||
+        !this.cloudFallbackEnabled ||
+        !this.hasCloudCredentials()
+      ) {
+        throw localError;
+      }
+      try {
+        await this.client().send(
+          new HeadObjectCommand({ Bucket: this.bucketName(), Key: key }),
+        );
+        return await this.createCloudDownloadUrl(
+          key,
+          expiresInSeconds,
+          response,
+        );
+      } catch (cloudError) {
+        const statusCode = (
+          cloudError as { $metadata?: { httpStatusCode?: number } } | undefined
+        )?.$metadata?.httpStatusCode;
+        const errName = (cloudError as { name?: string } | undefined)?.name;
+        if (
+          statusCode === 404 ||
+          statusCode === 403 ||
+          errName === 'NotFound' ||
+          errName === 'NoSuchKey' ||
+          errName === 'AccessDenied'
+        ) {
+          throw localError;
+        }
+        throw cloudError;
+      }
+    }
   }
 
   async headObject(key: string): Promise<StoredObjectMetadata> {
@@ -216,6 +274,11 @@ export class S3Storage implements ChatObjectStorage {
     const path = this.localPath(key);
     await rm(path, { force: true });
     await rm(`${path}.meta.json`, { force: true }).catch(() => undefined);
+    if (this.cloudFallbackEnabled && this.hasCloudCredentials()) {
+      await this.client()
+        .send(new DeleteObjectCommand({ Bucket: this.bucketName(), Key: key }))
+        .catch(() => undefined);
+    }
   }
 
   private client(): S3Client {

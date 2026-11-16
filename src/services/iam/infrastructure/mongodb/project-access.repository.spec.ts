@@ -392,3 +392,222 @@ describe('MongoProjectAccessRepository deleteProject', () => {
     );
   });
 });
+
+describe('MongoProjectAccessRepository addMember with TEAM_LEADER role', () => {
+  it('enforces project.leader.manage (denying TEAM_LEADER actors) and records PROJECT_LEADER_ASSIGNED audit for Organization ADMIN', async () => {
+    const organizationId = new Types.ObjectId();
+    const projectId = new Types.ObjectId();
+    const adminId = new Types.ObjectId();
+    const leaderId = new Types.ObjectId();
+    const candidateId = new Types.ObjectId();
+    const adminRoleId = new Types.ObjectId();
+    const leaderRoleId = new Types.ObjectId();
+    const orgMembershipId = new Types.ObjectId();
+    const leaderMembershipId = new Types.ObjectId();
+    const createdMembershipId = new Types.ObjectId();
+    const createdAssignmentId = new Types.ObjectId();
+    const adminAssignmentId = new Types.ObjectId();
+    const leaderAssignmentId = new Types.ObjectId();
+
+    const session = {
+      withTransaction: jest.fn(async (fn: () => Promise<void>) => fn()),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const insertOne = jest.fn().mockResolvedValue({ acknowledged: true });
+    const projects = {
+      findOne: jest.fn().mockImplementation(() =>
+        query({
+          _id: projectId,
+          organizationId,
+          status: 'ACTIVE',
+          visibility: 'PRIVATE',
+        }),
+      ),
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const users = {
+      findById: jest
+        .fn()
+        .mockImplementation((id: Types.ObjectId) =>
+          query({ _id: id, status: 'ACTIVE' }),
+        ),
+      findOne: jest
+        .fn()
+        .mockImplementation(({ _id }: { _id: Types.ObjectId }) =>
+          query({
+            _id,
+            email: 'candidate@example.test',
+            fullName: 'Candidate User',
+            status: 'ACTIVE',
+          }),
+        ),
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const organizationMemberships = {
+      findOne: jest
+        .fn()
+        .mockImplementation(({ userId }: { userId: Types.ObjectId }) =>
+          query({
+            _id: orgMembershipId,
+            organizationId,
+            userId,
+            status: 'ACTIVE',
+          }),
+        ),
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const projectMemberships = {
+      findOne: jest
+        .fn()
+        .mockImplementation(({ userId }: { userId: Types.ObjectId }) =>
+          userId.equals(leaderId)
+            ? query({
+                _id: leaderMembershipId,
+                organizationId,
+                projectId,
+                userId,
+                status: 'ACTIVE',
+              })
+            : query(null),
+        ),
+      create: jest.fn().mockResolvedValue([
+        {
+          toObject: () => ({
+            _id: createdMembershipId,
+            organizationId,
+            projectId,
+            userId: candidateId,
+            status: 'ACTIVE',
+            joinedAt: new Date('2026-11-15T00:00:00.000Z'),
+          }),
+        },
+      ]),
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const assignments = {
+      find: jest
+        .fn()
+        .mockImplementation(({ userId }: { userId: Types.ObjectId }) =>
+          userId.equals(adminId)
+            ? query([
+                {
+                  _id: adminAssignmentId,
+                  organizationId,
+                  projectId: null,
+                  userId: adminId,
+                  roleId: adminRoleId,
+                  roleCode: 'ADMIN',
+                },
+              ])
+            : query([
+                {
+                  _id: leaderAssignmentId,
+                  organizationId,
+                  projectId,
+                  userId: leaderId,
+                  roleId: leaderRoleId,
+                  roleCode: 'TEAM_LEADER',
+                },
+              ]),
+        ),
+      findOne: jest.fn().mockReturnValue(query(null)),
+      create: jest.fn().mockResolvedValue([{ _id: createdAssignmentId }]),
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+    const leaderPermissions = [
+      'project.read',
+      'project.members.list',
+      'project.members.add',
+      'project.members.remove',
+      'project.update',
+      'project.visibility.manage',
+    ];
+    const roles = {
+      find: jest.fn().mockImplementation(() =>
+        query([
+          {
+            _id: adminRoleId,
+            code: 'ADMIN',
+            permissions: ['project.members.add', 'project.leader.manage'],
+          },
+          {
+            _id: leaderRoleId,
+            code: 'TEAM_LEADER',
+            permissions: leaderPermissions,
+          },
+        ]),
+      ),
+      findOne: jest.fn().mockImplementation(({ code }: { code: string }) =>
+        code === 'TEAM_LEADER'
+          ? query({
+              _id: leaderRoleId,
+              code: 'TEAM_LEADER',
+              permissions: leaderPermissions,
+            })
+          : query(null),
+      ),
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    };
+
+    const connection = {
+      startSession: jest.fn().mockResolvedValue(session),
+      useDb: jest.fn().mockReturnValue({
+        collection: jest.fn().mockReturnValue({ insertOne }),
+      }),
+      models: {
+        continuum_iam_projects: projects,
+        continuum_iam_users: users,
+        continuum_iam_organization_memberships: organizationMemberships,
+        continuum_iam_project_memberships: projectMemberships,
+        continuum_iam_role_assignments: assignments,
+        continuum_iam_roles: roles,
+      },
+    } as unknown as Connection;
+
+    const repo = new MongoProjectAccessRepository(connection);
+
+    // 1. Existing TEAM_LEADER has project.members.add, NOT project.leader.manage -> rejected with 403
+    await expect(
+      repo.addMember(
+        organizationId.toHexString(),
+        leaderId.toHexString(),
+        projectId.toHexString(),
+        candidateId.toHexString(),
+        'TEAM_LEADER',
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(projectMemberships.create).not.toHaveBeenCalled();
+
+    // 2. Organization ADMIN succeeds and emits both PROJECT_MEMBER_ADDED and PROJECT_LEADER_ASSIGNED
+    await expect(
+      repo.addMember(
+        organizationId.toHexString(),
+        adminId.toHexString(),
+        projectId.toHexString(),
+        candidateId.toHexString(),
+        'TEAM_LEADER',
+      ),
+    ).resolves.toMatchObject({
+      projectId: projectId.toHexString(),
+      userId: candidateId.toHexString(),
+      status: 'ACTIVE',
+    });
+
+    expect(insertOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'PROJECT_MEMBER_ADDED',
+        targetResource: 'PROJECT_MEMBERSHIP',
+        targetResourceId: createdMembershipId.toHexString(),
+      }),
+      { session },
+    );
+    expect(insertOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'PROJECT_LEADER_ASSIGNED',
+        targetResource: 'ROLE_ASSIGNMENT',
+        targetResourceId: createdAssignmentId.toHexString(),
+      }),
+      { session },
+    );
+  });
+});

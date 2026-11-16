@@ -81,6 +81,8 @@ export interface EnvironmentVariables {
   WORKNOTE_HISTORY_STALE_DAYS?: number;
   WORKNOTE_HISTORY_RELATED_ENABLED?: boolean;
   WORKNOTE_HISTORY_MAX_RELATED_NOTES?: number;
+  IAM_DEV_SYNTHETIC_INVITATION_READINESS?: boolean;
+  CHAT_STORAGE_CLOUD_FALLBACK_ENABLED?: boolean;
   [key: string]: unknown;
 }
 
@@ -101,6 +103,12 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   ORGANIZATION_INVITATION_A7_LEGACY_RIGHTS_EVIDENCE_SHA256:
     invitationEvidenceSchema,
   ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256: invitationEvidenceSchema,
+  IAM_DEV_SYNTHETIC_INVITATION_READINESS: Joi.boolean().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.invalid(true).default(false),
+    otherwise: Joi.boolean().optional(),
+  }),
+  CHAT_STORAGE_CLOUD_FALLBACK_ENABLED: Joi.boolean().default(false),
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
   GOOGLE_CALLBACK_URL: Joi.string()
