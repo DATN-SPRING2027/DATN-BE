@@ -161,6 +161,15 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       ],
     },
     {
+      name: 'sag_operator_grants',
+      indexes: [
+        index(
+          { subjectUserId: 1, permission: 1, instance: 1, environment: 1 },
+          { unique: true },
+        ),
+      ],
+    },
+    {
       name: 'platform_authority_assignments',
       indexes: [
         index({ subjectUserId: 1, permission: 1, scope: 1 }, { unique: true }),

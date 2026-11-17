@@ -1,4 +1,5 @@
 import { Schema } from 'mongoose';
+import { SAG_PERMISSIONS } from '../../application/platform/sag-operator';
 import type { ServiceCollectionDefinition } from './mongodb.types';
 import {
   membershipInvitationSchema,
@@ -337,6 +338,20 @@ const iamSchemas: Record<string, Schema> = {
       timestamps: true,
       strict: true,
     },
+  ),
+  sag_operator_grants: new Schema(
+    {
+      subjectUserId: { type: Schema.Types.ObjectId, required: true },
+      permission: { type: String, required: true, enum: SAG_PERMISSIONS },
+      instance: { type: String, required: true },
+      environment: { type: String, required: true },
+      grantedBy: { type: Schema.Types.ObjectId, required: true },
+      grantedAt: { type: Date, required: true },
+      status: { type: String, enum: ['ACTIVE', 'REVOKED'], required: true },
+      expiresAt: Date,
+      revokedAt: Date,
+    },
+    { timestamps: true, strict: true },
   ),
   platform_authority_assignments: new Schema(
     {

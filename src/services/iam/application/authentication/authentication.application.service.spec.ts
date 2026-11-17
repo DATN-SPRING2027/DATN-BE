@@ -57,6 +57,7 @@ describe('AuthenticationApplicationService', () => {
   };
   let authorizationEvidence: {
     loadPlatformPermission: jest.Mock;
+    activeSagGrant: jest.Mock;
   };
   let authorizationPolicy: AuthorizationPolicy;
   let service: AuthenticationApplicationService;
@@ -132,6 +133,7 @@ describe('AuthenticationApplicationService', () => {
       revokeToken: jest.fn().mockResolvedValue(undefined),
     };
     authorizationEvidence = {
+      activeSagGrant: jest.fn().mockResolvedValue(null),
       loadPlatformPermission: jest.fn().mockResolvedValue({ assignments: [] }),
     };
     authorizationPolicy = new AuthorizationPolicy();
@@ -983,6 +985,39 @@ describe('AuthenticationApplicationService', () => {
         undefined,
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('requires a deployment grant even for org admins and rechecks the original session for secrets', async () => {
+    const scope = { instance: 'sag-01', environment: 'stage' };
+    const token = 'Bearer any.valid-token';
+    const permission = 'sag.dsh.credential.rotate';
+    await expect(
+      service.authorizeSagOperation(token, permission, scope),
+    ).rejects.toThrow();
+    authorizationEvidence.activeSagGrant.mockResolvedValue({ expiresAt: null });
+    const session = await service.authorizeSagOperation(
+      token,
+      permission,
+      scope,
+    );
+    expect(authorizationEvidence.activeSagGrant).toHaveBeenCalledWith(
+      USER_ID,
+      permission,
+      scope,
+      expect.any(Date),
+    );
+    await expect(
+      service.recheckSagOperation(session, permission, scope),
+    ).resolves.toBeUndefined();
+    repository.hasActiveRefreshSession.mockResolvedValue(false);
+    await expect(
+      service.recheckSagOperation(session, permission, scope),
+    ).rejects.toThrow();
+    repository.hasActiveRefreshSession.mockResolvedValue(true);
+    authorizationEvidence.activeSagGrant.mockResolvedValue(null);
+    await expect(
+      service.recheckSagOperation(session, permission, scope),
+    ).rejects.toThrow();
   });
 
   it('authenticates a Human User for platform APIs without requiring Organization membership', async () => {

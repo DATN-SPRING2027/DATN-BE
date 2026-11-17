@@ -906,6 +906,74 @@ export class AuthenticationApplicationService {
    * Permission and lifecycle evidence is evaluated separately by the platform
    * authorization guard on every request.
    */
+  async authorizeSagOperation(
+    authorization: string,
+    permission: string,
+    scope: { instance: string; environment: string },
+  ) {
+    const { claims } = await this.getVerifiedActiveSubject(
+      authorization,
+      undefined,
+    );
+    // A valid Continuum session identifies the actor. Only the deployment grant authorizes the operation.
+    if (!claims.sid) throw unauthorized();
+    const grant = await this.authorizationEvidence.activeSagGrant?.(
+      claims.sub,
+      permission,
+      scope,
+      new Date(),
+    );
+    if (!grant) throw new ForbiddenException();
+    const accessHash = createHash('sha256')
+      .update(extractAccessToken(authorization, undefined)!)
+      .digest('hex');
+    return {
+      sub: claims.sub,
+      sid: claims.sid,
+      userFence: claims.userFence ?? 0,
+      accessHash,
+      exp: Math.min(
+        claims.exp,
+        grant.expiresAt
+          ? Math.floor(grant.expiresAt.getTime() / 1000)
+          : Infinity,
+      ),
+    };
+  }
+
+  async recheckSagOperation(
+    claims: {
+      sub?: string;
+      sid?: string;
+      accessHash?: string;
+      userFence?: number;
+    },
+    permission: string,
+    scope: { instance: string; environment: string },
+  ) {
+    if (!claims.sub || !claims.sid || !claims.accessHash) throw unauthorized();
+    const now = new Date();
+    const [revoked, user, active, grant] = await Promise.all([
+      this.securityStore.isTokenRevoked(claims.accessHash),
+      this.repository.findProfileById(claims.sub),
+      this.repository.hasActiveRefreshSession(claims.sub, claims.sid, now),
+      this.authorizationEvidence.activeSagGrant?.(
+        claims.sub,
+        permission,
+        scope,
+        now,
+      ),
+    ]);
+    if (
+      revoked ||
+      user?.status !== 'ACTIVE' ||
+      (user.mutationFence ?? 0) !== claims.userFence ||
+      !active ||
+      !grant
+    )
+      throw new ForbiddenException();
+  }
+
   async getCurrentPlatformSubject(
     authorization: string | undefined,
     cookieHeader: string | undefined,
