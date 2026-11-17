@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "surfaces": {
-    "task-note-assessment/2026-11-05.v34": "e64a8833d52c3b9d2e6011e2bbccec9383ac855eea56bd7d69a95707e5713b48",
+    "task-note-assessment/2026-11-16.v36": "ccb17d8f09c3f0033910995163286ba7d11638f6d1032b366fca50090c5faee5",
     "task-note-interpreter/2026-10-29.v1": "5cee7e45ecfa0a939d7a5dd9f072d194252b17f880e99d0f6120265a555c88a0",
-    "task-note-assessor/2026-11-05.v7": "f57c715810ba3241c9f0935768ffa8e53bddafbc404131015fea13400063d0fb",
-    "task-note-assessment-split/2026-11-05.v7": "9307250b63d505ebcdfd7364ea93cb49d1d38c7fdc07adc3f5d700d318cb653c",
+    "task-note-assessor/2026-11-16.v8": "27f58f135c7acad53d1379c73c138d9d062a137df68d81de394ff08445494379",
+    "task-note-assessment-split/2026-11-16.v8": "19173ee1bc9da98955f0e8768661b6d8b5d8401f31abbbeb5991ecc57dc7e822",
     "worknote-rewrite/2026-10-27.v0.3.2#grammar": "ca6df830dc86407a71ababcb21320841bd8670c77268072f17859dcca3bfbd4f",
     "worknote-rewrite/2026-10-27.v0.3.2#clarify": "50f4cb7db54cadfc225f8589ed3207b8b0456ebe4f826e6b56c66475aac267f3",
     "worknote-rewrite/2026-10-27.v0.3.2#shorten": "cdc34339a1557490dc18bfc0851c75fa6e119952f043b7ed9062aa9ac2c71e93",

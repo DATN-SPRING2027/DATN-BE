@@ -22,7 +22,7 @@ import {
   type SourceRef,
 } from './work-note-assessment.types';
 
-export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-11-05.v34';
+export const ASSESSMENT_PROMPT_VERSION = 'task-note-assessment/2026-11-16.v36';
 export const assessmentHash = (v: unknown): string =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const invalid = (message = 'Assessment output is invalid.') => {

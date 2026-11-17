@@ -146,7 +146,7 @@ COVERAGE: Chỉ báo cáo hiện tại từ note/answer mới có thể hỗ tr�
 HISTORY: history chỉ là ngữ cảnh quá khứ, không là yêu cầu hoặc bằng chứng hoàn tất hiện tại. PARENT/CHILD/LINKED và OUTDATED/SUPERSEDED không tạo BLOCKING của Task này. Chỉ SELF với factStatus CONFLICT_* và mâu thuẫn hiện tại cùng target chưa được giải thích mới tạo HISTORICAL_CONFLICT/history.conflict, NEEDS_AUTHOR_INPUT, trích cả history và note/answer hiện có để hỏi làm rõ. Claim lịch sử nếu có phải là HISTORICAL_REPORT; không bịa historical finding/sourceId. Không đặt CONTRADICTORY chỉ vì một báo cáo lịch sử cần làm rõ.
 ADEQUACY: Kiểm tra từng mục REQUIRED của purpose bằng nội dung note và answers hiện tại. Một thông tin đã có không phải gap; không chép lại chính thông tin đó rồi hỏi chi tiết hơn. Không tự lấy lý do trong Task làm lý do của tác giả. Nếu đủ mọi thông tin bắt buộc và không có mâu thuẫn thì ENOUGH_FOR_PURPOSE, gaps=[], nextQuestion=null. Nếu thiếu một thông tin bắt buộc thì NEEDS_AUTHOR_INPUT, tạo đúng gap BLOCKING thuộc ALLOWED BLOCKING NEEDS. Thiếu thông tin ngoài rubric chỉ ảnh hưởng coverage, không được BLOCKING.
 QUESTIONS: Ở lượt đầu answers=[] và NEEDS_AUTHOR_INPUT, nextQuestion phải là object trỏ tới gap BLOCKING cần hỏi. Sau một câu trả lời unknown/skipped/chưa làm hoặc mayAskAgain=false, không hỏi lại đúng need/target đó; nếu thông tin đó vẫn bắt buộc cho purpose hiện tại thì BẮT BUỘC giữ noteAdequacy=NEEDS_AUTHOR_INPUT (TUYỆT ĐỐI không đổi sang ENOUGH_FOR_PURPOSE khi tác giả bấm skip/unknown) và đặt nextQuestion=null. Một nhu cầu khác bắt buộc, chưa hỏi, vẫn có thể được hỏi. Câu hỏi chỉ hỏi thông tin còn thiếu; OPTIONAL không sinh câu hỏi.
-FINAL JSON: đúng 8 root keys, không thêm id/state/hash/verificationStatus. scope là string; requirements và unknowns là sibling của scope. gap đủ kind, needCode, target, impact, owner, sourceRefs; gapIndex là integer trỏ gap BLOCKING. ENOUGH_FOR_PURPOSE không có BLOCKING hoặc nextQuestion. CONTRADICTORY không có nextQuestion. Kiểm tra lại mọi quote-sourceId và text-quote trước khi xuất.`;
+FINAL JSON: đúng 8 root keys, không thêm id/state/hash/verificationStatus. scope là string; requirements và unknowns là sibling của scope. gap đủ kind, needCode, target, impact, owner, sourceRefs; gapIndex là integer trỏ gap BLOCKING. ENOUGH_FOR_PURPOSE không có BLOCKING hoặc nextQuestion. CONTRADICTORY không có nextQuestion. Với Task có danh sách đánh số, trích từng tiêu chí từ task.description: chọn đoạn liên tục, rồi sao chép CÙNG MỘT CHUỖI vào requirement.text và sourceRefs[0].quote; không diễn giải lại, không đổi từ, không gộp với câu mục tiêu. Có thể bỏ số thứ tự chỉ khi bỏ ở CẢ text và quote. Kiểm tra lại mọi quote-sourceId và text-quote trước khi xuất.`;
 
 export function assessmentPurposePolicy(purpose: AssessmentPurpose) {
   const rule = purpose === 'AUTO' ? null : PURPOSE_RUBRIC_TABLE[purpose];
@@ -245,6 +245,7 @@ function multiStepExample(params: {
   purpose: Exclude<AssessmentPurpose, 'AUTO'>;
   title: string;
   description: string;
+  descriptionRequirements?: string[];
   steps?: string[];
   status?: 'IN_PROGRESS' | 'TODO' | 'DONE';
   note: string;
@@ -275,7 +276,9 @@ function multiStepExample(params: {
     }));
   const reqSources = [
     ...(params.description
-      ? [{ sourceId: 'task.description', text: params.description }]
+      ? (params.descriptionRequirements ?? [params.description]).map(
+          (text) => ({ sourceId: 'task.description', text }),
+        )
       : []),
     ...steps.map((s, i) => ({ sourceId: `task.step.${i}`, text: s })),
   ];
@@ -364,6 +367,21 @@ const qaMissingObservedResult = multiStepExample({
     text: 'Khi chạy thử lọc mã phiếu có dấu gạch ngang trên local, bạn quan sát thấy kết quả hiển thị ra sao?',
     owner: 'NOTE_AUTHOR',
   },
+});
+
+const progressBlockedNoEtaEnough = multiStepExample({
+  purpose: 'PROGRESS',
+  title: 'Retry queue thanh toán',
+  description:
+    'Mục tiêu: xử lý lỗi tạm thời khi worker gọi dịch vụ thanh toán.\nTiêu chí hoàn thành:\n1. Chỉ retry lỗi timeout và HTTP 503, tối đa 3 lần với backoff tăng dần.\n2. Không retry lỗi HTTP 4xx.\n3. Có integration test kiểm tra các trường hợp trên.',
+  descriptionRequirements: [
+    'Chỉ retry lỗi timeout và HTTP 503, tối đa 3 lần với backoff tăng dần.',
+    'Không retry lỗi HTTP 4xx.',
+    'Có integration test kiểm tra các trường hợp trên.',
+  ],
+  note: 'Đã triển khai retry timeout và HTTP 503 tối đa 3 lần với backoff tăng dần. HTTP 4xx không retry. Unit test đã pass. Integration test chưa chạy vì test broker chưa sẵn sàng; hiện chưa có ETA.',
+  adequacy: 'ENOUGH_FOR_PURPOSE',
+  coverages: ['SUPPORTED', 'SUPPORTED', 'NOT_REPORTED'],
 });
 
 const progressMultiStepEnough = multiStepExample({
@@ -971,6 +989,7 @@ const incidentResolvedEnough = multiStepExample({
 });
 
 export const ASSESSMENT_EXAMPLES = [
+  progressBlockedNoEtaEnough,
   incidentResolvedEnough,
   progressStatusPlaceholderVague,
   handoffBlockedEnough,
@@ -1017,7 +1036,7 @@ export function selectAssessmentExamples(input: AssessmentModelInput) {
   switch (input.purpose) {
     case 'PROGRESS':
       return [
-        progressMultiStepEnough,
+        progressBlockedNoEtaEnough,
         progressBlockedEnough,
         progressVague,
         progressStatusPlaceholderVague,
