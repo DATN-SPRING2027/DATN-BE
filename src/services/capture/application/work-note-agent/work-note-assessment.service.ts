@@ -3,6 +3,7 @@ import {
   ConflictException,
   HttpException,
   Injectable,
+  Logger,
   Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
@@ -16,6 +17,7 @@ import {
   type DraftRow,
 } from './work-note-agent-drafts.service';
 import { WorkNoteAgentModel } from '../../infrastructure/ai/work-note-agent.model';
+import { XkiroError } from '../../infrastructure/ai/work-note-xkiro.client';
 import { WorkNotesAuthorizationService } from '../work-notes-authorization.service';
 import { WorkNotesService } from '../work-notes.service';
 import { RedisService } from '../../infrastructure/redis/redis.service';
@@ -565,10 +567,35 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         return v;
       });
     } catch (e) {
+      const failureReason =
+        e instanceof XkiroError
+          ? `PROVIDER_${e.code}`
+          : e instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(e.message)
+            ? e.message
+            : e instanceof ConflictException
+              ? 'ASSESSMENT_STALE'
+              : 'ASSESSMENT_OUTPUT_REJECTED';
+      new Logger(WorkNoteAssessmentService.name).warn(
+        JSON.stringify({
+          event: 'worknote.assessment.failed',
+          operationId: input.operationId,
+          kind,
+          failureReason,
+        }),
+      );
       await this.operations().updateOne(
         { _id: this.opId(actor, input.operationId), status: 'PENDING' },
-        { $set: { status: 'FAILED', failureCode: 'ASSESSMENT_FAILED' } },
+        {
+          $set: {
+            status: 'FAILED',
+            failureCode: 'ASSESSMENT_FAILED',
+          },
+        },
       );
+      const restoreWaitingReply =
+        kind === 'reply' &&
+        !(e instanceof ConflictException) &&
+        d.state.assessment?.state === 'waiting_for_answer';
       await this.drafts().updateOne(
         {
           _id: id,
@@ -578,9 +605,21 @@ export class WorkNoteAssessmentService extends WorkNoteAgentDraftsService {
         },
         {
           $set: {
-            'state.assessment.state':
-              e instanceof ConflictException ? 'stale' : 'error',
-            'state.assessment.allowedActions': ['reset', 'feedback', 'manual'],
+            ...(restoreWaitingReply
+              ? {
+                  'state.assessment': d.state.assessment,
+                  'state.pendingQuestion': d.state.pendingQuestion ?? null,
+                }
+              : {
+                  'state.assessment.state':
+                    e instanceof ConflictException ? 'stale' : 'error',
+                  'state.assessment.allowedActions': [
+                    'reset',
+                    'feedback',
+                    'manual',
+                  ],
+                }),
+            updatedAt: new Date(),
           },
           $unset: { inferenceOperationId: '', inferenceLeaseUntil: '' },
         },

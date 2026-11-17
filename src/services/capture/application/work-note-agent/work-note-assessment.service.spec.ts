@@ -312,6 +312,71 @@ describe('Persisted Task assessment scope and lifecycle', () => {
       d.contentMarkdown,
     );
   });
+  it('keeps a pending reply available after provider failure so the author can retry with a new operation ID', async () => {
+    const d = await draft();
+    model.assess.mockImplementationOnce(async (i: AssessmentModelInput) => ({
+      result: {
+        ...result(i),
+        noteAdequacy: 'NEEDS_AUTHOR_INPUT',
+        gaps: [
+          {
+            kind: 'SCOPE',
+            target: 'test broker ETA',
+            impact: 'BLOCKING',
+            owner: 'NOTE_AUTHOR',
+            sourceRefs: [{ sourceId: 'note.body', quote: d.contentMarkdown }],
+          },
+        ],
+        nextQuestion: {
+          gapIndex: 0,
+          text: 'When will the test broker be available?',
+          reason: 'The broker is not ready.',
+          options: [],
+        },
+      },
+      provenance: { httpAttempts: 1 },
+    }));
+    const assessment = await service.assess(headers, projectId, d.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      purpose: 'PROGRESS',
+    });
+    expect(assessment.state).toBe('waiting_for_answer');
+    const question = assessment.nextQuestion!;
+    model.assess.mockRejectedValueOnce(Error('provider unavailable'));
+    await expect(
+      service.reply(headers, projectId, d.id, assessment.id, {
+        ...op(),
+        expectedRevision: d.revision,
+        expectedAssessmentRevision: assessment.revision,
+        gapId: question.gapId,
+        questionId: question.id,
+        disposition: 'answered',
+        answer: 'Chưa có ETA vì chưa biết khi nào test broker sẵn sàng.',
+      }),
+    ).rejects.toMatchObject({ status: 502 });
+
+    const afterFailure = (await service.get(headers, projectId, d.id))
+      .assessment!;
+    expect(afterFailure.state).toBe('waiting_for_answer');
+    expect(afterFailure.nextQuestion).toEqual(question);
+    expect(afterFailure.allowedActions).toContain('reply');
+
+    const retry = await service.reply(headers, projectId, d.id, assessment.id, {
+      ...op(),
+      expectedRevision: d.revision,
+      expectedAssessmentRevision: assessment.revision,
+      gapId: question.gapId,
+      questionId: question.id,
+      disposition: 'answered',
+      answer: 'Chưa có ETA vì chưa biết khi nào test broker sẵn sàng.',
+    });
+    expect(retry.answers.at(-1)).toMatchObject({
+      disposition: 'answered',
+      answer: 'Chưa có ETA vì chưa biết khi nào test broker sẵn sàng.',
+    });
+    expect(model.assess).toHaveBeenCalledTimes(3);
+  });
   it('preserves concurrent feedback when an inference completes after its lease expires', async () => {
     const d = await draft();
     let finish!: () => void;

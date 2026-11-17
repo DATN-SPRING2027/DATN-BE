@@ -114,6 +114,22 @@ describe('Split Task Interpreter + Assessor / Questioner architecture', () => {
     }
   });
 
+  it('includes a progress example with a known blocker and no ETA without making Task completion sufficient', () => {
+    const ex = ASSESSMENT_EXAMPLES.find(
+      (example) =>
+        example.input.purpose === 'PROGRESS' &&
+        example.input.sources.some(
+          (source) =>
+            source.id === 'note.body' && source.text.includes('chưa có ETA'),
+        ),
+    );
+    expect(ex).toBeDefined();
+    expect(ex!.output.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(ex!.output.gaps).toEqual([]);
+    expect(ex!.output.nextQuestion).toBeNull();
+    expect(ex!.output.coverage.at(-1)?.status).toBe('NOT_REPORTED');
+  });
+
   it('prevents Assessor from overriding Task Understanding and recovers missing options only when enabled', () => {
     const ex = structuredClone(
       ASSESSMENT_EXAMPLES.find((e) => e.output.nextQuestion !== null)!,

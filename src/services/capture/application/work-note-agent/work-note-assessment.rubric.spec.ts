@@ -30,6 +30,12 @@ describe('WorkNote assessment purpose rubric & gap taxonomy (Plan v3 §§1, 3, 5
     }
   });
 
+  it('does not require an ETA for a progress blocker unless the Task or purpose asks for it', () => {
+    expect(
+      PURPOSE_RUBRIC_TABLE.PROGRESS.forbiddenExtraDemands.join(' '),
+    ).toContain('ETA');
+  });
+
   it('classifies actor/role permission gaps consistently regardless of gap kind or phrasing', () => {
     const variants = [
       {

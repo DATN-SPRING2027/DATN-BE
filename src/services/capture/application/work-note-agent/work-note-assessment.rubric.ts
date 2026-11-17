@@ -69,6 +69,7 @@ export const PURPOSE_RUBRIC_TABLE: Record<
       'Không đòi đã hoàn thành kiểm thử cho phần chưa kiểm thử.',
       'Không đòi hoàn thành các bước checklist còn lại của toàn Task.',
       'Không đòi tài liệu vận hành hoặc nghiệm thu cuối.',
+      'Không đòi ETA, người phụ trách khắc phục hoặc kế hoạch xử lý blocker nếu Task hay mục đích ghi chú không yêu cầu.',
     ],
     requireWholeTaskCoverage: false,
     allowedBlockingNeeds: [
@@ -79,9 +80,9 @@ export const PURPOSE_RUBRIC_TABLE: Record<
     contrastiveExamples: {
       sufficient: {
         task: 'Thêm retry upload từng phần; checklist: retry file lỗi và giữ nguyên file đã lên.',
-        note: 'Đã thêm nút retry cho từng file lỗi; chưa kiểm thử khi mất mạng giữa chừng.',
+        note: 'Đã thêm nút retry cho từng file lỗi; chưa kiểm thử khi mất mạng vì môi trường test đang chờ broker và chưa có ETA.',
         reason:
-          'Nêu rõ phần đã làm và giới hạn kiểm thử; tiêu chí chưa test chỉ làm Task chưa hoàn tất, không làm thiếu note Progress.',
+          'Nêu rõ phần đã làm, lý do đang chờ và giới hạn kiểm thử; không cần ETA để ghi nhận tiến độ, còn tiêu chí chưa test chỉ làm Task chưa hoàn tất.',
       },
       insufficient: {
         task: 'Cập nhật bảng danh sách công việc theo múi giờ người dùng.',

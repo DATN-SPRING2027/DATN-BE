@@ -64,6 +64,34 @@ const output = (): AssessmentModelOutput => ({
   nextQuestion: null,
 });
 describe('Task assessment sourced protocol', () => {
+  it('demonstrates literal extraction of separate criteria from one numbered Task description', () => {
+    const example = ASSESSMENT_EXAMPLES.find((e) =>
+      e.input.sources.some(
+        (s) => s.id === 'note.body' && s.text.includes('hiện chưa có ETA'),
+      ),
+    )!;
+    const description = example.input.sources.find(
+      (s) => s.id === 'task.description',
+    )!.text;
+    expect(description).toContain('1.');
+    expect(description).toContain('3.');
+    expect(example.output.taskUnderstanding.requirements).toHaveLength(3);
+    for (const requirement of example.output.taskUnderstanding.requirements) {
+      expect(requirement.sourceRefs).toEqual([
+        { sourceId: 'task.description', quote: requirement.text },
+      ]);
+      expect(description).toContain(requirement.text);
+    }
+    expect(example.output.coverage.map((c) => c.status)).toEqual([
+      'SUPPORTED',
+      'SUPPORTED',
+      'NOT_REPORTED',
+    ]);
+    expect(example.output.noteAdequacy).toBe('ENOUGH_FOR_PURPOSE');
+    expect(() =>
+      parseAssessmentOutput(example.input, JSON.stringify(example.output)),
+    ).not.toThrow();
+  });
   it('separates editing permission from adequacy for the same unfinished Task', () => {
     const partial = output();
     partial.coverage[0].status = 'PARTIAL';
