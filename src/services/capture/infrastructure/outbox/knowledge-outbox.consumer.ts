@@ -15,7 +15,10 @@ import {
   buildWorkReportMarkdownArtifact,
 } from '../../application/markdown-artifact.builder';
 import { CAPTURE_PERSISTENCE } from '../persistence';
-import { ProjectDocumentStorage } from '../storage/project-document.storage';
+import {
+  isDocumentStorageKeyInScope,
+  ProjectDocumentStorage,
+} from '../storage/project-document.storage';
 
 export const SAG_KNOWLEDGE_SYNC_TRANSPORT = Symbol(
   'SAG_KNOWLEDGE_SYNC_TRANSPORT',
@@ -1169,6 +1172,17 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
             });
             return 'PUBLISHED';
           }
+        }
+
+        if (
+          targetVersionDoc.file?.key &&
+          !isDocumentStorageKeyInScope(
+            targetVersionDoc.file.key,
+            organizationId,
+            projectId,
+          )
+        ) {
+          throw new Error('DOCUMENT_STORAGE_SCOPE_MISMATCH');
         }
 
         const actorUserId = String(

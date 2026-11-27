@@ -258,9 +258,10 @@ export class HandoverLifecycleSourceService {
         (smeIdLower !== '' && smeIdLower === actorIdLower) ||
         explicitAcl.has(actorIdLower);
       canRead = explicitlyAuthorized && teamSatisfied;
+    } else if (ko.confidentiality === 'TEAM') {
+      canRead = Types.ObjectId.isValid(teamIdHex) && hasTeamAccess;
     } else if (
       ko.confidentiality === 'PROJECT' ||
-      ko.confidentiality === 'TEAM' ||
       ko.confidentiality === 'INTERNAL' ||
       ko.confidentiality === 'PUBLIC'
     ) {

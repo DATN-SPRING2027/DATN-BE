@@ -41,7 +41,7 @@ spec:
             - name: TASK_SERVICE_URL
               value: http://{{ include "continuum-ai.fullname" . }}-iam:3001
             - name: AI_ENGINE_SERVICE_URL
-              value: http://{{ include "continuum-ai.fullname" . }}-iam:3001
+              value: http://{{ include "continuum-ai.fullname" . }}-handover:3006
             - name: CAPTURE_SERVICE_URL
               value: http://{{ include "continuum-ai.fullname" . }}-capture:3002
             - name: CHAT_SERVICE_URL

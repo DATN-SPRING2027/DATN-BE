@@ -58,7 +58,7 @@ describe('Project Document local storage', () => {
     }
   });
 
-  it('defaults to ../.data/continuum-vault, enables R2 when configured without local override, and respects STORAGE_FORCE_LOCAL=true with lazy migration', async () => {
+  it('defaults to ../.data/continuum-vault, requires explicit R2 opt-in, and respects STORAGE_FORCE_LOCAL=true with lazy migration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'continuum-vault-override-'));
     try {
       const defaultStorage = new ProjectDocumentStorage(
@@ -68,9 +68,14 @@ describe('Project Document local storage', () => {
       expect(defaultStorage.getLocalRoot()).toBe(
         resolve(process.cwd(), '..', '.data', 'continuum-vault'),
       );
-      // BE-DATA-002: R2 is env-driven — enabled automatically when R2 credentials exist
-      // and neither STORAGE_FORCE_LOCAL=true nor STORAGE_MODE=local is set.
-      expect(defaultStorage.isDirectCloudEnabled()).toBe(true);
+      expect(defaultStorage.isDirectCloudEnabled()).toBe(false);
+      const cloudStorage = new ProjectDocumentStorage(
+        { isConfigured: () => true } as unknown as R2Storage,
+        {
+          get: (key: string) => (key === 'STORAGE_MODE' ? 'r2' : undefined),
+        } as unknown as ConfigService,
+      );
+      expect(cloudStorage.isDirectCloudEnabled()).toBe(true);
 
       const unconfiguredFallback = new ProjectDocumentStorage(
         { isConfigured: () => false } as unknown as R2Storage,

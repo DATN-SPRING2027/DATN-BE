@@ -681,11 +681,11 @@ describe('Capture Audit Remediation Regressions', () => {
       );
     });
 
-    it('ProjectDocumentStorage respects STORAGE_MODE=local and enables R2 when configured without local override (BE-DATA-002)', () => {
+    it('ProjectDocumentStorage enables R2 only in explicit cloud mode (BE-DATA-002)', () => {
       const r2Stub = { isConfigured: () => true } as unknown as R2Storage;
       const cloudStorage = new ProjectDocumentStorage(
         r2Stub,
-        new ConfigService({}),
+        new ConfigService({ STORAGE_MODE: 'r2' }),
       );
       expect(cloudStorage.isDirectCloudEnabled()).toBe(true);
 

@@ -40,7 +40,10 @@ import {
   QUEUE_NAMES,
   type CaptureQueuePublisher,
 } from '../infrastructure/queues/queue.names';
-import { ProjectDocumentStorage } from '../infrastructure/storage/project-document.storage';
+import {
+  isDocumentStorageKeyInScope,
+  ProjectDocumentStorage,
+} from '../infrastructure/storage/project-document.storage';
 import { NotificationService } from '../../notification/notification.service';
 import {
   assertReviewerCanReview,
@@ -4009,7 +4012,14 @@ export class WorkNotesService {
       });
     const file = version?.file as
       { key?: string; name?: string; contentType?: string } | undefined;
-    if (!file?.key || !file.name || !file.contentType) throw documentNotFound();
+    if (
+      !file?.key ||
+      !file.name ||
+      !file.contentType ||
+      !isDocumentStorageKeyInScope(file.key, actor.organizationId, projectId)
+    ) {
+      throw documentNotFound();
+    }
     if (!this.documentStorage) {
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
@@ -4018,7 +4028,8 @@ export class WorkNotesService {
     if (
       typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
       this.documentStorage.isDirectCloudEnabled() &&
-      typeof this.documentStorage.createDirectDownloadUrl === 'function'
+      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
+      !(await this.documentStorage.hasLocalFile(file.key))
     ) {
       const expiresInSeconds = Math.max(
         30,
@@ -4085,7 +4096,14 @@ export class WorkNotesService {
       });
     const file = version?.file as
       { key?: string; name?: string; contentType?: string } | undefined;
-    if (!file?.key || !file.name || !file.contentType) throw documentNotFound();
+    if (
+      !file?.key ||
+      !file.name ||
+      !file.contentType ||
+      !isDocumentStorageKeyInScope(file.key, actor.organizationId, projectId)
+    ) {
+      throw documentNotFound();
+    }
     if (!this.documentStorage)
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
@@ -5059,6 +5077,15 @@ export class WorkNotesService {
     let fileName: string;
     let contentType: string;
     if (fileMeta?.key && fileMeta.name && fileMeta.contentType) {
+      if (
+        !isDocumentStorageKeyInScope(
+          fileMeta.key,
+          actor.organizationId,
+          projectId,
+        )
+      ) {
+        throw documentNotFound();
+      }
       if (!this.documentStorage) {
         throw new ServiceUnavailableException(
           'Project Document storage is unavailable.',

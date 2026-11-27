@@ -32,6 +32,18 @@ export interface StoredDocumentPrefixInspection {
   prefix: Buffer;
 }
 
+export function isDocumentStorageKeyInScope(
+  key: string,
+  organizationId: string,
+  projectId: string,
+): boolean {
+  const [, keyOrganizationId, keyProjectId] = key.toLowerCase().split('/');
+  return (
+    keyOrganizationId === organizationId.toLowerCase() &&
+    keyProjectId === projectId.toLowerCase()
+  );
+}
+
 @Injectable()
 export class ProjectDocumentStorage {
   private readonly localRoot: string;
@@ -46,10 +58,7 @@ export class ProjectDocumentStorage {
       config.get<string>('WORK_NOTE_LOCAL_STORAGE_DIR') ||
       config.get<string>('LOCAL_STORAGE_DIR');
     this.localRoot = resolve(configuredDir || resolveDefaultVaultRoot());
-    // BE-DATA-002: Env-driven storage driver selection. Uses R2/S3 automatically
-    // when R2 credentials are configured unless explicitly opted into local mode
-    // via STORAGE_FORCE_LOCAL=true or STORAGE_MODE=local (falls back cleanly to
-    // Local Vault when R2 credentials are absent for local dev).
+    // Keep Vault deployments on local storage until an explicit R2 cutover.
     const storageMode = String(config.get<string>('STORAGE_MODE') ?? '')
       .trim()
       .toLowerCase();
@@ -58,7 +67,7 @@ export class ProjectDocumentStorage {
     )
       .trim()
       .toLowerCase();
-    this.forceLocal = forceLocalEnv === 'true' || storageMode === 'local';
+    this.forceLocal = forceLocalEnv === 'true' || storageMode !== 'r2';
     this.localDisabled =
       String(config.get<string>('LOCAL_STORAGE_DISABLED') ?? '')
         .trim()
@@ -148,9 +157,21 @@ export class ProjectDocumentStorage {
     ).catch(() => undefined);
   }
 
+  async hasLocalFile(key: string): Promise<boolean> {
+    if (this.localDisabled) return false;
+    try {
+      return (await stat(this.localPath(key))).isFile();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
   async get(key: string): Promise<Buffer> {
     this.validateKey(key);
-    if (!this.useLocal()) return this.r2.getObject(key);
+    if (!this.useLocal() && !(await this.hasLocalFile(key))) {
+      return this.r2.getObject(key);
+    }
     const path = this.localPath(key);
     try {
       return await readFile(path);
@@ -177,7 +198,7 @@ export class ProjectDocumentStorage {
 
   async getStream(key: string): Promise<Readable> {
     this.validateKey(key);
-    if (!this.useLocal()) {
+    if (!this.useLocal() && !(await this.hasLocalFile(key))) {
       if (typeof this.r2.getObjectStream === 'function') {
         return this.r2.getObjectStream(key);
       }
