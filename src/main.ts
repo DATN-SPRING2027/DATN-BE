@@ -2,7 +2,7 @@ import 'dotenv/config';
 import './common/observability/register-otel';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
-import { configureApplication } from './bootstrap';
+import { configureApplication, resolveCorsAllowedOrigins } from './bootstrap';
 import { ConfigService } from '@nestjs/config';
 import { monolithIamServiceUrl } from './monolith-configuration';
 
@@ -22,6 +22,11 @@ async function bootstrap() {
       .split(',')
       .map((cidr) => cidr.trim())
       .filter(Boolean),
+    resolveCorsAllowedOrigins({
+      corsAllowedOrigins: config.get<string>('CORS_ALLOWED_ORIGINS'),
+      continuumWebBaseUrl: config.get<string>('CONTINUUM_WEB_BASE_URL'),
+      webAppUrl: config.get<string>('WEB_APP_URL'),
+    }),
   );
 
   const port = process.env.PORT || 3001;

@@ -1377,4 +1377,399 @@ export class AiChatService {
       throw error;
     }
   }
+
+  async searchKnowledge(
+    headers: AiChatRequestHeaders,
+    input: Readonly<{
+      projectId: string;
+      query: string;
+      topK?: number;
+      retrievalMode?: string;
+      sourceIds?: string[];
+    }>,
+  ): Promise<{
+    query: string;
+    summary: string;
+    answerStatus: string;
+    noAnswerReason: string | null;
+    degraded: boolean;
+    degradedReason: string | null;
+    sections: Array<{
+      chunkId: string | null;
+      searchUnitId: string | null;
+      documentId: string | null;
+      documentVersionId: string | null;
+      documentName: string | null;
+      versionNo: number | null;
+      sectionPath: string | null;
+      pageFrom: number | null;
+      pageTo: number | null;
+      heading: string;
+      content: string;
+      score: number;
+      rank: number;
+      sourceId: string | null;
+      sourceName: string | null;
+    }>;
+    citations: Array<{
+      n: number;
+      documentId: string;
+      documentVersionId: string;
+      documentName: string;
+      versionNo: number | null;
+      chunkId: string;
+      sectionPath: string | null;
+      pageFrom: number;
+      pageTo: number;
+      heading: string;
+      snippet: string;
+      score: number;
+      sourceId: string;
+      sourceName: string | null;
+    }>;
+  }> {
+    const trimmedQuery =
+      typeof input.query === 'string' ? input.query.trim() : '';
+    if (!trimmedQuery || trimmedQuery.length > 4000) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'query must be between 1 and 4000 characters.',
+      });
+    }
+
+    let topK: number | undefined;
+    if (input.topK !== undefined) {
+      if (
+        typeof input.topK !== 'number' ||
+        !Number.isSafeInteger(input.topK) ||
+        input.topK < 1 ||
+        input.topK > 50
+      ) {
+        throw new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          message: 'topK must be an integer between 1 and 50.',
+        });
+      }
+      topK = input.topK;
+    }
+
+    const allowedModes = new Set([
+      'EXACT',
+      'LOCAL_FACTUAL',
+      'ENTITY_RELATIONAL',
+      'TEMPORAL',
+      'GLOBAL_TOPIC',
+      'MULTI_HOP',
+    ]);
+    let retrievalMode: string | undefined;
+    if (input.retrievalMode !== undefined) {
+      if (
+        typeof input.retrievalMode !== 'string' ||
+        !allowedModes.has(input.retrievalMode)
+      ) {
+        throw new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          message:
+            'retrievalMode must be one of EXACT, LOCAL_FACTUAL, ENTITY_RELATIONAL, TEMPORAL, GLOBAL_TOPIC, MULTI_HOP.',
+        });
+      }
+      retrievalMode = input.retrievalMode;
+    }
+
+    let sourceIds: string[] | undefined;
+    if (input.sourceIds !== undefined) {
+      if (
+        !Array.isArray(input.sourceIds) ||
+        input.sourceIds.length > 100 ||
+        input.sourceIds.some(
+          (id) =>
+            typeof id !== 'string' ||
+            id.trim().length < 1 ||
+            id.trim().length > 128,
+        )
+      ) {
+        throw new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          message:
+            'sourceIds must be an array of at most 100 source identifiers.',
+        });
+      }
+      const cleaned = input.sourceIds.map((id) => id.trim());
+      if (cleaned.length > 0) {
+        sourceIds = [...new Set(cleaned)];
+      }
+    }
+
+    const { bearerHeaders, cacheKey } = await this.resolveSagSession(
+      headers,
+      input.projectId,
+    );
+
+    let result: { status: number; body: Record<string, unknown> };
+    try {
+      result = await this.aiEngine.request<Record<string, unknown>>({
+        path: '/api/v1/search',
+        method: 'POST',
+        headers: bearerHeaders,
+        body: {
+          query: trimmedQuery,
+          ...(topK !== undefined ? { top_k: topK } : {}),
+          ...(retrievalMode !== undefined
+            ? { retrieval_mode: retrievalMode }
+            : {}),
+          ...(sourceIds !== undefined ? { source_ids: sourceIds } : {}),
+          save_exploration: false,
+        },
+      });
+    } catch (error) {
+      this.sessionCache.delete(cacheKey);
+      throw error;
+    }
+
+    const payload =
+      result.body && typeof result.body === 'object' ? result.body : null;
+    if (!payload || !Array.isArray(payload.sections)) {
+      throw new BadGatewayException(
+        'AI Engine returned an invalid search payload.',
+      );
+    }
+
+    const sections = payload.sections.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+      const row = raw as Record<string, unknown>;
+      return [
+        {
+          chunkId: typeof row.chunk_id === 'string' ? row.chunk_id : null,
+          searchUnitId:
+            typeof row.search_unit_id === 'string' ? row.search_unit_id : null,
+          documentId:
+            typeof row.document_id === 'string' ? row.document_id : null,
+          documentVersionId:
+            typeof row.document_version_id === 'string'
+              ? row.document_version_id
+              : null,
+          documentName:
+            typeof row.document_name === 'string' ? row.document_name : null,
+          versionNo:
+            typeof row.version_no === 'number' &&
+            Number.isFinite(row.version_no)
+              ? row.version_no
+              : null,
+          sectionPath:
+            typeof row.section_path === 'string' ? row.section_path : null,
+          pageFrom:
+            typeof row.page_from === 'number' && Number.isFinite(row.page_from)
+              ? row.page_from
+              : null,
+          pageTo:
+            typeof row.page_to === 'number' && Number.isFinite(row.page_to)
+              ? row.page_to
+              : null,
+          heading: typeof row.heading === 'string' ? row.heading : '',
+          content: typeof row.content === 'string' ? row.content : '',
+          score:
+            typeof row.score === 'number' && Number.isFinite(row.score)
+              ? row.score
+              : 0,
+          rank:
+            typeof row.rank === 'number' && Number.isFinite(row.rank)
+              ? row.rank
+              : 0,
+          sourceId: typeof row.source_id === 'string' ? row.source_id : null,
+          sourceName:
+            typeof row.source_name === 'string' ? row.source_name : null,
+        },
+      ];
+    });
+
+    const rawCitations = Array.isArray(payload.citations)
+      ? payload.citations
+      : [];
+    const citations = rawCitations.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+      const row = raw as Record<string, unknown>;
+      return [
+        {
+          n: typeof row.n === 'number' && Number.isFinite(row.n) ? row.n : 0,
+          documentId:
+            typeof row.document_id === 'string' ? row.document_id : '',
+          documentVersionId:
+            typeof row.document_version_id === 'string'
+              ? row.document_version_id
+              : '',
+          documentName:
+            typeof row.document_name === 'string' ? row.document_name : '',
+          versionNo:
+            typeof row.version_no === 'number' &&
+            Number.isFinite(row.version_no)
+              ? row.version_no
+              : null,
+          chunkId: typeof row.chunk_id === 'string' ? row.chunk_id : '',
+          sectionPath:
+            typeof row.section_path === 'string' ? row.section_path : null,
+          pageFrom:
+            typeof row.page_from === 'number' && Number.isFinite(row.page_from)
+              ? row.page_from
+              : 1,
+          pageTo:
+            typeof row.page_to === 'number' && Number.isFinite(row.page_to)
+              ? row.page_to
+              : 1,
+          heading: typeof row.heading === 'string' ? row.heading : '',
+          snippet: typeof row.snippet === 'string' ? row.snippet : '',
+          score:
+            typeof row.score === 'number' && Number.isFinite(row.score)
+              ? row.score
+              : 0,
+          sourceId: typeof row.source_id === 'string' ? row.source_id : '',
+          sourceName:
+            typeof row.source_name === 'string' ? row.source_name : null,
+        },
+      ];
+    });
+
+    return {
+      query: typeof payload.query === 'string' ? payload.query : trimmedQuery,
+      summary: typeof payload.summary === 'string' ? payload.summary : '',
+      answerStatus:
+        typeof payload.answer_status === 'string'
+          ? payload.answer_status
+          : 'skipped',
+      noAnswerReason:
+        typeof payload.no_answer_reason === 'string'
+          ? payload.no_answer_reason
+          : null,
+      degraded: Boolean(payload.degraded),
+      degradedReason:
+        typeof payload.degraded_reason === 'string'
+          ? payload.degraded_reason
+          : null,
+      sections,
+      citations,
+    };
+  }
+
+  async askKnowledgeQuestion(
+    headers: AiChatRequestHeaders,
+    input: Readonly<{
+      projectId: string;
+      query: string;
+      threadId?: string;
+      persistThread?: boolean;
+    }>,
+    signal?: AbortSignal,
+  ): Promise<{
+    threadId: string;
+    threadPersisted: boolean;
+    messageId: string | null;
+    answer: string;
+    answerStatus: string | null;
+    citations: unknown[];
+    retrievalSteps: unknown[];
+  }> {
+    const trimmedQuery =
+      typeof input.query === 'string' ? input.query.trim() : '';
+    if (!trimmedQuery || trimmedQuery.length > 4000) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'query must be between 1 and 4000 characters.',
+      });
+    }
+
+    const createdEphemeralThread = input.threadId === undefined;
+    let resolvedThreadId: string | undefined;
+    if (!createdEphemeralThread) {
+      const candidate =
+        typeof input.threadId === 'string' ? input.threadId.trim() : '';
+      if (!SAFE_ID_PATTERN.test(candidate)) {
+        throw new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          message: 'threadId is invalid.',
+        });
+      }
+      resolvedThreadId = candidate;
+    }
+
+    let askSucceeded = false;
+
+    try {
+      if (createdEphemeralThread) {
+        const created = await this.createThread(headers, input.projectId, {
+          title: trimmedQuery.slice(0, 80),
+        });
+        resolvedThreadId = created.id;
+      }
+      const threadId = resolvedThreadId!;
+
+      const stream = await this.openAskStream(
+        headers,
+        input.projectId,
+        threadId,
+        { query: trimmedQuery },
+        signal,
+      );
+
+      let streamedText = '';
+      let completedAnswer = '';
+      let messageId: string | null = null;
+      let answerStatus: string | null = null;
+      let citations: unknown[] = [];
+      let retrievalSteps: unknown[] = [];
+
+      for await (const frame of stream) {
+        if (frame.event === 'delta' && typeof frame.data.text === 'string') {
+          streamedText += frame.data.text;
+        } else if (frame.event === 'completed') {
+          if (typeof frame.data.content === 'string') {
+            completedAnswer = frame.data.content;
+          }
+          if (typeof frame.data.messageId === 'string') {
+            messageId = frame.data.messageId;
+          }
+          if (typeof frame.data.answerStatus === 'string') {
+            answerStatus = frame.data.answerStatus;
+          }
+          if (Array.isArray(frame.data.citations)) {
+            citations = frame.data.citations;
+          }
+          if (Array.isArray(frame.data.retrievalSteps)) {
+            retrievalSteps = frame.data.retrievalSteps;
+          }
+        } else if (frame.event === 'failed') {
+          throw new BadGatewayException({
+            code:
+              typeof frame.data.code === 'string'
+                ? frame.data.code
+                : 'AI_ASK_FAILED',
+            message:
+              typeof frame.data.message === 'string'
+                ? frame.data.message
+                : 'AI knowledge question failed.',
+          });
+        }
+      }
+
+      askSucceeded = true;
+
+      return {
+        threadId,
+        threadPersisted:
+          !createdEphemeralThread || input.persistThread === true,
+        messageId,
+        answer: completedAnswer || streamedText,
+        answerStatus,
+        citations,
+        retrievalSteps,
+      };
+    } finally {
+      const shouldKeepNewThread = input.persistThread === true && askSucceeded;
+      if (createdEphemeralThread && resolvedThreadId && !shouldKeepNewThread) {
+        await this.deleteThread(
+          headers,
+          input.projectId,
+          resolvedThreadId,
+        ).catch(() => undefined);
+      }
+    }
+  }
 }

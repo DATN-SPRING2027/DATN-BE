@@ -1,4 +1,9 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import type { AuthenticatedIdentity } from '../authentication/authentication.application.service';
 import { NotificationService } from '../../../notification/notification.service';
 import {
@@ -17,11 +22,28 @@ export class ProjectAccessService {
     private readonly notificationService?: NotificationService,
   ) {}
 
+  private assertMcpProjectAllowed(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+  ): void {
+    const allowed = actor.mcpGrant?.allowedProjectIds;
+    if (
+      Array.isArray(allowed) &&
+      !allowed.some((id) => id.toLowerCase() === projectId.trim().toLowerCase())
+    ) {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
+  }
+
   updateSettings(
     actor: AuthenticatedIdentity,
     projectId: string,
     input: ProjectSettingsUpdateInput,
   ) {
+    this.assertMcpProjectAllowed(actor, projectId);
     return this.repository.updateSettings(
       actor.organizationId,
       actor.id,
@@ -31,6 +53,7 @@ export class ProjectAccessService {
   }
 
   deleteProject(actor: AuthenticatedIdentity, projectId: string) {
+    this.assertMcpProjectAllowed(actor, projectId);
     return this.repository.deleteProject(
       actor.organizationId,
       actor.id,
@@ -43,6 +66,7 @@ export class ProjectAccessService {
     projectId: string,
     visibility: 'PRIVATE' | 'PUBLIC',
   ) {
+    this.assertMcpProjectAllowed(actor, projectId);
     return this.repository.changeVisibility(
       actor.organizationId,
       actor.id,
@@ -56,6 +80,7 @@ export class ProjectAccessService {
     projectId: string,
     query: ProjectMembershipListQuery,
   ) {
+    this.assertMcpProjectAllowed(actor, projectId);
     const result = await this.repository.listMembers(
       actor.organizationId,
       projectId,
@@ -77,6 +102,7 @@ export class ProjectAccessService {
     projectId: string,
     search?: string,
   ) {
+    this.assertMcpProjectAllowed(actor, projectId);
     const searchTerm = search?.trim();
     const candidates = await this.repository.listMemberCandidates(
       actor.organizationId,
@@ -87,6 +113,7 @@ export class ProjectAccessService {
   }
 
   async listLeaders(actor: AuthenticatedIdentity, projectId: string) {
+    this.assertMcpProjectAllowed(actor, projectId);
     const leaders = await this.repository.listLeaders(
       actor.organizationId,
       projectId,
@@ -99,6 +126,7 @@ export class ProjectAccessService {
     projectId: string,
     search?: string,
   ) {
+    this.assertMcpProjectAllowed(actor, projectId);
     const candidates = await this.repository.listLeaderCandidates(
       actor.organizationId,
       projectId,

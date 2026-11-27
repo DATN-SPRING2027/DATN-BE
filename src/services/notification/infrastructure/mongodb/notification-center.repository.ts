@@ -436,6 +436,14 @@ export class NotificationCenterRepository {
     const scopedOrgId = this.normalizeOrganizationId(
       organizationId ?? query.organizationId,
     );
+    const allowedProjectSet =
+      query.allowedProjectIds != null && Array.isArray(query.allowedProjectIds)
+        ? new Set(
+            (query.allowedProjectIds as readonly string[]).map((id: string) =>
+              id.trim().toLowerCase(),
+            ),
+          )
+        : null;
     const limit = Math.min(Math.max(Number(query.limit) || 20, 1), 100);
     const parsedCursor = this.parseCursor(query.cursor);
     const model = this.notificationsModel();
@@ -447,7 +455,10 @@ export class NotificationCenterRepository {
             (doc.recipientId === recipientId ||
               doc.recipientUserId === recipientId) &&
             this.matchesOrganization(doc, scopedOrgId) &&
-            (!allowedTypes || allowedTypes.includes(doc.type)),
+            (!allowedTypes || allowedTypes.includes(doc.type)) &&
+            (!allowedProjectSet ||
+              (typeof doc.projectId === 'string' &&
+                allowedProjectSet.has(doc.projectId.toLowerCase()))),
         )
         .sort(
           (a, b) =>
@@ -493,10 +504,18 @@ export class NotificationCenterRepository {
       baseFilter,
       allowedTypes,
     );
-    const filter: Record<string, unknown> = parsedCursor
+    const projectFilteredBase: Record<string, unknown> = allowedProjectSet
       ? {
           $and: [
             typeFilteredBase,
+            { projectId: { $in: [...allowedProjectSet] } },
+          ],
+        }
+      : typeFilteredBase;
+    const filter: Record<string, unknown> = parsedCursor
+      ? {
+          $and: [
+            projectFilteredBase,
             {
               $or: [
                 { createdAt: { $lt: parsedCursor.createdAt } },
@@ -508,7 +527,22 @@ export class NotificationCenterRepository {
             },
           ],
         }
-      : typeFilteredBase;
+      : projectFilteredBase;
+
+    const unreadCountFilter: Record<string, unknown> = allowedProjectSet
+      ? {
+          $and: [
+            this.filterByNotificationTypes(
+              this.unreadMatchFilter(recipientId, scopedOrgId),
+              allowedTypes,
+            ),
+            { projectId: { $in: [...allowedProjectSet] } },
+          ],
+        }
+      : this.filterByNotificationTypes(
+          this.unreadMatchFilter(recipientId, scopedOrgId),
+          allowedTypes,
+        );
 
     const [rows, unreadCount] = await Promise.all([
       model
@@ -517,14 +551,7 @@ export class NotificationCenterRepository {
         .limit(limit + 1)
         .lean()
         .exec(),
-      model
-        .countDocuments(
-          this.filterByNotificationTypes(
-            this.unreadMatchFilter(recipientId, scopedOrgId),
-            allowedTypes,
-          ),
-        )
-        .exec(),
+      model.countDocuments(unreadCountFilter).exec(),
     ]);
 
     const hasMore = rows.length > limit;
@@ -547,8 +574,17 @@ export class NotificationCenterRepository {
   async countUnread(
     recipientId: string,
     organizationId?: string | null,
+    allowedProjectIds?: readonly string[] | null,
   ): Promise<number> {
     const scopedOrgId = this.normalizeOrganizationId(organizationId);
+    const allowedProjectSet =
+      allowedProjectIds != null && Array.isArray(allowedProjectIds)
+        ? new Set(
+            (allowedProjectIds as readonly string[]).map((id: string) =>
+              id.trim().toLowerCase(),
+            ),
+          )
+        : null;
     const model = this.notificationsModel();
     if (!model) {
       return [...this.memoryStore.values()].filter(
@@ -556,13 +592,18 @@ export class NotificationCenterRepository {
           (doc.recipientId === recipientId ||
             doc.recipientUserId === recipientId) &&
           this.matchesOrganization(doc, scopedOrgId) &&
+          (!allowedProjectSet ||
+            (typeof doc.projectId === 'string' &&
+              allowedProjectSet.has(doc.projectId.toLowerCase()))) &&
           !doc.readAt &&
           !doc.isRead,
       ).length;
     }
-    return model
-      .countDocuments(this.unreadMatchFilter(recipientId, scopedOrgId))
-      .exec();
+    const baseFilter = this.unreadMatchFilter(recipientId, scopedOrgId);
+    const filter = allowedProjectSet
+      ? { $and: [baseFilter, { projectId: { $in: [...allowedProjectSet] } }] }
+      : baseFilter;
+    return model.countDocuments(filter).exec();
   }
 
   async markRead(

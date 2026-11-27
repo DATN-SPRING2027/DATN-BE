@@ -286,6 +286,19 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       name: 'knowledge_owner_assignments',
       indexes: [index({ knowledgeObjectId: 1, effectiveTo: 1 })],
     },
+    {
+      name: 'mcp_api_keys',
+      indexes: [
+        index(
+          { keyHash: 1 },
+          { unique: true, name: 'mcp_api_key_hash_unique' },
+        ),
+        index(
+          { organizationId: 1, userId: 1, createdAt: -1, _id: -1 },
+          { name: 'mcp_api_key_owner_list' },
+        ),
+      ],
+    },
   ],
 };
 
