@@ -98,7 +98,7 @@ services:
         GATEWAY_PORT: 3000
         IAM_SERVICE_URL: http://iam:3001
         TASK_SERVICE_URL: http://iam:3001
-        AI_ENGINE_SERVICE_URL: http://iam:3001
+        AI_ENGINE_SERVICE_URL: http://handover:3006
         CAPTURE_SERVICE_URL: http://capture:3002
         JIRA_SERVICE_URL: http://jira:3003
         LIFECYCLE_SERVICE_URL: http://lifecycle:3004
