@@ -259,6 +259,8 @@ export class HandoverLifecycleSourceService {
         explicitAcl.has(actorIdLower);
       canRead = explicitlyAuthorized && teamSatisfied;
     } else if (
+      ko.confidentiality === 'PROJECT' ||
+      ko.confidentiality === 'TEAM' ||
       ko.confidentiality === 'INTERNAL' ||
       ko.confidentiality === 'PUBLIC'
     ) {
