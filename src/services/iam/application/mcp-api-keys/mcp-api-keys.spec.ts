@@ -133,7 +133,7 @@ describe('MCP API Keys & Scoped Authentication (Packet A)', () => {
       ],
       mcpEndpointPath: '/api/v1/mcp',
       protocolVersion: '2025-03-26',
-      toolCount: 28,
+      toolCount: 36,
     });
     expect(JSON.stringify(listed)).not.toContain(created.rawKey);
   });

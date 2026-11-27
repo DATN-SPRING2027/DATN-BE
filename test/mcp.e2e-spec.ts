@@ -287,7 +287,7 @@ describe('Continuum System-Wide MCP & API Key Lifecycle (E2E)', () => {
       .expect(201);
     const fullRawKey = (mintFull.body as { rawKey: string }).rawKey;
 
-    // 3. List keys via interactive JWT session -> 2 items, toolCount: 28, no rawKey exposed
+    // 3. List keys via interactive JWT session -> 2 items, toolCount: 36, no rawKey exposed
     const listKeys = await request(server)
       .get('/api/v1/iam/mcp-api-keys')
       .set('Authorization', `Bearer ${jwtToken}`)
@@ -295,7 +295,7 @@ describe('Continuum System-Wide MCP & API Key Lifecycle (E2E)', () => {
     expect(listKeys.body).toMatchObject({
       mcpEndpointPath: '/api/v1/mcp',
       protocolVersion: '2025-03-26',
-      toolCount: 28,
+      toolCount: 36,
     });
     expect((listKeys.body as { items: unknown[] }).items).toHaveLength(2);
     expect(JSON.stringify(listKeys.body)).not.toContain(roRawKey);
@@ -378,7 +378,7 @@ describe('Continuum System-Wide MCP & API Key Lifecycle (E2E)', () => {
       .send({ jsonrpc: '2.0', method: 'notifications/initialized' })
       .expect(202);
 
-    // Full key sees all 28 tools; ReadOnly key sees only READ_ONLY-accessible tools
+    // Full key sees all 36 tools; ReadOnly key sees only READ_ONLY-accessible tools
     const fullToolsRes = await request(server)
       .post('/api/v1/mcp')
       .set('Authorization', `Bearer ${fullRawKey}`)
@@ -386,7 +386,7 @@ describe('Continuum System-Wide MCP & API Key Lifecycle (E2E)', () => {
       .expect(200);
     expect(
       (fullToolsRes.body as { result: { tools: unknown[] } }).result.tools,
-    ).toHaveLength(28);
+    ).toHaveLength(36);
 
     const roToolsRes = await request(server)
       .post('/api/v1/mcp')
@@ -396,8 +396,12 @@ describe('Continuum System-Wide MCP & API Key Lifecycle (E2E)', () => {
     const roToolNames = (
       roToolsRes.body as { result: { tools: Array<{ name: string }> } }
     ).result.tools.map((t) => t.name);
+    // 20 READ_ONLY tools minus continuum_chat (filtered for project-restricted keys) = 19
+    expect(roToolNames).toHaveLength(19);
     expect(roToolNames).not.toContain('continuum_create_task');
+    expect(roToolNames).not.toContain('continuum_create_project');
     expect(roToolNames).toContain('continuum_list_projects');
+    expect(roToolNames).toContain('continuum_get_document');
 
     // continuum_list_projects with roRawKey returns ONLY PROJECT_A (intersects allowedProjectIds!)
     const roProjectsCall = await request(server)

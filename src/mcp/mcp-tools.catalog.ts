@@ -11,6 +11,25 @@ const OBJECT_ID_SCHEMA = {
   description: '24-character hexadecimal Continuum identifier.',
 } as const;
 
+const DOCUMENT_TYPE_VALUES = [
+  'MVP',
+  'DATABASE_DESIGN',
+  'RSR',
+  'ARCHITECTURE',
+  'API_SPECIFICATION',
+  'RESEARCH',
+  'REQUIREMENT',
+  'DESIGN',
+  'TECHNICAL_SPECIFICATION',
+  'OTHER',
+] as const;
+
+const REVIEW_DECISION_VALUES = [
+  'APPROVE',
+  'REQUEST_CHANGES',
+  'REJECT',
+] as const;
+
 export const MCP_RESOURCES_CATALOG: readonly McpResourceDefinition[] = [
   {
     uri: 'continuum://context/current',
@@ -91,7 +110,7 @@ export const MCP_PROMPTS_CATALOG: readonly McpPromptDefinition[] = [
 
 export const MCP_TOOLS_CATALOG: readonly McpToolDefinition[] = [
   // =========================================================================
-  // 1. IAM & Projects (4)
+  // 1. IAM & Projects (7)
   // =========================================================================
   {
     name: 'continuum_get_context',
@@ -184,6 +203,118 @@ export const MCP_TOOLS_CATALOG: readonly McpToolDefinition[] = [
         search: { type: 'string', maxLength: 120 },
       },
       required: ['projectId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continuum_create_project',
+    description:
+      'Create a new Continuum project in the active organization with optional initial members and leaders. Requires organization-wide FULL_OPERATIONS scope and project.create permission.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Create Project',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 200 },
+        code: {
+          type: 'string',
+          pattern: '^[A-Z][A-Z0-9_-]{1,31}$',
+          description:
+            'Uppercase project key (2-32 chars, starts with A-Z, e.g. CNTM, CORE_API).',
+        },
+        description: { type: 'string', maxLength: 2000 },
+        visibility: {
+          type: 'string',
+          enum: ['PRIVATE', 'PUBLIC'],
+          default: 'PRIVATE',
+        },
+        memberUserIds: {
+          type: 'array',
+          maxItems: 50,
+          items: OBJECT_ID_SCHEMA,
+        },
+        leaderUserIds: {
+          type: 'array',
+          maxItems: 50,
+          items: OBJECT_ID_SCHEMA,
+        },
+      },
+      required: ['name', 'code'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continuum_update_project',
+    description:
+      'Update project name, description, or visibility (PRIVATE/PUBLIC). Requires FULL_OPERATIONS scope and live project.update / project.visibility.manage permissions.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Update Project Settings',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        name: { type: 'string', minLength: 1, maxLength: 200 },
+        description: {
+          type: ['string', 'null'],
+          maxLength: 2000,
+        },
+        visibility: {
+          type: 'string',
+          enum: ['PRIVATE', 'PUBLIC'],
+        },
+      },
+      required: ['projectId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continuum_manage_project_members',
+    description:
+      'Discover member/leader candidates or add/remove members and assign/change/revoke project leaders. Requires FULL_OPERATIONS scope and live project access permissions.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Manage Project Members & Leaders',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        action: {
+          type: 'string',
+          enum: [
+            'LIST_CANDIDATES',
+            'LIST_LEADER_CANDIDATES',
+            'ADD_MEMBER',
+            'REMOVE_MEMBER',
+            'ASSIGN_LEADER',
+            'CHANGE_LEADER',
+            'REVOKE_LEADER',
+          ],
+        },
+        userId: OBJECT_ID_SCHEMA,
+        role: { type: 'string', enum: ['MEMBER', 'TEAM_LEADER'] },
+        membershipId: OBJECT_ID_SCHEMA,
+        previousUserId: OBJECT_ID_SCHEMA,
+        nextUserId: OBJECT_ID_SCHEMA,
+        search: { type: 'string', maxLength: 254 },
+      },
+      required: ['projectId', 'action'],
       additionalProperties: false,
     },
   },
@@ -607,6 +738,35 @@ export const MCP_TOOLS_CATALOG: readonly McpToolDefinition[] = [
     },
   },
   {
+    name: 'continuum_review_work_note',
+    description:
+      'Approve, request changes on, or reject a submitted task work note (APPROVE auto-queues SAG sync). Requires FULL_OPERATIONS scope and reviewer permission.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Review Task Work Note',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        noteId: OBJECT_ID_SCHEMA,
+        action: { type: 'string', enum: [...REVIEW_DECISION_VALUES] },
+        comment: {
+          type: 'string',
+          maxLength: 2000,
+          description:
+            'Optional for APPROVE; required when action is REQUEST_CHANGES or REJECT.',
+        },
+      },
+      required: ['projectId', 'noteId', 'action'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'continuum_list_documents',
     description:
       'List project documents and their governance/knowledge status.',
@@ -641,6 +801,29 @@ export const MCP_TOOLS_CATALOG: readonly McpToolDefinition[] = [
     },
   },
   {
+    name: 'continuum_get_document',
+    description:
+      'Fetch full details, Markdown content, file metadata, review history, and live SAG knowledge status for a single project document.',
+    requiredScope: 'READ_ONLY',
+    annotations: {
+      title: 'Get Project Document Details',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        documentId: OBJECT_ID_SCHEMA,
+        includeKnowledgeStatus: { type: 'boolean', default: true },
+      },
+      required: ['projectId', 'documentId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'continuum_create_document',
     description:
       'Create a Markdown/text project document (and optionally submit it for review). Requires FULL_OPERATIONS scope.',
@@ -660,23 +843,109 @@ export const MCP_TOOLS_CATALOG: readonly McpToolDefinition[] = [
         description: { type: 'string', maxLength: 2000 },
         type: {
           type: 'string',
-          enum: [
-            'MVP',
-            'DATABASE_DESIGN',
-            'RSR',
-            'ARCHITECTURE',
-            'API_SPECIFICATION',
-            'RESEARCH',
-            'REQUIREMENT',
-            'DESIGN',
-            'TECHNICAL_SPECIFICATION',
-            'OTHER',
-          ],
+          enum: [...DOCUMENT_TYPE_VALUES],
         },
         content: { type: 'string', minLength: 1, maxLength: 100000 },
         submitForReview: { type: 'boolean', default: false },
       },
       required: ['projectId', 'title', 'type', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continuum_upload_document_file',
+    description:
+      'Upload or replace a binary/text attachment (PDF, DOCX, XLSX, PPTX, MD, TXT, JSON, PNG/JPG/WEBP, etc., up to 20 MB encoded as base64) on a DRAFT project document. Requires FULL_OPERATIONS scope.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Upload Document Attachment File',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        documentId: OBJECT_ID_SCHEMA,
+        fileName: { type: 'string', minLength: 1, maxLength: 180 },
+        contentType: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 160,
+          description:
+            'MIME content type (e.g. application/pdf, text/markdown).',
+        },
+        contentBase64: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 28000000,
+          description: 'Base64-encoded file bytes (decoded size <= 20 MB).',
+        },
+        expectedSha256: {
+          type: 'string',
+          pattern: '^[a-fA-F0-9]{64}$',
+        },
+        autoSyncSag: { type: 'boolean', default: false },
+      },
+      required: [
+        'projectId',
+        'documentId',
+        'fileName',
+        'contentType',
+        'contentBase64',
+      ],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continuum_review_document',
+    description:
+      'Govern a project document across its full lifecycle: UPDATE_DRAFT, SUBMIT, COMMENT, APPROVE, REQUEST_CHANGES, REJECT, ARCHIVE, SYNC_KNOWLEDGE, or KNOWLEDGE_CONTROL (PAUSE/RESUME/REPROCESS/REVOKE in SAG). Requires FULL_OPERATIONS scope.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Govern, Review & Sync Document',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        documentId: OBJECT_ID_SCHEMA,
+        action: {
+          type: 'string',
+          enum: [
+            'UPDATE_DRAFT',
+            'SUBMIT',
+            'COMMENT',
+            'APPROVE',
+            'REQUEST_CHANGES',
+            'REJECT',
+            'ARCHIVE',
+            'SYNC_KNOWLEDGE',
+            'KNOWLEDGE_CONTROL',
+          ],
+        },
+        comment: {
+          type: 'string',
+          maxLength: 2000,
+          description:
+            'Required for COMMENT, REQUEST_CHANGES, REJECT; optional for APPROVE.',
+        },
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        description: { type: 'string', maxLength: 2000 },
+        type: { type: 'string', enum: [...DOCUMENT_TYPE_VALUES] },
+        content: { type: 'string', minLength: 1, maxLength: 100000 },
+        knowledgeAction: {
+          type: 'string',
+          enum: ['PAUSE', 'RESUME', 'REPROCESS', 'REVOKE'],
+        },
+      },
+      required: ['projectId', 'documentId', 'action'],
       additionalProperties: false,
     },
   },
@@ -758,6 +1027,35 @@ export const MCP_TOOLS_CATALOG: readonly McpToolDefinition[] = [
         },
       },
       required: ['projectId', 'accomplishments', 'approach', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continuum_review_work_report',
+    description:
+      'Approve, request changes on, or reject a submitted periodic work report. Requires FULL_OPERATIONS scope and live leader/manager review authority.',
+    requiredScope: 'FULL_OPERATIONS',
+    annotations: {
+      title: 'Review Work Report',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: OBJECT_ID_SCHEMA,
+        reportId: OBJECT_ID_SCHEMA,
+        action: { type: 'string', enum: [...REVIEW_DECISION_VALUES] },
+        comment: {
+          type: 'string',
+          maxLength: 2000,
+          description:
+            'Optional for APPROVE; required when action is REQUEST_CHANGES or REJECT.',
+        },
+      },
+      required: ['projectId', 'reportId', 'action'],
       additionalProperties: false,
     },
   },

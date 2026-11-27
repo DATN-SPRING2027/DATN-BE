@@ -22,11 +22,14 @@ const NOTE_ID = '651a2b3c4d5e6f7a8b9c0dd4';
 const HANDOVER_ID = '651a2b3c4d5e6f7a8b9c0de5';
 const CONV_ID = '651a2b3c4d5e6f7a8b9c0df6';
 
-const CANONICAL_28_TOOLS = [
+const CANONICAL_36_TOOLS = [
   'continuum_get_context',
   'continuum_list_projects',
   'continuum_get_project',
   'continuum_list_project_members',
+  'continuum_create_project',
+  'continuum_update_project',
+  'continuum_manage_project_members',
   'continuum_list_tasks',
   'continuum_get_task',
   'continuum_get_project_task_summary',
@@ -38,10 +41,15 @@ const CANONICAL_28_TOOLS = [
   'continuum_list_work_notes',
   'continuum_get_work_note',
   'continuum_create_work_note',
+  'continuum_review_work_note',
   'continuum_list_documents',
+  'continuum_get_document',
   'continuum_create_document',
+  'continuum_upload_document_file',
+  'continuum_review_document',
   'continuum_list_work_reports',
   'continuum_save_work_report_draft',
+  'continuum_review_work_report',
   'continuum_list_handovers',
   'continuum_get_handover',
   'continuum_preview_departing_handover',
@@ -99,6 +107,14 @@ describe('McpService & McpToolsService (Packet C)', () => {
         status: 'ACTIVE',
         visibility: 'PRIVATE',
       }),
+      create: jest.fn().mockResolvedValue({
+        id: PROJECT_ID,
+        organizationId: ORG_ID,
+        name: 'New Project',
+        code: 'NEWPROJ',
+        status: 'ACTIVE',
+        visibility: 'PRIVATE',
+      }),
     };
     const projectAccessService = {
       listMembers: jest.fn().mockResolvedValue({
@@ -108,6 +124,38 @@ describe('McpService & McpToolsService (Packet C)', () => {
       listLeaders: jest.fn().mockResolvedValue({
         data: [{ userId: LEADER_ID, fullName: 'Leader' }],
       }),
+      updateSettings: jest.fn().mockResolvedValue({
+        id: PROJECT_ID,
+        organizationId: ORG_ID,
+        name: 'Alpha Renamed',
+        code: 'ALP',
+        status: 'ACTIVE',
+        visibility: 'PRIVATE',
+      }),
+      changeVisibility: jest.fn().mockResolvedValue({
+        id: PROJECT_ID,
+        organizationId: ORG_ID,
+        name: 'Alpha Renamed',
+        code: 'ALP',
+        status: 'ACTIVE',
+        visibility: 'PUBLIC',
+      }),
+      listMemberCandidates: jest.fn().mockResolvedValue({
+        data: [{ id: SUCCESSOR_ID, email: 'member@continuum.ai' }],
+      }),
+      listLeaderCandidates: jest.fn().mockResolvedValue({
+        data: [{ id: LEADER_ID, email: 'leader@continuum.ai' }],
+      }),
+      addMember: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d11',
+        userId: SUCCESSOR_ID,
+        role: 'MEMBER',
+        status: 'ACTIVE',
+      }),
+      removeMember: jest.fn().mockResolvedValue(undefined),
+      assignLeader: jest.fn().mockResolvedValue(undefined),
+      changeLeader: jest.fn().mockResolvedValue(undefined),
+      revokeLeader: jest.fn().mockResolvedValue(undefined),
     };
     const taskWorkspaceService = {
       listProjectTasks: jest.fn().mockResolvedValue({
@@ -169,13 +217,63 @@ describe('McpService & McpToolsService (Packet C)', () => {
       createTaskNote: jest
         .fn()
         .mockResolvedValue({ id: NOTE_ID, title: 'Created Note' }),
+      reviewTaskNote: jest.fn().mockResolvedValue({
+        id: NOTE_ID,
+        title: 'Created Note',
+        reviewStatus: 'APPROVED',
+      }),
       listDocuments: jest.fn().mockResolvedValue({
         data: [],
         pagination: { page: 1, pageSize: 20, totalItems: 0, totalPages: 0 },
       }),
+      getDocument: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        title: 'Architecture Spec',
+        status: 'DRAFT',
+      }),
+      getDocumentKnowledgeStatus: jest.fn().mockResolvedValue({
+        documentId: '651a2b3c4d5e6f7a8b9c0d66',
+        version: 1,
+        status: 'INDEXED',
+        searchStatus: 'READY',
+        knowledgeStatus: 'READY',
+        searchReady: true,
+        knowledgeReady: true,
+        progress: 100,
+      }),
       createDocument: jest
         .fn()
         .mockResolvedValue({ id: '651a2b3c4d5e6f7a8b9c0d66', status: 'DRAFT' }),
+      uploadDocumentFile: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        status: 'DRAFT',
+        file: { name: 'spec.md', contentType: 'text/markdown', size: 12 },
+      }),
+      updateDocumentDraft: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        title: 'Updated Spec',
+        status: 'DRAFT',
+      }),
+      commentDocument: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        status: 'PENDING_REVIEW',
+      }),
+      reviewDocument: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        status: 'APPROVED',
+      }),
+      archiveDocument: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        status: 'ARCHIVED',
+      }),
+      syncDocumentToSag: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        status: 'APPROVED',
+      }),
+      controlDocumentKnowledge: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d66',
+        status: 'APPROVED',
+      }),
       submitDocument: jest.fn().mockResolvedValue({
         id: '651a2b3c4d5e6f7a8b9c0d66',
         status: 'PENDING_REVIEW',
@@ -195,6 +293,10 @@ describe('McpService & McpToolsService (Packet C)', () => {
       submitWorkReport: jest.fn().mockResolvedValue({
         id: '651a2b3c4d5e6f7a8b9c0d55',
         status: 'PENDING_REVIEW',
+      }),
+      reviewWorkReport: jest.fn().mockResolvedValue({
+        id: '651a2b3c4d5e6f7a8b9c0d55',
+        status: 'APPROVED',
       }),
     };
     const handoverWorkflowService = {
@@ -329,6 +431,42 @@ describe('McpService & McpToolsService (Packet C)', () => {
         .mockResolvedValue({ updatedCount: 2, readAt: 'now' }),
     };
 
+    const authorizationEvidence = {
+      loadProjectCreate: jest.fn().mockResolvedValue({
+        membership: {
+          userId: USER_ID,
+          organizationId: ORG_ID,
+          status: 'ACTIVE',
+        },
+        explicitDeny: { denied: false },
+      }),
+      loadProjectAccess: jest.fn().mockResolvedValue({
+        project: {
+          id: PROJECT_ID,
+          organizationId: ORG_ID,
+          status: 'ACTIVE',
+          visibility: 'PRIVATE',
+        },
+        membership: {
+          userId: USER_ID,
+          organizationId: ORG_ID,
+          status: 'ACTIVE',
+        },
+        projectMembership: {
+          userId: USER_ID,
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          status: 'ACTIVE',
+        },
+        assignments: [{ role: 'ADMIN', scope: 'ORGANIZATION' }],
+        explicitDeny: { denied: false },
+      }),
+    };
+    const authorizationPolicy = {
+      evaluate: jest.fn().mockReturnValue({ allowed: true }),
+      evaluateProjectAccess: jest.fn().mockReturnValue({ allowed: true }),
+    };
+
     const toolsService = new McpToolsService(
       projectService as never,
       projectAccessService as never,
@@ -339,6 +477,8 @@ describe('McpService & McpToolsService (Packet C)', () => {
       chatService as never,
       chatFeaturesService as never,
       notificationService as never,
+      authorizationEvidence as never,
+      authorizationPolicy as never,
     );
     const mcpService = new McpService(toolsService);
 
@@ -354,12 +494,14 @@ describe('McpService & McpToolsService (Packet C)', () => {
       chatService,
       chatFeaturesService,
       notificationService,
+      authorizationEvidence,
+      authorizationPolicy,
     };
   }
 
-  it('registers all 28 canonical tools with valid JSON Schema and MCP annotations', () => {
-    expect(MCP_TOOLS_CATALOG).toHaveLength(28);
-    expect(MCP_TOOLS_CATALOG.map((t) => t.name)).toEqual(CANONICAL_28_TOOLS);
+  it('registers all 36 canonical tools with valid JSON Schema and MCP annotations', () => {
+    expect(MCP_TOOLS_CATALOG).toHaveLength(36);
+    expect(MCP_TOOLS_CATALOG.map((t) => t.name)).toEqual(CANONICAL_36_TOOLS);
     for (const tool of MCP_TOOLS_CATALOG) {
       expect(tool.inputSchema).toMatchObject({ type: 'object' });
       expect(tool.annotations).toEqual(
@@ -704,7 +846,7 @@ describe('McpService & McpToolsService (Packet C)', () => {
     );
   });
 
-  it('enforces runtime inputSchema validation across all 28 tools, aliases unassigned/backlog, wraps unquoted ifMatch, and normalizes Unicode NFC (BE-2)', async () => {
+  it('enforces runtime inputSchema validation across all 36 tools, aliases unassigned/backlog, wraps unquoted ifMatch, and normalizes Unicode NFC (BE-2)', async () => {
     const {
       toolsService,
       projectService,
@@ -1448,6 +1590,259 @@ describe('McpService & McpToolsService (Packet C)', () => {
         query: 'Create persistent AI thread?',
         persistThread: true,
       },
+    );
+  });
+
+  it('supports project/member lifecycle, binary document upload, document/work-note/work-report review, and live RBAC denial', async () => {
+    const {
+      toolsService,
+      projectService,
+      projectAccessService,
+      workNotesService,
+      authorizationPolicy,
+    } = createHarness();
+    const orgCtx = {
+      actor: orgWideFullActor,
+      authorizationHeader: 'Bearer ctm_mcp_org_full',
+    };
+    const scopedCtx = {
+      actor: fullActor,
+      authorizationHeader: 'Bearer ctm_mcp_scoped_full',
+    };
+
+    // 1. Project-restricted key is blocked on continuum_create_project
+    const restrictedCreate = await toolsService.callTool(
+      scopedCtx,
+      'continuum_create_project',
+      { name: 'Blocked Project', code: 'BLK' },
+    );
+    expect(restrictedCreate).toMatchObject({
+      isError: true,
+      structuredContent: { code: 'MCP_SCOPE_FORBIDDEN' },
+    });
+
+    // 2. Live RBAC denial on continuum_create_project
+    authorizationPolicy.evaluate.mockReturnValueOnce({ allowed: false });
+    const rbacDeniedCreate = await toolsService.callTool(
+      orgCtx,
+      'continuum_create_project',
+      { name: 'Unauthorized Project', code: 'UNAUTH' },
+    );
+    expect(rbacDeniedCreate).toMatchObject({
+      isError: true,
+      structuredContent: { status: 403, code: 'FORBIDDEN' },
+    });
+    expect(projectService.create).not.toHaveBeenCalled();
+
+    // 3. Successful create, update, and member/leader management
+    const createdProj = await toolsService.callTool(
+      orgCtx,
+      'continuum_create_project',
+      {
+        name: 'Continuum Core',
+        code: 'CNTM',
+        visibility: 'PRIVATE',
+        memberUserIds: [SUCCESSOR_ID, SUCCESSOR_ID],
+      },
+    );
+    expect(createdProj.isError).toBeUndefined();
+    expect(projectService.create).toHaveBeenCalledWith(
+      orgWideFullActor,
+      expect.objectContaining({
+        name: 'Continuum Core',
+        code: 'CNTM',
+        visibility: 'PRIVATE',
+        memberUserIds: [SUCCESSOR_ID],
+      }),
+    );
+
+    const updatedProj = await toolsService.callTool(
+      orgCtx,
+      'continuum_update_project',
+      { projectId: PROJECT_ID, name: 'Alpha Renamed', visibility: 'PUBLIC' },
+    );
+    expect(updatedProj.isError).toBeUndefined();
+    expect(projectAccessService.updateSettings).toHaveBeenCalledWith(
+      orgWideFullActor,
+      PROJECT_ID,
+      { name: 'Alpha Renamed' },
+    );
+    expect(projectAccessService.changeVisibility).toHaveBeenCalledWith(
+      orgWideFullActor,
+      PROJECT_ID,
+      'PUBLIC',
+    );
+
+    authorizationPolicy.evaluateProjectAccess.mockReturnValueOnce({
+      allowed: false,
+    });
+    const deniedAdd = await toolsService.callTool(
+      orgCtx,
+      'continuum_manage_project_members',
+      { projectId: PROJECT_ID, action: 'ADD_MEMBER', userId: SUCCESSOR_ID },
+    );
+    expect(deniedAdd).toMatchObject({
+      isError: true,
+      structuredContent: { status: 403, code: 'FORBIDDEN' },
+    });
+
+    const addedMember = await toolsService.callTool(
+      orgCtx,
+      'continuum_manage_project_members',
+      {
+        projectId: PROJECT_ID,
+        action: 'ADD_MEMBER',
+        userId: SUCCESSOR_ID,
+        role: 'MEMBER',
+      },
+    );
+    expect(addedMember.isError).toBeUndefined();
+    expect(projectAccessService.addMember).toHaveBeenCalledWith(
+      orgWideFullActor,
+      PROJECT_ID,
+      SUCCESSOR_ID,
+      'MEMBER',
+    );
+
+    // 4. Document get + base64 file upload validation + review/SAG sync
+    const gotDoc = await toolsService.callTool(
+      orgCtx,
+      'continuum_get_document',
+      { projectId: PROJECT_ID, documentId: '651a2b3c4d5e6f7a8b9c0d66' },
+    );
+    expect(gotDoc.structuredContent).toMatchObject({
+      id: '651a2b3c4d5e6f7a8b9c0d66',
+      knowledgeStatus: { knowledgeReady: true },
+    });
+
+    const badBase64 = await toolsService.callTool(
+      orgCtx,
+      'continuum_upload_document_file',
+      {
+        projectId: PROJECT_ID,
+        documentId: '651a2b3c4d5e6f7a8b9c0d66',
+        fileName: 'spec.md',
+        contentType: 'text/markdown',
+        contentBase64: '***not-base64***',
+      },
+    );
+    expect(badBase64).toMatchObject({
+      isError: true,
+      structuredContent: { code: 'DOCUMENT_FILE_INVALID' },
+    });
+
+    const uploadedDoc = await toolsService.callTool(
+      orgCtx,
+      'continuum_upload_document_file',
+      {
+        projectId: PROJECT_ID,
+        documentId: '651a2b3c4d5e6f7a8b9c0d66',
+        fileName: 'spec.md',
+        contentType: 'text/markdown',
+        contentBase64: Buffer.from('# Spec v1').toString('base64'),
+      },
+    );
+    expect(uploadedDoc.isError).toBeUndefined();
+    expect(workNotesService.uploadDocumentFile).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: ORG_ID }),
+      PROJECT_ID,
+      '651a2b3c4d5e6f7a8b9c0d66',
+      'spec.md',
+      'text/markdown',
+      Buffer.from('# Spec v1'),
+    );
+
+    const rejectedWithoutComment = await toolsService.callTool(
+      orgCtx,
+      'continuum_review_document',
+      {
+        projectId: PROJECT_ID,
+        documentId: '651a2b3c4d5e6f7a8b9c0d66',
+        action: 'REJECT',
+      },
+    );
+    expect(rejectedWithoutComment).toMatchObject({
+      isError: true,
+      structuredContent: { code: 'VALIDATION_FAILED' },
+    });
+
+    const approvedDoc = await toolsService.callTool(
+      orgCtx,
+      'continuum_review_document',
+      {
+        projectId: PROJECT_ID,
+        documentId: '651a2b3c4d5e6f7a8b9c0d66',
+        action: 'APPROVE',
+        comment: 'Verified architecture',
+      },
+    );
+    expect(approvedDoc.isError).toBeUndefined();
+    expect(workNotesService.reviewDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: ORG_ID }),
+      PROJECT_ID,
+      '651a2b3c4d5e6f7a8b9c0d66',
+      'APPROVED',
+      { comment: 'Verified architecture' },
+    );
+
+    const syncedDoc = await toolsService.callTool(
+      orgCtx,
+      'continuum_review_document',
+      {
+        projectId: PROJECT_ID,
+        documentId: '651a2b3c4d5e6f7a8b9c0d66',
+        action: 'SYNC_KNOWLEDGE',
+      },
+    );
+    expect(syncedDoc.isError).toBeUndefined();
+    expect(workNotesService.syncDocumentToSag).toHaveBeenCalled();
+
+    // 5. Work note & work report reviews require comment on REJECT/REQUEST_CHANGES and map statuses cleanly
+    const noteChangesMissingComment = await toolsService.callTool(
+      orgCtx,
+      'continuum_review_work_note',
+      { projectId: PROJECT_ID, noteId: NOTE_ID, action: 'REQUEST_CHANGES' },
+    );
+    expect(noteChangesMissingComment).toMatchObject({
+      isError: true,
+      structuredContent: { code: 'VALIDATION_FAILED' },
+    });
+
+    const noteApproved = await toolsService.callTool(
+      orgCtx,
+      'continuum_review_work_note',
+      {
+        projectId: PROJECT_ID,
+        noteId: NOTE_ID,
+        action: 'APPROVE',
+        comment: 'Looks solid',
+      },
+    );
+    expect(noteApproved.isError).toBeUndefined();
+    expect(workNotesService.reviewTaskNote).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: ORG_ID }),
+      PROJECT_ID,
+      NOTE_ID,
+      'APPROVED',
+      { comment: 'Looks solid' },
+    );
+
+    const reportApproved = await toolsService.callTool(
+      orgCtx,
+      'continuum_review_work_report',
+      {
+        projectId: PROJECT_ID,
+        reportId: '651a2b3c4d5e6f7a8b9c0d55',
+        action: 'APPROVE',
+      },
+    );
+    expect(reportApproved.isError).toBeUndefined();
+    expect(workNotesService.reviewWorkReport).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: ORG_ID }),
+      PROJECT_ID,
+      '651a2b3c4d5e6f7a8b9c0d55',
+      'APPROVED',
+      {},
     );
   });
 });

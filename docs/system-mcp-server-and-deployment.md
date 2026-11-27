@@ -9,7 +9,7 @@ Continuum exposes a stateless **Streamable HTTP JSON-RPC 2.0 Model Context Proto
 | Layer | Module / File | Responsibility |
 | :--- | :--- | :--- |
 | **MCP Protocol Server** | `src/mcp/mcp.controller.ts`, `src/mcp/mcp.service.ts` | Handles `GET` discovery (or `405` on passive `text/event-stream` probe), `POST` JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `202` notifications), and `DELETE` on `/api/v1/mcp` & `/internal/mcp`. |
-| **Catalog & Runtime Validation** | `src/mcp/mcp-tools.catalog.ts`, `src/mcp/mcp-schema-validator.ts` | Canonical registry of **28 tools**, **2 resources**, and **4 prompts** with strict JSON Schema validation (`additionalProperties: false`, bounded depth `<= 32` + `WeakSet` cycle guard). |
+| **Catalog & Runtime Validation** | `src/mcp/mcp-tools.catalog.ts`, `src/mcp/mcp-schema-validator.ts` | Canonical registry of **36 tools**, **2 resources**, and **4 prompts** with strict JSON Schema validation (`additionalProperties: false`, bounded depth `<= 32` + `WeakSet` cycle guard). |
 | **Tool Dispatcher & Guardrails** | `src/mcp/mcp-tools.service.ts` | Executes all 6 subsystems, auto-resolves optimistic concurrency `If-Match` ETags, enforces `READ_ONLY` / `READ_WRITE` / `FULL_OPERATIONS` scope checks (including dynamic escalation for `continuum_ask_knowledge` `persistThread: true`, `continuum_save_work_report_draft` `submit: true`, `continuum_chat` `SEND_MESSAGE`, `continuum_notifications` `MARK_READ`/`MARK_ALL_READ`), and checks `allowedProjectIds`. |
 | **Personal MCP API Key Vault** | `src/services/iam/controllers/mcp-api-keys.controller.ts`, `src/services/iam/application/mcp-api-keys/mcp-api-keys.service.ts` | Generates `ctm_mcp_<43-char-base64url>` secrets (32-byte CSPRNG), stores only SHA-256 digest + 16-char `keyPrefix` in MongoDB `continuum_iam.mcp_api_keys`, supports list / mint / revoke with live RBAC intersection. |
 | **REST Mutation Boundary** | `src/common/http/mcp-key-rest-guard.middleware.ts` | Blocks `ctm_mcp_` tokens from mutating non-MCP REST endpoints (`POST`, `PUT`, `PATCH`, `DELETE` outside `/api/v1/mcp` and `/internal/mcp`) with `403 MCP_KEY_DIRECT_MUTATION_FORBIDDEN`. |
@@ -18,10 +18,10 @@ Continuum exposes a stateless **Streamable HTTP JSON-RPC 2.0 Model Context Proto
 
 ### Capability Matrix Summary
 
-- **28 Tools:**
-  - *IAM & Projects (4):* `continuum_get_context`, `continuum_list_projects`, `continuum_get_project`, `continuum_list_project_members`
+- **36 Tools:**
+  - *IAM & Projects (7):* `continuum_get_context`, `continuum_list_projects`, `continuum_get_project`, `continuum_list_project_members`, `continuum_create_project`, `continuum_update_project`, `continuum_manage_project_members`
   - *Tasks & Sprints (8):* `continuum_list_tasks`, `continuum_get_task`, `continuum_get_project_task_summary`, `continuum_list_sprints`, `continuum_create_task`, `continuum_update_task`, `continuum_transition_task`, `continuum_add_task_comment`
-  - *Work Notes, Documents & Reports (7):* `continuum_list_work_notes`, `continuum_get_work_note`, `continuum_create_work_note`, `continuum_list_documents`, `continuum_create_document`, `continuum_list_work_reports`, `continuum_save_work_report_draft`
+  - *Work Notes, Documents & Reports (12):* `continuum_list_work_notes`, `continuum_get_work_note`, `continuum_create_work_note`, `continuum_review_work_note`, `continuum_list_documents`, `continuum_get_document`, `continuum_create_document`, `continuum_upload_document_file`, `continuum_review_document`, `continuum_list_work_reports`, `continuum_save_work_report_draft`, `continuum_review_work_report`
   - *Knowledge Handover (5):* `continuum_list_handovers`, `continuum_get_handover`, `continuum_preview_departing_handover`, `continuum_create_and_bundle_handover`, `continuum_act_on_handover`
   - *SAG Knowledge & Grounded Q&A (2):* `continuum_search_knowledge`, `continuum_ask_knowledge` (supports optional `persistThread: true` under `READ_WRITE` scope)
   - *Team Chat & Notifications (2):* `continuum_chat` (blocked when key is project-restricted), `continuum_notifications` (scoped by `allowedProjectIds`)
@@ -79,7 +79,7 @@ What works automatically on `http://localhost:3001` / `http://localhost:3000` re
 1. **HTTPS Required for IDE Clients:** Remote MCP hosts (Cursor, Claude Code, VS Code, Antigravity) expect valid TLS certificates (`TLS 1.2/1.3`) when connecting over public DNS. Do **not** terminate HTTP-only on public domains.
 2. **Disable Request/Response Buffering & Raise Timeout (`>= 180s`):**
    - `continuum_ask_knowledge` aggregates SAG SSE reasoning streams that can run 30–120 seconds.
-   - Ensure `nginx/nginx.conf` (updated in this PR with a dedicated `location ~ ^/api/v1/mcp/?$` block) sets `proxy_buffering off`, `proxy_request_buffering off`, `proxy_read_timeout 180s`, and `proxy_send_timeout 180s` on **both** `/api/v1/mcp` (BE) and `/api/backend/mcp` (if proxying FE in Topology A).
+   - Ensure `nginx/nginx.conf` (updated in this PR with a dedicated `location ~ ^/api/v1/mcp/?$` block) sets `client_max_body_size 30m` (for base64 document attachment uploads up to 20 MB), `proxy_buffering off`, `proxy_request_buffering off`, `proxy_read_timeout 180s`, and `proxy_send_timeout 180s` on **both** `/api/v1/mcp` (BE) and `/api/backend/mcp` (if proxying FE in Topology A).
 3. **Preserve MCP & Auth Headers Through CDN / Reverse Proxy:**
    - Do **not** strip `Authorization`, `Mcp-Session-Id`, `MCP-Protocol-Version`, `Last-Event-ID`, or `X-Request-Id`.
    - Allow `GET`, `POST`, `DELETE`, `OPTIONS` on `/api/v1/mcp` and `/api/backend/mcp`.
@@ -121,12 +121,12 @@ curl -i -X POST "https://api.yourdomain.com/api/v1/mcp" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 
-# 2. Initialize & list all 28 tools with a personal key minted from /organization/integrations
+# 2. Initialize & list all 36 tools with a personal key minted from /organization/integrations
 curl -sS -X POST "https://api.yourdomain.com/api/v1/mcp" \
   -H "Authorization: Bearer ctm_mcp_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | jq '.result.tools | length'
-# Expect: 28
+# Expect: 36
 
 # 3. Verify REST mutation boundary blocks ctm_mcp_ outside /api/v1/mcp (HTTP 403 MCP_KEY_DIRECT_MUTATION_FORBIDDEN)
 curl -i -X POST "https://api.yourdomain.com/api/v1/iam/mcp-api-keys" \

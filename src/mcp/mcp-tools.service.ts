@@ -3,9 +3,11 @@ import {
   BadRequestException,
   ForbiddenException,
   HttpException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { AiChatService } from '../integrations/ai-engine/ai-chat.service';
@@ -13,6 +15,7 @@ import type { AiChatRequestHeaders } from '../integrations/ai-engine/ai-chat.typ
 import { WorkNotesService } from '../services/capture/application/work-notes.service';
 import type {
   CaptureRequestHeaders,
+  DocumentKnowledgeControlAction,
   DocumentStatus,
   DocumentType,
   TaskNoteReviewStatus,
@@ -27,6 +30,14 @@ import {
   readCookie,
   type AuthenticatedIdentity,
 } from '../services/iam/application/authentication/authentication.application.service';
+import {
+  AUTHORIZATION_EVIDENCE_PROVIDER,
+  type AuthorizationEvidenceProvider,
+} from '../services/iam/application/authorization/authorization-evidence.provider';
+import {
+  AuthorizationPolicy,
+  type ProjectAccessPermission,
+} from '../services/iam/application/authorization/authorization.policy';
 import type { McpKeyScopeMode } from '../services/iam/application/mcp-api-keys/mcp-api-key.types';
 import { ProjectAccessService } from '../services/iam/application/projects/project-access.service';
 import { ProjectService } from '../services/iam/application/projects/project.service';
@@ -57,6 +68,133 @@ import {
 
 const OBJECT_ID_REGEX = /^[a-f0-9]{24}$/i;
 const UNQUOTED_ETAG_REGEX = /^(task|handover):[a-fA-F0-9]{24}:\d+$/;
+const PROJECT_CODE_REGEX = /^[A-Z][A-Z0-9_-]{1,31}$/;
+const STRICT_BASE64_REGEX =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const MAX_DOCUMENT_FILE_BYTES = 20 * 1024 * 1024;
+const VALID_DOCUMENT_TYPES = new Set<DocumentType>([
+  'MVP',
+  'DATABASE_DESIGN',
+  'RSR',
+  'ARCHITECTURE',
+  'API_SPECIFICATION',
+  'RESEARCH',
+  'REQUIREMENT',
+  'DESIGN',
+  'TECHNICAL_SPECIFICATION',
+  'OTHER',
+]);
+const REVIEW_DECISION_MAP: Readonly<
+  Record<string, 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED'>
+> = {
+  APPROVE: 'APPROVED',
+  REQUEST_CHANGES: 'CHANGES_REQUESTED',
+  REJECT: 'REJECTED',
+};
+const VALID_KNOWLEDGE_CONTROL_ACTIONS = new Set<DocumentKnowledgeControlAction>(
+  ['PAUSE', 'RESUME', 'REPROCESS', 'REVOKE'],
+);
+
+function parseDocumentPayload(args: Record<string, unknown>): {
+  title: string;
+  type: DocumentType;
+  content: string;
+  description?: string;
+} {
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  const content = typeof args.content === 'string' ? args.content : '';
+  if (
+    !title ||
+    title.length > 200 ||
+    !content.trim() ||
+    typeof args.type !== 'string' ||
+    !VALID_DOCUMENT_TYPES.has(args.type as DocumentType)
+  ) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'Valid title, type, and non-empty content are required.',
+    });
+  }
+  return {
+    title,
+    type: args.type as DocumentType,
+    content,
+    ...(typeof args.description === 'string'
+      ? { description: args.description.trim() }
+      : {}),
+  };
+}
+
+function parseReviewDecision(args: Record<string, unknown>): {
+  mappedStatus: 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
+  comment?: string;
+} {
+  const action = typeof args.action === 'string' ? args.action : '';
+  const mappedStatus = REVIEW_DECISION_MAP[action];
+  if (!mappedStatus) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'action must be APPROVE, REQUEST_CHANGES, or REJECT.',
+    });
+  }
+  const comment = asOptionalString(args.comment);
+  if (mappedStatus !== 'APPROVED' && !comment) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: `comment is required when action is ${action}.`,
+    });
+  }
+  return {
+    mappedStatus,
+    ...(comment ? { comment } : {}),
+  };
+}
+
+function decodeBase64DocumentBytes(rawBase64: unknown): Buffer {
+  if (typeof rawBase64 !== 'string') {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: 'contentBase64 must be a non-empty base64 string.',
+    });
+  }
+  const cleaned = rawBase64.replace(/\s+/g, '');
+  if (
+    !cleaned ||
+    cleaned.length % 4 !== 0 ||
+    !STRICT_BASE64_REGEX.test(cleaned)
+  ) {
+    throw new BadRequestException({
+      code: 'DOCUMENT_FILE_INVALID',
+      message: 'contentBase64 is not valid base64.',
+    });
+  }
+  const bytes = Buffer.from(cleaned, 'base64');
+  if (bytes.length === 0 || bytes.length > MAX_DOCUMENT_FILE_BYTES) {
+    throw new BadRequestException({
+      code: 'DOCUMENT_FILE_TOO_LARGE',
+      message: 'Decoded document file size must be between 1 byte and 20 MB.',
+    });
+  }
+  return bytes;
+}
+
+function dedupeObjectIdArray(
+  raw: unknown,
+  fieldName: string,
+): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length > 50) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: `${fieldName} must be an array of at most 50 valid IDs.`,
+    });
+  }
+  return [
+    ...new Set(
+      raw.map((id, idx) => assertObjectId(id, `${fieldName}[${idx}]`)),
+    ),
+  ];
+}
 
 class McpScopeForbiddenError extends Error {
   constructor(message: string) {
@@ -169,7 +307,91 @@ export class McpToolsService {
     private readonly chatService: ChatApplicationService,
     private readonly chatFeaturesService: ChatFeaturesService,
     private readonly notificationService: NotificationService,
+    @Optional()
+    @Inject(AUTHORIZATION_EVIDENCE_PROVIDER)
+    private readonly authorizationEvidence?: AuthorizationEvidenceProvider,
+    @Optional()
+    private readonly authorizationPolicy?: AuthorizationPolicy,
   ) {}
+
+  private async assertProjectCreateAuthorized(
+    actor: AuthenticatedIdentity,
+  ): Promise<void> {
+    if (!this.authorizationEvidence || !this.authorizationPolicy) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Project creation authorization service is unavailable.',
+      });
+    }
+    const facts = await this.authorizationEvidence.loadProjectCreate(
+      actor.id,
+      actor.organizationId,
+    );
+    if (!facts) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Insufficient organization permission to create projects.',
+      });
+    }
+    const decision = this.authorizationPolicy.evaluate({
+      permission: 'project.create',
+      subject: {
+        userId: actor.id,
+        organizationId: actor.organizationId,
+        status: 'ACTIVE',
+      },
+      requestedOrganizationId: actor.organizationId,
+      ...facts,
+      now: new Date(),
+    });
+    if (!decision.allowed) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Insufficient organization permission to create projects.',
+      });
+    }
+  }
+
+  private async assertProjectAccessAuthorized(
+    actor: AuthenticatedIdentity,
+    projectId: string,
+    permission: ProjectAccessPermission,
+  ): Promise<void> {
+    if (!this.authorizationEvidence || !this.authorizationPolicy) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Project access authorization service is unavailable.',
+      });
+    }
+    const facts = await this.authorizationEvidence.loadProjectAccess(
+      actor.id,
+      actor.organizationId,
+      projectId,
+    );
+    if (!facts?.project) {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
+    const decision = this.authorizationPolicy.evaluateProjectAccess({
+      permission,
+      subject: {
+        userId: actor.id,
+        organizationId: actor.organizationId,
+        status: 'ACTIVE',
+      },
+      requestedOrganizationId: actor.organizationId,
+      requestedProjectId: projectId,
+      ...facts,
+    });
+    if (!decision.allowed) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: `Missing live permission '${permission}' for project ${projectId}.`,
+      });
+    }
+  }
 
   private effectiveScope(actor: AuthenticatedIdentity): McpKeyScopeMode {
     return actor.mcpGrant?.scope ?? 'FULL_OPERATIONS';
@@ -332,7 +554,11 @@ export class McpToolsService {
       actor.mcpGrant?.allowedProjectIds,
     );
     return MCP_TOOLS_CATALOG.filter((tool) => {
-      if (isProjectRestricted && tool.name === 'continuum_chat') {
+      if (
+        isProjectRestricted &&
+        (tool.name === 'continuum_chat' ||
+          tool.name === 'continuum_create_project')
+      ) {
         return false;
       }
       return this.hasScope(actor, tool.requiredScope);
@@ -669,11 +895,12 @@ export class McpToolsService {
       const args = validation.args;
 
       if (
-        toolName === 'continuum_chat' &&
+        (toolName === 'continuum_chat' ||
+          toolName === 'continuum_create_project') &&
         Array.isArray(ctx.actor.mcpGrant?.allowedProjectIds)
       ) {
         return this.scopeForbiddenResult(
-          'continuum_chat is organization-wide and requires an organization-wide MCP key.',
+          `${toolName} is organization-wide and requires an organization-wide MCP key.`,
         );
       }
 
@@ -798,6 +1025,256 @@ export class McpToolsService {
           members: members.data,
           pagination: members.pagination,
         };
+      }
+
+      case 'continuum_create_project': {
+        const name = typeof args.name === 'string' ? args.name.trim() : '';
+        const code = typeof args.code === 'string' ? args.code.trim() : '';
+        if (!name || name.length > 200 || !PROJECT_CODE_REGEX.test(code)) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message:
+              'Valid name (1-200 chars) and uppercase project code (2-32 chars matching ^[A-Z][A-Z0-9_-]{1,31}$) are required.',
+          });
+        }
+        const visibility = args.visibility === 'PUBLIC' ? 'PUBLIC' : 'PRIVATE';
+        const description =
+          typeof args.description === 'string' ? args.description : undefined;
+        const memberUserIds = dedupeObjectIdArray(
+          args.memberUserIds,
+          'memberUserIds',
+        );
+        const leaderUserIds = dedupeObjectIdArray(
+          args.leaderUserIds,
+          'leaderUserIds',
+        );
+        await this.assertProjectCreateAuthorized(ctx.actor);
+        return this.projectService.create(ctx.actor, {
+          name,
+          code,
+          visibility,
+          ...(description !== undefined ? { description } : {}),
+          ...(memberUserIds !== undefined ? { memberUserIds } : {}),
+          ...(leaderUserIds !== undefined ? { leaderUserIds } : {}),
+        });
+      }
+
+      case 'continuum_update_project': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const hasName = args.name !== undefined;
+        const hasDescription = args.description !== undefined;
+        const hasVisibility = args.visibility !== undefined;
+        if (!hasName && !hasDescription && !hasVisibility) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message:
+              'At least one of name, description, or visibility must be provided.',
+          });
+        }
+        const settingsInput: { name?: string; description?: string | null } =
+          {};
+        if (hasName) {
+          const trimmedName =
+            typeof args.name === 'string' ? args.name.trim() : '';
+          if (!trimmedName || trimmedName.length > 200) {
+            throw new BadRequestException({
+              code: 'VALIDATION_FAILED',
+              message: 'name must be between 1 and 200 characters.',
+            });
+          }
+          settingsInput.name = trimmedName;
+        }
+        if (hasDescription) {
+          if (args.description === null) {
+            settingsInput.description = null;
+          } else if (
+            typeof args.description === 'string' &&
+            args.description.length <= 2000
+          ) {
+            settingsInput.description = args.description;
+          } else {
+            throw new BadRequestException({
+              code: 'VALIDATION_FAILED',
+              message: 'description must be null or at most 2000 characters.',
+            });
+          }
+        }
+        if (
+          hasVisibility &&
+          args.visibility !== 'PRIVATE' &&
+          args.visibility !== 'PUBLIC'
+        ) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message: 'visibility must be PRIVATE or PUBLIC.',
+          });
+        }
+
+        let updated: unknown = null;
+        if (hasName || hasDescription) {
+          await this.assertProjectAccessAuthorized(
+            ctx.actor,
+            projectId,
+            'project.update',
+          );
+          updated = await this.projectAccessService.updateSettings(
+            ctx.actor,
+            projectId,
+            settingsInput,
+          );
+        }
+        if (hasVisibility) {
+          await this.assertProjectAccessAuthorized(
+            ctx.actor,
+            projectId,
+            'project.visibility.manage',
+          );
+          updated = await this.projectAccessService.changeVisibility(
+            ctx.actor,
+            projectId,
+            args.visibility as 'PRIVATE' | 'PUBLIC',
+          );
+        }
+        return updated;
+      }
+
+      case 'continuum_manage_project_members': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const action = typeof args.action === 'string' ? args.action : '';
+        switch (action) {
+          case 'LIST_CANDIDATES': {
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.members.add',
+            );
+            return this.projectAccessService.listMemberCandidates(
+              ctx.actor,
+              projectId,
+              asOptionalString(args.search),
+            );
+          }
+          case 'LIST_LEADER_CANDIDATES': {
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.leader.manage',
+            );
+            return this.projectAccessService.listLeaderCandidates(
+              ctx.actor,
+              projectId,
+              asOptionalString(args.search),
+            );
+          }
+          case 'ADD_MEMBER': {
+            const userId = assertObjectId(args.userId, 'userId');
+            const role =
+              args.role === undefined
+                ? undefined
+                : args.role === 'MEMBER' || args.role === 'TEAM_LEADER'
+                  ? args.role
+                  : null;
+            if (role === null) {
+              throw new BadRequestException({
+                code: 'VALIDATION_FAILED',
+                message: 'role must be MEMBER or TEAM_LEADER.',
+              });
+            }
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.members.add',
+            );
+            return role
+              ? this.projectAccessService.addMember(
+                  ctx.actor,
+                  projectId,
+                  userId,
+                  role,
+                )
+              : this.projectAccessService.addMember(
+                  ctx.actor,
+                  projectId,
+                  userId,
+                );
+          }
+          case 'REMOVE_MEMBER': {
+            const membershipId = assertObjectId(
+              args.membershipId,
+              'membershipId',
+            );
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.members.remove',
+            );
+            await this.projectAccessService.removeMember(
+              ctx.actor,
+              projectId,
+              membershipId,
+            );
+            return { removed: true, projectId, membershipId };
+          }
+          case 'ASSIGN_LEADER': {
+            const userId = assertObjectId(args.userId, 'userId');
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.leader.manage',
+            );
+            await this.projectAccessService.assignLeader(
+              ctx.actor,
+              projectId,
+              userId,
+            );
+            return { assigned: true, projectId, userId };
+          }
+          case 'CHANGE_LEADER': {
+            const previousUserId = assertObjectId(
+              args.previousUserId,
+              'previousUserId',
+            );
+            const nextUserId = assertObjectId(args.nextUserId, 'nextUserId');
+            if (previousUserId === nextUserId) {
+              throw new BadRequestException({
+                code: 'VALIDATION_FAILED',
+                message: 'previousUserId and nextUserId must be different.',
+              });
+            }
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.leader.manage',
+            );
+            await this.projectAccessService.changeLeader(
+              ctx.actor,
+              projectId,
+              previousUserId,
+              nextUserId,
+            );
+            return { changed: true, projectId, previousUserId, nextUserId };
+          }
+          case 'REVOKE_LEADER': {
+            const userId = assertObjectId(args.userId, 'userId');
+            await this.assertProjectAccessAuthorized(
+              ctx.actor,
+              projectId,
+              'project.leader.manage',
+            );
+            await this.projectAccessService.revokeLeader(
+              ctx.actor,
+              projectId,
+              userId,
+            );
+            return { revoked: true, projectId, userId };
+          }
+          default:
+            throw new BadRequestException({
+              code: 'VALIDATION_FAILED',
+              message:
+                'action must be one of LIST_CANDIDATES, LIST_LEADER_CANDIDATES, ADD_MEMBER, REMOVE_MEMBER, ASSIGN_LEADER, CHANGE_LEADER, REVOKE_LEADER.',
+            });
+        }
       }
 
       // ---------------------------------------------------------------------
@@ -1169,6 +1646,19 @@ export class McpToolsService {
         );
       }
 
+      case 'continuum_review_work_note': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const noteId = assertObjectId(args.noteId, 'noteId');
+        const { mappedStatus, comment } = parseReviewDecision(args);
+        return this.workNotesService.reviewTaskNote(
+          this.buildCaptureHeaders(ctx),
+          projectId,
+          noteId,
+          mappedStatus,
+          comment ? { comment } : {},
+        );
+      }
+
       case 'continuum_list_documents': {
         const projectId = assertObjectId(args.projectId, 'projectId');
         const page = positiveInt(args.page, 1, 1000, 'page');
@@ -1186,46 +1676,55 @@ export class McpToolsService {
         );
       }
 
+      case 'continuum_get_document': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const documentId = assertObjectId(args.documentId, 'documentId');
+        const headers = this.buildCaptureHeaders(ctx);
+        const doc = await this.workNotesService.getDocument(
+          headers,
+          projectId,
+          documentId,
+        );
+        if (args.includeKnowledgeStatus === false) {
+          return doc;
+        }
+        try {
+          const knowledgeStatus =
+            await this.workNotesService.getDocumentKnowledgeStatus(
+              headers,
+              projectId,
+              documentId,
+            );
+          return { ...doc, knowledgeStatus };
+        } catch (error) {
+          if (
+            error instanceof UnauthorizedException ||
+            error instanceof ForbiddenException ||
+            error instanceof NotFoundException
+          ) {
+            throw error;
+          }
+          const detail =
+            error instanceof Error ? error.message : 'SAG status unavailable';
+          this.logger.warn(
+            `Degraded document knowledge status for ${documentId} in project ${projectId}: ${detail}`,
+          );
+          return {
+            ...doc,
+            knowledgeStatus: doc.knowledgeSync ?? null,
+            knowledgeStatusError: detail,
+          };
+        }
+      }
+
       case 'continuum_create_document': {
         const projectId = assertObjectId(args.projectId, 'projectId');
-        const title = typeof args.title === 'string' ? args.title.trim() : '';
-        const content = typeof args.content === 'string' ? args.content : '';
-        const docTypes = new Set([
-          'MVP',
-          'DATABASE_DESIGN',
-          'RSR',
-          'ARCHITECTURE',
-          'API_SPECIFICATION',
-          'RESEARCH',
-          'REQUIREMENT',
-          'DESIGN',
-          'TECHNICAL_SPECIFICATION',
-          'OTHER',
-        ]);
-        if (
-          !title ||
-          title.length > 200 ||
-          !content.trim() ||
-          typeof args.type !== 'string' ||
-          !docTypes.has(args.type)
-        ) {
-          throw new BadRequestException({
-            code: 'VALIDATION_FAILED',
-            message: 'Valid title, type, and non-empty content are required.',
-          });
-        }
+        const payload = parseDocumentPayload(args);
         const headers = this.buildCaptureHeaders(ctx);
         const created = await this.workNotesService.createDocument(
           headers,
           projectId,
-          {
-            title,
-            type: args.type as DocumentType,
-            content,
-            ...(typeof args.description === 'string'
-              ? { description: args.description.trim() }
-              : {}),
-          },
+          payload,
         );
         if (args.submitForReview === true) {
           return this.workNotesService.submitDocument(
@@ -1235,6 +1734,172 @@ export class McpToolsService {
           );
         }
         return created;
+      }
+
+      case 'continuum_upload_document_file': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const documentId = assertObjectId(args.documentId, 'documentId');
+        const fileName =
+          typeof args.fileName === 'string' ? args.fileName.trim() : '';
+        const contentType =
+          typeof args.contentType === 'string' ? args.contentType.trim() : '';
+        if (!fileName || fileName.length > 180 || !contentType) {
+          throw new BadRequestException({
+            code: 'VALIDATION_FAILED',
+            message: 'fileName (1-180 chars) and contentType are required.',
+          });
+        }
+        const bytes = decodeBase64DocumentBytes(args.contentBase64);
+        const expectedSha256 = asOptionalString(args.expectedSha256);
+        const autoSyncSag = args.autoSyncSag === true;
+        const options =
+          expectedSha256 || autoSyncSag
+            ? {
+                ...(expectedSha256 ? { expectedSha256 } : {}),
+                ...(autoSyncSag ? { autoSyncSag: true } : {}),
+              }
+            : undefined;
+        const headers = this.buildCaptureHeaders(ctx);
+        return options
+          ? this.workNotesService.uploadDocumentFile(
+              headers,
+              projectId,
+              documentId,
+              fileName,
+              contentType,
+              bytes,
+              options,
+            )
+          : this.workNotesService.uploadDocumentFile(
+              headers,
+              projectId,
+              documentId,
+              fileName,
+              contentType,
+              bytes,
+            );
+      }
+
+      case 'continuum_review_document': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const documentId = assertObjectId(args.documentId, 'documentId');
+        const action = typeof args.action === 'string' ? args.action : '';
+        const headers = this.buildCaptureHeaders(ctx);
+
+        switch (action) {
+          case 'UPDATE_DRAFT': {
+            const payload = parseDocumentPayload(args);
+            return this.workNotesService.updateDocumentDraft(
+              headers,
+              projectId,
+              documentId,
+              payload,
+            );
+          }
+          case 'SUBMIT':
+            return this.workNotesService.submitDocument(
+              headers,
+              projectId,
+              documentId,
+            );
+          case 'COMMENT': {
+            const comment = asOptionalString(args.comment);
+            if (!comment) {
+              throw new BadRequestException({
+                code: 'VALIDATION_FAILED',
+                message: 'comment is required when action is COMMENT.',
+              });
+            }
+            return this.workNotesService.commentDocument(
+              headers,
+              projectId,
+              documentId,
+              { comment },
+            );
+          }
+          case 'APPROVE': {
+            const comment = asOptionalString(args.comment);
+            return this.workNotesService.reviewDocument(
+              headers,
+              projectId,
+              documentId,
+              'APPROVED',
+              comment ? { comment } : {},
+            );
+          }
+          case 'REQUEST_CHANGES': {
+            const comment = asOptionalString(args.comment);
+            if (!comment) {
+              throw new BadRequestException({
+                code: 'VALIDATION_FAILED',
+                message: 'comment is required when action is REQUEST_CHANGES.',
+              });
+            }
+            return this.workNotesService.reviewDocument(
+              headers,
+              projectId,
+              documentId,
+              'CHANGES_REQUESTED',
+              { comment },
+            );
+          }
+          case 'REJECT': {
+            const comment = asOptionalString(args.comment);
+            if (!comment) {
+              throw new BadRequestException({
+                code: 'VALIDATION_FAILED',
+                message: 'comment is required when action is REJECT.',
+              });
+            }
+            return this.workNotesService.reviewDocument(
+              headers,
+              projectId,
+              documentId,
+              'REJECTED',
+              { comment },
+            );
+          }
+          case 'ARCHIVE':
+            return this.workNotesService.archiveDocument(
+              headers,
+              projectId,
+              documentId,
+            );
+          case 'SYNC_KNOWLEDGE':
+            return this.workNotesService.syncDocumentToSag(
+              headers,
+              projectId,
+              documentId,
+            );
+          case 'KNOWLEDGE_CONTROL': {
+            const knowledgeAction =
+              typeof args.knowledgeAction === 'string'
+                ? (args.knowledgeAction as DocumentKnowledgeControlAction)
+                : null;
+            if (
+              !knowledgeAction ||
+              !VALID_KNOWLEDGE_CONTROL_ACTIONS.has(knowledgeAction)
+            ) {
+              throw new BadRequestException({
+                code: 'VALIDATION_FAILED',
+                message:
+                  'knowledgeAction must be PAUSE, RESUME, REPROCESS, or REVOKE.',
+              });
+            }
+            return this.workNotesService.controlDocumentKnowledge(
+              headers,
+              projectId,
+              documentId,
+              knowledgeAction,
+            );
+          }
+          default:
+            throw new BadRequestException({
+              code: 'VALIDATION_FAILED',
+              message:
+                'action must be one of UPDATE_DRAFT, SUBMIT, COMMENT, APPROVE, REQUEST_CHANGES, REJECT, ARCHIVE, SYNC_KNOWLEDGE, KNOWLEDGE_CONTROL.',
+            });
+        }
       }
 
       case 'continuum_list_work_reports': {
@@ -1318,6 +1983,19 @@ export class McpToolsService {
           );
         }
         return saved;
+      }
+
+      case 'continuum_review_work_report': {
+        const projectId = assertObjectId(args.projectId, 'projectId');
+        const reportId = assertObjectId(args.reportId, 'reportId');
+        const { mappedStatus, comment } = parseReviewDecision(args);
+        return this.workNotesService.reviewWorkReport(
+          this.buildCaptureHeaders(ctx),
+          projectId,
+          reportId,
+          mappedStatus,
+          comment ? { comment } : {},
+        );
       }
 
       // ---------------------------------------------------------------------

@@ -1,6 +1,6 @@
 export const MCP_ENDPOINT_PATH = '/api/v1/mcp' as const;
 export const MCP_DEFAULT_PROTOCOL_VERSION = '2025-03-26' as const;
-export const MCP_CANONICAL_TOOL_COUNT = 28 as const;
+export const MCP_CANONICAL_TOOL_COUNT = 36 as const;
 
 export const MCP_KEY_SCOPES = [
   'READ_ONLY',
@@ -31,7 +31,7 @@ export interface ListMcpApiKeysResponse {
   items: McpApiKeyView[];
   mcpEndpointPath: '/api/v1/mcp';
   protocolVersion: '2025-03-26';
-  toolCount: 28;
+  toolCount: 36;
 }
 
 export interface CreateMcpApiKeyRequest {

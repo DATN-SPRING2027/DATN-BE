@@ -15,7 +15,7 @@ import { requestIdMiddleware } from './common/http/request-id.middleware';
 import { mcpKeyRestMutationGuardMiddleware } from './common/http/mcp-key-rest-guard.middleware';
 import { StructuredExceptionFilter } from './common/http/structured-exception.filter';
 
-const mcpPermissiveJsonParser = express.json({ strict: false });
+const mcpPermissiveJsonParser = express.json({ strict: false, limit: '28mb' });
 
 function trimTrailingSlashes(value: string): string {
   let end = value.length;
