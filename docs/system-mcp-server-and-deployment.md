@@ -32,7 +32,7 @@ Continuum exposes a stateless **Streamable HTTP JSON-RPC 2.0 Model Context Proto
 
 ## 2. Local vs. Production DNS & Domain Checklist (DO NOT SKIP ON DEPLOY)
 
-What works automatically on `http://localhost:3001` / `http://localhost:3099` requires explicit environment, DNS, proxy, and database index configuration when deploying behind real production domains.
+What works automatically on `http://localhost:3001` / `http://localhost:3000` requires explicit environment, DNS, proxy, and database index configuration when deploying behind real production domains.
 
 ### A. Choose Your Production DNS Topology
 
