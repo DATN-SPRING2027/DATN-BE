@@ -121,6 +121,7 @@ export interface ChatMessagePage {
 export interface ChatMessageWrite {
   message: ChatMessage;
   recipientIds: string[];
+  newlyMentionedUserIds?: string[];
 }
 
 export interface ChatReadState {

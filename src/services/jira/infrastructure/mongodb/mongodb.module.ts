@@ -43,6 +43,12 @@ export class MongoInfrastructureModule {
             dbName: serviceDatabaseName,
             autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
             serverSelectionTimeoutMS: 5000,
+            maxPoolSize: Math.max(
+              1,
+              Number(config.get('MONGODB_MAX_POOL_SIZE')) || 15,
+            ),
+            minPoolSize: 2,
+            socketTimeoutMS: 30_000,
           }),
         }),
         MongooseModule.forFeature(models, serviceDatabaseName),

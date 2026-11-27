@@ -5,7 +5,14 @@ export interface StoredObjectMetadata {
   contentType: string | undefined;
 }
 
+export interface StoredObjectStream {
+  stream: Readable;
+  size: number | undefined;
+  contentType: string | undefined;
+}
+
 export interface ChatObjectStorage {
+  isConfigured(): boolean;
   putObject(
     key: string,
     body: Readable,
@@ -19,8 +26,10 @@ export interface ChatObjectStorage {
       contentType: string;
       contentDisposition: 'inline' | 'attachment';
       filename: string;
+      localStreamUrl?: string;
     },
   ): Promise<string>;
+  openReadStream(key: string): Promise<StoredObjectStream>;
   headObject(key: string): Promise<StoredObjectMetadata>;
   deleteObject(key: string): Promise<void>;
 }

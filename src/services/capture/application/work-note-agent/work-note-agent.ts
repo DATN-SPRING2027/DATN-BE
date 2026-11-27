@@ -222,6 +222,7 @@ export type PreparedAgentRequest = Readonly<{
   messages: readonly AgentMessage[];
   input: AgentInput;
   fragments: readonly Fragment[];
+  protectedPrefix: string;
   promptVersion: string;
 }>;
 
@@ -342,6 +343,7 @@ export function prepareAgentRequest(input: AgentInput): PreparedAgentRequest {
     messages,
     input: snapshot,
     fragments: protectedText.fragments,
+    protectedPrefix: protectedText.prefix,
     promptVersion: snapshot.historicalContext
       ? `${PROMPT_VERSION}+${HISTORY_POLICY_VERSION}`
       : PROMPT_VERSION,

@@ -58,7 +58,7 @@ describe('Project Document local storage', () => {
     }
   });
 
-  it('defaults to ../.data/continuum-vault and always stores in Local Vault without .env overrides even when R2 is configured', async () => {
+  it('defaults to ../.data/continuum-vault, enables R2 when configured without local override, and respects STORAGE_FORCE_LOCAL=true with lazy migration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'continuum-vault-override-'));
     try {
       const defaultStorage = new ProjectDocumentStorage(
@@ -68,7 +68,15 @@ describe('Project Document local storage', () => {
       expect(defaultStorage.getLocalRoot()).toBe(
         resolve(process.cwd(), '..', '.data', 'continuum-vault'),
       );
-      expect(defaultStorage.isDirectCloudEnabled()).toBe(false);
+      // BE-DATA-002: R2 is env-driven — enabled automatically when R2 credentials exist
+      // and neither STORAGE_FORCE_LOCAL=true nor STORAGE_MODE=local is set.
+      expect(defaultStorage.isDirectCloudEnabled()).toBe(true);
+
+      const unconfiguredFallback = new ProjectDocumentStorage(
+        { isConfigured: () => false } as unknown as R2Storage,
+        { get: () => undefined } as unknown as ConfigService,
+      );
+      expect(unconfiguredFallback.isDirectCloudEnabled()).toBe(false);
 
       const putObjectSpy = jest.fn();
       const deleteObjectSpy = jest.fn().mockResolvedValue(undefined);
@@ -85,6 +93,7 @@ describe('Project Document local storage', () => {
         {
           get: (cfgKey: string) => {
             if (cfgKey === 'WORK_NOTE_LOCAL_STORAGE_DIR') return root;
+            if (cfgKey === 'STORAGE_FORCE_LOCAL') return 'true';
             return undefined;
           },
         } as unknown as ConfigService,

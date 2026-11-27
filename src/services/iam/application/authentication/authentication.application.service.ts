@@ -1,6 +1,5 @@
 import {
   ConflictException,
-  ForbiddenException,
   Inject,
   Injectable,
   HttpException,
@@ -114,7 +113,20 @@ export class RefreshCsrfError extends Error {
   }
 }
 
+export class RefreshConcurrentConflictError extends UnauthorizedException {
+  constructor() {
+    super({
+      code: 'AUTH_REFRESH_CONCURRENT',
+      message:
+        'Refresh token was just rotated by a concurrent request. Retry with the updated session.',
+    });
+    this.name = RefreshConcurrentConflictError.name;
+  }
+}
+
 const REFRESH_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+const DUMMY_BCRYPT_HASH =
+  '$2b$12$C6UzMDM.H6dfI/f/IKcEeO7H4Q4oO3J4M8L7X2v1Z0yK6pQ9W5e2a';
 
 export function validCsrfPair(
   cookieValue: string | undefined,
@@ -393,10 +405,7 @@ export class AuthenticationApplicationService {
     if (
       !(await this.hasActivePlatformAssignment(account.userId, account.status))
     )
-      throw new ForbiddenException({
-        code: 'FORBIDDEN',
-        message: 'Insufficient authorization.',
-      });
+      throw unauthorized();
 
     await this.rehashPasswordIfNeeded(account, input.password, needsRehash);
     const identity: AuthenticatedPlatformSubject = {
@@ -433,8 +442,28 @@ export class AuthenticationApplicationService {
         429,
       );
     }
+    // Check per-account lockout BEFORE fetching user credentials or verifying
+    // password so locked-out accounts reject even valid password guesses and
+    // cannot be abused for CPU amplification or credential oracles (SEC-AUTH-003).
+    if (
+      this.securityStore.isRateLimited &&
+      (await this.securityStore.isRateLimited(
+        `auth:login:account:${emailKey}`,
+        5,
+      ))
+    ) {
+      throw new HttpException(
+        { code: 'LOGIN_RATE_LIMITED', message: 'Too many login attempts.' },
+        429,
+      );
+    }
     const account = await this.repository.findAccountByEmail(input.email);
-    if (!account) return this.rejectInvalidPassword(emailKey);
+    if (!account) {
+      await this.credentials
+        .verifyPassword(DUMMY_BCRYPT_HASH, input.password)
+        .catch(() => undefined);
+      return this.rejectInvalidPassword(emailKey);
+    }
 
     let verification: { verified: boolean; needsRehash: boolean };
     try {
@@ -716,6 +745,35 @@ export class AuthenticationApplicationService {
     status: string,
   ): Promise<boolean> {
     const now = new Date();
+    if (this.authorizationEvidence.loadAllPlatformPermissions) {
+      const evidence =
+        await this.authorizationEvidence.loadAllPlatformPermissions(userId);
+      if (!evidence) return false;
+      const byPermission = new Map<
+        string,
+        (typeof evidence.assignments)[number][]
+      >();
+      for (const assignment of evidence.assignments) {
+        const list = byPermission.get(assignment.permission);
+        if (list) list.push(assignment);
+        else byPermission.set(assignment.permission, [assignment]);
+      }
+      for (const permission of PLATFORM_PERMISSIONS) {
+        const assignments = byPermission.get(permission);
+        if (
+          assignments &&
+          this.authorizationPolicy.evaluatePlatformPermission({
+            permission,
+            subject: { userId, status },
+            assignments,
+            now,
+          }).allowed
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
     for (const permission of PLATFORM_PERMISSIONS) {
       const evidence = await this.authorizationEvidence.loadPlatformPermission(
         userId,
@@ -854,6 +912,42 @@ export class AuthenticationApplicationService {
       orgId: user.organizationId,
       roles: user.roles,
     });
+    // Revoke prior session family & access token after issuing the new
+    // organization session so old org sessions cannot linger for 7 days
+    // (SEC-BE-004 / E2E-INT-007).
+    const priorToken = extractAccessToken(authorization, cookieHeader);
+    if (priorToken) {
+      try {
+        const priorClaims = this.accessTokens.verifyAccessToken(priorToken);
+        const remainingSeconds =
+          priorClaims.exp - Math.floor(Date.now() / 1000);
+        const tasks: Promise<unknown>[] = [];
+        if (remainingSeconds > 0) {
+          tasks.push(
+            this.securityStore.revokeToken(
+              createHash('sha256').update(priorToken).digest('hex'),
+              remainingSeconds,
+            ),
+          );
+        }
+        if (
+          priorClaims.sid &&
+          this.repository.revokeRefreshSessionBySessionId
+        ) {
+          tasks.push(
+            this.repository.revokeRefreshSessionBySessionId(
+              priorClaims.sub,
+              priorClaims.sid,
+            ),
+          );
+        }
+        if (tasks.length > 0) {
+          await Promise.all(tasks);
+        }
+      } catch {
+        // Prior token already validated above; ignore cleanup errors.
+      }
+    }
     clearRequestMemo('auth');
     return {
       ...issued,
@@ -930,25 +1024,61 @@ export class AuthenticationApplicationService {
 
     const now = new Date();
     const permissions: PlatformPermission[] = [];
-    for (const permission of PLATFORM_PERMISSIONS) {
+    if (this.authorizationEvidence.loadAllPlatformPermissions) {
       try {
         const evidence =
-          await this.authorizationEvidence.loadPlatformPermission(
+          await this.authorizationEvidence.loadAllPlatformPermissions(
             claims.sub,
-            permission,
           );
-        if (
-          evidence &&
-          this.authorizationPolicy.evaluatePlatformPermission({
-            permission,
-            subject: { userId: claims.sub, status: profile.status },
-            assignments: evidence.assignments,
-            now,
-          }).allowed
-        )
-          permissions.push(permission);
+        if (evidence) {
+          const byPermission = new Map<
+            string,
+            (typeof evidence.assignments)[number][]
+          >();
+          for (const assignment of evidence.assignments) {
+            const list = byPermission.get(assignment.permission);
+            if (list) list.push(assignment);
+            else byPermission.set(assignment.permission, [assignment]);
+          }
+          for (const permission of PLATFORM_PERMISSIONS) {
+            const assignments = byPermission.get(permission);
+            if (
+              assignments &&
+              this.authorizationPolicy.evaluatePlatformPermission({
+                permission,
+                subject: { userId: claims.sub, status: profile.status },
+                assignments,
+                now,
+              }).allowed
+            ) {
+              permissions.push(permission);
+            }
+          }
+        }
       } catch {
         // A partial or unavailable evidence store must never advertise rights.
+      }
+    } else {
+      for (const permission of PLATFORM_PERMISSIONS) {
+        try {
+          const evidence =
+            await this.authorizationEvidence.loadPlatformPermission(
+              claims.sub,
+              permission,
+            );
+          if (
+            evidence &&
+            this.authorizationPolicy.evaluatePlatformPermission({
+              permission,
+              subject: { userId: claims.sub, status: profile.status },
+              assignments: evidence.assignments,
+              now,
+            }).allowed
+          )
+            permissions.push(permission);
+        } catch {
+          // A partial or unavailable evidence store must never advertise rights.
+        }
       }
     }
     if (permissions.length === 0) throw unauthorized();
@@ -986,9 +1116,14 @@ export class AuthenticationApplicationService {
     if (!claims.sid) throw unauthorized();
 
     const tokenDigest = createHash('sha256').update(token).digest('hex');
-    const [revoked, profile] = await Promise.all([
+    const [revoked, profile, hasActiveSession] = await Promise.all([
       this.securityStore.isTokenRevoked(tokenDigest),
       this.repository.findProfileById(claims.sub),
+      this.repository.hasActiveRefreshSession(
+        claims.sub,
+        claims.sid,
+        new Date(),
+      ),
     ]);
     if (revoked) {
       throw unauthorized();
@@ -996,15 +1131,7 @@ export class AuthenticationApplicationService {
     if (!profile || profile.status !== 'ACTIVE') throw unauthorized();
     if ((claims.userFence ?? 0) !== (profile.mutationFence ?? 0))
       throw unauthorized();
-    if (
-      claims.sid &&
-      !(await this.repository.hasActiveRefreshSession(
-        claims.sub,
-        claims.sid,
-        new Date(),
-      ))
-    )
-      throw unauthorized();
+    if (!hasActiveSession) throw unauthorized();
     return { claims, profile };
   }
 
@@ -1022,6 +1149,14 @@ export class AuthenticationApplicationService {
           await this.securityStore.revokeToken(
             createHash('sha256').update(accessToken).digest('hex'),
             remainingSeconds,
+          );
+        }
+        // Revoke the session family in MongoDB even on Bearer-only logout
+        // without refresh cookies (SEC-BE-004 / E2E-INT-007).
+        if (claims.sid && this.repository.revokeRefreshSessionBySessionId) {
+          await this.repository.revokeRefreshSessionBySessionId(
+            claims.sub,
+            claims.sid,
           );
         }
       } catch (error) {
@@ -1052,15 +1187,21 @@ export class AuthenticationApplicationService {
     const now = new Date();
     const replacement = randomBytes(32).toString('base64url');
     if (current.outcome === 'REVOKED') {
-      // Preserve the approved replay response: the repository atomically
-      // invalidates the user's remaining sessions and returns REPLAYED.
-      await this.repository.rotateRefreshSession(
+      // Delegate to transactional repository rotation check:
+      // - Within the 10s same-session concurrent grace window -> returns
+      //   CONCURRENT_ROTATION without revoking all sessions or mutationFence++.
+      // - Outside the grace window or after logout -> revokes all sessions,
+      //   increments mutationFence++, and returns REPLAYED.
+      const replayOutcome = await this.repository.rotateRefreshSession(
         currentHash,
         createHash('sha256').update(replacement).digest('hex'),
         new Date(now.getTime() + REFRESH_LIFETIME_MS),
         now,
         current.sessionId,
       );
+      if (replayOutcome.outcome === 'CONCURRENT_ROTATION') {
+        throw new RefreshConcurrentConflictError();
+      }
       throw unauthorized();
     }
     if (current.expiresAt.getTime() <= now.getTime()) throw unauthorized();
@@ -1124,6 +1265,9 @@ export class AuthenticationApplicationService {
       now,
       current.sessionId,
     );
+    if (rotation.outcome === 'CONCURRENT_ROTATION') {
+      throw new RefreshConcurrentConflictError();
+    }
     if (rotation.outcome !== 'ROTATED') throw unauthorized();
     return { accessToken, refreshToken: replacement };
   }

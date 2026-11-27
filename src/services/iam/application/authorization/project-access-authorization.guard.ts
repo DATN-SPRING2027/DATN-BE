@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
+import { resolveExpectedOrganizationHeader } from '../../../../common/http/organization-header';
 import { AuthenticationApplicationService } from '../authentication/authentication.application.service';
 import {
   AUTHORIZATION_EVIDENCE_PROVIDER,
@@ -46,8 +47,11 @@ export class ProjectAccessAuthorizationGuard implements CanActivate {
       request.headers.cookie,
     );
     const projectId = request.params?.projectId;
+    const headerOrganizationId = resolveExpectedOrganizationHeader(
+      request.headers,
+    );
     const selectors: unknown[] = [
-      request.headers['x-organization-id'],
+      headerOrganizationId,
       request.query?.organizationId,
     ];
     if (
@@ -80,20 +84,34 @@ export class ProjectAccessAuthorizationGuard implements CanActivate {
       requestedProjectId: projectId,
       ...facts,
     };
+    const requestedBodyRole =
+      typeof (request as { body?: { role?: unknown } }).body?.role === 'string'
+        ? (request as { body?: { role?: string } }).body?.role
+        : undefined;
+    const effectivePermission: ProjectAccessPermission =
+      permission === 'project.members.add' &&
+      requestedBodyRole === 'TEAM_LEADER'
+        ? 'project.leader.manage'
+        : permission;
     const decision = this.policy.evaluateProjectAccess({
-      permission,
+      permission: effectivePermission,
       ...baseInput,
     });
     if (!decision.allowed) {
-      const isLeaderListRead =
-        permission === 'project.leader.manage' &&
-        context.getHandler()?.name === 'listLeaders';
-      if (isLeaderListRead) {
-        const fallbackDecision = this.policy.evaluateProjectAccess({
-          permission: 'project.members.list',
+      // SEC-AUTH-004: listLeaders allows ADMIN (project.leader.manage) or an active
+      // Project TEAM_LEADER with project.members.list — never a regular MEMBER.
+      if (
+        effectivePermission === 'project.leader.manage' &&
+        context.getHandler().name === 'listLeaders' &&
+        this.policy.evaluateProjectAccess({
           ...baseInput,
-        });
-        if (fallbackDecision.allowed) return true;
+          permission: 'project.members.list',
+          assignments: baseInput.assignments.filter(
+            (assignment) => assignment.roleCode === 'TEAM_LEADER',
+          ),
+        }).allowed
+      ) {
+        return true;
       }
       throw new ForbiddenException();
     }

@@ -199,9 +199,11 @@ export class WorkNoteAgentDraftsService {
   protected operations() {
     return this.db().collection<OperationRow>('work_note_agent_operations');
   }
+  private baseStorageVerifiedDb?: unknown;
   protected async storageReady() {
+    const db = this.db();
+    if (this.baseStorageVerifiedDb === db) return;
     try {
-      const db = this.db();
       for (const collection of [
         'work_note_agent_drafts',
         'work_note_agent_operations',
@@ -229,6 +231,7 @@ export class WorkNoteAgentDraftsService {
         )
       )
         throw Error('missing version uniqueness');
+      this.baseStorageVerifiedDb = db;
     } catch {
       throw new ServiceUnavailableException({
         code: 'WORKNOTE_STORAGE_NOT_READY',
@@ -1478,49 +1481,16 @@ export class WorkNoteAgentDraftsService {
       ? prevReview.history
       : [];
     const nowIso = now.toISOString();
-    const shouldAutoApprove = Boolean(actor.canReview) && autoApprove !== false;
-
-    if (shouldAutoApprove) {
-      const reviewerRole: 'MANAGER' | 'LEADER' = actor.isManager
-        ? 'MANAGER'
-        : 'LEADER';
-      const previousApprovedVersion =
-        prevReview?.status === 'APPROVED'
-          ? Math.max(1, Number(previous?.currentVersionNumber ?? 1))
-          : undefined;
-      return {
-        review: {
-          status: 'APPROVED',
-          submittedAt: nowIso,
-          reviewedBy: actor.userId,
-          reviewedAt: nowIso,
-          history: [
-            ...prevHistory,
-            {
-              action: 'APPROVED',
-              reviewerId: actor.userId,
-              reviewerRole,
-              at: nowIso,
-            },
-          ],
-        },
-        knowledgeSync: {
-          documentId: noteId,
-          version,
-          status: 'QUEUED_OUTBOX',
-          searchStatus: 'PENDING',
-          knowledgeStatus: 'NOT_STARTED',
-          searchReady: false,
-          knowledgeReady: false,
-          currentStage: 'OUTBOX_QUEUE',
-          progress: 5,
-          syncedAt: nowIso,
-        },
-        ...(previousApprovedVersion && previousApprovedVersion < version
-          ? { previousApprovedVersion }
-          : {}),
-      };
-    }
+    // BE-LOGIC-001: Self-approval is unconditionally forbidden. Every saved or
+    // restored Task Note enters PENDING_REVIEW for an independent reviewer.
+    void actor;
+    void noteId;
+    void version;
+    void autoApprove;
+    const previousApprovedVersion =
+      prevReview?.status === 'APPROVED'
+        ? Math.max(1, Number(previous?.currentVersionNumber ?? 1))
+        : undefined;
 
     return {
       review: {
@@ -1528,10 +1498,11 @@ export class WorkNoteAgentDraftsService {
         submittedAt: nowIso,
         history: [...prevHistory],
       },
+      ...(previousApprovedVersion ? { previousApprovedVersion } : {}),
     };
   }
 
-  private async appendTaskNoteKnowledgeOutbox(
+  private async appendTaskNoteRevokedOutbox(
     db: Db,
     session: ClientSession,
     params: {
@@ -1539,39 +1510,13 @@ export class WorkNoteAgentDraftsService {
       projectId: string;
       noteId: string;
       version: number;
-      previousApprovedVersion?: number;
+      reason: string;
       now: Date;
     },
   ): Promise<void> {
-    const outboxCol = db.collection('outbox_events');
-    if (
-      params.previousApprovedVersion &&
-      params.previousApprovedVersion < params.version
-    ) {
-      await outboxCol.insertOne(
-        {
-          eventName: 'KNOWLEDGE_SOURCE_REPLACED',
-          aggregateType: 'WORK_NOTE',
-          aggregateId: params.noteId,
-          payload: {
-            sourceType: 'WORK_NOTE',
-            sourceId: params.noteId,
-            organizationId: params.organizationId,
-            projectId: params.projectId,
-            previousVersion: params.previousApprovedVersion,
-            version: params.version,
-          },
-          status: 'PENDING',
-          occurredAt: params.now,
-          createdAt: params.now,
-          updatedAt: params.now,
-        },
-        { session },
-      );
-    }
-    await outboxCol.insertOne(
+    await db.collection('outbox_events').insertOne(
       {
-        eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+        eventName: 'KNOWLEDGE_SOURCE_REVOKED',
         aggregateType: 'WORK_NOTE',
         aggregateId: params.noteId,
         payload: {
@@ -1580,7 +1525,7 @@ export class WorkNoteAgentDraftsService {
           organizationId: params.organizationId,
           projectId: params.projectId,
           version: params.version,
-          approvedAt: params.now.toISOString(),
+          reason: params.reason,
         },
         status: 'PENDING',
         occurredAt: params.now,
@@ -1593,7 +1538,9 @@ export class WorkNoteAgentDraftsService {
 
   private canonical(row: Document, actor: WorkNotesActor): CanonicalTaskNote {
     const authorId = String(row.authorUserId);
-    const manage = authorId === actor.userId || actor.canReview;
+    const isNonMemberManager = Boolean(actor.isManager && !actor.isLeader);
+    const manage =
+      !isNonMemberManager && (authorId === actor.userId || actor.canReview);
     const currentVersionNumber = Number(row.currentVersionNumber ?? 0);
     const provenance =
       row.provenance &&
@@ -1679,12 +1626,15 @@ export class WorkNoteAgentDraftsService {
       createdAt: createdAtIso,
       updatedAt: new Date(row.updatedAt as string).toISOString(),
       permissions: {
-        canCreate: true,
+        canCreate: !isNonMemberManager,
         canEdit: manage,
-        canDelete: manage,
+        canDelete:
+          manage && (reviewStatus !== 'APPROVED' || Boolean(actor.canReview)),
         canSubmit: false,
         canReview: Boolean(
-          actor.canReview && reviewStatus === 'PENDING_REVIEW',
+          actor.canReview &&
+          authorId !== actor.userId &&
+          reviewStatus === 'PENDING_REVIEW',
         ),
         canConfigure: false,
       },
@@ -1902,21 +1852,14 @@ export class WorkNoteAgentDraftsService {
             previous?.provenance as
               { aiChatSource?: TaskNoteAiChatSource } | undefined
           )?.aiChatSource;
-      const bodyCharCount = d.state.contentMarkdown.trim().length;
-      const effectiveAutoApprove =
-        bodyCharCount >= 30 ? input.autoApprove : false;
-      const shouldAutoApprove =
-        Boolean(actor.canReview) && effectiveAutoApprove !== false;
-      const reviewStatus: TaskNoteReviewStatus = shouldAutoApprove
-        ? 'APPROVED'
-        : 'PENDING_REVIEW';
+      const reviewStatus: TaskNoteReviewStatus = 'PENDING_REVIEW';
       const governance = this.buildReviewGovernanceOnSave({
         actor,
         noteId: String(noteId),
         version,
         now,
         previous,
-        autoApprove: effectiveAutoApprove,
+        autoApprove: false,
       });
       const provenance = {
         kind: 'AUTHOR_SAVE',
@@ -1969,6 +1912,8 @@ export class WorkNoteAgentDraftsService {
         const replaced = await db.collection('work_notes').replaceOne(
           {
             _id: noteId,
+            organizationId: d.organizationId,
+            projectId: d.projectId,
             status: 'CONFIRMED',
             currentVersionNumber: previous.currentVersionNumber ?? {
               $exists: false,
@@ -2028,13 +1973,15 @@ export class WorkNoteAgentDraftsService {
         }),
         { session },
       );
-      if (shouldAutoApprove) {
-        await this.appendTaskNoteKnowledgeOutbox(db, session, {
+      if (governance.previousApprovedVersion) {
+        // BE-DATA-003: Editing a previously approved Task Note reverts it to PENDING_REVIEW;
+        // emit durable SAG revocation inside the transaction so stale knowledge is removed.
+        await this.appendTaskNoteRevokedOutbox(db, session, {
           organizationId: actor.organizationId,
           projectId,
           noteId: String(noteId),
-          version,
-          previousApprovedVersion: governance.previousApprovedVersion,
+          version: governance.previousApprovedVersion,
+          reason: 'UPDATED_PENDING_REAPPROVAL',
           now,
         });
       }
@@ -2220,6 +2167,8 @@ export class WorkNoteAgentDraftsService {
       const replaced = await db.collection('work_notes').replaceOne(
         {
           _id: previous._id,
+          organizationId: oid(actor.organizationId),
+          projectId: oid(projectId),
           status: 'CONFIRMED',
           currentVersionNumber: input.expectedVersion,
         },
@@ -2240,13 +2189,13 @@ export class WorkNoteAgentDraftsService {
         },
         { session },
       );
-      if (actor.canReview) {
-        await this.appendTaskNoteKnowledgeOutbox(db, session, {
+      if (governance.previousApprovedVersion) {
+        await this.appendTaskNoteRevokedOutbox(db, session, {
           organizationId: actor.organizationId,
           projectId,
           noteId,
-          version,
-          previousApprovedVersion: governance.previousApprovedVersion,
+          version: governance.previousApprovedVersion,
+          reason: 'RESTORED_PENDING_REAPPROVAL',
           now,
         });
       }
@@ -2273,7 +2222,7 @@ export class WorkNoteAgentDraftsService {
       committedRestore = {
         title: String(row.title),
         version,
-        reviewStatus: actor.canReview ? 'APPROVED' : 'PENDING_REVIEW',
+        reviewStatus: 'PENDING_REVIEW',
       };
       return this.canonical(row, actor);
     });

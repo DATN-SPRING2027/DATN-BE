@@ -42,8 +42,20 @@ export class ChatRealtimeGateway
     private readonly chat: ChatApplicationService,
     private readonly realtime: ChatRealtimeService,
   ) {
+    const configuredOrigins = config
+      .get<string>('CHAT_ALLOWED_ORIGINS')
+      ?.trim();
+    const nodeEnv = String(
+      config.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    const defaultOrigins =
+      nodeEnv === 'production'
+        ? ''
+        : 'http://localhost:3000,http://127.0.0.1:3000';
     this.allowedOrigins = new Set(
-      (config.get<string>('CHAT_ALLOWED_ORIGINS') ?? 'http://localhost:3000')
+      (configuredOrigins || defaultOrigins)
         .split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
@@ -68,6 +80,14 @@ export class ChatRealtimeGateway
         client.close(1008, 'Realtime ticket expired');
         return;
       }
+      const organizationId =
+        typeof request.headers['x-organization-id'] === 'string'
+          ? request.headers['x-organization-id']
+          : undefined;
+      const expectedOrganizationId =
+        typeof request.headers['x-expected-organization-id'] === 'string'
+          ? request.headers['x-expected-organization-id']
+          : undefined;
       const credentials = this.chat.getSessionCredential({
         ...(typeof request.headers.authorization === 'string'
           ? { authorization: request.headers.authorization }
@@ -75,6 +95,8 @@ export class ChatRealtimeGateway
         ...(typeof request.headers.cookie === 'string'
           ? { cookie: request.headers.cookie }
           : {}),
+        ...(organizationId ? { organizationId } : {}),
+        ...(expectedOrganizationId ? { expectedOrganizationId } : {}),
       });
       const binding = this.chat.getSessionBinding(credentials);
       if (binding.tokenHash !== session.tokenHash) {
@@ -89,20 +111,23 @@ export class ChatRealtimeGateway
         client.close(1008, 'Realtime session expired');
         return;
       }
-      await this.realtime.register(
+      const registered = await this.realtime.register(
         client,
         actor,
         credentials,
         session.tokenHash,
         session.expiresAt,
       );
+      if (!registered) {
+        return;
+      }
       this.realtime.send(client, 'connected', { userId: actor.id });
     } catch (error) {
+      const status =
+        error instanceof HttpException ? error.getStatus() : undefined;
       client.close(
-        error instanceof HttpException && error.getStatus() === 401
-          ? 1008
-          : 1013,
-        error instanceof HttpException && error.getStatus() === 401
+        status === 401 || status === 403 || status === 409 ? 1008 : 1013,
+        status === 401 || status === 403 || status === 409
           ? 'Realtime session expired'
           : 'Realtime service unavailable',
       );
@@ -119,7 +144,13 @@ export class ChatRealtimeGateway
     @MessageBody() body: unknown,
   ) {
     const actor = this.realtime.getActor(client);
-    if (!actor || !isRecord(body) || typeof body.conversationId !== 'string') {
+    if (!actor) {
+      return this.error(client, 'CHAT_SESSION_REQUIRED');
+    }
+    if (!this.realtime.consumeSocketRateLimit(client, 'subscribe')) {
+      return this.error(client, 'CHAT_RATE_LIMITED');
+    }
+    if (!isRecord(body) || typeof body.conversationId !== 'string') {
       return this.error(client, 'CHAT_SUBSCRIBE_INVALID');
     }
     try {
@@ -139,6 +170,13 @@ export class ChatRealtimeGateway
     @ConnectedSocket() client: WebSocket,
     @MessageBody() body: unknown,
   ) {
+    const actor = this.realtime.getActor(client);
+    if (!actor) {
+      return this.error(client, 'CHAT_SESSION_REQUIRED');
+    }
+    if (!this.realtime.consumeSocketRateLimit(client, 'unsubscribe')) {
+      return this.error(client, 'CHAT_RATE_LIMITED');
+    }
     if (!isRecord(body) || typeof body.conversationId !== 'string') {
       return this.error(client, 'CHAT_SUBSCRIBE_INVALID');
     }
@@ -155,8 +193,13 @@ export class ChatRealtimeGateway
     @MessageBody() body: unknown,
   ) {
     const actor = this.realtime.getActor(client);
+    if (!actor) {
+      return this.error(client, 'CHAT_SESSION_REQUIRED');
+    }
+    if (!this.realtime.consumeSocketRateLimit(client, 'presence.watch')) {
+      return this.error(client, 'CHAT_RATE_LIMITED');
+    }
     if (
-      !actor ||
       !isRecord(body) ||
       !Array.isArray(body.userIds) ||
       !body.userIds.every((userId) => typeof userId === 'string')
@@ -177,8 +220,13 @@ export class ChatRealtimeGateway
     @MessageBody() body: unknown,
   ) {
     const actor = this.realtime.getActor(client);
+    if (!actor) {
+      return this.error(client, 'CHAT_SESSION_REQUIRED');
+    }
+    if (!this.realtime.consumeSocketRateLimit(client, 'typing')) {
+      return this.error(client, 'CHAT_RATE_LIMITED');
+    }
     if (
-      !actor ||
       !isRecord(body) ||
       typeof body.conversationId !== 'string' ||
       typeof body.isTyping !== 'boolean'
@@ -204,9 +252,14 @@ export class ChatRealtimeGateway
 
   @SubscribeMessage('heartbeat')
   heartbeat(@ConnectedSocket() client: WebSocket) {
-    return this.realtime.getActor(client)
-      ? { event: 'heartbeat.ack', data: { at: Date.now() } }
-      : this.error(client, 'CHAT_SESSION_REQUIRED');
+    const actor = this.realtime.getActor(client);
+    if (!actor) {
+      return this.error(client, 'CHAT_SESSION_REQUIRED');
+    }
+    if (!this.realtime.consumeSocketRateLimit(client, 'heartbeat')) {
+      return this.error(client, 'CHAT_RATE_LIMITED');
+    }
+    return { event: 'heartbeat.ack', data: { at: Date.now() } };
   }
 
   private error(client: WebSocket, code: string) {

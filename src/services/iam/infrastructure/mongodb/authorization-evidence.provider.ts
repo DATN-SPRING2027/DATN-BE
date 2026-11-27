@@ -269,6 +269,46 @@ export class MongoAuthorizationEvidenceProvider implements AuthorizationEvidence
     };
   }
 
+  async loadAllPlatformPermissions(
+    userId: string,
+  ): Promise<PlatformPermissionEvidence | null> {
+    if (!validId(userId)) return null;
+    const assignments = await this.model<PlatformAuthorityAssignmentDocument>(
+      'platform_authority_assignments',
+    )
+      .find(
+        {
+          subjectUserId: new Types.ObjectId(userId),
+          status: 'ACTIVE',
+        },
+        {
+          subjectUserId: 1,
+          grantedAt: 1,
+          grantedBy: 1,
+          permission: 1,
+          scope: 1,
+          status: 1,
+          expiresAt: 1,
+          revokedAt: 1,
+        },
+      )
+      .lean()
+      .exec();
+
+    return {
+      assignments: assignments.map((assignment) => ({
+        subjectUserId: String(assignment.subjectUserId),
+        grantedAt: assignment.grantedAt,
+        grantedBy: String(assignment.grantedBy),
+        permission: assignment.permission,
+        scope: assignment.scope,
+        status: assignment.status,
+        expiresAt: assignment.expiresAt ?? null,
+        revokedAt: assignment.revokedAt ?? null,
+      })),
+    };
+  }
+
   private model<T>(collection: string): Model<T> {
     const model = this.connection?.models[modelName(collection)] as
       Model<T> | undefined;

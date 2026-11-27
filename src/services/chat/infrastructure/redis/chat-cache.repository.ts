@@ -91,49 +91,78 @@ export function cachedChatRepository(
             // Preserve the repository's structured membership error.
             return original.apply(target, args) as unknown;
           }
-          const version = (await redis.get(generation)) ?? '0';
-          const digest = createHash('sha256')
-            .update(JSON.stringify(args))
-            .digest('hex');
-          const cacheKey = `${prefix}:chat:read:${String(key)}:${actor.organizationId}:${actor.id}:${version}:${digest}`;
-          const cached = await redis.get(cacheKey);
+          let cacheKey: string | undefined;
+          let cached: string | null = null;
+          try {
+            const version = (await redis.get(generation)) ?? '0';
+            const digest = createHash('sha256')
+              .update(JSON.stringify(args))
+              .digest('hex');
+            cacheKey = `${prefix}:chat:read:${String(key)}:${actor.organizationId}:${actor.id}:${version}:${digest}`;
+            cached = await redis.get(cacheKey);
+          } catch {
+            // Soft-degrade to MongoDB when Redis is unavailable.
+          }
           if (cached) {
-            const result = JSON.parse(cached) as {
-              data?: { id?: string; conversationId?: string }[];
-              nextCursor?: { createdAt: string | Date };
-            };
-            if (result.nextCursor)
-              result.nextCursor.createdAt = new Date(
-                result.nextCursor.createdAt,
-              );
-            if (unscopedReads.has(String(key)) && result.data) {
-              const permitted = await Promise.all(
-                result.data.map((item) =>
-                  target.isMember(
-                    actor,
-                    String(key) === 'listConversations'
-                      ? String(item.id)
-                      : String(item.conversationId),
-                  ),
-                ),
-              );
-              // Regenerate pagination from live membership instead of returning an incomplete page.
-              if (permitted.some((value) => !value))
-                return original.apply(target, args) as unknown;
+            let result:
+              | {
+                  data?: { id?: string; conversationId?: string }[];
+                  nextCursor?: { createdAt: string | Date };
+                }
+              | undefined;
+            try {
+              result = JSON.parse(cached) as {
+                data?: { id?: string; conversationId?: string }[];
+                nextCursor?: { createdAt: string | Date };
+              };
+            } catch {
+              result = undefined;
             }
-            return result;
+            if (result) {
+              if (result.nextCursor)
+                result.nextCursor.createdAt = new Date(
+                  result.nextCursor.createdAt,
+                );
+              if (unscopedReads.has(String(key)) && result.data) {
+                const permitted = await Promise.all(
+                  result.data.map((item) =>
+                    target.isMember(
+                      actor,
+                      String(key) === 'listConversations'
+                        ? String(item.id)
+                        : String(item.conversationId),
+                    ),
+                  ),
+                );
+                // Regenerate pagination from live membership instead of returning an incomplete page.
+                if (permitted.some((value) => !value))
+                  return original.apply(target, args) as unknown;
+              }
+              return result;
+            }
           }
           const result: unknown = await original.apply(target, args);
-          await redis.set(cacheKey, JSON.stringify(result), 15);
+          if (cacheKey) {
+            try {
+              await redis.set(cacheKey, JSON.stringify(result), 15);
+            } catch {
+              // Cache write failures must never break persisted reads.
+            }
+          }
           return result;
         }
         const result: unknown = await original.apply(target, args);
-        await redis.increment(generation, 86400);
-        if (historyWrites.has(String(key)))
-          await redis.increment(
-            `${prefix}:chat:history-version:${actor.organizationId}:${String(args[1])}`,
-            86400,
-          );
+        try {
+          await redis.increment(generation, 86400);
+          if (historyWrites.has(String(key))) {
+            await redis.increment(
+              `${prefix}:chat:history-version:${actor.organizationId}:${String(args[1])}`,
+              86400,
+            );
+          }
+        } catch {
+          // Cache invalidation failures must never fail persisted writes.
+        }
         return result;
       };
     },

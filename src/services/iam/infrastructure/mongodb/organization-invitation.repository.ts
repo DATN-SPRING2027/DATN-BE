@@ -193,6 +193,8 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
       row.status === 'PENDING' && row.expiresAt.getTime() <= now.getTime()
         ? 'EXPIRED'
         : row.status;
+    // SEC-BE-006: Redact invitedEmail & organizationName once an invitation is terminal.
+    const isPending = status === 'PENDING';
     return {
       invitation: {
         id: row._id.toHexString(),
@@ -201,8 +203,8 @@ export class MongoOrganizationInvitationRepository implements OrganizationInvita
         version: row.version,
         expiresAt: row.expiresAt.toISOString(),
         createdAt: row.createdAt.toISOString(),
-        invitedEmail: row.email,
-        organizationName: organization.name,
+        invitedEmail: isPending ? row.email : '',
+        organizationName: isPending ? organization.name : '',
       },
     };
   }

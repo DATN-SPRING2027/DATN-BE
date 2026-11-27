@@ -205,7 +205,9 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
     expect(candidates.some((c) => c.kind === 'PROJECT_DOCUMENT')).toBe(true);
   });
 
-  it('enforces Lifecycle KNOWLEDGE_OBJECT VERIFIED state and RESTRICTED confidentiality (A04 / A13)', async () => {
+  it('enforces Lifecycle KNOWLEDGE_OBJECT VERIFIED state, strict RESTRICTED ACL without leader bypass, and teamId membership (SEC-AUTH-014 / BE-PERF-005)', async () => {
+    const teamId = new Types.ObjectId('751a2b3c4d5e6f7a8b9c0d99');
+    const smeId = new Types.ObjectId('851a2b3c4d5e6f7a8b9c0d39');
     const koRow = {
       _id: koId,
       organizationId: orgId,
@@ -214,29 +216,112 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
       status: 'VERIFIED',
       currentVersionNumber: 1,
       ownerUserId: departingId.toHexString(),
+      smeUserId: smeId.toHexString(),
       confidentiality: 'RESTRICTED',
     };
-    const verRow = {
-      _id: new Types.ObjectId(),
+    const teamKoId = new Types.ObjectId('951a2b3c4d5e6f7a8b9c0d45');
+    const teamKoRow = {
+      _id: teamKoId,
       organizationId: orgId,
       projectId,
-      knowledgeObjectId: koId,
-      versionNumber: 1,
-      title: 'Production Incident Escalation Runbook',
-      contentMarkdown: 'Escalate SEV-1 incidents to on-call lead.',
-      summary: 'SEV-1 escalation steps',
+      teamId,
+      title: 'Payments Team Internal Runbook',
+      status: 'VERIFIED',
+      currentVersionNumber: 1,
+      ownerUserId: departingId.toHexString(),
+      confidentiality: 'INTERNAL',
     };
+    const verRows = [
+      {
+        _id: new Types.ObjectId(),
+        organizationId: orgId,
+        projectId,
+        knowledgeObjectId: koId,
+        versionNumber: 1,
+        title: 'Production Incident Escalation Runbook',
+        contentMarkdown: 'Escalate SEV-1 incidents to on-call lead.',
+        summary: 'SEV-1 escalation steps',
+      },
+      {
+        _id: new Types.ObjectId(),
+        organizationId: orgId,
+        projectId,
+        knowledgeObjectId: teamKoId,
+        versionNumber: 1,
+        title: 'Payments Team Internal Runbook',
+        contentMarkdown: 'Payments settlement reconciliation.',
+        summary: 'Settlement steps',
+      },
+    ];
+    const allKos = [koRow, teamKoRow];
+    const teamMemberships = [
+      {
+        organizationId: orgId,
+        teamId,
+        userId: departingId.toHexString(),
+        status: 'ACTIVE',
+      },
+    ];
+
+    const koFindSpy = jest.fn(() => ({
+      sort: () => ({
+        limit: () => ({ toArray: () => Promise.resolve(allKos) }),
+      }),
+      toArray: () => Promise.resolve(allKos),
+    }));
+    const verFindSpy = jest.fn(() => ({
+      toArray: () => Promise.resolve(verRows),
+    }));
 
     const connection = {
       db: {
         collection: (name: string) => ({
-          findOne: jest.fn(() =>
-            Promise.resolve(name === 'knowledge_objects' ? koRow : verRow),
-          ),
+          findOne: jest.fn((filter: Record<string, unknown>) => {
+            if (name === 'knowledge_objects') {
+              const targetId =
+                filter._id instanceof Types.ObjectId
+                  ? filter._id.toHexString()
+                  : typeof filter._id === 'string'
+                    ? filter._id
+                    : '';
+              return Promise.resolve(
+                allKos.find((k) => k._id.toHexString() === targetId) ?? null,
+              );
+            }
+            const targetKoId =
+              filter.knowledgeObjectId instanceof Types.ObjectId
+                ? filter.knowledgeObjectId.toHexString()
+                : typeof filter.knowledgeObjectId === 'string'
+                  ? filter.knowledgeObjectId
+                  : '';
+            return Promise.resolve(
+              verRows.find(
+                (v) => v.knowledgeObjectId.toHexString() === targetKoId,
+              ) ?? null,
+            );
+          }),
+          find: name === 'knowledge_objects' ? koFindSpy : verFindSpy,
+        }),
+      },
+    };
+
+    const iamConnection = {
+      db: {
+        collection: (name: string) => ({
+          findOne: jest.fn((filter: Record<string, unknown>) => {
+            if (name !== 'team_memberships') return Promise.resolve(null);
+            const candidates = (
+              (filter.userId as { $in?: unknown[] })?.$in ?? []
+            ).map((v) =>
+              v instanceof Types.ObjectId ? v.toHexString() : String(v),
+            );
+            return Promise.resolve(
+              teamMemberships.find((m) => candidates.includes(m.userId)) ??
+                null,
+            );
+          }),
           find: jest.fn(() => ({
-            sort: () => ({
-              limit: () => ({ toArray: () => Promise.resolve([koRow]) }),
-            }),
+            toArray: () => Promise.resolve(teamMemberships),
           })),
         }),
       },
@@ -244,8 +329,10 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
 
     const lifecycleSvc = new HandoverLifecycleSourceService(
       connection as never,
+      iamConnection as never,
     );
 
+    // SEC-AUTH-014: Project leader without owner/SME/ACL match MUST NOT read RESTRICTED knowledge object
     const forLeader = await lifecycleSvc.evaluateSource(
       {
         organizationId: orgId.toHexString(),
@@ -256,8 +343,34 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
       },
       { kind: 'KNOWLEDGE_OBJECT', id: koId.toHexString(), version: 1 },
     );
-    expect(forLeader.readable).toBe(true);
+    expect(forLeader.readable).toBe(false);
 
+    // Owner and SME CAN read RESTRICTED knowledge object
+    const forOwner = await lifecycleSvc.evaluateSource(
+      {
+        organizationId: orgId.toHexString(),
+        projectId: projectId.toHexString(),
+        userId: departingId.toHexString(),
+        isProjectMember: true,
+        isProjectLeader: false,
+      },
+      { kind: 'KNOWLEDGE_OBJECT', id: koId.toHexString(), version: 1 },
+    );
+    expect(forOwner.readable).toBe(true);
+
+    const forSme = await lifecycleSvc.evaluateSource(
+      {
+        organizationId: orgId.toHexString(),
+        projectId: projectId.toHexString(),
+        userId: smeId.toHexString(),
+        isProjectMember: true,
+        isProjectLeader: false,
+      },
+      { kind: 'KNOWLEDGE_OBJECT', id: koId.toHexString(), version: 1 },
+    );
+    expect(forSme.readable).toBe(true);
+
+    // Member B cannot read RESTRICTED knowledge object
     const forMemberB = await lifecycleSvc.evaluateSource(
       {
         organizationId: orgId.toHexString(),
@@ -269,6 +382,63 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
       { kind: 'KNOWLEDGE_OBJECT', id: koId.toHexString(), version: 1 },
     );
     expect(forMemberB.readable).toBe(false);
+
+    // SEC-AUTH-014: Team-scoped INTERNAL knowledge object denies non-team member, allows active team member
+    const teamForOutsider = await lifecycleSvc.evaluateSource(
+      {
+        organizationId: orgId.toHexString(),
+        projectId: projectId.toHexString(),
+        userId: memberBId.toHexString(),
+        isProjectMember: true,
+        isProjectLeader: false,
+      },
+      { kind: 'KNOWLEDGE_OBJECT', id: teamKoId.toHexString(), version: 1 },
+    );
+    expect(teamForOutsider.readable).toBe(false);
+
+    const teamForMember = await lifecycleSvc.evaluateSource(
+      {
+        organizationId: orgId.toHexString(),
+        projectId: projectId.toHexString(),
+        userId: departingId.toHexString(),
+        isProjectMember: true,
+        isProjectLeader: false,
+      },
+      { kind: 'KNOWLEDGE_OBJECT', id: teamKoId.toHexString(), version: 1 },
+    );
+    expect(teamForMember.readable).toBe(true);
+
+    // BE-PERF-005: Batch multi-viewer evaluation issues 1 knowledge_objects query + 1 knowledge_versions query
+    koFindSpy.mockClear();
+    verFindSpy.mockClear();
+    const matrix = await lifecycleSvc.evaluateSourcesBatchForViewers(
+      [
+        {
+          organizationId: orgId.toHexString(),
+          projectId: projectId.toHexString(),
+          userId: leaderId.toHexString(),
+          isProjectMember: true,
+          isProjectLeader: true,
+        },
+        {
+          organizationId: orgId.toHexString(),
+          projectId: projectId.toHexString(),
+          userId: departingId.toHexString(),
+          isProjectMember: true,
+          isProjectLeader: false,
+        },
+      ],
+      [
+        { kind: 'KNOWLEDGE_OBJECT', id: koId.toHexString(), version: 1 },
+        { kind: 'KNOWLEDGE_OBJECT', id: teamKoId.toHexString(), version: 1 },
+      ],
+    );
+    expect(koFindSpy).toHaveBeenCalledTimes(1);
+    expect(verFindSpy).toHaveBeenCalledTimes(1);
+    expect(matrix[0][0].readable).toBe(false);
+    expect(matrix[0][1].readable).toBe(false);
+    expect(matrix[1][0].readable).toBe(true);
+    expect(matrix[1][1].readable).toBe(true);
   });
 
   it('never leaks newer v2 content when evaluating pinned v1 of TASK_NOTE or WORK_REPORT (F03)', async () => {
@@ -334,7 +504,13 @@ describe('Handover Capture & Lifecycle Source Boundary Contracts (C04 / A03 / A0
           find: jest.fn(() => ({
             toArray: () =>
               Promise.resolve(
-                name === 'work_note_versions' ? noteVersions : [],
+                name === 'work_note_versions'
+                  ? noteVersions
+                  : name === 'work_notes'
+                    ? [noteLiveV2]
+                    : name === 'work_reports'
+                      ? [reportLiveV2]
+                      : [],
               ),
           })),
         }),

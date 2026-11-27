@@ -167,7 +167,14 @@ export class NotificationService {
         readAt: updated.readAt,
       });
     }
-    return updated;
+    // SEC-AUTH-011: Sanitize returned DTO identically to listForUser so revoked/deleted
+    // notifications never leak original title/message/target URL through markAsRead.
+    const [sanitized] = await this.repository.sanitizeItemsForListing(
+      userId,
+      [updated],
+      organizationId ?? updated.organizationId,
+    );
+    return sanitized ?? updated;
   }
 
   async markAllAsRead(
@@ -615,6 +622,22 @@ export class NotificationService {
     });
   }
 
+  async findExistingDeadlineEventKeys(
+    pairs: ReadonlyArray<{ recipientId: string; eventKey: string }>,
+  ): Promise<Set<string>> {
+    return this.repository.findExistingEventKeys(pairs);
+  }
+
+  async filterActiveTaskDeadlineMemberships(
+    entries: ReadonlyArray<{
+      organizationId: string;
+      projectId: string;
+      assigneeUserId: string;
+    }>,
+  ): Promise<Set<string>> {
+    return this.repository.filterActiveTaskDeadlineMemberships(entries);
+  }
+
   async notifyTaskDeadlineApproaching(input: {
     assigneeUserId: string;
     organizationId: string;
@@ -622,7 +645,18 @@ export class NotificationService {
     taskId: string;
     taskTitle: string;
     dueDateIso: string;
+    skipMembershipCheck?: boolean;
   }): Promise<NotificationItemDto[]> {
+    // SEC-AUTH-016: Verify recipient is still an active member of both organization and project.
+    if (!input.skipMembershipCheck) {
+      const verifiedRecipients =
+        await this.repository.filterActiveProjectRecipients(
+          input.organizationId,
+          input.projectId,
+          [input.assigneeUserId],
+        );
+      if (verifiedRecipients.length === 0) return [];
+    }
     return this.emitSafe({
       type: 'TASK_DEADLINE_APPROACHING',
       actorId: null,
@@ -650,7 +684,18 @@ export class NotificationService {
     taskId: string;
     taskTitle: string;
     dueDateIso: string;
+    skipMembershipCheck?: boolean;
   }): Promise<NotificationItemDto[]> {
+    // SEC-AUTH-016: Verify recipient is still an active member of both organization and project.
+    if (!input.skipMembershipCheck) {
+      const verifiedRecipients =
+        await this.repository.filterActiveProjectRecipients(
+          input.organizationId,
+          input.projectId,
+          [input.assigneeUserId],
+        );
+      if (verifiedRecipients.length === 0) return [];
+    }
     return this.emitSafe({
       type: 'TASK_DEADLINE_OVERDUE',
       actorId: null,

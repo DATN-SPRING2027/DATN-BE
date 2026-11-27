@@ -34,6 +34,7 @@ import {
   type PlatformLoginResult,
   type LoginResult,
   readCookie,
+  RefreshConcurrentConflictError,
   RefreshCsrfError,
   validCsrfPair,
 } from '../application/authentication/authentication.application.service';
@@ -481,6 +482,13 @@ export class AuthenticationController {
         throw new ForbiddenException({
           code: 'AUTH_CSRF_INVALID',
           message: 'CSRF validation failed.',
+        });
+      }
+      if (error instanceof RefreshConcurrentConflictError) {
+        throw new UnauthorizedException({
+          code: 'AUTH_REFRESH_CONCURRENT',
+          message:
+            'Refresh token was recently rotated by a concurrent request. Retry with the updated session.',
         });
       }
       if (error instanceof UnauthorizedException) {

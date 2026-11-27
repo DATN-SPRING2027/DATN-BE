@@ -111,13 +111,51 @@ function readinessStatus(
       : 'UNAVAILABLE';
 }
 
+function isMonolithRuntime(config: ConfigService): boolean {
+  const mode =
+    config.get<string>('CONTINUUM_RUNTIME_MODE') ??
+    process.env.CONTINUUM_RUNTIME_MODE;
+  return mode === 'monolith';
+}
+
+function isLocalDefaultServiceUrl(
+  configuredUrl: string | undefined,
+  defaultUrl: string,
+): boolean {
+  if (!configuredUrl || configuredUrl.trim() === '') return true;
+  const normalized = configuredUrl.trim().replace(/\/$/, '');
+  return (
+    normalized === defaultUrl ||
+    normalized === defaultUrl.replace('127.0.0.1', 'localhost')
+  );
+}
+
 @Injectable()
 export class HttpPlatformServiceOperationsRepository implements PlatformServiceOperationsRepository {
   constructor(private readonly config: ConfigService) {}
 
   async listServices(): Promise<{ data: PlatformServiceOperationsSummary[] }> {
+    const monolithBaseUrl = isMonolithRuntime(this.config)
+      ? (
+          this.config.get<string>('IAM_SERVICE_URL') ??
+          serviceDefinitions.iam.defaultUrl
+        ).replace(/\/$/, '')
+      : null;
+    let sharedMonolithProbe: Promise<ReadinessPayload | null> | null = null;
+    const getSharedMonolithProbe = (): Promise<ReadinessPayload | null> => {
+      if (!sharedMonolithProbe) {
+        sharedMonolithProbe = this.fetchReadiness(
+          monolithBaseUrl ?? serviceDefinitions.iam.defaultUrl,
+          true,
+        );
+      }
+      return sharedMonolithProbe;
+    };
+
     const data = await Promise.all(
-      PLATFORM_SERVICE_IDS.map((id) => this.probeService(id)),
+      PLATFORM_SERVICE_IDS.map((id) =>
+        this.probeService(id, monolithBaseUrl ? getSharedMonolithProbe : null),
+      ),
     );
     return { data };
   }
@@ -128,18 +166,51 @@ export class HttpPlatformServiceOperationsRepository implements PlatformServiceO
     return this.probeService(id);
   }
 
+  private async fetchReadiness(
+    baseUrl: string,
+    preferMonolithPublicPath = false,
+  ): Promise<ReadinessPayload | null> {
+    const cleanBase = baseUrl.replace(/\/$/, '');
+    const primaryPath = preferMonolithPublicPath
+      ? '/api/v1/health/ready'
+      : '/internal/health/ready';
+    const fallbackPath = preferMonolithPublicPath
+      ? '/internal/health/ready'
+      : '/api/v1/health/ready';
+
+    let response = await fetch(`${cleanBase}${primaryPath}`, {
+      signal: AbortSignal.timeout(probeTimeoutMs),
+    });
+    if (response.status === 404) {
+      response = await fetch(`${cleanBase}${fallbackPath}`, {
+        signal: AbortSignal.timeout(probeTimeoutMs),
+      });
+    }
+    return parseReadinessPayload(await response.json());
+  }
+
   private async probeService(
     id: PlatformServiceId,
+    getSharedMonolithProbe?: (() => Promise<ReadinessPayload | null>) | null,
   ): Promise<PlatformServiceOperationsSummary> {
     const definition = serviceDefinitions[id];
     const baseUrl = this.config.get<string>(definition.configKey);
     const checkedAt = new Date().toISOString();
+    const useMonolithSelfProbe =
+      isMonolithRuntime(this.config) &&
+      isLocalDefaultServiceUrl(baseUrl, definition.defaultUrl);
+
     try {
-      const response = await fetch(
-        `${(baseUrl ?? definition.defaultUrl).replace(/\/$/, '')}/internal/health/ready`,
-        { signal: AbortSignal.timeout(probeTimeoutMs) },
-      );
-      const payload = parseReadinessPayload(await response.json());
+      const payload = useMonolithSelfProbe
+        ? await (getSharedMonolithProbe
+            ? getSharedMonolithProbe()
+            : this.fetchReadiness(
+                this.config.get<string>('IAM_SERVICE_URL') ??
+                  serviceDefinitions.iam.defaultUrl,
+                true,
+              ))
+        : await this.fetchReadiness(baseUrl ?? definition.defaultUrl, false);
+
       if (!payload) {
         return this.unavailable(id, checkedAt, 'Health response was invalid.');
       }
@@ -155,7 +226,9 @@ export class HttpPlatformServiceOperationsRepository implements PlatformServiceO
         lastCheckedAt: checkedAt,
         diagnosticsSummary:
           readiness === 'READY'
-            ? 'Service and configured dependencies are ready.'
+            ? useMonolithSelfProbe
+              ? 'Monolith-hosted service and configured dependencies are ready.'
+              : 'Service and configured dependencies are ready.'
             : readiness === 'DEGRADED'
               ? 'Service is live; one or more configured dependencies are unavailable.'
               : 'Service is live; configured dependencies are unavailable.',

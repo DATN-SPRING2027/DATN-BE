@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Readable } from 'node:stream';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -8,6 +9,12 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+
+export interface R2UploadUrlOptions {
+  contentLength?: number;
+  checksumSha256Base64?: string;
+}
 
 export interface R2DownloadUrlOptions {
   responseContentDisposition?: string;
@@ -73,6 +80,30 @@ export class R2Storage implements OnModuleDestroy {
     return Buffer.from(await result.Body.transformToByteArray());
   }
 
+  async getObjectStream(key: string): Promise<Readable> {
+    const result = await this.client().send(
+      new GetObjectCommand({ Bucket: this.bucketName(), Key: key }),
+    );
+    if (!result.Body) throw new Error('File is unavailable');
+    if (result.Body instanceof Readable) {
+      return result.Body;
+    }
+    if (
+      typeof (result.Body as { transformToWebStream?: () => unknown })
+        .transformToWebStream === 'function'
+    ) {
+      return Readable.fromWeb(
+        (
+          result.Body as {
+            transformToWebStream: () => Parameters<typeof Readable.fromWeb>[0];
+          }
+        ).transformToWebStream(),
+      );
+    }
+    const bytes = Buffer.from(await result.Body.transformToByteArray());
+    return Readable.from([bytes]);
+  }
+
   async inspectObjectPrefix(
     key: string,
     maxBytes = 64,
@@ -122,6 +153,7 @@ export class R2Storage implements OnModuleDestroy {
     key: string,
     contentType: string,
     expiresInSeconds = 900,
+    options?: R2UploadUrlOptions,
   ): Promise<string> {
     return getSignedUrl(
       this.client(),
@@ -129,6 +161,14 @@ export class R2Storage implements OnModuleDestroy {
         Bucket: this.bucketName(),
         Key: key,
         ContentType: contentType,
+        ...(typeof options?.contentLength === 'number' &&
+        Number.isSafeInteger(options.contentLength) &&
+        options.contentLength > 0
+          ? { ContentLength: options.contentLength }
+          : {}),
+        ...(options?.checksumSha256Base64
+          ? { ChecksumSHA256: options.checksumSha256Base64 }
+          : {}),
       }),
       { expiresIn: expiresInSeconds },
     );
@@ -160,6 +200,7 @@ export class R2Storage implements OnModuleDestroy {
       throw new Error('R2 storage is not configured');
     }
     if (!this.s3Client) {
+      // BE-REL-006: Bounded HTTP connection & socket timeouts on S3/R2 SDK client.
       this.s3Client = new S3Client({
         region: 'auto',
         endpoint: this.endpoint,
@@ -167,6 +208,10 @@ export class R2Storage implements OnModuleDestroy {
           accessKeyId: this.accessKeyId,
           secretAccessKey: this.secretAccessKey,
         },
+        requestHandler: new NodeHttpHandler({
+          connectionTimeout: 5_000,
+          socketTimeout: 30_000,
+        }),
       });
     }
     return this.s3Client;

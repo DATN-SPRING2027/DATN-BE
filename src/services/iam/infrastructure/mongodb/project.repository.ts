@@ -654,6 +654,9 @@ export class MongoProjectRepository implements ProjectRepository {
     search?: string,
   ): Promise<ProjectOrganizationMemberCandidate[]> {
     if (!validId(organizationId) || !validId(actorUserId)) return [];
+    // SEC-AUTH-012: Require >= 2 non-whitespace characters to prevent blank-query org directory dump.
+    const trimmedSearch = search?.trim() ?? '';
+    if (trimmedSearch.length < 2) return [];
     const usersModel = this.connection?.models[name('users')] as
       Model<UserSummaryDocument> | undefined;
     if (!usersModel) return [];
@@ -677,14 +680,12 @@ export class MongoProjectRepository implements ProjectRepository {
       .filter((id) => String(id).toLowerCase() !== actorUserId.toLowerCase());
     if (candidateObjectIds.length === 0) return [];
 
+    const pattern = new RegExp(escapeRegExp(trimmedSearch), 'i');
     const userFilter: Record<string, unknown> = {
       _id: { $in: candidateObjectIds },
       status: 'ACTIVE',
+      $or: [{ fullName: pattern }, { email: pattern }],
     };
-    if (search && search.trim().length > 0) {
-      const pattern = new RegExp(escapeRegExp(search.trim()), 'i');
-      userFilter.$or = [{ fullName: pattern }, { email: pattern }];
-    }
 
     const users = await usersModel
       .find(userFilter, { _id: 1, email: 1, fullName: 1, avatarUrl: 1 })

@@ -45,6 +45,8 @@
     "test:organization-role-reconciliation": "node --test scripts/organization-role-reconciliation.test.mjs",
     "test:organization-role-reconciliation:mongodb": "node --test scripts/organization-role-reconciliation.mongodb.test.mjs",
     "test:migrations:plan": "node --test scripts/migrations/*.plan.test.mjs",
+    "migrate:audit-remediation-indexes": "node scripts/migrations/20261127-audit-remediation-indexes.mjs",
+    "test:audit-remediation-indexes:plan": "node --test scripts/migrations/20261127-audit-remediation-indexes.plan.test.mjs",
     "migrate:handover-v2": "node scripts/migrations/20261028-handover-v2.mjs",
     "test:handover-v2:plan": "node --test scripts/migrations/handover-v2.plan.test.mjs",
     "test:handover-v2:mongodb": "node --test scripts/migrations/handover-v2.mongodb.test.mjs",
@@ -145,7 +147,7 @@
     "typescript-eslint": "^8.20.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "overrides": {
     "multer": "2.5.0"

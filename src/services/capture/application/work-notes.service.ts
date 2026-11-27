@@ -16,10 +16,13 @@ import { Types, type ClientSession, type Connection } from 'mongoose';
 import {
   createHash,
   createHmac,
+  randomBytes,
   randomUUID,
   timingSafeEqual,
 } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import type { Document, Db } from 'mongodb';
+import { RedisService } from '../infrastructure/redis/redis.service';
 import { CAPTURE_PERSISTENCE } from '../infrastructure/persistence';
 import {
   AuditService,
@@ -326,8 +329,55 @@ const isActorLeader = (actor: WorkNotesActor): boolean =>
   Boolean(actor.isLeader) || (actor.canReview && !actor.isManager);
 const isActorPureMember = (actor: WorkNotesActor): boolean =>
   !isActorManager(actor) && !isActorLeader(actor);
+const isNonMemberManager = (actor: WorkNotesActor): boolean =>
+  isActorManager(actor) && !actor.isLeader;
 const escapeRegex = (value: string): string =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const BULK_ACTION_CONCURRENCY = 6;
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let nextIndex = 0;
+  const count = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      while (nextIndex < items.length) {
+        const idx = nextIndex++;
+        await worker(items[idx]);
+      }
+    }),
+  );
+}
+
+function sanitizeClientErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof HttpException) {
+    const response = err.getResponse();
+    if (
+      response &&
+      typeof response === 'object' &&
+      typeof (response as { message?: unknown }).message === 'string'
+    ) {
+      const msg = (response as { message: string }).message.trim();
+      if (
+        msg &&
+        !/https?:\/\/|mongodb|redis|ECONN|ENOTFOUND|stack/i.test(msg)
+      ) {
+        return msg.slice(0, 300);
+      }
+    }
+    if (typeof response === 'string' && response.trim()) {
+      if (!/https?:\/\/|mongodb|redis|ECONN|ENOTFOUND|stack/i.test(response)) {
+        return response.trim().slice(0, 300);
+      }
+    }
+  }
+  return fallback;
+}
 
 const OLE2_SIGNATURE = Buffer.from([
   0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1,
@@ -341,8 +391,117 @@ function isTextBuffer(bytes: Buffer): boolean {
   return !sample.includes(0);
 }
 
-const isZipBuffer = (bytes: Buffer) =>
-  bytes.subarray(0, 2).toString('ascii') === 'PK';
+function isSafeXmlBuffer(bytes: Buffer): boolean {
+  if (!isTextBuffer(bytes)) return false;
+  const textSample = bytes
+    .subarray(0, Math.min(bytes.length, 262_144))
+    .toString('utf-8');
+  // SEC-BE-011: Reject XML XXE declarations (DOCTYPE / ENTITY).
+  if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(textSample)) {
+    return false;
+  }
+  return true;
+}
+
+const ZIP_MAX_ENTRIES = 5_000;
+const ZIP_MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+const ZIP_MAX_COMPRESSION_RATIO = 100;
+
+function validateZipArchiveStructure(
+  bytes: Buffer,
+  requiredEntry?: string,
+): boolean {
+  // SEC-BE-011: Require full ZIP archive structure (PK\x03\x04 local header + EOCD + central directory).
+  if (bytes.length < 22) return false;
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) return false;
+  const isLocalHeader = bytes[2] === 0x03 && bytes[3] === 0x04;
+  if (!isLocalHeader) return false;
+
+  // Locate ZIP End of Central Directory (PK\x05\x06) within trailing 65KB
+  const minEocdOffset = Math.max(0, bytes.length - 65_557);
+  let eocdOffset = -1;
+  for (let i = bytes.length - 22; i >= minEocdOffset; i -= 1) {
+    if (
+      bytes[i] === 0x50 &&
+      bytes[i + 1] === 0x4b &&
+      bytes[i + 2] === 0x05 &&
+      bytes[i + 3] === 0x06
+    ) {
+      eocdOffset = i;
+      break;
+    }
+  }
+  if (eocdOffset < 0) return false;
+
+  const totalEntries = bytes.readUInt16LE(eocdOffset + 10);
+  const centralDirSize = bytes.readUInt32LE(eocdOffset + 12);
+  const centralDirOffset = bytes.readUInt32LE(eocdOffset + 16);
+  if (
+    totalEntries === 0 ||
+    totalEntries > ZIP_MAX_ENTRIES ||
+    centralDirOffset + centralDirSize > eocdOffset
+  ) {
+    return false;
+  }
+
+  let cursor = centralDirOffset;
+  let totalUncompressed = 0;
+  let totalCompressed = 0;
+  let foundRequired = !requiredEntry;
+
+  for (let i = 0; i < totalEntries; i += 1) {
+    if (cursor + 46 > centralDirOffset + centralDirSize) return false;
+    if (
+      bytes[cursor] !== 0x50 ||
+      bytes[cursor + 1] !== 0x4b ||
+      bytes[cursor + 2] !== 0x01 ||
+      bytes[cursor + 3] !== 0x02
+    ) {
+      return false;
+    }
+    const compressedSize = bytes.readUInt32LE(cursor + 20);
+    const uncompressedSize = bytes.readUInt32LE(cursor + 24);
+    const fileNameLen = bytes.readUInt16LE(cursor + 28);
+    const extraLen = bytes.readUInt16LE(cursor + 30);
+    const commentLen = bytes.readUInt16LE(cursor + 32);
+    const nextCursor = cursor + 46 + fileNameLen + extraLen + commentLen;
+    if (nextCursor > centralDirOffset + centralDirSize) return false;
+
+    const entryName = bytes
+      .subarray(cursor + 46, cursor + 46 + fileNameLen)
+      .toString('utf-8');
+    // Reject zip-slip traversal paths
+    if (
+      entryName.startsWith('/') ||
+      entryName.startsWith('\\') ||
+      /(^|[\\/])\.\.([\\/]|$)/.test(entryName)
+    ) {
+      return false;
+    }
+    if (requiredEntry && entryName === requiredEntry) {
+      foundRequired = true;
+    }
+    totalCompressed += compressedSize;
+    totalUncompressed += uncompressedSize;
+    if (totalUncompressed > ZIP_MAX_UNCOMPRESSED_BYTES) {
+      return false;
+    }
+    cursor = nextCursor;
+  }
+
+  if (
+    totalCompressed > 0 &&
+    totalUncompressed / totalCompressed > ZIP_MAX_COMPRESSION_RATIO
+  ) {
+    return false;
+  }
+  return foundRequired;
+}
+
+const isOoxmlBuffer = (bytes: Buffer) =>
+  validateZipArchiveStructure(bytes, '[Content_Types].xml');
+const isOdfBuffer = (bytes: Buffer) =>
+  validateZipArchiveStructure(bytes, 'mimetype');
 const isOle2Buffer = (bytes: Buffer) =>
   bytes.length >= 8 && bytes.subarray(0, 8).equals(OLE2_SIGNATURE);
 const isRtfBuffer = (bytes: Buffer) =>
@@ -372,7 +531,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
       'application/zip',
       'application/x-zip-compressed',
     ],
-    validateBytes: isZipBuffer,
+    validateBytes: isOoxmlBuffer,
   },
   {
     extensions: ['.doc'],
@@ -389,7 +548,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
       'application/zip',
       'application/x-zip-compressed',
     ],
-    validateBytes: isZipBuffer,
+    validateBytes: isOoxmlBuffer,
   },
   {
     extensions: ['.xls'],
@@ -406,7 +565,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
       'application/zip',
       'application/x-zip-compressed',
     ],
-    validateBytes: isZipBuffer,
+    validateBytes: isOoxmlBuffer,
   },
   {
     extensions: ['.ppt'],
@@ -422,7 +581,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
       'application/zip',
       'application/x-zip-compressed',
     ],
-    validateBytes: isZipBuffer,
+    validateBytes: isOdfBuffer,
   },
   {
     extensions: ['.ods'],
@@ -432,7 +591,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
       'application/zip',
       'application/x-zip-compressed',
     ],
-    validateBytes: isZipBuffer,
+    validateBytes: isOdfBuffer,
   },
   {
     extensions: ['.odp'],
@@ -442,7 +601,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
       'application/zip',
       'application/x-zip-compressed',
     ],
-    validateBytes: isZipBuffer,
+    validateBytes: isOdfBuffer,
   },
   {
     extensions: ['.rtf'],
@@ -501,7 +660,7 @@ const DOCUMENT_FILE_FORMAT_RULES: readonly DocumentFileFormatRule[] = [
     extensions: ['.xml', '.drawio'],
     canonicalContentType: 'application/xml',
     acceptedContentTypes: ['application/xml', 'text/xml', 'text/plain'],
-    validateBytes: isTextBuffer,
+    validateBytes: isSafeXmlBuffer,
   },
   {
     extensions: ['.sql'],
@@ -567,6 +726,7 @@ function resolveValidatedDocumentContentType(
 }
 
 interface SignedDocumentUploadClaims {
+  jti: string;
   orgId: string;
   projId: string;
   docId: string;
@@ -580,8 +740,12 @@ interface SignedDocumentUploadClaims {
   exp: number;
 }
 
+const EPHEMERAL_DEV_UPLOAD_SECRET = randomBytes(32).toString('hex');
+
 @Injectable()
 export class WorkNotesService {
+  private readonly consumedUploadJtis = new Map<string, number>();
+
   constructor(
     private readonly authorization: WorkNotesAuthorizationService,
     @Optional()
@@ -599,7 +763,57 @@ export class WorkNotesService {
     private readonly queueRuntime?: CaptureQueuePublisher,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly reportRoster?: ProjectReportRosterService,
+    @Optional() private readonly redis?: RedisService,
   ) {}
+
+  /**
+   * SEC-BE-007: Verify caller authentication and project authorization BEFORE
+   * reading/buffering up to 20 MB request streams in file upload handlers.
+   */
+  async assertUploadAuthorized(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+  ): Promise<WorkNotesActor> {
+    return this.authorization.resolveProject(headers, projectId);
+  }
+
+  private formatEntityEtag(updatedAt: unknown): string | null {
+    const isoValue = iso(updatedAt);
+    if (!isoValue) return null;
+    const ms = Date.parse(isoValue);
+    return Number.isFinite(ms) ? `W/"${ms}"` : null;
+  }
+
+  /**
+   * E2E-INT-012: Optional optimistic concurrency check when client sends If-Match.
+   */
+  private assertIfMatch(
+    headers: CaptureRequestHeaders,
+    currentUpdatedAt: unknown,
+  ): void {
+    const rawIfMatch = headers.ifMatch?.trim();
+    if (!rawIfMatch || rawIfMatch === '*') return;
+    const expected = this.formatEntityEtag(currentUpdatedAt);
+    if (!expected) return;
+    const normalizeTag = (tag: string) =>
+      tag
+        .trim()
+        .replace(/^W\//i, '')
+        .replace(/^"(.*)"$/, '$1');
+    const providedTags = rawIfMatch.split(',').map(normalizeTag);
+    const expectedNorm = normalizeTag(expected);
+    const expectedIso = iso(currentUpdatedAt) ?? '';
+    if (
+      !providedTags.includes(expectedNorm) &&
+      (!expectedIso || !providedTags.includes(expectedIso))
+    ) {
+      throw new ConflictException({
+        code: 'ETAG_MISMATCH',
+        message:
+          'The resource was modified by another request. Reload and retry your edit.',
+      });
+    }
+  }
 
   async listTaskNotes(
     headers: CaptureRequestHeaders,
@@ -631,11 +845,8 @@ export class WorkNotesService {
         .toArray(),
       collection.countDocuments(filter),
     ]);
-    const records = await this.refreshTaskNotesLiveKnowledge(
-      actor,
-      projectId,
-      rows.map((row) => this.taskNoteRecord(row, actor)),
-    );
+    // BE-PERF-001: Serve persisted knowledgeSync on list GET (no synchronous per-row SAG HTTP polling).
+    const records = rows.map((row) => this.taskNoteRecord(row, actor));
     return {
       data: records,
       pagination: this.pagination(page, pageSize, totalItems),
@@ -713,28 +924,48 @@ export class WorkNotesService {
           .toArray(),
         collection.countDocuments(filter),
       ]);
-      const records = await this.refreshTaskNotesLiveKnowledge(
-        actor,
-        projectId,
-        rows.map((row) => this.taskNoteRecord(row, actor)),
-      );
+      const records = rows.map((row) => this.taskNoteRecord(row, actor));
       return {
         data: records,
         pagination: this.pagination(page, pageSize, totalItems),
       };
     }
 
-    const allRows = await collection.find(filter).sort(sortSpec).toArray();
+    // BE-PERF-001: Resolve distinct matching taskIds first (index-covered projection,
+    // never loading full note bodies into RAM), authorize distinct taskIds with bounded
+    // concurrency, then paginate directly in MongoDB for exact totalItems & full pages.
+    const rawDistinctTaskIds: unknown[] =
+      typeof collection.distinct === 'function'
+        ? await collection.distinct('taskId', filter)
+        : (
+            await collection
+              .find(filter, { projection: { taskId: 1 } })
+              .toArray()
+          ).map((row) => (row as Record<string, unknown>).taskId);
     const distinctTaskIds = [
       ...new Set(
-        allRows
-          .map((row) => idText((row as Record<string, unknown>).taskId))
+        rawDistinctTaskIds
+          .map((value) => idText(value))
           .filter((id) => validId(id)),
       ),
     ];
-    const resolvedTaskActors = new Map<string, WorkNotesActor | null>();
-    await Promise.all(
-      distinctTaskIds.map(async (candidateTaskId) => {
+    if (distinctTaskIds.length === 0) {
+      return {
+        data: [],
+        pagination: this.pagination(page, pageSize, 0),
+      };
+    }
+
+    let resolvedTaskActors: Map<string, WorkNotesActor | null>;
+    if (typeof this.authorization.resolveTasksBatch === 'function') {
+      resolvedTaskActors = await this.authorization.resolveTasksBatch(
+        headers,
+        actor,
+        distinctTaskIds,
+      );
+    } else {
+      resolvedTaskActors = new Map<string, WorkNotesActor | null>();
+      await runWithConcurrency(distinctTaskIds, 6, async (candidateTaskId) => {
         try {
           const resolved = await this.authorization.resolveTask(
             headers,
@@ -752,32 +983,42 @@ export class WorkNotesService {
           }
           throw err;
         }
-      }),
-    );
+      });
+    }
 
-    const authorizedRows = allRows.filter((row) => {
-      const rowTaskId = idText((row as Record<string, unknown>).taskId);
-      return Boolean(resolvedTaskActors.get(rowTaskId));
-    });
-    const totalItems = authorizedRows.length;
-    const pagedRows = authorizedRows.slice(
-      (page - 1) * pageSize,
-      page * pageSize,
-    );
-    const mappedPage = pagedRows.map((row) => {
+    const allowedTaskObjectIds = [...resolvedTaskActors.entries()]
+      .filter(([, taskActor]) => Boolean(taskActor))
+      .map(([allowedTaskId]) => objectId(allowedTaskId));
+    if (allowedTaskObjectIds.length === 0) {
+      return {
+        data: [],
+        pagination: this.pagination(page, pageSize, 0),
+      };
+    }
+
+    const authorizedFilter: Record<string, unknown> = {
+      ...filter,
+      taskId: { $in: allowedTaskObjectIds },
+    };
+    const [authorizedPageRows, totalItems] = await Promise.all([
+      collection
+        .find(authorizedFilter)
+        .sort(sortSpec)
+        .skip((page - 1) * pageSize)
+        .limit(pageSize)
+        .toArray(),
+      collection.countDocuments(authorizedFilter),
+    ]);
+    const mappedPage = authorizedPageRows.map((row) => {
       const rowTaskId = idText((row as Record<string, unknown>).taskId);
       const taskActor = resolvedTaskActors.get(rowTaskId) ?? actor;
       return this.taskNoteRecord(row, taskActor);
     });
-    const refreshedPage = await this.refreshTaskNotesLiveKnowledge(
-      actor,
-      projectId,
-      mappedPage,
-    );
     const withStorageRefs = await this.attachTaskNoteStorageReferences(
       actor.organizationId,
-      pagedRows,
-      refreshedPage,
+      projectId,
+      authorizedPageRows,
+      mappedPage,
     );
     return {
       data: withStorageRefs,
@@ -824,6 +1065,7 @@ export class WorkNotesService {
     }
     const [withStorageRef] = await this.attachTaskNoteStorageReferences(
       actor.organizationId,
+      projectId,
       [row],
       [mapped],
     );
@@ -869,6 +1111,7 @@ export class WorkNotesService {
     }
     const [withStorageRef] = await this.attachTaskNoteStorageReferences(
       taskActor.organizationId,
+      projectId,
       [row],
       [mapped],
     );
@@ -886,62 +1129,25 @@ export class WorkNotesService {
       projectId,
       taskId,
     );
+    if (isNonMemberManager(actor)) {
+      throw new ForbiddenException({
+        code: 'TASK_NOTE_READ_ONLY',
+        message: 'Managers have read-only access to Task Notes.',
+      });
+    }
     const id = new Types.ObjectId();
     const noteId = String(id);
     const now = new Date();
     const nowIso = now.toISOString();
-    const bodyCharCount =
-      input.accomplishments.trim().length +
-      input.approach.trim().length +
-      input.reason.trim().length;
-    const shouldAutoApprove =
-      Boolean(actor.canReview) &&
-      input.autoApprove !== false &&
-      bodyCharCount >= 30;
-    const reviewStatus: TaskNoteReviewStatus = shouldAutoApprove
-      ? 'APPROVED'
-      : 'PENDING_REVIEW';
-    const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
-      ? 'MANAGER'
-      : 'LEADER';
-    const queuedSync: DocumentKnowledgeStatusRecord | undefined =
-      shouldAutoApprove
-        ? {
-            documentId: noteId,
-            version: 1,
-            status: 'QUEUED_OUTBOX',
-            searchStatus: 'PENDING',
-            knowledgeStatus: 'NOT_STARTED',
-            searchReady: false,
-            knowledgeReady: false,
-            currentStage: 'OUTBOX_QUEUE',
-            progress: 5,
-            syncedAt: nowIso,
-          }
-        : undefined;
+    // BE-LOGIC-001: Self-approval is unconditionally forbidden. Every created
+    // Task Note enters PENDING_REVIEW for an independent reviewer.
+    const reviewStatus: TaskNoteReviewStatus = 'PENDING_REVIEW';
     const provenance: Record<string, unknown> = {
-      review: shouldAutoApprove
-        ? {
-            status: 'APPROVED',
-            submittedAt: nowIso,
-            reviewedBy: actor.userId,
-            reviewerName: actor.userName,
-            reviewedAt: nowIso,
-            history: [
-              {
-                action: 'APPROVED',
-                reviewerId: actor.userId,
-                reviewerRole,
-                at: nowIso,
-              },
-            ],
-          }
-        : {
-            status: 'PENDING_REVIEW',
-            submittedAt: nowIso,
-            history: [],
-          },
-      ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
+      review: {
+        status: 'PENDING_REVIEW',
+        submittedAt: nowIso,
+        history: [],
+      },
     };
     let insertedRow: Document | null = null;
     await this.transaction(async (db, session) => {
@@ -967,24 +1173,6 @@ export class WorkNotesService {
       };
       await db.collection('work_notes').insertOne(doc, { session });
       insertedRow = doc;
-      if (shouldAutoApprove && this.outbox) {
-        await this.appendOutbox(
-          {
-            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
-            aggregateType: 'WORK_NOTE',
-            aggregateId: noteId,
-            payload: {
-              sourceType: 'WORK_NOTE',
-              sourceId: noteId,
-              organizationId: actor.organizationId,
-              projectId,
-              version: 1,
-              approvedAt: nowIso,
-            },
-          },
-          session,
-        );
-      }
       await this.auditEvent(
         actor,
         'TASK_NOTE_CREATED',
@@ -1019,10 +1207,6 @@ export class WorkNotesService {
       status: 'CONFIRMED',
       reviewStatus,
       submittedAt: nowIso,
-      ...(shouldAutoApprove
-        ? { reviewedBy: actor.userId, reviewedAt: nowIso }
-        : {}),
-      ...(queuedSync ? { knowledgeSync: queuedSync } : {}),
       ...input,
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -1042,20 +1226,18 @@ export class WorkNotesService {
       projectId,
       taskId,
     );
+    if (isNonMemberManager(actor)) {
+      throw new ForbiddenException({
+        code: 'TASK_NOTE_READ_ONLY',
+        message: 'Managers have read-only access to Task Notes.',
+      });
+    }
     if (!validId(noteId)) throw this.taskNoteNotFound();
     let updatedRow: Document | null = null;
     let nextVersion = 1;
-    const bodyCharCount =
-      input.accomplishments.trim().length +
-      input.approach.trim().length +
-      input.reason.trim().length;
-    const shouldAutoApprove =
-      Boolean(actor.canReview) &&
-      input.autoApprove !== false &&
-      bodyCharCount >= 30;
-    const reviewStatus: TaskNoteReviewStatus = shouldAutoApprove
-      ? 'APPROVED'
-      : 'PENDING_REVIEW';
+    let revokedPriorVersion: number | null = null;
+    // BE-LOGIC-001: Updating a Task Note always resets review status to PENDING_REVIEW.
+    const reviewStatus: TaskNoteReviewStatus = 'PENDING_REVIEW';
     await this.transaction(async (db, session) => {
       const existing = await db.collection('work_notes').findOne(
         {
@@ -1070,6 +1252,7 @@ export class WorkNotesService {
         { session },
       );
       if (!existing) throw this.taskNoteNotFound();
+      this.assertIfMatch(headers, existing.updatedAt);
       if (existing.contentSchemaVersion === 2)
         throw new ConflictException({
           code: 'NOTE_EDITOR_UPGRADE_REQUIRED',
@@ -1092,51 +1275,23 @@ export class WorkNotesService {
         rawProv.review && typeof rawProv.review === 'object'
           ? (rawProv.review as { status?: string; history?: unknown })
           : undefined;
+      const prevSync = rawProv.knowledgeSync as
+        { sagDocumentId?: string; status?: string } | undefined;
+      const wasSyncedToSag =
+        prevReview?.status === 'APPROVED' ||
+        Boolean(prevSync?.sagDocumentId) ||
+        (Boolean(prevSync?.status) && prevSync?.status !== 'REVOKED');
       const prevHistory = pickReviewHistory(prevReview?.history);
-      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
-        ? 'MANAGER'
-        : 'LEADER';
       const nextProv: Record<string, unknown> = {
         ...rawProv,
-        review: shouldAutoApprove
-          ? {
-              status: 'APPROVED',
-              submittedAt: nowIso,
-              reviewedBy: actor.userId,
-              reviewedAt: nowIso,
-              history: [
-                ...prevHistory,
-                {
-                  action: 'APPROVED',
-                  reviewerId: actor.userId,
-                  reviewerRole,
-                  at: nowIso,
-                },
-              ],
-            }
-          : {
-              status: 'PENDING_REVIEW',
-              submittedAt: nowIso,
-              history: prevHistory,
-            },
+        review: {
+          status: 'PENDING_REVIEW',
+          submittedAt: nowIso,
+          history: prevHistory,
+        },
       };
       delete nextProv.mdFile;
-      if (shouldAutoApprove) {
-        nextProv.knowledgeSync = {
-          documentId: noteId,
-          version: nextVersion,
-          status: 'QUEUED_OUTBOX',
-          searchStatus: 'PENDING',
-          knowledgeStatus: 'NOT_STARTED',
-          searchReady: false,
-          knowledgeReady: false,
-          currentStage: 'OUTBOX_QUEUE',
-          progress: 5,
-          syncedAt: nowIso,
-        };
-      } else {
-        delete nextProv.knowledgeSync;
-      }
+      delete nextProv.knowledgeSync;
 
       updatedRow = await db.collection('work_notes').findOneAndUpdate(
         {
@@ -1162,28 +1317,13 @@ export class WorkNotesService {
         { returnDocument: 'after', session },
       );
       if (!updatedRow) throw this.taskNoteNotFound();
-      if (shouldAutoApprove && this.outbox) {
-        if (prevReview?.status === 'APPROVED') {
-          await this.appendOutbox(
-            {
-              eventName: 'KNOWLEDGE_SOURCE_REPLACED',
-              aggregateType: 'WORK_NOTE',
-              aggregateId: noteId,
-              payload: {
-                sourceType: 'WORK_NOTE',
-                sourceId: noteId,
-                organizationId: actor.organizationId,
-                projectId,
-                previousVersion: prevVersion,
-                version: nextVersion,
-              },
-            },
-            session,
-          );
-        }
+      if (wasSyncedToSag && this.outbox) {
+        // BE-DATA-003: Emit durable SAG revocation inside the transaction whenever
+        // an edited Task Note reverts from APPROVED/synced back to PENDING_REVIEW.
+        revokedPriorVersion = prevVersion;
         await this.appendOutbox(
           {
-            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
             aggregateType: 'WORK_NOTE',
             aggregateId: noteId,
             payload: {
@@ -1191,8 +1331,8 @@ export class WorkNotesService {
               sourceId: noteId,
               organizationId: actor.organizationId,
               projectId,
-              version: nextVersion,
-              approvedAt: nowIso,
+              version: prevVersion,
+              reason: 'UPDATED_PENDING_REAPPROVAL',
             },
           },
           session,
@@ -1208,6 +1348,15 @@ export class WorkNotesService {
       );
     });
     if (!updatedRow) throw this.taskNoteNotFound();
+    if (revokedPriorVersion !== null) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        noteId,
+        'KNOWLEDGE_SOURCE_REVOKED',
+        revokedPriorVersion,
+        headers.requestId,
+      );
+    }
     await this.afterTaskNoteSaved({
       headers,
       actor,
@@ -1298,6 +1447,12 @@ export class WorkNotesService {
       projectId,
       taskId,
     );
+    if (isNonMemberManager(actor)) {
+      throw new ForbiddenException({
+        code: 'TASK_NOTE_READ_ONLY',
+        message: 'Managers have read-only access to Task Notes.',
+      });
+    }
     if (!validId(noteId)) throw this.taskNoteNotFound();
     let existingProv: Record<string, unknown> | undefined;
     let revokedVersion = 1;
@@ -1322,6 +1477,16 @@ export class WorkNotesService {
         !Array.isArray(existing.provenance)
           ? (existing.provenance as Record<string, unknown>)
           : undefined;
+      const existingReviewStatus = (
+        existingProv?.review as { status?: string } | undefined
+      )?.status;
+      // SEC-AUTH-007: Regular MEMBER authors cannot archive/delete APPROVED SAG knowledge.
+      if (existingReviewStatus === 'APPROVED' && !actor.canReview) {
+        throw new ForbiddenException({
+          code: 'DOCUMENT_CONTROL_FORBIDDEN',
+          message: 'Only a Project reviewer can delete an approved Task Note.',
+        });
+      }
       const result = await db.collection('work_notes').updateOne(
         {
           _id: objectId(noteId),
@@ -1401,6 +1566,7 @@ export class WorkNotesService {
     if (mdFileKey && this.documentStorage) {
       const stillReferenced = await this.isStorageKeyStillReferenced(
         actor.organizationId,
+        projectId,
         mdFileKey,
         { excludeWorkNoteId: noteId },
       );
@@ -1420,13 +1586,32 @@ export class WorkNotesService {
       projectId,
       noteId,
     );
+    if (isNonMemberManager(actor)) {
+      throw new ForbiddenException({
+        code: 'TASK_NOTE_READ_ONLY',
+        message: 'Managers have read-only access to Task Notes.',
+      });
+    }
     const authorId = String(row.authorUserId);
     const isOwner = authorId.toLowerCase() === actor.userId.toLowerCase();
-    if (!isOwner && !actor.canReview) {
+    const existingProvCheck =
+      row.provenance &&
+      typeof row.provenance === 'object' &&
+      !Array.isArray(row.provenance)
+        ? (row.provenance as Record<string, unknown>)
+        : undefined;
+    const isApprovedNote =
+      (existingProvCheck?.review as { status?: string } | undefined)?.status ===
+      'APPROVED';
+    if (
+      (!isOwner && !actor.canReview) ||
+      (isApprovedNote && !actor.canReview)
+    ) {
       throw new ForbiddenException({
         code: 'DOCUMENT_CONTROL_FORBIDDEN',
-        message:
-          'Only the author or a Project reviewer can delete this Task Note.',
+        message: isApprovedNote
+          ? 'Only a Project reviewer can delete an approved Task Note.'
+          : 'Only the author or a Project reviewer can delete this Task Note.',
       });
     }
     const taskId = idText(row.taskId);
@@ -1523,6 +1708,7 @@ export class WorkNotesService {
     if (mdFileKey) {
       const stillReferenced = await this.isStorageKeyStillReferenced(
         actor.organizationId,
+        projectId,
         mdFileKey,
         { excludeWorkNoteId: noteId },
       );
@@ -1554,15 +1740,14 @@ export class WorkNotesService {
       projectId,
       noteId,
     );
-    const authorId = String(row.authorUserId);
-    const isOwner = authorId.toLowerCase() === actor.userId.toLowerCase();
-    if (!isOwner && !actor.canReview) {
+    if (isNonMemberManager(actor)) {
       throw new ForbiddenException({
-        code: 'DOCUMENT_CONTROL_FORBIDDEN',
-        message:
-          'Only the author or a Project reviewer can manage Task Note storage artifacts.',
+        code: 'TASK_NOTE_READ_ONLY',
+        message: 'Managers have read-only access to Task Notes.',
       });
     }
+    const authorId = String(row.authorUserId);
+    const isOwner = authorId.toLowerCase() === actor.userId.toLowerCase();
     const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
     const rawProv =
       row.provenance &&
@@ -1574,6 +1759,17 @@ export class WorkNotesService {
       rawProv.review && typeof rawProv.review === 'object'
         ? (rawProv.review as Record<string, unknown>)
         : {};
+    const isApprovedNote = existingReview.status === 'APPROVED';
+    if (
+      (!isOwner && !actor.canReview) ||
+      (isApprovedNote && !actor.canReview)
+    ) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CONTROL_FORBIDDEN',
+        message:
+          'Only a Project reviewer can manage approved Task Note storage artifacts.',
+      });
+    }
     const existingSync = normalizeKnowledgeSyncForVersion(
       rawProv.knowledgeSync,
       versionNumber,
@@ -1749,6 +1945,7 @@ export class WorkNotesService {
     if (mdFileKey) {
       const stillReferenced = await this.isStorageKeyStillReferenced(
         actor.organizationId,
+        projectId,
         mdFileKey,
         { excludeWorkNoteId: noteId },
       );
@@ -1777,63 +1974,77 @@ export class WorkNotesService {
     const uniqueIds = Array.from(
       new Set(input.ids.map((id) => id.trim()).filter(Boolean)),
     ).slice(0, 50);
+    const outcomes = new Array<
+      { ok: true; id: string } | { ok: false; id: string; message: string }
+    >(uniqueIds.length);
+
+    await runWithConcurrency(
+      uniqueIds.map((id, index) => ({ id, index })),
+      BULK_ACTION_CONCURRENCY,
+      async ({ id, index }) => {
+        try {
+          switch (input.action) {
+            case 'APPROVE':
+              await this.reviewTaskNote(headers, projectId, id, 'APPROVED', {
+                comment: input.comment,
+              });
+              break;
+            case 'REQUEST_CHANGES':
+              await this.reviewTaskNote(
+                headers,
+                projectId,
+                id,
+                'CHANGES_REQUESTED',
+                { comment: input.comment },
+              );
+              break;
+            case 'REJECT':
+              await this.reviewTaskNote(headers, projectId, id, 'REJECTED', {
+                comment: input.comment,
+              });
+              break;
+            case 'SYNC':
+              await this.syncTaskNoteToSag(headers, projectId, id);
+              break;
+            case 'PAUSE':
+            case 'RESUME':
+            case 'REPROCESS':
+            case 'REVOKE':
+              await this.controlTaskNoteKnowledge(
+                headers,
+                projectId,
+                id,
+                input.action,
+              );
+              break;
+            case 'PURGE_ARTIFACT':
+              await this.purgeTaskNoteArtifact(headers, projectId, id, {
+                reopen: input.reopen,
+                comment: input.comment,
+              });
+              break;
+            case 'DELETE':
+              await this.deleteProjectTaskNote(headers, projectId, id);
+              break;
+            default:
+              throw new BadRequestException({ code: 'INVALID_BULK_ACTION' });
+          }
+          outcomes[index] = { ok: true, id };
+        } catch (err) {
+          outcomes[index] = {
+            ok: false,
+            id,
+            message: sanitizeClientErrorMessage(err, 'Operation failed.'),
+          };
+        }
+      },
+    );
+
     const succeededIds: string[] = [];
     const failed: Array<{ id: string; message: string }> = [];
-
-    for (const id of uniqueIds) {
-      try {
-        switch (input.action) {
-          case 'APPROVE':
-            await this.reviewTaskNote(headers, projectId, id, 'APPROVED', {
-              comment: input.comment,
-            });
-            break;
-          case 'REQUEST_CHANGES':
-            await this.reviewTaskNote(
-              headers,
-              projectId,
-              id,
-              'CHANGES_REQUESTED',
-              { comment: input.comment },
-            );
-            break;
-          case 'REJECT':
-            await this.reviewTaskNote(headers, projectId, id, 'REJECTED', {
-              comment: input.comment,
-            });
-            break;
-          case 'SYNC':
-            await this.syncTaskNoteToSag(headers, projectId, id);
-            break;
-          case 'PAUSE':
-          case 'RESUME':
-          case 'REPROCESS':
-          case 'REVOKE':
-            await this.controlTaskNoteKnowledge(
-              headers,
-              projectId,
-              id,
-              input.action,
-            );
-            break;
-          case 'PURGE_ARTIFACT':
-            await this.purgeTaskNoteArtifact(headers, projectId, id, {
-              reopen: input.reopen,
-              comment: input.comment,
-            });
-            break;
-          case 'DELETE':
-            await this.deleteProjectTaskNote(headers, projectId, id);
-            break;
-          default:
-            throw new BadRequestException({ code: 'INVALID_BULK_ACTION' });
-        }
-        succeededIds.push(id);
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Operation failed.';
-        failed.push({ id, message });
-      }
+    for (const outcome of outcomes) {
+      if (outcome.ok) succeededIds.push(outcome.id);
+      else failed.push({ id: outcome.id, message: outcome.message });
     }
 
     return {
@@ -1900,9 +2111,8 @@ export class WorkNotesService {
       if (!current) throw this.taskNoteNotFound();
       authorId = String(current.authorUserId);
       noteTitle = text(current.title);
-      if (!actor.canReview) {
-        throw this.reviewPermissionDenied();
-      }
+      // BE-LOGIC-001: Enforce independent reviewer (never allow self-review).
+      assertReviewerCanReview(authorId, actor.userId, actor.canReview);
 
       sourceVersion = Math.max(1, Number(current.currentVersionNumber ?? 1));
       const rawProv =
@@ -1983,6 +2193,8 @@ export class WorkNotesService {
       const updated = await notes.updateOne(
         {
           _id: objectId(noteId),
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
           status: 'CONFIRMED',
           $or: [
             { 'provenance.review.status': 'PENDING_REVIEW' },
@@ -2211,6 +2423,7 @@ export class WorkNotesService {
     const reviewStatus = (rawProv.review as { status?: string } | undefined)
       ?.status;
 
+    // BE-LOGIC-001: Sync NEVER auto-approves or promotes unapproved Task Notes.
     if (reviewStatus !== 'APPROVED') {
       if (!actor.canReview) {
         throw new ForbiddenException({
@@ -2219,90 +2432,9 @@ export class WorkNotesService {
             'Only an approved Task Note can be synchronized to SAG. Submit it for Leader/Manager approval first.',
         });
       }
-      const authorId = String(row.authorUserId);
-      if (authorId.toLowerCase() !== actor.userId.toLowerCase()) {
-        await this.reviewTaskNote(headers, projectId, noteId, 'APPROVED', {});
-      } else {
-        const now = new Date();
-        const nowIso = now.toISOString();
-        const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
-          ? 'MANAGER'
-          : 'LEADER';
-        const existingReview =
-          rawProv.review && typeof rawProv.review === 'object'
-            ? (rawProv.review as { submittedAt?: string; history?: unknown })
-            : undefined;
-        const autoReview = {
-          status: 'APPROVED' as const,
-          submittedAt:
-            existingReview?.submittedAt ?? iso(row.createdAt) ?? nowIso,
-          reviewedBy: actor.userId,
-          reviewedAt: nowIso,
-          history: [
-            ...pickReviewHistory(existingReview?.history),
-            {
-              action: 'APPROVED' as const,
-              reviewerId: actor.userId,
-              reviewerRole,
-              at: nowIso,
-            },
-          ],
-        };
-        await this.database()
-          .collection('work_notes')
-          .updateOne(
-            { _id: objectId(noteId) },
-            {
-              $set: {
-                'provenance.review': autoReview,
-                updatedAt: now,
-              },
-            },
-          );
-        await this.auditEvent(
-          actor,
-          'TASK_NOTE_AUTO_APPROVED',
-          'WORK_NOTE',
-          noteId,
-          {
-            version: versionNumber,
-          },
-        );
-      }
-      const reloaded = await this.loadAuthorizedTaskNoteRow(
-        headers,
-        projectId,
-        noteId,
+      throw conflict(
+        'Only an approved Task Note can be synchronized to SAG. Approve it via the review workflow first.',
       );
-      return this.syncApprovedArtifactToSag({
-        actor: reloaded.actor,
-        projectId,
-        aggregateType: 'WORK_NOTE',
-        logicalPrefix: 'work_note',
-        entityId: noteId,
-        versionNumber: Math.max(
-          1,
-          Number(reloaded.row.currentVersionNumber ?? 1),
-        ),
-        rawProvenance:
-          reloaded.row.provenance &&
-          typeof reloaded.row.provenance === 'object' &&
-          !Array.isArray(reloaded.row.provenance)
-            ? (reloaded.row.provenance as Record<string, unknown>)
-            : {},
-        ensureStoredFile: () =>
-          this.ensureApprovedTaskNoteMarkdownStored(
-            reloaded.actor,
-            reloaded.row,
-          ),
-        persistSync: (syncRecord) =>
-          this.persistTaskNoteKnowledgeSyncRecord(
-            noteId,
-            versionNumber,
-            syncRecord,
-          ),
-        auditAction: 'TASK_NOTE_KNOWLEDGE_SYNCED',
-      });
     }
 
     return this.syncApprovedArtifactToSag({
@@ -2344,6 +2476,13 @@ export class WorkNotesService {
       !Array.isArray(row.provenance)
         ? (row.provenance as Record<string, unknown>)
         : {};
+    const reviewStatus = (rawProv.review as { status?: string } | undefined)
+      ?.status;
+    // SEC-AUTH-007: Regular MEMBER authors cannot REVOKE/PAUSE/control approved SAG knowledge.
+    const canControl =
+      reviewStatus === 'APPROVED'
+        ? Boolean(actor.canReview)
+        : authorId === actor.userId || Boolean(actor.canReview);
     return this.controlEntityKnowledge({
       actor,
       projectId,
@@ -2351,7 +2490,7 @@ export class WorkNotesService {
       logicalPrefix: 'work_note',
       entityId: noteId,
       versionNumber,
-      canControl: authorId === actor.userId || actor.canReview,
+      canControl,
       rawProvenance: rawProv,
       action,
       ensureStoredFile: () =>
@@ -2420,11 +2559,14 @@ export class WorkNotesService {
       });
       const versionDocs = await this.database()
         .collection('project_document_versions')
-        .find({
-          organizationId: objectId(actor.organizationId),
-          projectId: objectId(projectId),
-          $or: versionQueries,
-        })
+        .find(
+          {
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            $or: versionQueries,
+          },
+          { projection: { content: 0 } },
+        )
         .toArray();
       for (const versionDoc of versionDocs) {
         const raw = versionDoc as unknown as Record<string, unknown>;
@@ -2448,6 +2590,7 @@ export class WorkNotesService {
 
     const storageRefsByDocId = await this.resolveStorageReferencesByDocument(
       actor.organizationId,
+      projectId,
       rows.map((row) => {
         const raw = row as unknown as Record<string, unknown>;
         const docId = String(raw._id);
@@ -2491,89 +2634,7 @@ export class WorkNotesService {
       };
     });
 
-    const candidatesForLiveSync = summaries
-      .filter((item) => {
-        if (item.status !== 'APPROVED') return false;
-        const sync = item.knowledgeSync;
-        if (!sync) return true;
-        const normalized = (sync.status || '').toUpperCase();
-        const normalizedStage = (sync.currentStage || '').toUpperCase();
-        const normalizedDocStatus = (sync.documentStatus || '').toUpperCase();
-        const normalizedKnowledgeStatus = (
-          sync.knowledgeStatus || ''
-        ).toUpperCase();
-        if (['FAILED', 'REVOKED', 'NOT_SYNCED'].includes(normalized)) {
-          return false;
-        }
-        if (
-          normalized === 'PAUSED' ||
-          (normalizedStage === 'PAUSED' && normalizedDocStatus === 'PAUSED')
-        ) {
-          return false;
-        }
-        const isSettledKnowledge = Boolean(
-          sync.knowledgeReady ||
-          isKnowledgeSettledStatus(normalizedKnowledgeStatus),
-        );
-        const isKnowledgeInFlight =
-          !isSettledKnowledge &&
-          ['PROCESSING', 'EXTRACTING', 'RUNNING', 'QUEUED', 'PENDING'].includes(
-            normalizedKnowledgeStatus,
-          );
-        const isDocInFlight = [
-          'PENDING',
-          'LOADING',
-          'EXTRACTING',
-          'PAUSING',
-        ].includes(normalizedDocStatus);
-        const isStagePaused = ['PAUSING', 'PAUSED'].includes(normalizedStage);
-        const isTerminalReady =
-          !isKnowledgeInFlight &&
-          !isDocInFlight &&
-          !isStagePaused &&
-          (isSettledKnowledge ||
-            (sync.searchReady &&
-              (normalized === 'READY' ||
-                normalized === 'SEARCH_READY' ||
-                normalizedStage === 'COMPLETE' ||
-                normalizedDocStatus === 'READY' ||
-                normalizedDocStatus === 'INDEXED'))) &&
-          sync.progress >= 100;
-        if (isTerminalReady) return false;
-        return (
-          typeof this.sagTransport?.getProjectDocumentVersionStatus ===
-            'function' || !sync.status
-        );
-      })
-      .sort(
-        (left, right) =>
-          Number(Boolean(right.knowledgeSync)) -
-          Number(Boolean(left.knowledgeSync)),
-      )
-      .slice(0, 25);
-
-    if (candidatesForLiveSync.length > 0) {
-      const refreshedById = new Map<string, DocumentKnowledgeStatusRecord>();
-      await Promise.allSettled(
-        candidatesForLiveSync.map(async (item) => {
-          const live = await this.resolveDocumentKnowledgeStatusForActor(
-            actor,
-            projectId,
-            item.id,
-          );
-          if (live.status !== 'NOT_SYNCED' || item.knowledgeSync) {
-            refreshedById.set(item.id, live);
-          }
-        }),
-      );
-      for (let i = 0; i < summaries.length; i += 1) {
-        const live = refreshedById.get(summaries[i].id);
-        if (live) {
-          summaries[i] = { ...summaries[i], knowledgeSync: live };
-        }
-      }
-    }
-
+    // BE-PERF-001: Serve persisted knowledgeSync on list GET (no 25 synchronous live SAG HTTP calls).
     return {
       data: summaries,
       pagination: this.pagination(page, pageSize, totalItems),
@@ -3132,27 +3193,45 @@ export class WorkNotesService {
         }
       }
     } else if (this.sagTransport?.getProjectDocumentReadinessBatch) {
+      const transport = this.sagTransport;
+      const readinessBatches: Array<{
+        projId: string;
+        batch: Array<{
+          documentId: string;
+          sagDocumentId: string;
+          sagVersionNo: number;
+        }>;
+      }> = [];
       for (const [projId, projectCandidates] of candidatesByProject.entries()) {
         for (
           let offset = 0;
           offset < projectCandidates.length;
           offset += PROJECT_SOURCE_READINESS_BATCH_SIZE
         ) {
-          const batch = projectCandidates.slice(
-            offset,
-            offset + PROJECT_SOURCE_READINESS_BATCH_SIZE,
-          );
+          readinessBatches.push({
+            projId,
+            batch: projectCandidates.slice(
+              offset,
+              offset + PROJECT_SOURCE_READINESS_BATCH_SIZE,
+            ),
+          });
+        }
+      }
+      // BE-PERF-001: Parallelize per-project readiness batches with bounded concurrency.
+      await runWithConcurrency(
+        readinessBatches,
+        5,
+        async ({ projId, batch }) => {
           try {
-            const receipt =
-              await this.sagTransport.getProjectDocumentReadinessBatch({
-                organizationId: scope.organizationId,
-                projectId: projId,
-                actorUserId: scope.actorId,
-                documents: batch.map((candidate) => ({
-                  documentId: candidate.sagDocumentId,
-                  versionNo: candidate.sagVersionNo,
-                })),
-              });
+            const receipt = await transport.getProjectDocumentReadinessBatch!({
+              organizationId: scope.organizationId,
+              projectId: projId,
+              actorUserId: scope.actorId,
+              documents: batch.map((candidate) => ({
+                documentId: candidate.sagDocumentId,
+                versionNo: candidate.sagVersionNo,
+              })),
+            });
             verifiedAt = receipt.verifiedAt;
             const liveByKey = new Map(
               receipt.items.map((item) => [
@@ -3196,8 +3275,8 @@ export class WorkNotesService {
               readinessByDocumentId.set(candidate.documentId, 'UNVERIFIED');
             }
           }
-        }
-      }
+        },
+      );
     }
 
     const pageVersionQueries = pageRows.flatMap((row) => {
@@ -3311,6 +3390,13 @@ export class WorkNotesService {
     input: ProjectDocumentInput,
   ): Promise<ProjectDocumentRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
+    if (isNonMemberManager(actor)) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_CREATE_FORBIDDEN',
+        message:
+          'Only Project Members and Project Leaders can create Project Documents.',
+      });
+    }
     const id = new Types.ObjectId();
     const versionId = new Types.ObjectId();
     const now = new Date();
@@ -3447,9 +3533,14 @@ export class WorkNotesService {
       'file.sha256': sha256,
       'file.key': { $type: 'string', $ne: '' },
     });
-    const existingKey = (
+    const existingKeyRaw = (
       existingWithSameHash?.file as { key?: string } | undefined
     )?.key;
+    const expectedProjectPrefix = `work-notes/${actor.organizationId}/${projectId}/`;
+    const existingKey =
+      existingKeyRaw && existingKeyRaw.startsWith(expectedProjectPrefix)
+        ? existingKeyRaw
+        : undefined;
     let existingStoredValid = Boolean(existingKey);
     if (
       existingKey &&
@@ -3464,7 +3555,7 @@ export class WorkNotesService {
     }
     const reusedExistingKey = Boolean(existingKey && existingStoredValid);
     const key =
-      existingKey ||
+      (reusedExistingKey ? existingKey : undefined) ||
       `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
     if (!reusedExistingKey) {
       await this.documentStorage
@@ -3528,21 +3619,15 @@ export class WorkNotesService {
     if (
       oldKey &&
       oldKey !== key &&
-      (await versions.countDocuments({
-        'file.key': oldKey,
-        _id: { $ne: previousVersion._id },
-      })) === 0
+      !(await this.isStorageKeyStillReferenced(
+        actor.organizationId,
+        projectId,
+        oldKey,
+        { excludeDocumentVersionId: String(previousVersion._id) },
+      ))
     )
       await this.documentStorage.delete(oldKey).catch(() => undefined);
-    if (options?.autoSyncSag && actor.canReview) {
-      await this.syncOrEnqueueApprovedDocument(
-        headers,
-        actor,
-        projectId,
-        documentId,
-        versionNumber,
-      );
-    }
+    // BE-LOGIC-001: Uploading a file NEVER auto-approves or bypasses review (ignore autoSyncSag).
     const updated = await this.readDocument(actor, id);
     if (!updated) throw documentNotFound();
     return updated;
@@ -3617,15 +3702,23 @@ export class WorkNotesService {
     );
     const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
 
+    // SEC-AUTH-002 / BE-DATA-001: Strictly scope SHA-256 deduplication by BOTH
+    // organizationId AND projectId, and require project-scoped storage key prefix.
+    const expectedProjectPrefix = `work-notes/${actor.organizationId}/${projectId}/`;
     const existingWithSameHash = await versions.findOne({
       organizationId: objectId(actor.organizationId),
+      projectId: objectId(projectId),
       'file.sha256': sha256,
       'file.size': input.size,
       'file.key': { $type: 'string', $ne: '' },
     });
-    const existingKey = (
+    const existingKeyRaw = (
       existingWithSameHash?.file as { key?: string } | undefined
     )?.key;
+    const existingKey =
+      existingKeyRaw && existingKeyRaw.startsWith(expectedProjectPrefix)
+        ? existingKeyRaw
+        : undefined;
     if (
       existingKey &&
       typeof this.documentStorage.inspectStoredPrefix === 'function'
@@ -3643,6 +3736,7 @@ export class WorkNotesService {
         ) === rule.canonicalContentType
       ) {
         const uploadToken = this.signDocumentUploadClaims({
+          jti: randomUUID(),
           orgId: actor.organizationId,
           projId: projectId,
           docId: documentId,
@@ -3675,12 +3769,18 @@ export class WorkNotesService {
     }
 
     const key = `work-notes/${actor.organizationId}/${projectId}/${documentId}/${randomUUID()}`;
+    const checksumSha256Base64 = Buffer.from(sha256, 'hex').toString('base64');
     const uploadUrl = await this.documentStorage.createDirectUploadUrl(
       key,
       rule.canonicalContentType,
       expiresInSeconds,
+      {
+        contentLength: input.size,
+        checksumSha256Base64,
+      },
     );
     const uploadToken = this.signDocumentUploadClaims({
+      jti: randomUUID(),
       orgId: actor.organizationId,
       projId: projectId,
       docId: documentId,
@@ -3700,6 +3800,7 @@ export class WorkNotesService {
       uploadUrl,
       headers: {
         'Content-Type': rule.canonicalContentType,
+        'x-amz-checksum-sha256': checksumSha256Base64,
       },
       expiresInSeconds,
       canonicalContentType: rule.canonicalContentType,
@@ -3715,44 +3816,49 @@ export class WorkNotesService {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(documentId)) throw documentNotFound();
     const claims = this.verifyDocumentUploadClaims(input.uploadToken);
+    const expectedProjectPrefix = `work-notes/${actor.organizationId}/${projectId}/`;
     if (
       claims.orgId !== actor.organizationId ||
       claims.projId !== projectId ||
       claims.docId !== documentId ||
-      claims.userId !== actor.userId
+      claims.userId !== actor.userId ||
+      !claims.key.startsWith(expectedProjectPrefix)
     ) {
       throw new BadRequestException({
         code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
         message: 'Upload token does not match the target document or user.',
       });
     }
-    if (
-      !this.documentStorage ||
-      typeof this.documentStorage.inspectStoredPrefix !== 'function'
-    ) {
+    await this.consumeUploadTokenJti(claims.jti, claims.exp);
+    if (!this.documentStorage) {
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
       );
     }
 
-    const stored = await this.documentStorage
-      .inspectStoredPrefix(claims.key, 64)
-      .catch(() => null);
-    if (!stored) {
+    // SEC-AUTH-002 / BE-DATA-001 / SEC-BE-011: Verify FULL object SHA-256,
+    // exact byte length, and full format/structure (never trust 64-byte prefix alone).
+    let fullBytes: Buffer | null = null;
+    if (typeof this.documentStorage.get === 'function') {
+      fullBytes = await this.documentStorage.get(claims.key).catch(() => null);
+    }
+    if (!fullBytes) {
       throw new BadRequestException({
         code: 'DOCUMENT_UPLOAD_NOT_FOUND',
         message: 'Uploaded file was not found in cloud storage.',
       });
     }
 
+    const actualSha256 = createHash('sha256').update(fullBytes).digest('hex');
     const validatedContentType =
-      stored.size === claims.size &&
-      stored.size > 0 &&
-      stored.size <= 20 * 1024 * 1024
+      fullBytes.length === claims.size &&
+      fullBytes.length > 0 &&
+      fullBytes.length <= 20 * 1024 * 1024 &&
+      actualSha256 === claims.sha256.toLowerCase()
         ? resolveValidatedDocumentContentType(
             claims.fileName,
             claims.contentType,
-            stored.prefix,
+            fullBytes,
           )
         : null;
     if (validatedContentType !== claims.contentType) {
@@ -3760,9 +3866,14 @@ export class WorkNotesService {
         await this.documentStorage.delete(claims.key).catch(() => undefined);
       }
       throw new BadRequestException({
-        code: 'DOCUMENT_FILE_INVALID',
+        code:
+          actualSha256 !== claims.sha256.toLowerCase()
+            ? 'DOCUMENT_FILE_CHECKSUM_MISMATCH'
+            : 'DOCUMENT_FILE_INVALID',
         message:
-          'Uploaded file size or magic-byte signature does not match the declared document format.',
+          actualSha256 !== claims.sha256.toLowerCase()
+            ? 'Uploaded file content does not match declared SHA-256 hash.'
+            : 'Uploaded file size or magic-byte signature does not match the declared document format.',
       });
     }
 
@@ -3856,24 +3967,17 @@ export class WorkNotesService {
     if (
       oldKey &&
       oldKey !== claims.key &&
-      (await versions.countDocuments({
-        'file.key': oldKey,
-        _id: { $ne: previousVersion._id },
-      })) === 0
+      !(await this.isStorageKeyStillReferenced(
+        actor.organizationId,
+        projectId,
+        oldKey,
+        { excludeDocumentVersionId: String(previousVersion._id) },
+      ))
     ) {
       await this.documentStorage.delete(oldKey).catch(() => undefined);
     }
 
-    if (input.autoSyncSag && actor.canReview) {
-      await this.syncOrEnqueueApprovedDocument(
-        headers,
-        actor,
-        projectId,
-        documentId,
-        versionNumber,
-      );
-    }
-
+    // BE-LOGIC-001: Upload confirmation NEVER auto-approves drafts (ignore autoSyncSag).
     const updated = await this.readDocument(actor, id);
     if (!updated) throw documentNotFound();
     return updated;
@@ -3955,7 +4059,12 @@ export class WorkNotesService {
     projectId: string,
     documentId: string,
     versionNumber?: number,
-  ): Promise<{ bytes: Buffer; name: string; contentType: string }> {
+  ): Promise<{
+    bytes?: Buffer;
+    stream?: Readable;
+    name: string;
+    contentType: string;
+  }> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(documentId)) throw documentNotFound();
     const document = await this.database()
@@ -3981,6 +4090,13 @@ export class WorkNotesService {
       throw new ServiceUnavailableException(
         'Project Document storage is unavailable.',
       );
+    if (typeof this.documentStorage.getStream === 'function') {
+      return {
+        stream: await this.documentStorage.getStream(file.key),
+        name: file.name,
+        contentType: file.contentType,
+      };
+    }
     return {
       bytes: await this.documentStorage.get(file.key),
       name: file.name,
@@ -4012,6 +4128,7 @@ export class WorkNotesService {
         ),
       );
       if (!current) throw documentNotFound();
+      this.assertIfMatch(headers, current.updatedAt);
       if (String(current.createdByUserId) !== actor.userId) {
         throw new ForbiddenException({
           code: 'DOCUMENT_OWNER_REQUIRED',
@@ -4149,6 +4266,7 @@ export class WorkNotesService {
         ),
       );
       if (!current) throw documentNotFound();
+      this.assertIfMatch(headers, current.updatedAt);
       if (String(current.createdByUserId) !== actor.userId) {
         throw new ForbiddenException({
           code: 'DOCUMENT_OWNER_REQUIRED',
@@ -4547,7 +4665,8 @@ export class WorkNotesService {
     documentId: string,
   ): Promise<ProjectDocumentRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
-    if (!actor.canReview) throw this.reviewPermissionDenied();
+    // SEC-AUTH-007: Non-member Managers can review Documents, not archive/delete them.
+    if (!isActorLeader(actor)) throw this.reviewPermissionDenied();
     if (!validId(documentId)) throw documentNotFound();
     const id = objectId(documentId);
     const now = new Date();
@@ -4654,6 +4773,12 @@ export class WorkNotesService {
     documentId: string,
   ): Promise<DeleteProjectDocumentResult> {
     const actor = await this.authorization.resolveProject(headers, projectId);
+    if (isNonMemberManager(actor)) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_DELETE_FORBIDDEN',
+        message: 'Managers cannot delete Project Documents.',
+      });
+    }
     if (!validId(documentId)) throw documentNotFound();
     const id = objectId(documentId);
     const db = this.database();
@@ -4668,9 +4793,10 @@ export class WorkNotesService {
 
     const authorId = String(document.createdByUserId);
     const docStatus = text(document.status);
+    // SEC-AUTH-007: Only Project Leaders (not non-member Managers) can delete
+    // approved/archived or another member's documents; authors may delete their own unapproved drafts.
     const canDelete =
-      actor.canReview ||
-      actor.canConfigure ||
+      isActorLeader(actor) ||
       (authorId === actor.userId &&
         docStatus !== 'APPROVED' &&
         docStatus !== 'ARCHIVED');
@@ -4711,6 +4837,7 @@ export class WorkNotesService {
       }
     }
 
+    const revokedVersion = Number(document.currentVersionNumber) || 1;
     let sagRevoked = false;
     if (
       hasSagSync &&
@@ -4721,7 +4848,7 @@ export class WorkNotesService {
           organizationId: actor.organizationId,
           projectId,
           documentId,
-          version: Number(document.currentVersionNumber) || 1,
+          version: revokedVersion,
           logicalSourceId: `continuum:project_document:${documentId}`,
           actorUserId: actor.userId,
           reason: 'DOCUMENT_DELETED',
@@ -4751,25 +4878,62 @@ export class WorkNotesService {
       if (deletedDoc.deletedCount !== 1) {
         throw documentNotFound();
       }
+      // BE-DATA-003: Remove stale pending/failed ingest events, and ALWAYS emit
+      // a durable KNOWLEDGE_SOURCE_REVOKED outbox event inside the transaction
+      // when the document was synced to SAG (so transient SAG outage cannot leave
+      // orphaned knowledge chunks behind).
       await txDb.collection('outbox_events').deleteMany(
         {
           aggregateType: 'PROJECT_DOCUMENT',
           aggregateId: documentId,
+          eventName: {
+            $in: ['KNOWLEDGE_SOURCE_APPROVED', 'KNOWLEDGE_SOURCE_REPLACED'],
+          },
           status: { $in: ['PENDING', 'FAILED'] },
         },
         { session },
       );
+      if (hasSagSync && !sagRevoked && this.outbox) {
+        await this.appendOutbox(
+          {
+            eventName: 'KNOWLEDGE_SOURCE_REVOKED',
+            aggregateType: 'PROJECT_DOCUMENT',
+            aggregateId: documentId,
+            payload: {
+              sourceType: 'PROJECT_DOCUMENT',
+              sourceId: documentId,
+              organizationId: actor.organizationId,
+              projectId,
+              version: revokedVersion,
+              reason: 'DOCUMENT_DELETED',
+            },
+          },
+          session,
+        );
+      }
     });
+
+    if (hasSagSync && !sagRevoked) {
+      await this.dispatchKnowledgeIngestionJob(
+        projectId,
+        documentId,
+        'KNOWLEDGE_SOURCE_REVOKED',
+        revokedVersion,
+        headers.requestId,
+      );
+    }
 
     let r2DeletedKeys = 0;
     let r2RetainedSharedKeys = 0;
     if (candidateKeys.size > 0) {
-      const versionsCollection = db.collection('project_document_versions');
       for (const key of candidateKeys) {
-        const remainingRefs = await versionsCollection.countDocuments({
-          'file.key': key,
-        });
-        if (remainingRefs === 0) {
+        // BE-DATA-003: Cross-collection project-scoped storage reference check.
+        const stillReferenced = await this.isStorageKeyStillReferenced(
+          actor.organizationId,
+          projectId,
+          key,
+        );
+        if (!stillReferenced) {
           if (this.documentStorage) {
             const deletedFromCloud = await this.documentStorage
               .delete(key)
@@ -4834,12 +4998,18 @@ export class WorkNotesService {
     if (text(document.status) === 'ARCHIVED') {
       throw conflict('Archived documents cannot be synchronized to SAG.');
     }
-    if (!actor.canReview && text(document.status) !== 'APPROVED') {
-      throw new ForbiddenException({
-        code: 'LEADER_APPROVAL_REQUIRED',
-        message:
-          'Only a Project Leader can add documents directly to SAG. Members must submit a review request to the Project Leader first.',
-      });
+    // BE-LOGIC-001: Sync NEVER auto-approves or promotes unapproved Documents.
+    if (text(document.status) !== 'APPROVED') {
+      if (!actor.canReview) {
+        throw new ForbiddenException({
+          code: 'LEADER_APPROVAL_REQUIRED',
+          message:
+            'Only an approved Project Document can be synchronized to SAG. Submit it for review first.',
+        });
+      }
+      throw conflict(
+        'Only an approved Project Document can be synchronized to SAG. Approve it via the review workflow first.',
+      );
     }
     const versionNumber = Number(document.currentVersionNumber);
     const versionDoc = record(
@@ -4851,38 +5021,6 @@ export class WorkNotesService {
       }),
     );
     if (!versionDoc) throw documentNotFound();
-    if (actor.canReview && text(document.status) !== 'APPROVED') {
-      const now = new Date();
-      await db.collection('project_document_versions').updateOne(
-        { _id: versionDoc._id },
-        {
-          $set: {
-            status: 'APPROVED',
-            reviewedByUserId: objectId(actor.userId),
-            reviewedAt: now,
-            updatedAt: now,
-          },
-        },
-      );
-      await db.collection('project_documents').updateOne(
-        { _id: id },
-        {
-          $set: {
-            status: 'APPROVED',
-            latestApprovedVersionNumber: versionNumber,
-            updatedByUserId: objectId(actor.userId),
-            updatedAt: now,
-          },
-        },
-      );
-      await this.auditEvent(
-        actor,
-        'DOCUMENT_AUTO_APPROVED',
-        'PROJECT_DOCUMENT',
-        documentId,
-        { version: versionNumber },
-      );
-    }
 
     const fileMeta = versionDoc.file as
       | {
@@ -4914,111 +5052,61 @@ export class WorkNotesService {
       : '';
 
     const logicalSourceId = `continuum:project_document:${documentId}`;
-    const canDirectObjectIngest = Boolean(
-      fileMeta?.key &&
-      fileMeta.name &&
-      fileMeta.contentType &&
-      fileMeta.sha256 &&
-      typeof fileMeta.size === 'number' &&
-      fileMeta.size > 0 &&
-      this.documentStorage &&
-      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-      this.documentStorage.isDirectCloudEnabled() &&
-      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
-      typeof this.sagTransport.ingestProjectDocumentObject === 'function',
-    );
 
-    let fileHash: string;
-    let receipt: SagProjectDocumentUploadReceipt;
-
-    if (canDirectObjectIngest && fileMeta && this.documentStorage) {
-      fileHash = fileMeta.sha256!;
-      const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
-      const sagIngestUrlTtlSeconds = Math.max(
-        60,
-        Number(
-          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
-        ) || 1800,
-      );
-      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
-        fileMeta.key!,
-        sagIngestUrlTtlSeconds,
-        {
-          fileName: fileMeta.name,
-          contentType: fileMeta.contentType,
-        },
-      );
-      try {
-        receipt = await this.sagTransport.ingestProjectDocumentObject!({
-          organizationId: actor.organizationId,
-          projectId,
-          documentId,
-          version: versionNumber,
-          logicalSourceId,
-          idempotencyKey,
-          actorUserId: actor.userId,
-          sourceUrl,
-          fileName: fileMeta.name!,
-          contentType: fileMeta.contentType!,
-          expectedSha256: fileHash,
-          expectedSizeBytes: fileMeta.size!,
-        });
-      } catch (error) {
-        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
+    // E2E-INT-001: Always upload document bytes via SAG's active
+    // POST /api/v1/projects/{projectId}/documents/upload endpoint (never deleted /ingest-object).
+    let bytes: Buffer;
+    let fileName: string;
+    let contentType: string;
+    if (fileMeta?.key && fileMeta.name && fileMeta.contentType) {
+      if (!this.documentStorage) {
+        throw new ServiceUnavailableException(
+          'Project Document storage is unavailable.',
+        );
       }
+      bytes = await this.documentStorage.get(fileMeta.key);
+      fileName = fileMeta.name;
+      contentType = fileMeta.contentType;
     } else {
-      let bytes: Buffer;
-      let fileName: string;
-      let contentType: string;
-      if (fileMeta?.key && fileMeta.name && fileMeta.contentType) {
-        if (!this.documentStorage) {
-          throw new ServiceUnavailableException(
-            'Project Document storage is unavailable.',
-          );
-        }
-        bytes = await this.documentStorage.get(fileMeta.key);
-        fileName = fileMeta.name;
-        contentType = fileMeta.contentType;
-      } else {
-        const markdown = text(versionDoc.content).trim();
-        if (!markdown) {
-          throw conflict(
-            'A Document needs text or an uploaded file before syncing to SAG.',
-          );
-        }
-        const baseTitle = (
-          text(versionDoc.title) ||
-          text(document.title) ||
-          documentId
-        )
-          .replace(/[^a-zA-Z0-9._-]+/g, '-')
-          .replace(/^-+|-+$/g, '')
-          .slice(0, 120);
-        bytes = Buffer.from(markdown, 'utf-8');
-        fileName = `${baseTitle || documentId}.md`;
-        contentType = 'text/markdown';
+      const markdown = text(versionDoc.content).trim();
+      if (!markdown) {
+        throw conflict(
+          'A Document needs text or an uploaded file before syncing to SAG.',
+        );
       }
+      const baseTitle = (
+        text(versionDoc.title) ||
+        text(document.title) ||
+        documentId
+      )
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 120);
+      bytes = Buffer.from(markdown, 'utf-8');
+      fileName = `${baseTitle || documentId}.md`;
+      contentType = 'text/markdown';
+    }
 
-      fileHash =
-        fileMeta?.sha256 || createHash('sha256').update(bytes).digest('hex');
-      const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
+    const fileHash =
+      fileMeta?.sha256 || createHash('sha256').update(bytes).digest('hex');
+    const idempotencyKey = `continuum:project_document:${documentId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
 
-      try {
-        receipt = await this.sagTransport.uploadProjectDocument({
-          organizationId: actor.organizationId,
-          projectId,
-          documentId,
-          version: versionNumber,
-          logicalSourceId,
-          idempotencyKey,
-          actorUserId: actor.userId,
-          fileName,
-          contentType,
-          bytes,
-        });
-      } catch (error) {
-        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
-      }
+    let receipt: SagProjectDocumentUploadReceipt;
+    try {
+      receipt = await this.sagTransport.uploadProjectDocument({
+        organizationId: actor.organizationId,
+        projectId,
+        documentId,
+        version: versionNumber,
+        logicalSourceId,
+        idempotencyKey,
+        actorUserId: actor.userId,
+        fileName,
+        contentType,
+        bytes,
+      });
+    } catch (error) {
+      this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
     }
 
     const syncedAt = new Date().toISOString();
@@ -5584,11 +5672,18 @@ export class WorkNotesService {
       }),
     );
     if (!document) throw documentNotFound();
-    if (String(document.createdByUserId) !== actor.userId && !actor.canReview) {
+    const isApprovedDoc = text(document.status) === 'APPROVED';
+    // SEC-AUTH-007: Regular MEMBER authors cannot REVOKE/PAUSE/control approved SAG knowledge.
+    const canControl = isApprovedDoc
+      ? Boolean(actor.canReview)
+      : String(document.createdByUserId) === actor.userId ||
+        Boolean(actor.canReview);
+    if (!canControl) {
       throw new ForbiddenException({
         code: 'DOCUMENT_CONTROL_FORBIDDEN',
-        message:
-          'Only the Document owner or a Project reviewer can control SAG processing.',
+        message: isApprovedDoc
+          ? 'Only a Project reviewer can control SAG processing for an approved Document.'
+          : 'Only the Document owner or a Project reviewer can control SAG processing.',
       });
     }
     const versionNumber = Number(document.currentVersionNumber);
@@ -5641,15 +5736,22 @@ export class WorkNotesService {
         progress: 0,
         syncedAt: new Date().toISOString(),
       };
-      await db
-        .collection('project_document_versions')
-        .updateOne(
-          { _id: versionDoc._id },
-          { $set: { knowledgeSync: revokedRecord } },
-        );
-      await db
-        .collection('project_documents')
-        .updateOne({ _id: id }, { $set: { knowledgeSync: revokedRecord } });
+      await db.collection('project_document_versions').updateOne(
+        {
+          _id: versionDoc._id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { $set: { knowledgeSync: revokedRecord } },
+      );
+      await db.collection('project_documents').updateOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { $set: { knowledgeSync: revokedRecord } },
+      );
       await this.auditEvent(
         actor,
         'DOCUMENT_KNOWLEDGE_REVOKED',
@@ -5683,41 +5785,7 @@ export class WorkNotesService {
       });
     }
 
-    const fileMeta = versionDoc.file as
-      | {
-          key?: string;
-          name?: string;
-          contentType?: string;
-          size?: number;
-          sha256?: string;
-        }
-      | undefined;
-
-    let reprocessSourceUrl: string | undefined;
-    if (
-      action === 'REPROCESS' &&
-      fileMeta?.key &&
-      this.documentStorage &&
-      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-      this.documentStorage.isDirectCloudEnabled() &&
-      typeof this.documentStorage.createDirectDownloadUrl === 'function'
-    ) {
-      const sagIngestUrlTtlSeconds = Math.max(
-        60,
-        Number(
-          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
-        ) || 1800,
-      );
-      reprocessSourceUrl = await this.documentStorage
-        .createDirectDownloadUrl(fileMeta.key, sagIngestUrlTtlSeconds, {
-          ...(fileMeta.name ? { fileName: fileMeta.name } : {}),
-          ...(fileMeta.contentType
-            ? { contentType: fileMeta.contentType }
-            : {}),
-        })
-        .catch(() => undefined);
-    }
-
+    // E2E-INT-001: Do not generate/send ignored sourceUrl JSON body on /reprocess.
     const sagDocumentId = storedSync?.sagDocumentId || logicalSourceId;
     try {
       await this.sagTransport.controlProjectDocument({
@@ -5726,13 +5794,6 @@ export class WorkNotesService {
         sagDocumentId,
         actorUserId: actor.userId,
         action: action.toLowerCase() as 'pause' | 'resume' | 'reprocess',
-        ...(reprocessSourceUrl ? { sourceUrl: reprocessSourceUrl } : {}),
-        ...(fileMeta?.name ? { fileName: fileMeta.name } : {}),
-        ...(fileMeta?.contentType ? { contentType: fileMeta.contentType } : {}),
-        ...(fileMeta?.sha256 ? { expectedSha256: fileMeta.sha256 } : {}),
-        ...(typeof fileMeta?.size === 'number' && fileMeta.size > 0
-          ? { expectedSizeBytes: fileMeta.size }
-          : {}),
       });
     } catch (error) {
       this.mapSagTransportError(error, 'SAG_CONTROL_FAILED');
@@ -5774,15 +5835,22 @@ export class WorkNotesService {
         error: null,
         syncedAt: new Date().toISOString(),
       };
-      await db
-        .collection('project_document_versions')
-        .updateOne(
-          { _id: versionDoc._id },
-          { $set: { knowledgeSync: resetRecord } },
-        );
-      await db
-        .collection('project_documents')
-        .updateOne({ _id: id }, { $set: { knowledgeSync: resetRecord } });
+      await db.collection('project_document_versions').updateOne(
+        {
+          _id: versionDoc._id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { $set: { knowledgeSync: resetRecord } },
+      );
+      await db.collection('project_documents').updateOne(
+        {
+          _id: id,
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+        },
+        { $set: { knowledgeSync: resetRecord } },
+      );
       return resetRecord;
     }
 
@@ -5802,31 +5870,55 @@ export class WorkNotesService {
     const match = /^SAG_[A-Z_]+_FAILED_(\d{3}):([\s\S]*)$/.exec(rawMessage);
     if (match) {
       const statusCode = Number(match[1]);
-      const detail =
-        (match[2] || '').trim() || 'Upstream SAG operation failed.';
+      // SEC-BE-012: Never leak raw upstream stack traces, URLs, or internal topology.
+      const safeMessage =
+        statusCode === 400 || statusCode === 422
+          ? 'The document could not be processed by the knowledge engine.'
+          : statusCode === 403
+            ? 'Knowledge processing permission denied.'
+            : statusCode === 404
+              ? 'Knowledge source was not found.'
+              : statusCode === 409
+                ? 'Knowledge source state conflict. Please retry.'
+                : 'Knowledge processing service is temporarily unavailable.';
       if (statusCode === 400 || statusCode === 422) {
-        throw new BadRequestException({ code: fallbackCode, message: detail });
+        throw new BadRequestException({
+          code: fallbackCode,
+          message: safeMessage,
+        });
       }
       if (statusCode === 403) {
-        throw new ForbiddenException({ code: fallbackCode, message: detail });
+        throw new ForbiddenException({
+          code: fallbackCode,
+          message: safeMessage,
+        });
       }
       if (statusCode === 404) {
-        throw new NotFoundException({ code: fallbackCode, message: detail });
+        throw new NotFoundException({
+          code: fallbackCode,
+          message: safeMessage,
+        });
       }
       if (statusCode === 409) {
-        throw new ConflictException({ code: fallbackCode, message: detail });
+        throw new ConflictException({
+          code: fallbackCode,
+          message: safeMessage,
+        });
       }
       if (statusCode === 502 || statusCode === 503 || statusCode === 504) {
         throw new ServiceUnavailableException({
           code: fallbackCode,
-          message: detail,
+          message: safeMessage,
         });
       }
-      throw new BadGatewayException({ code: fallbackCode, message: detail });
+      throw new BadGatewayException({
+        code: fallbackCode,
+        message: safeMessage,
+      });
     }
     throw new BadGatewayException({
       code: fallbackCode,
-      message: rawMessage || 'SAG processing service request failed.',
+      message: 'Knowledge processing service request failed.',
     });
   }
 
@@ -5994,23 +6086,28 @@ export class WorkNotesService {
       ],
     };
 
-    const existingAuthoredReport = await this.database()
-      .collection('work_reports')
-      .findOne({
-        organizationId: objectId(actor.organizationId),
-        projectId: objectId(projectId),
-        ...scopeReportFilter,
-        periodStart: { $gte: activeEffectiveAt },
-        ...authoredOrSubmittedCondition,
-      });
-    const shouldSplitSegment =
-      Boolean(existingAuthoredReport) &&
-      activeEffectiveAt.getTime() < now.getTime();
-    const changeEffectiveAt = shouldSplitSegment ? now : activeEffectiveAt;
+    let changeEffectiveAt = activeEffectiveAt;
 
     await this.transaction(async (db, session) => {
       const settingsCollection = db.collection('work_report_settings');
       const reportsCollection = db.collection('work_reports');
+
+      // BE-LOGIC-003: Perform authored-report existence check INSIDE the MongoDB
+      // transaction so concurrent draft creation/submission cannot race with cadence splitting.
+      const existingAuthoredReport = await reportsCollection.findOne(
+        {
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(projectId),
+          ...scopeReportFilter,
+          periodStart: { $gte: activeEffectiveAt },
+          ...authoredOrSubmittedCondition,
+        },
+        { session },
+      );
+      const shouldSplitSegment =
+        Boolean(existingAuthoredReport) &&
+        activeEffectiveAt.getTime() < now.getTime();
+      changeEffectiveAt = shouldSplitSegment ? now : activeEffectiveAt;
 
       await settingsCollection.deleteMany(
         {
@@ -6155,7 +6252,11 @@ export class WorkNotesService {
           );
         } else {
           await settingsCollection.updateOne(
-            { _id: active._id },
+            {
+              _id: active._id,
+              organizationId: objectId(actor.organizationId),
+              projectId: objectId(projectId),
+            },
             {
               $set: {
                 reportScope: scope,
@@ -6261,16 +6362,45 @@ export class WorkNotesService {
     filters?: WorkReportsListFilters,
   ): Promise<WorkReportsPageRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
-    const timelines = await this.scopedSettingsTimelines(actor);
+    if (scope === 'LEADER' && isActorPureMember(actor)) {
+      throw this.reviewPermissionDenied();
+    }
     const now = new Date();
     const collection = this.database().collection('work_reports');
 
-    if (scope === 'LEADER') {
-      if (isActorPureMember(actor)) throw this.reviewPermissionDenied();
-      const leaders =
+    // BE-PERF-001 & BE-PERF-003: Pure read-only GET (no write-on-read
+    // ensureReportObligations / markOverdue mutations on GET; scheduled obligations
+    // run in WorkReportOverdueScheduler and draft creation runs on-demand in
+    // saveCurrentWorkReportDraft). Run timelines + roster in parallel (0 HTTP hops in monolith).
+    const resolveCombinedRoster = async (): Promise<{
+      members: Array<{ userId: string; fullName: string; joinedAt: string }>;
+      leaders: Array<{ userId: string; fullName: string; joinedAt: string }>;
+    }> => {
+      if (typeof this.authorization.listActiveRoster === 'function') {
+        return this.authorization.listActiveRoster(actor, headers);
+      }
+      const [members, leaders] = await Promise.all([
+        typeof this.authorization.listActiveMembers === 'function'
+          ? this.authorization.listActiveMembers(actor, headers)
+          : Promise.resolve([]),
         typeof this.authorization.listActiveLeaders === 'function'
-          ? await this.authorization.listActiveLeaders(actor, headers)
-          : [];
+          ? this.authorization.listActiveLeaders(actor, headers).catch(() => [])
+          : Promise.resolve([]),
+      ]);
+      return { members, leaders };
+    };
+
+    const canViewAllMembers = isActorLeader(actor) || isActorManager(actor);
+    const needsRoster = scope === 'LEADER' || canViewAllMembers;
+    const [timelines, combinedRoster] = await Promise.all([
+      this.scopedSettingsTimelines(actor),
+      needsRoster ? resolveCombinedRoster() : Promise.resolve(null),
+    ]);
+
+    if (scope === 'LEADER') {
+      const canViewAllLeaders = isActorManager(actor);
+      const roster = combinedRoster ?? { members: [], leaders: [] };
+      const leaders = [...roster.leaders];
       if (isActorLeader(actor)) {
         const normalizedActorId = actor.userId.toLowerCase();
         if (
@@ -6287,24 +6417,7 @@ export class WorkNotesService {
         }
       }
       const hasActiveLeaders = leaders.length > 0 || isActorLeader(actor);
-      const activeLeaderIds = new Set(
-        leaders.map((leader) => leader.userId.toLowerCase()),
-      );
-      await this.ensureReportObligations(
-        actor,
-        leaders,
-        timelines.leaderRows,
-        now,
-        'LEADER',
-      );
-      await this.markOverdue(actor, projectId, now, activeLeaderIds, 'LEADER');
-
-      const canViewAllLeaders = isActorManager(actor);
-      const extraDirectoryMembers = canViewAllLeaders
-        ? await this.authorization
-            .listActiveMembers(actor, headers)
-            .catch(() => [])
-        : [];
+      const extraDirectoryMembers = canViewAllLeaders ? roster.members : [];
       const visibleRosterPeople = canViewAllLeaders
         ? leaders
         : leaders.filter(
@@ -6335,29 +6448,24 @@ export class WorkNotesService {
       });
     }
 
-    const canViewAllMembers = isActorLeader(actor) || isActorManager(actor);
-    const [members, extraDirectoryLeaders, hasActiveLeaders] =
-      await Promise.all([
-        canViewAllMembers
-          ? this.authorization.listActiveMembers(actor, headers)
-          : Promise.resolve([this.resolveActorMemberObligation(actor)]),
-        canViewAllMembers &&
-        typeof this.authorization.listActiveLeaders === 'function'
-          ? this.authorization.listActiveLeaders(actor, headers).catch(() => [])
-          : Promise.resolve([]),
-        this.resolveHasActiveLeaders(actor, headers),
-      ]);
-    const activeMemberIds = new Set(
-      members.map((member) => member.userId.toLowerCase()),
-    );
-    await this.ensureReportObligations(
-      actor,
-      members,
-      timelines.memberRows,
-      now,
-      'MEMBER',
-    );
-    await this.markOverdue(actor, projectId, now, activeMemberIds, 'MEMBER');
+    let members: Array<{ userId: string; fullName: string; joinedAt: string }>;
+    let extraDirectoryLeaders: Array<{
+      userId: string;
+      fullName: string;
+      joinedAt: string;
+    }>;
+    let hasActiveLeaders: boolean;
+    if (canViewAllMembers) {
+      const roster = combinedRoster ?? { members: [], leaders: [] };
+      members = roster.members;
+      extraDirectoryLeaders = roster.leaders;
+      hasActiveLeaders =
+        isActorLeader(actor) || extraDirectoryLeaders.length > 0;
+    } else {
+      members = [this.resolveActorMemberObligation(actor)];
+      extraDirectoryLeaders = [];
+      hasActiveLeaders = true;
+    }
 
     const baseVisibilityFilter: Record<string, unknown> = {
       organizationId: objectId(actor.organizationId),
@@ -6759,6 +6867,7 @@ export class WorkNotesService {
     }
     const [withStorageRef] = await this.attachWorkReportStorageReferences(
       actor.organizationId,
+      projectId,
       [row],
       [mapped],
     );
@@ -6773,7 +6882,13 @@ export class WorkNotesService {
   ): Promise<WorkReportRecord> {
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(reportId)) throw reportNotFound();
-    return this.saveReportDraft(actor, objectId(reportId), input);
+    return this.saveReportDraft(
+      actor,
+      objectId(reportId),
+      input,
+      undefined,
+      headers,
+    );
   }
 
   async submitWorkReport(
@@ -6782,15 +6897,13 @@ export class WorkNotesService {
     reportId: string,
     options?: { autoApprove?: boolean },
   ): Promise<WorkReportRecord> {
+    void options;
     const actor = await this.authorization.resolveProject(headers, projectId);
     if (!validId(reportId)) throw reportNotFound();
     const id = objectId(reportId);
     const now = new Date();
-    let shouldAutoApprove = Boolean(
-      options?.autoApprove &&
-      (actor.canReview || isActorLeader(actor) || isActorManager(actor)),
-    );
-    let reportVersion = 1;
+    // BE-LOGIC-001: Self-approval is unconditionally forbidden. Submitting a
+    // Work Report ALWAYS transitions to PENDING_REVIEW for an independent reviewer.
     const { submittedScope } = await this.transaction(async (db, session) => {
       const reports = db.collection('work_reports');
       const current = record(
@@ -6828,44 +6941,7 @@ export class WorkNotesService {
             ? 'Complete title and content before submitting.'
             : 'Complete the three required report fields before submitting.',
         );
-      const reportBodyCharCount =
-        current.contentSchemaVersion === 2 || hasFreeformBody
-          ? text(current.contentMarkdown).trim().length
-          : text(current.accomplishments).trim().length +
-            text(current.approach).trim().length +
-            text(current.reason).trim().length;
-      if (reportBodyCharCount < 30) {
-        shouldAutoApprove = false;
-      }
       const currentMemberId = String(current.memberUserId);
-      reportVersion = Math.max(1, Number(current.currentVersionNumber ?? 1));
-      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
-        ? 'MANAGER'
-        : 'LEADER';
-      const rawProv =
-        current.provenance &&
-        typeof current.provenance === 'object' &&
-        !Array.isArray(current.provenance)
-          ? (current.provenance as Record<string, unknown>)
-          : {};
-      const nextProv: Record<string, unknown> = shouldAutoApprove
-        ? {
-            ...rawProv,
-            knowledgeSync: {
-              documentId: reportId,
-              version: reportVersion,
-              status: 'QUEUED_OUTBOX',
-              searchStatus: 'PENDING',
-              knowledgeStatus: 'NOT_STARTED',
-              searchReady: false,
-              knowledgeReady: false,
-              currentStage: 'OUTBOX_QUEUE',
-              progress: 5,
-              syncedAt: now.toISOString(),
-            } satisfies DocumentKnowledgeStatusRecord,
-          }
-        : rawProv;
-      const history = pickReviewHistory(current.reviewHistory);
       const updated = await reports.updateOne(
         {
           _id: id,
@@ -6875,26 +6951,7 @@ export class WorkNotesService {
           status: { $in: ['DRAFT', 'OVERDUE', 'CHANGES_REQUESTED'] },
         },
         {
-          $set: shouldAutoApprove
-            ? {
-                status: 'APPROVED',
-                submittedAt: now,
-                reviewedByUserId: objectId(actor.userId),
-                reviewedByName: actor.userName,
-                reviewedAt: now,
-                reviewHistory: [
-                  ...history,
-                  {
-                    action: 'APPROVED',
-                    reviewerId: actor.userId,
-                    reviewerRole,
-                    at: now,
-                  },
-                ],
-                provenance: nextProv,
-                updatedAt: now,
-              }
-            : { status: 'PENDING_REVIEW', submittedAt: now, updatedAt: now },
+          $set: { status: 'PENDING_REVIEW', submittedAt: now, updatedAt: now },
         },
         { session },
       );
@@ -6914,64 +6971,19 @@ export class WorkNotesService {
         },
         session,
       );
-      if (shouldAutoApprove) {
-        await this.appendOutbox(
-          {
-            eventName: 'WORK_REPORT_APPROVED',
-            aggregateType: 'WORK_REPORT',
-            aggregateId: reportId,
-            payload: {
-              organizationId: actor.organizationId,
-              projectId,
-              memberId: currentMemberId,
-              scope: currentScope,
-              reviewerRole,
-            },
-          },
-          session,
-        );
-        await this.appendOutbox(
-          {
-            eventName: 'KNOWLEDGE_SOURCE_APPROVED',
-            aggregateType: 'WORK_REPORT',
-            aggregateId: reportId,
-            payload: {
-              sourceType: 'PERIODIC_REPORT',
-              sourceId: reportId,
-              organizationId: actor.organizationId,
-              projectId,
-              version: reportVersion,
-              approvedAt: now.toISOString(),
-            },
-          },
-          session,
-        );
-      }
       await this.auditEvent(
         actor,
-        shouldAutoApprove ? 'REPORT_APPROVED' : 'REPORT_SUBMITTED',
+        'REPORT_SUBMITTED',
         'WORK_REPORT',
         reportId,
         {
           memberId: currentMemberId,
           scope: currentScope,
-          ...(shouldAutoApprove ? { autoApproved: true } : {}),
         },
         session,
       );
       return { memberId: currentMemberId, submittedScope: currentScope };
     });
-
-    if (shouldAutoApprove) {
-      await this.dispatchKnowledgeIngestionJob(
-        projectId,
-        reportId,
-        'KNOWLEDGE_SOURCE_APPROVED',
-        reportVersion,
-        headers.requestId,
-      );
-      return this.getWorkReport(headers, projectId, reportId);
-    }
 
     if (this.notifications) {
       try {
@@ -7029,7 +7041,6 @@ export class WorkNotesService {
       throw this.reviewPermissionDenied();
     }
     if (!validId(reportId)) throw reportNotFound();
-    const hasActiveLeaders = await this.resolveHasActiveLeaders(actor, headers);
     const id = objectId(reportId);
     const now = new Date();
     let reportVersion = 1;
@@ -7052,9 +7063,12 @@ export class WorkNotesService {
         const currentScope: WorkReportScope = isLeaderReport
           ? 'LEADER'
           : 'MEMBER';
+        // SEC-AUTH-007: Per 04_WORK_NOTE_WORKFLOWS.md, Managers can review BOTH
+        // MEMBER and LEADER reports in active org projects (while LEADER reports
+        // require Manager review and MEMBER schedule configuration stays Leader-owned).
         const canReviewScope = isLeaderReport
           ? this.canManageLeaderTier(actor)
-          : this.canManageMemberTier(actor, hasActiveLeaders);
+          : this.canReviewMemberTier(actor);
         if (!canReviewScope) {
           throw this.reviewPermissionDenied();
         }
@@ -7092,7 +7106,12 @@ export class WorkNotesService {
         }
         const history = pickReviewHistory(current.reviewHistory);
         const updated = await reports.updateOne(
-          { _id: id, status: 'PENDING_REVIEW' },
+          {
+            _id: id,
+            organizationId: objectId(actor.organizationId),
+            projectId: objectId(projectId),
+            status: 'PENDING_REVIEW',
+          },
           {
             $set: {
               status: action,
@@ -7284,6 +7303,7 @@ export class WorkNotesService {
       reportId,
     );
     const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    // BE-LOGIC-001: Sync NEVER auto-approves or promotes unapproved Work Reports.
     if (text(row.status) !== 'APPROVED') {
       if (!actor.canReview && !isActorLeader(actor) && !isActorManager(actor)) {
         throw new ForbiddenException({
@@ -7292,44 +7312,8 @@ export class WorkNotesService {
             'Only an approved Work Report can be synchronized to SAG. Approve the report first.',
         });
       }
-      const now = new Date();
-      const reviewerRole: 'MANAGER' | 'LEADER' = isActorManager(actor)
-        ? 'MANAGER'
-        : 'LEADER';
-      const history = pickReviewHistory(row.reviewHistory);
-      await this.database()
-        .collection('work_reports')
-        .updateOne(
-          { _id: objectId(reportId) },
-          {
-            $set: {
-              status: 'APPROVED',
-              reviewedByUserId: objectId(actor.userId),
-              reviewedByName: actor.userName,
-              reviewedAt: now,
-              reviewHistory: [
-                ...history,
-                {
-                  action: 'APPROVED',
-                  reviewerId: actor.userId,
-                  reviewerRole,
-                  at: now,
-                },
-              ],
-              updatedAt: now,
-            },
-          },
-        );
-      row.status = 'APPROVED';
-      row.reviewedByUserId = objectId(actor.userId);
-      row.reviewedByName = actor.userName;
-      row.reviewedAt = now;
-      await this.auditEvent(
-        actor,
-        'WORK_REPORT_AUTO_APPROVED',
-        'WORK_REPORT',
-        reportId,
-        { version: versionNumber },
+      throw conflict(
+        'Only an approved Work Report can be synchronized to SAG. Approve it via the review workflow first.',
       );
     }
     const rawProv =
@@ -7371,6 +7355,15 @@ export class WorkNotesService {
     );
     const memberId = String(row.memberUserId);
     const versionNumber = Math.max(1, Number(row.currentVersionNumber ?? 1));
+    const isApproved = text(row.status) === 'APPROVED';
+    const isLeaderReport = text(row.reportScope) === 'LEADER';
+    const isReviewer = isLeaderReport
+      ? this.canManageLeaderTier(actor)
+      : this.canReviewMemberTier(actor);
+    // SEC-AUTH-007: Regular MEMBER authors cannot REVOKE/PAUSE/control approved SAG knowledge.
+    const canControl = isApproved
+      ? isReviewer
+      : memberId.toLowerCase() === actor.userId.toLowerCase() || isReviewer;
     const rawProv =
       row.provenance &&
       typeof row.provenance === 'object' &&
@@ -7384,10 +7377,7 @@ export class WorkNotesService {
       logicalPrefix: 'work_report',
       entityId: reportId,
       versionNumber,
-      canControl:
-        memberId.toLowerCase() === actor.userId.toLowerCase() ||
-        actor.canReview ||
-        isActorManager(actor),
+      canControl,
       rawProvenance: rawProv,
       action,
       ensureStoredFile: () =>
@@ -7591,6 +7581,7 @@ export class WorkNotesService {
     if (fileKey) {
       const stillReferenced = await this.isStorageKeyStillReferenced(
         actor.organizationId,
+        projectId,
         fileKey,
         { excludeWorkReportId: reportId },
       );
@@ -7619,66 +7610,80 @@ export class WorkNotesService {
     const uniqueIds = Array.from(
       new Set(input.ids.map((id) => id.trim()).filter(Boolean)),
     ).slice(0, 50);
+    const outcomes = new Array<
+      { ok: true; id: string } | { ok: false; id: string; message: string }
+    >(uniqueIds.length);
+
+    await runWithConcurrency(
+      uniqueIds.map((id, index) => ({ id, index })),
+      BULK_ACTION_CONCURRENCY,
+      async ({ id, index }) => {
+        try {
+          switch (input.action) {
+            case 'APPROVE':
+              await this.reviewWorkReport(headers, projectId, id, 'APPROVED', {
+                comment: input.comment,
+              });
+              break;
+            case 'REQUEST_CHANGES':
+              await this.reviewWorkReport(
+                headers,
+                projectId,
+                id,
+                'CHANGES_REQUESTED',
+                { comment: input.comment },
+              );
+              break;
+            case 'REJECT':
+              await this.reviewWorkReport(headers, projectId, id, 'REJECTED', {
+                comment: input.comment,
+              });
+              break;
+            case 'SYNC':
+              await this.syncWorkReportToSag(headers, projectId, id);
+              break;
+            case 'PAUSE':
+            case 'RESUME':
+            case 'REPROCESS':
+            case 'REVOKE':
+              await this.controlWorkReportKnowledge(
+                headers,
+                projectId,
+                id,
+                input.action,
+              );
+              break;
+            case 'PURGE_ARTIFACT':
+              await this.purgeWorkReportArtifact(headers, projectId, id, {
+                reopen: input.reopen,
+                comment: input.comment,
+              });
+              break;
+            case 'REOPEN':
+              await this.purgeWorkReportArtifact(headers, projectId, id, {
+                reopen: true,
+                comment: input.comment,
+              });
+              break;
+            default:
+              throw new BadRequestException({ code: 'INVALID_BULK_ACTION' });
+          }
+          outcomes[index] = { ok: true, id };
+        } catch (err) {
+          outcomes[index] = {
+            ok: false,
+            id,
+            message: sanitizeClientErrorMessage(err, 'Operation failed.'),
+          };
+        }
+      },
+    );
+
     const succeededIds: string[] = [];
     const failed: Array<{ id: string; message: string }> = [];
-
-    for (const id of uniqueIds) {
-      try {
-        switch (input.action) {
-          case 'APPROVE':
-            await this.reviewWorkReport(headers, projectId, id, 'APPROVED', {
-              comment: input.comment,
-            });
-            break;
-          case 'REQUEST_CHANGES':
-            await this.reviewWorkReport(
-              headers,
-              projectId,
-              id,
-              'CHANGES_REQUESTED',
-              { comment: input.comment },
-            );
-            break;
-          case 'REJECT':
-            await this.reviewWorkReport(headers, projectId, id, 'REJECTED', {
-              comment: input.comment,
-            });
-            break;
-          case 'SYNC':
-            await this.syncWorkReportToSag(headers, projectId, id);
-            break;
-          case 'PAUSE':
-          case 'RESUME':
-          case 'REPROCESS':
-          case 'REVOKE':
-            await this.controlWorkReportKnowledge(
-              headers,
-              projectId,
-              id,
-              input.action,
-            );
-            break;
-          case 'PURGE_ARTIFACT':
-            await this.purgeWorkReportArtifact(headers, projectId, id, {
-              reopen: input.reopen,
-              comment: input.comment,
-            });
-            break;
-          case 'REOPEN':
-            await this.purgeWorkReportArtifact(headers, projectId, id, {
-              reopen: true,
-              comment: input.comment,
-            });
-            break;
-          default:
-            throw new BadRequestException({ code: 'INVALID_BULK_ACTION' });
-        }
-        succeededIds.push(id);
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Operation failed.';
-        failed.push({ id, message });
-      }
+    for (const outcome of outcomes) {
+      if (outcome.ok) succeededIds.push(outcome.id);
+      else failed.push({ id: outcome.id, message: outcome.message });
     }
 
     return {
@@ -7711,103 +7716,140 @@ export class WorkNotesService {
           ]),
         )
       : undefined;
-    const rows = await db
-      .collection('work_reports')
-      .find({ status: 'DRAFT', dueAt: { $lte: now } })
-      .sort({ dueAt: 1, _id: 1 })
-      .limit(500)
-      .toArray();
+
+    // BE-LOGIC-003: Keyset-paginate over { dueAt, _id } across ALL overdue batches
+    // so inactive/archived rows never starve later active projects past row 500.
+    const batchSize = 500;
+    let lastDueAt: Date | null = null;
+    let lastId: Types.ObjectId | null = null;
     let transitioned = 0;
-    for (const candidate of rows) {
-      const item = candidate as unknown as Record<string, unknown>;
-      const candidateProjectId = String(item.projectId).toLowerCase();
-      const candidateMemberId = String(item.memberUserId).toLowerCase();
-      const candidateScope: WorkReportScope =
-        text(item.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
-      if (rostersByProject) {
-        const projectRoster = rostersByProject.get(candidateProjectId);
-        if (!projectRoster) {
-          continue;
-        }
-        if (candidateScope === 'LEADER') {
-          if (
-            projectRoster.leaders &&
-            !projectRoster.leaders.has(candidateMemberId)
-          ) {
+
+    while (true) {
+      const query: Record<string, unknown> = {
+        status: 'DRAFT',
+        dueAt: { $lte: now },
+      };
+      if (lastDueAt && lastId) {
+        query.$or = [
+          { dueAt: { $gt: lastDueAt } },
+          { dueAt: lastDueAt, _id: { $gt: lastId } },
+        ];
+      }
+      const rows = await db
+        .collection('work_reports')
+        .find(query)
+        .sort({ dueAt: 1, _id: 1 })
+        .limit(batchSize)
+        .toArray();
+      if (rows.length === 0) break;
+
+      const tail = rows[rows.length - 1] as unknown as Record<string, unknown>;
+      lastDueAt =
+        tail.dueAt instanceof Date ? tail.dueAt : new Date(String(tail.dueAt));
+      lastId =
+        tail._id instanceof Types.ObjectId
+          ? tail._id
+          : objectId(String(tail._id));
+
+      for (const candidate of rows) {
+        const item = candidate as unknown as Record<string, unknown>;
+        const candidateProjectId = String(item.projectId).toLowerCase();
+        const candidateMemberId = String(item.memberUserId).toLowerCase();
+        const candidateScope: WorkReportScope =
+          text(item.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER';
+        if (rostersByProject) {
+          const projectRoster = rostersByProject.get(candidateProjectId);
+          if (!projectRoster) {
             continue;
           }
-        } else if (!projectRoster.members.has(candidateMemberId)) {
-          continue;
+          if (candidateScope === 'LEADER') {
+            if (
+              projectRoster.leaders &&
+              !projectRoster.leaders.has(candidateMemberId)
+            ) {
+              continue;
+            }
+          } else if (!projectRoster.members.has(candidateMemberId)) {
+            continue;
+          }
         }
-      }
-      const id = objectId(String(item._id));
-      const didTransition = await this.transaction(
-        async (transactionDb, session) => {
-          const update = await transactionDb
-            .collection('work_reports')
-            .updateOne(
-              { _id: id, status: 'DRAFT', dueAt: { $lte: now } },
-              { $set: { status: 'OVERDUE', updatedAt: now } },
-              { session },
+        const id = objectId(String(item._id));
+        const didTransition = await this.transaction(
+          async (transactionDb, session) => {
+            const update = await transactionDb
+              .collection('work_reports')
+              .updateOne(
+                {
+                  _id: id,
+                  organizationId: item.organizationId,
+                  projectId: item.projectId,
+                  status: 'DRAFT',
+                  dueAt: { $lte: now },
+                },
+                { $set: { status: 'OVERDUE', updatedAt: now } },
+                { session },
+              );
+            if (update.modifiedCount !== 1) return false;
+            const projectId = String(item.projectId);
+            const memberId = String(item.memberUserId);
+            const commonPayload = {
+              organizationId: String(item.organizationId),
+              projectId,
+              memberId,
+              scope: candidateScope,
+              periodStart: iso(item.periodStart),
+              periodEnd: iso(item.periodEnd),
+              dueAt: iso(item.dueAt),
+            };
+            await this.appendOutbox(
+              {
+                eventName: 'WORK_REPORT_DUE',
+                aggregateType: 'WORK_REPORT',
+                aggregateId: String(id),
+                payload: commonPayload,
+              },
+              session,
             );
-          if (update.modifiedCount !== 1) return false;
-          const projectId = String(item.projectId);
-          const memberId = String(item.memberUserId);
-          const commonPayload = {
-            organizationId: String(item.organizationId),
-            projectId,
-            memberId,
-            scope: candidateScope,
-            periodStart: iso(item.periodStart),
-            periodEnd: iso(item.periodEnd),
-            dueAt: iso(item.dueAt),
-          };
-          await this.appendOutbox(
-            {
-              eventName: 'WORK_REPORT_DUE',
-              aggregateType: 'WORK_REPORT',
-              aggregateId: String(id),
-              payload: commonPayload,
-            },
-            session,
-          );
-          await this.appendOutbox(
-            {
-              eventName: 'WORK_REPORT_OVERDUE',
-              aggregateType: 'WORK_REPORT',
-              aggregateId: String(id),
-              payload: commonPayload,
-            },
-            session,
-          );
-          return true;
-        },
-      );
-      if (didTransition) {
-        transitioned += 1;
-        if (this.notifications) {
-          await this.notifications.emitSafe({
-            type: 'WORK_REPORT_OVERDUE',
-            actorId: null,
-            recipients: [String(item.memberUserId)],
-            title:
-              candidateScope === 'LEADER'
-                ? 'Leader work report overdue'
-                : 'Work report overdue',
-            message:
-              'Your periodic work report has passed its due date. Please complete and submit your report.',
-            organizationId: String(item.organizationId),
-            projectId: String(item.projectId),
-            target: {
-              kind: 'PROJECT',
-              url: `/projects/${String(item.projectId)}/work-reports`,
+            await this.appendOutbox(
+              {
+                eventName: 'WORK_REPORT_OVERDUE',
+                aggregateType: 'WORK_REPORT',
+                aggregateId: String(id),
+                payload: commonPayload,
+              },
+              session,
+            );
+            return true;
+          },
+        );
+        if (didTransition) {
+          transitioned += 1;
+          if (this.notifications) {
+            await this.notifications.emitSafe({
+              type: 'WORK_REPORT_OVERDUE',
+              actorId: null,
+              recipients: [String(item.memberUserId)],
+              title:
+                candidateScope === 'LEADER'
+                  ? 'Leader work report overdue'
+                  : 'Work report overdue',
+              message:
+                'Your periodic work report has passed its due date. Please complete and submit your report.',
               organizationId: String(item.organizationId),
               projectId: String(item.projectId),
-            },
-            eventKey: `work-report-overdue:${String(id)}`,
-          });
+              target: {
+                kind: 'PROJECT',
+                url: `/projects/${String(item.projectId)}/work-reports`,
+                organizationId: String(item.organizationId),
+                projectId: String(item.projectId),
+              },
+              eventKey: `work-report-overdue:${String(id)}`,
+            });
+          }
         }
       }
+
+      if (rows.length < batchSize) break;
     }
     return transitioned;
   }
@@ -7850,6 +7892,7 @@ export class WorkNotesService {
     reportId: Types.ObjectId,
     input: WorkReportInput,
     expectedScope?: WorkReportScope,
+    headers?: CaptureRequestHeaders,
   ): Promise<WorkReportRecord> {
     const reports = this.database().collection('work_reports');
     const existingReport = record(
@@ -7864,6 +7907,36 @@ export class WorkNotesService {
       (text(existingReport?.reportScope) === 'LEADER' ? 'LEADER' : 'MEMBER');
     this.assertCanAuthorScope(actor, resolvedScope);
     if (!existingReport) throw reportNotFound();
+    if (headers) {
+      this.assertIfMatch(headers, existingReport.updatedAt);
+    }
+    // SEC-AUTH-015: Validate every attached documentId belongs to the SAME
+    // (organizationId, projectId) — reject cross-tenant/cross-project foreign IDs.
+    if (input.documentIds && input.documentIds.length > 0) {
+      const uniqueDocIds = Array.from(
+        new Set(input.documentIds.map((id) => id.trim()).filter(Boolean)),
+      );
+      if (uniqueDocIds.some((id) => !validId(id))) {
+        throw new BadRequestException({
+          code: 'INVALID_DOCUMENT_REFERENCE',
+          message: 'One or more attached document references are invalid.',
+        });
+      }
+      const existingCount = await this.database()
+        .collection('project_documents')
+        .countDocuments({
+          _id: { $in: uniqueDocIds.map(objectId) },
+          organizationId: objectId(actor.organizationId),
+          projectId: objectId(actor.projectId),
+        });
+      if (existingCount !== uniqueDocIds.length) {
+        throw new BadRequestException({
+          code: 'INVALID_DOCUMENT_REFERENCE',
+          message:
+            'One or more attached Project Documents do not belong to this project.',
+        });
+      }
+    }
     const isFreeformInput = 'content' in input;
     if (existingReport.contentSchemaVersion === 2 && !isFreeformInput)
       throw conflict(
@@ -7969,6 +8042,10 @@ export class WorkNotesService {
 
   private canManageLeaderTier(actor: WorkNotesActor): boolean {
     return isActorManager(actor);
+  }
+
+  private canReviewMemberTier(actor: WorkNotesActor): boolean {
+    return isActorLeader(actor) || isActorManager(actor);
   }
 
   private canManageMemberTier(
@@ -8232,15 +8309,12 @@ export class WorkNotesService {
       )?.fullName;
       return this.workReportRecord(row, actor, authorName, hasActiveLeaders);
     });
-    const refreshedData = await this.refreshWorkReportsLiveKnowledge(
-      actor,
-      actor.projectId,
-      mappedData,
-    );
+    // BE-PERF-001: Serve persisted knowledgeSync on list GET (no 12 synchronous live SAG HTTP calls).
     const enrichedData = await this.attachWorkReportStorageReferences(
       actor.organizationId,
+      actor.projectId,
       rows,
-      refreshedData,
+      mappedData,
     );
     const refreshedSyncByReportId = new Map<
       string,
@@ -8800,12 +8874,16 @@ export class WorkNotesService {
       reportScope === 'LEADER'
         ? isActorLeader(actor)
         : isActorPureMember(actor);
+    const canReviewScope =
+      reportScope === 'LEADER'
+        ? this.canManageLeaderTier(actor)
+        : this.canReviewMemberTier(actor);
     const canManageScope =
       reportScope === 'LEADER'
         ? this.canManageLeaderTier(actor)
         : this.canManageMemberTier(actor, hasActiveLeaders);
     const canReviewReport =
-      canManageScope && !isOwner && status === 'PENDING_REVIEW';
+      canReviewScope && !isOwner && status === 'PENDING_REVIEW';
     const canConfigureReport = canManageScope;
 
     return {
@@ -9189,14 +9267,14 @@ export class WorkNotesService {
         : {}),
       permissions: {
         ...this.permissions(actor, createdBy, status),
+        canCreate: !isNonMemberManager(actor),
         canEdit:
           createdBy === actor.userId &&
           ['DRAFT', 'CHANGES_REQUESTED', 'APPROVED', 'REJECTED'].includes(
             status,
           ),
         canDelete:
-          actor.canReview ||
-          actor.canConfigure ||
+          isActorLeader(actor) ||
           (createdBy === actor.userId &&
             status !== 'APPROVED' &&
             status !== 'ARCHIVED'),
@@ -9304,6 +9382,7 @@ export class WorkNotesService {
     }
     const storageRefsByDoc = await this.resolveStorageReferencesByDocument(
       actor.organizationId,
+      actor.projectId,
       [
         {
           documentId: summary.id,
@@ -9345,6 +9424,7 @@ export class WorkNotesService {
 
   private async resolveStorageReferencesByDocument(
     organizationId: string,
+    projectId: string,
     entries: Array<{
       documentId: string;
       keys: string[];
@@ -9368,13 +9448,20 @@ export class WorkNotesService {
       distinctDocsByKey.set(key, new Set<string>());
     }
 
+    // SEC-AUTH-002 / BE-DATA-001: Strictly scope all storage reference lookups
+    // by BOTH organizationId AND projectId (eliminates cross-project existence oracle).
+    const scopeFilter = {
+      organizationId: objectId(organizationId),
+      projectId: objectId(projectId),
+    };
+
     try {
       const versionsCol = this.database().collection(
         'project_document_versions',
       );
       if (typeof versionsCol.find === 'function') {
         const cursor = versionsCol.find({
-          organizationId: objectId(organizationId),
+          ...scopeFilter,
           'file.key': { $in: uniqueKeys },
         });
         const rows =
@@ -9400,7 +9487,7 @@ export class WorkNotesService {
       const notesCol = this.database().collection('work_notes');
       if (typeof notesCol.find === 'function') {
         const cursor = notesCol.find({
-          organizationId: objectId(organizationId),
+          ...scopeFilter,
           status: 'CONFIRMED',
           'provenance.mdFile.key': { $in: uniqueKeys },
         });
@@ -9432,7 +9519,7 @@ export class WorkNotesService {
       const reportsCol = this.database().collection('work_reports');
       if (typeof reportsCol.find === 'function') {
         const cursor = reportsCol.find({
-          organizationId: objectId(organizationId),
+          ...scopeFilter,
           'file.key': { $in: uniqueKeys },
         });
         const rows =
@@ -9506,6 +9593,7 @@ export class WorkNotesService {
 
   private async attachTaskNoteStorageReferences(
     organizationId: string,
+    projectId: string,
     rawRows: Array<Record<string, unknown>>,
     mapped: TaskNoteRecord[],
   ): Promise<TaskNoteRecord[]> {
@@ -9548,6 +9636,7 @@ export class WorkNotesService {
     if (keyEntries.length === 0) return mapped;
     const refs = await this.resolveStorageReferencesByDocument(
       organizationId,
+      projectId,
       keyEntries,
     );
     return mapped.map((item) => {
@@ -9558,6 +9647,7 @@ export class WorkNotesService {
 
   private async attachWorkReportStorageReferences(
     organizationId: string,
+    projectId: string,
     rawRows: Array<Record<string, unknown>>,
     mapped: WorkReportRecord[],
   ): Promise<WorkReportRecord[]> {
@@ -9591,6 +9681,7 @@ export class WorkNotesService {
     if (keyEntries.length === 0) return mapped;
     const refs = await this.resolveStorageReferencesByDocument(
       organizationId,
+      projectId,
       keyEntries,
     );
     return mapped.map((item) => {
@@ -9912,17 +10003,22 @@ export class WorkNotesService {
     reviewStatus: TaskNoteReviewStatus = 'PENDING_REVIEW',
   ): WorkNotesPermissions {
     const isOwner = actor.userId.toLowerCase() === authorId.toLowerCase();
-    const canManage = isOwner || actor.canReview;
+    const readOnlyManager = isNonMemberManager(actor);
+    const canManage = !readOnlyManager && (isOwner || actor.canReview);
+    const canManageApproved = !readOnlyManager && Boolean(actor.canReview);
     return {
-      canCreate: true,
+      canCreate: !readOnlyManager,
       canEdit: canManage,
-      canDelete: canManage,
+      canDelete: reviewStatus === 'APPROVED' ? canManageApproved : canManage,
       canSubmit: false,
-      canReview: Boolean(actor.canReview && reviewStatus === 'PENDING_REVIEW'),
+      canReview: Boolean(
+        actor.canReview && !isOwner && reviewStatus === 'PENDING_REVIEW',
+      ),
       canConfigure: false,
       canControlKnowledge:
-        reviewStatus === 'APPROVED' ? canManage : Boolean(actor.canReview),
-      canPurgeArtifact: canManage,
+        reviewStatus === 'APPROVED' ? Boolean(actor.canReview) : canManage,
+      canPurgeArtifact:
+        reviewStatus === 'APPROVED' ? canManageApproved : canManage,
     };
   }
 
@@ -10015,14 +10111,18 @@ export class WorkNotesService {
   }
 
   private uploadIntentSigningKey(): Buffer {
+    // BE-DATA-002 / SEC-BE-002: Never reuse JWT_SECRET and never fall back to a
+    // hardcoded forgeable string; require DOCUMENT_UPLOAD_TOKEN_SECRET in production
+    // and use a random ephemeral per-process key in local dev/test when unset.
+    const nodeEnv = String(
+      this.config?.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+    )
+      .trim()
+      .toLowerCase();
     const rawSecret =
       this.config?.get<string>('DOCUMENT_UPLOAD_TOKEN_SECRET')?.trim() ||
-      this.config?.get<string>('JWT_SECRET')?.trim() ||
       process.env.DOCUMENT_UPLOAD_TOKEN_SECRET?.trim() ||
-      process.env.JWT_SECRET?.trim() ||
-      (process.env.NODE_ENV === 'production'
-        ? ''
-        : 'continuum-dev-document-upload-intent-secret');
+      (nodeEnv === 'production' ? '' : EPHEMERAL_DEV_UPLOAD_SECRET);
     if (!rawSecret) {
       throw new ServiceUnavailableException({
         code: 'DOCUMENT_UPLOAD_SIGNING_KEY_MISSING',
@@ -10032,6 +10132,49 @@ export class WorkNotesService {
     return createHmac('sha256', rawSecret)
       .update('continuum:document-upload-intent:v1')
       .digest();
+  }
+
+  /**
+   * BE-DATA-002: Single-use anti-replay check for upload-intent tokens (`jti`).
+   */
+  private async consumeUploadTokenJti(
+    jti: string,
+    expSec: number,
+  ): Promise<void> {
+    if (!jti || typeof jti !== 'string') {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_INVALID',
+        message: 'Upload token is missing a replay protection identifier.',
+      });
+    }
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ttlSeconds = Math.max(60, expSec - nowSec + 60);
+    if (this.redis && typeof this.redis.setIfAbsent === 'function') {
+      const fresh = await this.redis
+        .setIfAbsent(`capture:upload-jti:${jti}`, '1', ttlSeconds)
+        .catch(() => null);
+      if (fresh === false) {
+        throw new BadRequestException({
+          code: 'DOCUMENT_UPLOAD_TOKEN_REPLAYED',
+          message: 'Upload token has already been used.',
+        });
+      }
+      if (fresh === true) return;
+    }
+    const nowMs = Date.now();
+    if (this.consumedUploadJtis.size > 4096) {
+      for (const [key, expiresAt] of this.consumedUploadJtis) {
+        if (expiresAt <= nowMs) this.consumedUploadJtis.delete(key);
+      }
+    }
+    const existingExpiry = this.consumedUploadJtis.get(jti);
+    if (existingExpiry && existingExpiry > nowMs) {
+      throw new BadRequestException({
+        code: 'DOCUMENT_UPLOAD_TOKEN_REPLAYED',
+        message: 'Upload token has already been used.',
+      });
+    }
+    this.consumedUploadJtis.set(jti, nowMs + ttlSeconds * 1000);
   }
 
   private signDocumentUploadClaims(claims: SignedDocumentUploadClaims): string {
@@ -10110,6 +10253,8 @@ export class WorkNotesService {
     requestId?: string,
   ): Promise<void> {
     if (!this.queueRuntime) return;
+    // BE-REL-001: Deterministic BullMQ jobId without Date.now() so duplicate
+    // dispatches for the same document/event/version deduplicate cleanly.
     await this.queueRuntime
       .add(
         QUEUE_NAMES.ingestion,
@@ -10124,7 +10269,7 @@ export class WorkNotesService {
           ...(requestId ? { requestId } : {}),
         },
         {
-          jobId: `knowledge:${documentId}:${event}:v${version}:${Date.now()}`,
+          jobId: `knowledge:${documentId}:${event}:v${version}`,
         },
       )
       .catch(() => undefined);
@@ -10625,54 +10770,66 @@ export class WorkNotesService {
 
   private async isStorageKeyStillReferenced(
     organizationId: string,
+    projectId: string,
     key: string,
     exclude?: {
+      excludeDocumentVersionId?: string;
       excludeWorkNoteId?: string;
       excludeWorkReportId?: string;
     },
   ): Promise<boolean> {
     const db = this.database();
-    const orgOid = objectId(organizationId);
+    const scopeFilter = {
+      organizationId: objectId(organizationId),
+      projectId: objectId(projectId),
+    };
     try {
-      const docMatch = await db
+      const docCount = await db
         .collection('project_document_versions')
-        .findOne(
-          { organizationId: orgOid, 'file.key': key },
-          { projection: { _id: 1 } },
+        .countDocuments(
+          {
+            ...scopeFilter,
+            'file.key': key,
+            ...(exclude?.excludeDocumentVersionId &&
+            validId(exclude.excludeDocumentVersionId)
+              ? { _id: { $ne: objectId(exclude.excludeDocumentVersionId) } }
+              : {}),
+          },
+          { limit: 1 },
         );
-      if (docMatch) return true;
+      if (docCount > 0) return true;
     } catch {
       // Optional collection
     }
     try {
-      const noteMatch = await db.collection('work_notes').findOne(
+      const noteCount = await db.collection('work_notes').countDocuments(
         {
-          organizationId: orgOid,
+          ...scopeFilter,
           status: 'CONFIRMED',
           'provenance.mdFile.key': key,
           ...(exclude?.excludeWorkNoteId && validId(exclude.excludeWorkNoteId)
             ? { _id: { $ne: objectId(exclude.excludeWorkNoteId) } }
             : {}),
         },
-        { projection: { _id: 1 } },
+        { limit: 1 },
       );
-      if (noteMatch) return true;
+      if (noteCount > 0) return true;
     } catch {
       // Optional collection
     }
     try {
-      const reportMatch = await db.collection('work_reports').findOne(
+      const reportCount = await db.collection('work_reports').countDocuments(
         {
-          organizationId: orgOid,
-          'file.key': key,
+          ...scopeFilter,
+          $or: [{ 'file.key': key }, { 'provenance.mdFile.key': key }],
           ...(exclude?.excludeWorkReportId &&
           validId(exclude.excludeWorkReportId)
             ? { _id: { $ne: objectId(exclude.excludeWorkReportId) } }
             : {}),
         },
-        { projection: { _id: 1 } },
+        { limit: 1 },
       );
-      if (reportMatch) return true;
+      if (reportCount > 0) return true;
     } catch {
       // Optional collection
     }
@@ -11174,10 +11331,8 @@ export class WorkNotesService {
           currentStage: 'OUTBOX_DELIVERY',
           progress: 0,
           error: {
-            message: String(
-              pendingOutbox.lastError ??
-                'Failed to deliver Markdown artifact to SAG processing engine.',
-            ),
+            message:
+              'Failed to deliver Markdown artifact to SAG processing engine.',
           },
         };
         await persistSync(failedSync);
@@ -11379,76 +11534,33 @@ export class WorkNotesService {
     const fileHash = fileMeta.sha256;
     const idempotencyKey = `continuum:${logicalPrefix}:${entityId}:v${versionNumber}:${fileHash.slice(0, 16)}${resyncSuffix}`;
 
-    const canDirectObjectIngest = Boolean(
-      fileMeta.key &&
-      fileMeta.size > 0 &&
-      this.documentStorage &&
-      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-      this.documentStorage.isDirectCloudEnabled() &&
-      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
-      typeof this.sagTransport.ingestProjectDocumentObject === 'function',
-    );
-
+    // E2E-INT-001: Always upload bytes via POST /api/v1/projects/{projectId}/documents/upload
+    // (never call SAG's deleted /documents/ingest-object endpoint).
+    let bytes = fileMeta.bytes;
+    if (!bytes) {
+      if (!this.documentStorage || !fileMeta.key) {
+        throw new ServiceUnavailableException(
+          'Project Document storage is unavailable.',
+        );
+      }
+      bytes = await this.documentStorage.get(fileMeta.key);
+    }
     let receipt: SagProjectDocumentUploadReceipt;
-    if (canDirectObjectIngest && this.documentStorage && fileMeta.key) {
-      const sagIngestUrlTtlSeconds = Math.max(
-        60,
-        Number(
-          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
-        ) || 1800,
-      );
-      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
-        fileMeta.key,
-        sagIngestUrlTtlSeconds,
-        {
-          fileName: fileMeta.name,
-          contentType: fileMeta.contentType,
-        },
-      );
-      try {
-        receipt = await this.sagTransport.ingestProjectDocumentObject!({
-          organizationId: actor.organizationId,
-          projectId,
-          documentId: entityId,
-          version: versionNumber,
-          logicalSourceId,
-          idempotencyKey,
-          actorUserId: actor.userId,
-          sourceUrl,
-          fileName: fileMeta.name,
-          contentType: fileMeta.contentType,
-          expectedSha256: fileHash,
-          expectedSizeBytes: fileMeta.size,
-        });
-      } catch (error) {
-        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
-      }
-    } else {
-      let bytes = fileMeta.bytes;
-      if (!bytes) {
-        if (!this.documentStorage || !fileMeta.key) {
-          throw new ServiceUnavailableException(
-            'Project Document storage is unavailable.',
-          );
-        }
-        bytes = await this.documentStorage.get(fileMeta.key);
-      }
-      try {
-        receipt = await this.sagTransport.uploadProjectDocument({
-          organizationId: actor.organizationId,
-          projectId,
-          documentId: entityId,
-          version: versionNumber,
-          logicalSourceId,
-          idempotencyKey,
-          actorUserId: actor.userId,
-          fileName: fileMeta.name,
-          contentType: fileMeta.contentType,
-          bytes,
-        });
-      } catch (error) {
-        this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
-      }
+    try {
+      receipt = await this.sagTransport.uploadProjectDocument({
+        organizationId: actor.organizationId,
+        projectId,
+        documentId: entityId,
+        version: versionNumber,
+        logicalSourceId,
+        idempotencyKey,
+        actorUserId: actor.userId,
+        fileName: fileMeta.name,
+        contentType: fileMeta.contentType,
+        bytes,
+      });
+    } catch (error) {
+      this.mapSagTransportError(error, 'SAG_SYNC_FAILED');
     }
 
     const syncedAt = new Date().toISOString();
@@ -11634,30 +11746,8 @@ export class WorkNotesService {
       });
     }
 
-    const fileMeta = await ensureStoredFile();
-    let reprocessSourceUrl: string | undefined;
-    if (
-      action === 'REPROCESS' &&
-      fileMeta.key &&
-      this.documentStorage &&
-      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-      this.documentStorage.isDirectCloudEnabled() &&
-      typeof this.documentStorage.createDirectDownloadUrl === 'function'
-    ) {
-      const sagIngestUrlTtlSeconds = Math.max(
-        60,
-        Number(
-          this.config?.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
-        ) || 1800,
-      );
-      reprocessSourceUrl = await this.documentStorage
-        .createDirectDownloadUrl(fileMeta.key, sagIngestUrlTtlSeconds, {
-          fileName: fileMeta.name,
-          contentType: fileMeta.contentType,
-        })
-        .catch(() => undefined);
-    }
-
+    // E2E-INT-001: Do not generate/send ignored sourceUrl JSON body on /reprocess.
+    void ensureStoredFile;
     const sagDocumentId = storedSync?.sagDocumentId || logicalSourceId;
     try {
       await this.sagTransport.controlProjectDocument({
@@ -11666,11 +11756,6 @@ export class WorkNotesService {
         sagDocumentId,
         actorUserId: actor.userId,
         action: action.toLowerCase() as 'pause' | 'resume' | 'reprocess',
-        ...(reprocessSourceUrl ? { sourceUrl: reprocessSourceUrl } : {}),
-        fileName: fileMeta.name,
-        contentType: fileMeta.contentType,
-        expectedSha256: fileMeta.sha256,
-        ...(fileMeta.size > 0 ? { expectedSizeBytes: fileMeta.size } : {}),
       });
     } catch (error) {
       this.mapSagTransportError(error, 'SAG_CONTROL_FAILED');

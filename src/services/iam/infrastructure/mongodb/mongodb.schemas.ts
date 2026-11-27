@@ -60,7 +60,7 @@ const isCompletePlatformAuthorityBundle = (permissions: string[]) =>
 
 export const outboxSchema = new Schema(
   {
-    eventName: { type: String, required: true, index: true },
+    eventName: { type: String, required: true },
     aggregateType: { type: String, required: true, index: true },
     aggregateId: { type: String, required: true, index: true },
     payload: { type: Schema.Types.Mixed, required: true },
@@ -68,13 +68,20 @@ export const outboxSchema = new Schema(
       type: String,
       enum: ['PENDING', 'PUBLISHED', 'FAILED'],
       default: 'PENDING',
-      index: true,
     },
     occurredAt: { type: Date, required: true, default: Date.now },
     publishedAt: Date,
     lastError: String,
   },
   { collection: OUTBOX_COLLECTION, timestamps: true },
+);
+outboxSchema.index(
+  { eventName: 1, status: 1, occurredAt: 1, _id: 1 },
+  { name: 'iam_outbox_poll_idx' },
+);
+outboxSchema.index(
+  { status: 1, occurredAt: 1, _id: 1 },
+  { name: 'iam_outbox_status_occurred_idx' },
 );
 
 export const auditSchema = new Schema(
@@ -99,10 +106,28 @@ export const iamAuditSchema = new Schema(
     action: { type: String, required: true },
     targetResource: { type: String, required: true },
     targetResourceId: { type: String, required: true },
+    requestId: String,
+    correlationId: String,
     metadata: Schema.Types.Mixed,
     occurredAt: { type: Date, required: true },
   },
   { collection: 'audit_logs_iam', strict: true },
+);
+iamAuditSchema.index(
+  { occurredAt: -1, _id: -1 },
+  { name: 'audit_logs_iam_occurred_desc' },
+);
+iamAuditSchema.index(
+  { organizationId: 1, occurredAt: -1, _id: -1 },
+  { name: 'audit_logs_iam_org_occurred_desc' },
+);
+iamAuditSchema.index(
+  { actorUserId: 1, occurredAt: -1, _id: -1 },
+  { name: 'audit_logs_iam_actor_occurred_desc' },
+);
+iamAuditSchema.index(
+  { requestId: 1 },
+  { name: 'audit_logs_iam_request_id', sparse: true },
 );
 
 const iamSchemas: Record<string, Schema> = {
@@ -459,6 +484,7 @@ const iamSchemas: Record<string, Schema> = {
       ipAddress: String,
       userAgent: String,
       isRevoked: { type: Boolean, default: false },
+      rotatedAt: Date,
       expiresAt: { type: Date, required: true },
     },
     { collection: 'refresh_sessions', timestamps: true, strict: true },
@@ -547,8 +573,10 @@ const iamSchemas: Record<string, Schema> = {
 export function createCollectionSchema(
   definition: ServiceCollectionDefinition,
 ): Schema {
-  const schema =
-    iamSchemas[definition.name] ?? new Schema({}, { strict: true });
+  const baseSchema = iamSchemas[definition.name];
+  const schema = baseSchema
+    ? baseSchema.clone()
+    : new Schema({}, { strict: true });
   schema.set('collection', definition.name);
 
   for (const index of definition.indexes ?? []) {

@@ -1,4 +1,4 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import {
   Injectable,
   NotFoundException,
@@ -30,9 +30,14 @@ export class PlatformIntegrationOperationsHttpRepository implements PlatformInte
   async testConnection(
     input: PlatformIntegrationTestInput,
   ): Promise<PlatformIntegrationTestResult> {
-    const value = await this.post(input.integrationId, 'test-connection', {
-      ...input,
-    });
+    const value = await this.post(
+      input.integrationId,
+      'test-connection',
+      input.actorUserId,
+      {
+        ...input,
+      },
+    );
     if (
       !isRecord(value) ||
       value.integrationId !== input.integrationId ||
@@ -54,10 +59,15 @@ export class PlatformIntegrationOperationsHttpRepository implements PlatformInte
   async reconnect(
     input: PlatformIntegrationReconnectInput,
   ): Promise<PlatformIntegrationReconnectResult> {
-    const value = await this.post(input.integrationId, 'reconnect', {
-      ...input,
-      expectedUpdatedAt: input.expectedUpdatedAt.toISOString(),
-    });
+    const value = await this.post(
+      input.integrationId,
+      'reconnect',
+      input.actorUserId,
+      {
+        ...input,
+        expectedUpdatedAt: input.expectedUpdatedAt.toISOString(),
+      },
+    );
     if (
       !isRecord(value) ||
       value.integrationId !== input.integrationId ||
@@ -75,11 +85,14 @@ export class PlatformIntegrationOperationsHttpRepository implements PlatformInte
   private async post(
     integrationId: string,
     operation: 'test-connection' | 'reconnect',
+    actorUserId: string,
     body: object,
   ): Promise<unknown> {
     const baseUrl = this.config.get<string>('JIRA_SERVICE_URL');
     const secret = this.config.get<string>('PLATFORM_SERVICE_OPS_SECRET');
     if (!baseUrl || !secret || secret.length < 32) return this.unavailable();
+    const normalizedActorId = actorUserId.trim().toLowerCase();
+    if (!/^[a-f\d]{24}$/.test(normalizedActorId)) return this.unavailable();
     let url: URL;
     try {
       url = new URL(
@@ -90,9 +103,10 @@ export class PlatformIntegrationOperationsHttpRepository implements PlatformInte
       return this.unavailable();
     }
     const timestamp = Math.floor(Date.now() / 1000).toString();
+    const nonce = randomBytes(16).toString('hex');
     const serializedBody = JSON.stringify(body);
     const bodyHash = createHash('sha256').update(serializedBody).digest('hex');
-    const canonical = `${timestamp}\nPOST\n${url.pathname}${url.search}\n${bodyHash}`;
+    const canonical = `${timestamp}\n${nonce}\nPOST\n${url.pathname}${url.search}\n${normalizedActorId}\n${bodyHash}`;
     const signature = createHmac('sha256', secret)
       .update(canonical)
       .digest('hex');
@@ -100,10 +114,13 @@ export class PlatformIntegrationOperationsHttpRepository implements PlatformInte
     try {
       response = await fetch(url, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           accept: 'application/json',
           'content-type': 'application/json',
           'x-platform-ops-timestamp': timestamp,
+          'x-platform-ops-nonce': nonce,
+          'x-platform-ops-actor-id': normalizedActorId,
           'x-platform-ops-signature': signature,
         },
         body: serializedBody,

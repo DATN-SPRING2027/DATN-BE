@@ -54,19 +54,197 @@ export class HandoverSourcesService {
     viewer: HandoverSourceViewer,
     refs: readonly SourceRefDto[],
   ): Promise<Map<string, EvaluatedHandoverSource>> {
+    const [result] = await this.evaluateSourceRefsMapForViewers([viewer], refs);
+    return result ?? new Map<string, EvaluatedHandoverSource>();
+  }
+
+  async evaluateSourceRefsMapForViewers(
+    viewers: readonly HandoverSourceViewer[],
+    refs: readonly SourceRefDto[],
+  ): Promise<Array<Map<string, EvaluatedHandoverSource>>> {
+    if (viewers.length === 0) return [];
     const uniqueByKey = new Map<string, SourceRefDto>();
     for (const ref of refs) {
       uniqueByKey.set(sourceRefKey(ref), ref);
     }
+    if (uniqueByKey.size === 0) {
+      return viewers.map(() => new Map<string, EvaluatedHandoverSource>());
+    }
 
-    const entries = await Promise.all(
-      [...uniqueByKey.entries()].map(async ([key, ref]) => {
-        const evaluated = await this.evaluateSourceRef(viewer, ref);
-        return [key, evaluated] as const;
-      }),
+    const viewerKey = (v: HandoverSourceViewer) =>
+      `${v.organizationId.toLowerCase()}:${v.projectId.toLowerCase()}:${v.userId.toLowerCase()}:${v.isProjectMember ? 1 : 0}:${v.isProjectLeader ? 1 : 0}`;
+
+    const uniqueViewers: HandoverSourceViewer[] = [];
+    const viewerIndexByKey = new Map<string, number>();
+    const inputToUniqueIndex: number[] = [];
+    for (const viewer of viewers) {
+      const key = viewerKey(viewer);
+      let idx = viewerIndexByKey.get(key);
+      if (idx === undefined) {
+        idx = uniqueViewers.length;
+        viewerIndexByKey.set(key, idx);
+        uniqueViewers.push(viewer);
+      }
+      inputToUniqueIndex.push(idx);
+    }
+
+    const uniqueMaps = uniqueViewers.map(
+      () => new Map<string, EvaluatedHandoverSource>(),
     );
 
-    return new Map(entries);
+    const lifecycleEntries: Array<{
+      key: string;
+      ref: { kind: 'KNOWLEDGE_OBJECT'; id: string; version: number };
+    }> = [];
+    const captureEntries: Array<{
+      key: string;
+      ref: {
+        kind: 'TASK_NOTE' | 'PROJECT_DOCUMENT' | 'WORK_REPORT';
+        id: string;
+        version: number;
+      };
+    }> = [];
+
+    for (const [key, ref] of uniqueByKey.entries()) {
+      const verNum = parseSourceVersionNumber(ref.version);
+      if (verNum === null) {
+        const invalid: EvaluatedHandoverSource = {
+          kind: ref.kind,
+          id: ref.id.toLowerCase(),
+          version: 0,
+          exists: false,
+          eligible: false,
+          readable: false,
+          isCurrent: false,
+          currentVersion: null,
+          title: '',
+          excerpts: [],
+        };
+        for (const map of uniqueMaps) map.set(key, invalid);
+        continue;
+      }
+      if (ref.kind === 'KNOWLEDGE_OBJECT') {
+        lifecycleEntries.push({
+          key,
+          ref: { kind: 'KNOWLEDGE_OBJECT', id: ref.id, version: verNum },
+        });
+      } else {
+        captureEntries.push({
+          key,
+          ref: { kind: ref.kind, id: ref.id, version: verNum },
+        });
+      }
+    }
+
+    const captureSvc = this
+      .captureSourceService as HandoverCaptureSourceService & {
+      evaluateSourcesBatch?: (
+        viewer: HandoverSourceViewer,
+        refs: ReadonlyArray<{
+          kind: 'TASK_NOTE' | 'PROJECT_DOCUMENT' | 'WORK_REPORT';
+          id: string;
+          version: number;
+        }>,
+      ) => Promise<EvaluatedHandoverSource[]>;
+      evaluateSourcesBatchForViewers?: (
+        viewers: readonly HandoverSourceViewer[],
+        refs: ReadonlyArray<{
+          kind: 'TASK_NOTE' | 'PROJECT_DOCUMENT' | 'WORK_REPORT';
+          id: string;
+          version: number;
+        }>,
+      ) => Promise<EvaluatedHandoverSource[][]>;
+    };
+
+    const evaluateLifecycle = async (): Promise<void> => {
+      if (lifecycleEntries.length === 0) return;
+      const lifecycleRefs = lifecycleEntries.map((e) => e.ref);
+      let matrix: EvaluatedHandoverSource[][];
+      if (
+        typeof this.lifecycleSourceService.evaluateSourcesBatchForViewers ===
+        'function'
+      ) {
+        matrix =
+          await this.lifecycleSourceService.evaluateSourcesBatchForViewers(
+            uniqueViewers,
+            lifecycleRefs,
+          );
+      } else if (
+        typeof this.lifecycleSourceService.evaluateSourcesBatch === 'function'
+      ) {
+        matrix = await Promise.all(
+          uniqueViewers.map((viewer) =>
+            this.lifecycleSourceService.evaluateSourcesBatch(
+              viewer,
+              lifecycleRefs,
+            ),
+          ),
+        );
+      } else {
+        matrix = await Promise.all(
+          uniqueViewers.map((viewer) =>
+            Promise.all(
+              lifecycleRefs.map((ref) =>
+                this.lifecycleSourceService.evaluateSource(viewer, ref),
+              ),
+            ),
+          ),
+        );
+      }
+      for (let vIdx = 0; vIdx < uniqueViewers.length; vIdx += 1) {
+        const row = matrix[vIdx] ?? [];
+        for (let rIdx = 0; rIdx < lifecycleEntries.length; rIdx += 1) {
+          if (row[rIdx]) {
+            uniqueMaps[vIdx].set(lifecycleEntries[rIdx].key, row[rIdx]);
+          }
+        }
+      }
+    };
+
+    const evaluateCapture = async (): Promise<void> => {
+      if (captureEntries.length === 0) return;
+      const captureRefs = captureEntries.map((e) => e.ref);
+      let matrix: EvaluatedHandoverSource[][];
+      if (typeof captureSvc.evaluateSourcesBatchForViewers === 'function') {
+        matrix = await captureSvc.evaluateSourcesBatchForViewers(
+          uniqueViewers,
+          captureRefs,
+        );
+      } else if (typeof captureSvc.evaluateSourcesBatch === 'function') {
+        matrix = await Promise.all(
+          uniqueViewers.map((viewer) =>
+            captureSvc.evaluateSourcesBatch
+              ? captureSvc.evaluateSourcesBatch(viewer, captureRefs)
+              : Promise.all(
+                  captureRefs.map((ref) =>
+                    this.captureSourceService.evaluateSource(viewer, ref),
+                  ),
+                ),
+          ),
+        );
+      } else {
+        matrix = await Promise.all(
+          uniqueViewers.map((viewer) =>
+            Promise.all(
+              captureRefs.map((ref) =>
+                this.captureSourceService.evaluateSource(viewer, ref),
+              ),
+            ),
+          ),
+        );
+      }
+      for (let vIdx = 0; vIdx < uniqueViewers.length; vIdx += 1) {
+        const row = matrix[vIdx] ?? [];
+        for (let rIdx = 0; rIdx < captureEntries.length; rIdx += 1) {
+          if (row[rIdx]) {
+            uniqueMaps[vIdx].set(captureEntries[rIdx].key, row[rIdx]);
+          }
+        }
+      }
+    };
+
+    await Promise.all([evaluateLifecycle(), evaluateCapture()]);
+    return inputToUniqueIndex.map((idx) => uniqueMaps[idx]);
   }
 
   async discoverOfficialCandidates(

@@ -18,6 +18,8 @@ import { pipeline } from 'node:stream/promises';
 import { HealthResponse } from '../../../health/health.response';
 import { NotificationService } from '../../notification/notification.service';
 import { RedisService } from '../infrastructure/redis/redis.service';
+import { ChatUploadInspector } from './chat-file-validation';
+import { ChatHistoryCacheInvalidator } from './chat-history-cache';
 import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import {
   CHAT_REPOSITORY,
@@ -73,6 +75,13 @@ export interface ChatWsTicket {
   actor: ChatActor;
   tokenHash: string;
   expiresAt: number;
+}
+
+export interface ChatAttachmentDownloadStream {
+  stream: Readable;
+  size: number | undefined;
+  contentType: string;
+  filename: string;
 }
 
 function invalid(message = 'Request validation failed.'): never {
@@ -157,6 +166,8 @@ export class ChatApplicationService {
     config: ConfigService,
     @Optional()
     private readonly notificationService?: NotificationService,
+    @Optional()
+    private readonly historyCache?: ChatHistoryCacheInvalidator,
   ) {
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
   }
@@ -186,6 +197,21 @@ export class ChatApplicationService {
     const normalizedSearch =
       typeof searchValue === 'string' ? searchValue.trim() : '';
     const actor = await this.iam.getActor(credentials);
+    if (
+      !(await this.redis.consumeRateLimit(
+        this.redisKey(`search:${actor.organizationId}:${actor.id}`),
+        60,
+        60,
+      ))
+    ) {
+      throw new HttpException(
+        {
+          code: 'CHAT_RATE_LIMITED',
+          message: 'Search is temporarily rate limited.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     const cacheKey = this.redisKey(
       `candidate-search-v3:${actor.organizationId}:${actor.id}:${createHash(
         'sha256',
@@ -197,7 +223,12 @@ export class ChatApplicationService {
         )
         .digest('hex')}`,
     );
-    const cached = await this.redis.get(cacheKey);
+    let cached: string | null = null;
+    try {
+      cached = await this.redis.get(cacheKey);
+    } catch {
+      cached = null;
+    }
     let result: Awaited<ReturnType<ChatIamClient['searchCandidates']>>;
     if (cached) {
       const ids = JSON.parse(cached) as string[];
@@ -215,37 +246,25 @@ export class ChatApplicationService {
       };
     } else {
       result = await this.iam.searchCandidates(credentials, normalizedSearch);
-      await this.redis.set(
-        cacheKey,
-        JSON.stringify(result.data.map((candidate) => candidate.id)),
-        15,
-      );
+      try {
+        await this.redis.set(
+          cacheKey,
+          JSON.stringify(result.data.map((candidate) => candidate.id)),
+          15,
+        );
+      } catch {
+        // Candidate search cache failures must not break search.
+      }
     }
-    if (
-      !(await this.redis.consumeRateLimit(
-        this.redisKey(`search:${result.organizationId}:${result.actorId}`),
-        60,
-        60,
-      ))
-    ) {
-      throw new HttpException(
-        {
-          code: 'CHAT_RATE_LIMITED',
-          message: 'Search is temporarily rate limited.',
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
+    const onlineByUser = await this.resolvePresenceBatch(
+      result.organizationId,
+      result.data.map((candidate) => candidate.id),
+    );
     return {
-      data: await Promise.all(
-        result.data.map(async (candidate) => ({
-          ...candidate,
-          isOnline: await this.realtime.isOnline(
-            result.organizationId,
-            candidate.id,
-          ),
-        })),
-      ),
+      data: result.data.map((candidate) => ({
+        ...candidate,
+        isOnline: onlineByUser.get(candidate.id) ?? false,
+      })),
     };
   }
 
@@ -273,24 +292,32 @@ export class ChatApplicationService {
       typeof query.search === 'string' ? query.search.trim() : undefined,
       query.archived === 'true',
     );
-    const data = await Promise.all(
-      page.data.map(async (conversation) => ({
-        ...conversation,
-        members: await Promise.all(
-          conversation.members.map(async (member) => ({
-            ...member,
-            ...(conversation.type === 'DIRECT' && member.userId !== actor.id
-              ? {
-                  isOnline: await this.realtime.isOnline(
-                    actor.organizationId,
-                    member.userId,
-                  ),
-                }
-              : {}),
-          })),
+    const directPeerIds = [
+      ...new Set(
+        page.data.flatMap((conversation) =>
+          conversation.type === 'DIRECT'
+            ? conversation.members
+                .filter((member) => member.userId !== actor.id)
+                .map((member) => member.userId)
+            : [],
         ),
-      })),
+      ),
+    ];
+    const onlineByUser = await this.resolvePresenceBatch(
+      actor.organizationId,
+      directPeerIds,
     );
+    const data = page.data.map((conversation) => ({
+      ...conversation,
+      members: conversation.members.map((member) => ({
+        ...member,
+        ...(conversation.type === 'DIRECT' && member.userId !== actor.id
+          ? {
+              isOnline: onlineByUser.get(member.userId) ?? false,
+            }
+          : {}),
+      })),
+    }));
     return { data, nextCursor: encodeCursor(page.nextCursor) };
   }
 
@@ -302,10 +329,7 @@ export class ChatApplicationService {
       !objectId.test(body.participantId)
     )
       return invalid('Participant is invalid.');
-    const resolution = await this.iam.getCandidates(credentials, [
-      body.participantId,
-    ]);
-    const actor = resolution.actor;
+    const actor = await this.iam.getActor(credentials);
     if (
       !(await this.redis.consumeRateLimit(
         this.redisKey(`direct:${actor.organizationId}:${actor.id}`),
@@ -321,6 +345,9 @@ export class ChatApplicationService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+    const resolution = await this.iam.getCandidates(credentials, [
+      body.participantId,
+    ]);
     const recipient = resolution.data[0];
     if (!recipient)
       return invalid('Participant is unavailable in your organization.');
@@ -358,21 +385,11 @@ export class ChatApplicationService {
       participantIds.length
     )
       return invalid('Room participants must be unique.');
-    const resolution = await this.iam.getCandidates(
-      credentials,
-      participantIds,
-    );
-    const actor = resolution.actor;
+    const actor = await this.iam.getActor(credentials);
     if (
       participantIds.some((id) => id.toLowerCase() === actor.id.toLowerCase())
     ) {
       return invalid('Room participants cannot include you.');
-    }
-    const candidates = resolution.data;
-    if (candidates.length !== participantIds.length) {
-      return invalid(
-        'Every participant must be an active member of your organization.',
-      );
     }
     if (
       !(await this.redis.consumeRateLimit(
@@ -387,6 +404,16 @@ export class ChatApplicationService {
           message: 'Too many rooms were created. Try again shortly.',
         },
         HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const resolution = await this.iam.getCandidates(
+      credentials,
+      participantIds,
+    );
+    const candidates = resolution.data;
+    if (candidates.length !== participantIds.length) {
+      return invalid(
+        'Every participant must be an active member of your organization.',
       );
     }
     const id = await this.repository.createRoom(
@@ -459,18 +486,18 @@ export class ChatApplicationService {
       participantIds.length
     )
       return invalid('Room members must be unique.');
-    const resolution = await this.iam.getCandidates(
-      credentials,
-      participantIds,
-    );
-    const actor = resolution.actor;
+    const actor = await this.iam.getActor(credentials);
     if (
       participantIds.some((id) => id.toLowerCase() === actor.id.toLowerCase())
     )
       return invalid('You are already a room member.');
+    await this.requireMessageActionRateLimit(actor);
+    const resolution = await this.iam.getCandidates(
+      credentials,
+      participantIds,
+    );
     if (resolution.data.length !== participantIds.length)
       return invalid('Every participant must be active in your organization.');
-    await this.requireMessageActionRateLimit(actor);
     const members = await this.repository.addRoomMembers(
       actor,
       conversationId,
@@ -500,6 +527,13 @@ export class ChatApplicationService {
       conversationId,
       userId,
     );
+    if (typeof this.realtime.evictConversationMembers === 'function') {
+      await this.realtime.evictConversationMembers(
+        actor.organizationId,
+        conversationId,
+        [userId],
+      );
+    }
     await this.realtime.publishConversationEvent(
       'conversation.updated',
       actor.organizationId,
@@ -523,6 +557,13 @@ export class ChatApplicationService {
     const actor = await this.iam.getActor(credentials);
     await this.requireMessageActionRateLimit(actor);
     const recipients = await this.repository.leaveRoom(actor, conversationId);
+    if (typeof this.realtime.evictConversationMembers === 'function') {
+      await this.realtime.evictConversationMembers(
+        actor.organizationId,
+        conversationId,
+        [actor.id],
+      );
+    }
     await this.realtime.publishConversationEvent(
       'conversation.updated',
       actor.organizationId,
@@ -574,14 +615,21 @@ export class ChatApplicationService {
       );
       return { data: page.data, nextCursor: encodeCursor(page.nextCursor) };
     }
-    const versionKey = this.redisKey(
-      `history-version:${actor.organizationId}:${conversationId}`,
-    );
     let version = '0';
-    try {
-      version = (await this.redis.get(versionKey)) ?? '0';
-    } catch {
-      // Mongo remains authoritative when Redis is unavailable.
+    if (this.historyCache) {
+      version = await this.historyCache.getVersion(
+        actor.organizationId,
+        conversationId,
+      );
+    } else {
+      const versionKey = this.redisKey(
+        `history-version:${actor.organizationId}:${conversationId}`,
+      );
+      try {
+        version = (await this.redis.get(versionKey)) ?? '0';
+      } catch {
+        // Mongo remains authoritative when Redis is unavailable.
+      }
     }
     const cacheKey = this.redisKey(
       `history-inline-replies-v1:${actor.organizationId}:${conversationId}:${actor.id}:${version}:${limit}:${encodeCursor(cursor) ?? 'latest'}`,
@@ -755,9 +803,11 @@ export class ChatApplicationService {
     }
 
     let received = 0;
+    const inspector = new ChatUploadInspector(upload.contentType);
     const bounded = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
-        received += chunk.length;
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        received += buffer.length;
         if (received > upload.size) {
           callback(
             new BadRequestException({
@@ -767,17 +817,43 @@ export class ChatApplicationService {
           );
           return;
         }
-        callback(null, chunk);
+        const check = inspector.push(buffer);
+        if (!check.valid) {
+          callback(
+            new BadRequestException({
+              code: 'CHAT_UPLOAD_CONTENT_INVALID',
+              message:
+                check.reason ??
+                'Uploaded file content does not match the declared file type.',
+            }),
+          );
+          return;
+        }
+        callback(null, buffer);
       },
       flush(callback) {
-        callback(
-          received === upload.size
-            ? undefined
-            : new BadRequestException({
-                code: 'CHAT_UPLOAD_SIZE_MISMATCH',
-                message: 'Uploaded file size does not match the request.',
-              }),
-        );
+        if (received !== upload.size) {
+          callback(
+            new BadRequestException({
+              code: 'CHAT_UPLOAD_SIZE_MISMATCH',
+              message: 'Uploaded file size does not match the request.',
+            }),
+          );
+          return;
+        }
+        const finalCheck = inspector.finish();
+        if (!finalCheck.valid) {
+          callback(
+            new BadRequestException({
+              code: 'CHAT_UPLOAD_CONTENT_INVALID',
+              message:
+                finalCheck.reason ??
+                'Uploaded file content does not match the declared file type.',
+            }),
+          );
+          return;
+        }
+        callback();
       },
     });
     const transfer = pipeline(source, bounded);
@@ -888,41 +964,97 @@ export class ChatApplicationService {
         code: 'CHAT_ATTACHMENT_NOT_FOUND',
         message: 'Attachment not found.',
       });
+    const localStreamUrl = `/api/v1/chat/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}/content`;
+    const cacheKey = this.redisKey(
+      `attachment-url:${actor.organizationId}:${conversationId}:${attachmentId}`,
+    );
     try {
-      const cacheKey = this.redisKey(
-        `attachment-url:${actor.organizationId}:${conversationId}:${attachmentId}`,
-      );
-      const cached = await this.redis.get(cacheKey);
+      let cached: string | null = null;
+      try {
+        cached = await this.redis.get(cacheKey);
+      } catch {
+        cached = null;
+      }
       if (cached) {
         const value = JSON.parse(cached) as { url: string; expiresAt: number };
         const remaining = Math.floor((value.expiresAt - Date.now()) / 1000);
-        if (remaining > 30)
+        if (remaining > 30 && !value.url.startsWith('data:')) {
           return { url: value.url, expiresInSeconds: remaining };
+        }
       }
-      const result = {
-        url: await this.storage(object.provider).createDownloadUrl(
-          object.objectKey,
-          300,
-          {
-            contentType:
-              object.kind === 'IMAGE'
-                ? object.contentType
-                : 'application/octet-stream',
-            contentDisposition:
-              object.kind === 'IMAGE' ? 'inline' : 'attachment',
-            filename: object.name,
-          },
-        ),
-        expiresInSeconds: 300,
-      };
-      if (!result.url.startsWith('data:')) {
-        await this.redis.set(
-          cacheKey,
-          JSON.stringify({ url: result.url, expiresAt: Date.now() + 300000 }),
-          60,
-        );
+      const url = await this.storage(object.provider).createDownloadUrl(
+        object.objectKey,
+        300,
+        {
+          contentType:
+            object.kind === 'IMAGE'
+              ? object.contentType
+              : 'application/octet-stream',
+          contentDisposition: 'attachment',
+          filename: object.name,
+          localStreamUrl,
+        },
+      );
+      const result = { url, expiresInSeconds: 300 };
+      if (!url.startsWith('data:') && !url.startsWith('/api/v1/')) {
+        try {
+          await this.redis.set(
+            cacheKey,
+            JSON.stringify({ url, expiresAt: Date.now() + 300000 }),
+            60,
+          );
+        } catch {
+          // Cache write failures must not fail downloads.
+        }
       }
       return result;
+    } catch (error) {
+      if (this.isMissingStoredObjectError(error)) {
+        throw new NotFoundException({
+          code: 'CHAT_ATTACHMENT_NOT_FOUND',
+          message: 'Attachment not found.',
+        });
+      }
+      throw new ServiceUnavailableException({
+        code: 'CHAT_STORAGE_UNAVAILABLE',
+        message: 'File storage is unavailable.',
+      });
+    }
+  }
+
+  async getAttachmentStream(
+    credentials: ChatCredentials,
+    conversationId: string,
+    attachmentId: string,
+  ): Promise<ChatAttachmentDownloadStream> {
+    if (!objectId.test(conversationId) || !uuidV4.test(attachmentId)) {
+      return invalid('Attachment is invalid.');
+    }
+    const actor = await this.iam.getActor(credentials);
+    const object = await this.repository.getAttachmentObject(
+      actor,
+      conversationId,
+      attachmentId,
+    );
+    if (!object) {
+      throw new NotFoundException({
+        code: 'CHAT_ATTACHMENT_NOT_FOUND',
+        message: 'Attachment not found.',
+      });
+    }
+    try {
+      const opened = await this.storage(object.provider).openReadStream(
+        object.objectKey,
+      );
+      return {
+        stream: opened.stream,
+        size: opened.size,
+        contentType:
+          object.kind === 'IMAGE' && imageTypes.has(object.contentType)
+            ? object.contentType
+            : 'application/octet-stream',
+        filename: sanitizeFilename(object.name) || 'attachment',
+      };
     } catch (error) {
       if (this.isMissingStoredObjectError(error)) {
         throw new NotFoundException({
@@ -1077,14 +1209,11 @@ export class ChatApplicationService {
       result.recipientIds,
       result.message,
     );
-    if (
-      mentionUserIds &&
-      mentionUserIds.length > 0 &&
-      this.notificationService
-    ) {
+    const newlyMentioned = result.newlyMentionedUserIds ?? mentionUserIds;
+    if (newlyMentioned.length > 0 && this.notificationService) {
       await this.notificationService.notifyChatMention({
         actorId: actor.id,
-        mentionedUserIds: mentionUserIds,
+        mentionedUserIds: newlyMentioned,
         organizationId: actor.organizationId,
         conversationId,
         messageId: result.message.id,
@@ -1345,6 +1474,24 @@ export class ChatApplicationService {
     });
   }
 
+  private async resolvePresenceBatch(
+    organizationId: string,
+    userIds: string[],
+  ): Promise<Map<string, boolean>> {
+    const unique = [...new Set(userIds)];
+    if (unique.length === 0) return new Map();
+    if (typeof this.realtime.areOnlineBatch === 'function') {
+      return this.realtime.areOnlineBatch(organizationId, unique);
+    }
+    const pairs = await Promise.all(
+      unique.map(
+        async (id) =>
+          [id, await this.realtime.isOnline(organizationId, id)] as const,
+      ),
+    );
+    return new Map(pairs);
+  }
+
   private async requireMessageActionRateLimit(actor: ChatActor): Promise<void> {
     if (
       !(await this.redis.consumeRateLimit(
@@ -1396,6 +1543,10 @@ export class ChatApplicationService {
   }
 
   private async bumpHistoryVersion(actor: ChatActor, conversationId: string) {
+    if (this.historyCache) {
+      await this.historyCache.invalidate(actor.organizationId, conversationId);
+      return;
+    }
     try {
       await this.redis.increment(
         this.redisKey(

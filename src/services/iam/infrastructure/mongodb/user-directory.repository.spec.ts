@@ -346,6 +346,9 @@ describe('MongoUserDirectoryRepository', () => {
     };
     const memberships = {
       exists: jest.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+      distinct: jest
+        .fn()
+        .mockReturnValue(chain([new Types.ObjectId(organizationId)])),
     };
     const assignments = {
       find: jest
@@ -421,6 +424,9 @@ describe('MongoUserDirectoryRepository', () => {
     };
     const memberships = {
       exists: jest.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+      distinct: jest
+        .fn()
+        .mockReturnValue(chain([new Types.ObjectId(organizationId)])),
     };
     const assignments = {
       find: jest
@@ -474,5 +480,110 @@ describe('MongoUserDirectoryRepository', () => {
       { session: transactionSession },
     );
     expect(result).toMatchObject({ id: userId, fullName: 'Name C' });
+  });
+
+  it('SEC-AUTH-005: blocks Org ADMIN from mutating profile of a shared multi-organization user', async () => {
+    const actorId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const otherOrgId = new Types.ObjectId();
+    const transactionSession = {
+      withTransaction: jest.fn(async (callback: () => Promise<void>) =>
+        callback(),
+      ),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const memberships = {
+      exists: jest.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+      distinct: jest
+        .fn()
+        .mockReturnValue(
+          chain([new Types.ObjectId(organizationId), otherOrgId]),
+        ),
+    };
+    const assignments = {
+      find: jest
+        .fn()
+        .mockReturnValue(
+          chain([{ userId: new Types.ObjectId(userId), roleCode: 'MEMBER' }]),
+        ),
+    };
+    const users = {
+      findById: jest.fn().mockReturnValue(chain(user)),
+      updateOne: jest.fn(),
+    };
+    const connection = {
+      startSession: jest.fn().mockResolvedValue(transactionSession),
+      models: {
+        continuum_iam_organization_memberships: memberships,
+        continuum_iam_role_assignments: assignments,
+        continuum_iam_users: users,
+      },
+    } as unknown as Connection;
+
+    const repository = new MongoUserDirectoryRepository(connection);
+    await expect(
+      repository.update(
+        organizationId,
+        userId,
+        { fullName: 'Hijacked Name' },
+        actorId,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'SHARED_ACCOUNT_PROFILE_CHANGE' },
+    });
+    expect(users.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('SEC-AUTH-005: blocks Org ADMIN from modifying or suspending an active PLATFORM_OPERATOR', async () => {
+    const actorId = '651a2b3c4d5e6f7a8b9c0d1e';
+    const transactionSession = {
+      withTransaction: jest.fn(async (callback: () => Promise<void>) =>
+        callback(),
+      ),
+      endSession: jest.fn().mockResolvedValue(undefined),
+    };
+    const memberships = {
+      exists: jest.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+      distinct: jest
+        .fn()
+        .mockReturnValue(chain([new Types.ObjectId(organizationId)])),
+    };
+    const assignments = {
+      find: jest
+        .fn()
+        .mockReturnValue(
+          chain([{ userId: new Types.ObjectId(userId), roleCode: 'MEMBER' }]),
+        ),
+    };
+    const platformAuthorities = {
+      findOne: jest.fn().mockReturnValue(chain({ _id: new Types.ObjectId() })),
+    };
+    const users = {
+      findById: jest.fn().mockReturnValue(chain(user)),
+      updateOne: jest.fn(),
+    };
+    const connection = {
+      startSession: jest.fn().mockResolvedValue(transactionSession),
+      models: {
+        continuum_iam_organization_memberships: memberships,
+        continuum_iam_role_assignments: assignments,
+        continuum_iam_platform_authority_assignments: platformAuthorities,
+        continuum_iam_users: users,
+      },
+    } as unknown as Connection;
+
+    const repository = new MongoUserDirectoryRepository(connection);
+    await expect(
+      repository.update(
+        organizationId,
+        userId,
+        { fullName: 'Blocked Operator Mutation' },
+        actorId,
+      ),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'PLATFORM_OPERATOR_PROTECTED' },
+    });
+    expect(users.updateOne).not.toHaveBeenCalled();
   });
 });

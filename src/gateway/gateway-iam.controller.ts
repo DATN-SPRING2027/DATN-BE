@@ -13,6 +13,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { signGatewaySource } from '../common/http/gateway-source';
+import {
+  buildSafeInternalProxyUrl,
+  collectForwardedRequestHeaders,
+} from './gateway-proxy.util';
 
 const forwardedRequestHeaders = [
   'accept',
@@ -22,8 +26,10 @@ const forwardedRequestHeaders = [
   'if-match',
   'idempotency-key',
   'x-csrf-token',
+  'x-expected-organization-id',
   'x-organization-id',
   'x-request-id',
+  'traceparent',
 ] as const;
 const forwardedResponseHeaders = [
   'cache-control',
@@ -224,6 +230,14 @@ export class GatewayIamController {
 
   @Post('iam/organizations')
   createOwnOrganization(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Get('iam/organizations/slug-availability')
+  checkOrganizationSlugAvailability(
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {
@@ -954,28 +968,24 @@ export class GatewayIamController {
   }
 
   private async forward(request: Request, response: Response): Promise<void> {
-    const isTeamRoute =
-      /^\/api\/v1\/iam\/(?:projects\/[^/]+\/teams|teams\/[^/]+(?:\/(?:archive|restore))?)$/.test(
-        request.path,
-      );
-    if (isTeamRoute) response.setHeader('cache-control', 'no-store');
     const baseUrl = this.config.getOrThrow<string>('IAM_SERVICE_URL');
-    const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
-    const url = new URL(path, baseUrl).toString();
-    const headers: Record<string, string> = {};
-    for (const name of forwardedRequestHeaders) {
-      const value = request.headers[name];
-      if (typeof value === 'string') headers[name] = value;
-    }
+    const targetUrl = buildSafeInternalProxyUrl(request.originalUrl, baseUrl);
+    const url = targetUrl.toString();
+    const headers = collectForwardedRequestHeaders(
+      request,
+      forwardedRequestHeaders,
+    );
+    const pathname =
+      request.path ?? targetUrl.pathname.replace(/^\/internal\//, '/api/v1/');
     if (
-      /^\/api\/v1\/auth\/(?:(?:platform\/)?login|password-reset\/(?:request|confirm)|registrations(?:\/verify)?)$/.test(
-        request.path,
+      /^\/api\/v1\/(?:auth\/(?:(?:platform\/)?login|refresh|invitations\/resolve|password-reset\/(?:request|confirm)|registrations(?:\/verify)?)|iam\/organizations\/slug-availability)$/.test(
+        pathname,
       )
     ) {
       Object.assign(
         headers,
         signGatewaySource(
-          request.ip ?? request.socket.remoteAddress ?? '',
+          request.ip ?? request.socket?.remoteAddress ?? '',
           this.sourceSecret,
         ),
       );
@@ -983,16 +993,15 @@ export class GatewayIamController {
 
     let upstream: globalThis.Response;
     try {
-      const isGoogleOAuthRoute =
-        request.path === '/api/v1/auth/google' ||
-        request.path === '/api/v1/auth/google/callback';
       upstream = await fetch(url, {
         method: request.method,
         headers,
-        ...(request.body === undefined
+        redirect: 'manual',
+        ...(request.method === 'GET' ||
+        request.method === 'HEAD' ||
+        request.body === undefined
           ? {}
           : { body: JSON.stringify(request.body) }),
-        ...(isGoogleOAuthRoute ? { redirect: 'manual' as const } : {}),
         signal: AbortSignal.timeout(
           this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
         ),
@@ -1008,7 +1017,6 @@ export class GatewayIamController {
       const value = upstream.headers.get(name);
       if (value) response.setHeader(name, value);
     }
-    if (isTeamRoute) response.setHeader('cache-control', 'no-store');
     const cookies = upstream.headers.getSetCookie();
     if (cookies.length > 0) response.setHeader('set-cookie', cookies);
 

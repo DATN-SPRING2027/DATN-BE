@@ -24,8 +24,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "continuum-ai.mongodbApplicationRoles" -}}
 {{- $roles := list -}}
+{{- $seen := dict -}}
 {{- range $name, $service := .Values.services -}}
 {{- $roles = append $roles (dict "role" "readWrite" "db" $service.database) -}}
+{{- $_ := set $seen $service.database true -}}
+{{- end -}}
+{{- range $extraDb := list "continuum_audit" "continuum_task" -}}
+{{- if not (hasKey $seen $extraDb) -}}
+{{- $roles = append $roles (dict "role" "readWrite" "db" $extraDb) -}}
+{{- end -}}
 {{- end -}}
 {{- toJson $roles -}}
 {{- end }}

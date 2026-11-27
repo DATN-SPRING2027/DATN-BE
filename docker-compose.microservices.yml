@@ -8,7 +8,19 @@ x-otel-environment: &otel-environment
 services:
   redis:
     image: redis:7.2-alpine
-    command: redis-server --appendonly yes
+    command:
+      - sh
+      - -ec
+      - >-
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory 512mb
+        --maxmemory-policy noeviction
+        --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     volumes:
       - redis-data:/data
     healthcheck:
@@ -76,17 +88,31 @@ services:
   api-gateway:
     <<: &backend-service
       build: .
-      env_file:
-        - .env.example
       environment:
         <<: *otel-environment
+        NODE_ENV: production
         REDIS_HOST: redis
+        REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+        MONGODB_MAX_POOL_SIZE: "15"
         OTEL_SERVICE_NAME: continuum-api-gateway
         GATEWAY_PORT: 3000
         IAM_SERVICE_URL: http://iam:3001
+        TASK_SERVICE_URL: http://iam:3001
+        AI_ENGINE_SERVICE_URL: http://iam:3001
+        CAPTURE_SERVICE_URL: http://capture:3002
+        JIRA_SERVICE_URL: http://jira:3003
+        LIFECYCLE_SERVICE_URL: http://lifecycle:3004
         CHAT_SERVICE_URL: http://chat:3005
+        HANDOVER_SERVICE_URL: http://handover:3006
+        INGESTION_SERVICE_URL: http://ingestion:3007
+        NOTIFICATION_SERVICE_URL: http://notification:3008
+        BACKEND_TIMEOUT_MS: "5000"
+        CAPTURE_FILE_TIMEOUT_MS: "120000"
+        SAG_CHAT_STREAM_TIMEOUT_MS: "120000"
         IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
         GATEWAY_TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:?Set the trusted BFF or edge proxy CIDR}
+        CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set explicit production CORS_ALLOWED_ORIGINS}
+        METRICS_AUTH_TOKEN: ${METRICS_AUTH_TOKEN:?Set METRICS_AUTH_TOKEN for /api/v1/metrics}
         SWAGGER_ENABLED: "false"
     depends_on:
       redis:
@@ -120,10 +146,12 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-iam
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3001
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_iam
       JWT_SECRET: ${JWT_SECRET:?Set the IAM JWT secret}
       ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256: ${ORGANIZATION_INVITATION_A7_NOTIFICATION_EVIDENCE_SHA256:-}
@@ -131,7 +159,12 @@ services:
       ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256: ${ORGANIZATION_INVITATION_A8_CUTOVER_EVIDENCE_SHA256:-}
       IAM_GATEWAY_SECRET: ${IAM_GATEWAY_SECRET:?Set a distinct Gateway-to-IAM secret}
       PLATFORM_SERVICE_OPS_SECRET: ${PLATFORM_SERVICE_OPS_SECRET:?Set the internal IAM-to-Jira operations secret}
+      SAG_API_BASE_URL: ${SAG_API_BASE_URL:-}
+      SAG_BFF_SERVICE_TOKEN: ${SAG_BFF_SERVICE_TOKEN:-}
+      CONTINUUM_WEB_BASE_URL: ${CONTINUUM_WEB_BASE_URL:-}
+      SAG_WEB_BASE_URL: ${SAG_WEB_BASE_URL:-}
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
       IAM_SERVICE_URL: http://iam:3001
       CAPTURE_SERVICE_URL: http://capture:3002
       JIRA_SERVICE_URL: http://jira:3003
@@ -150,12 +183,18 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-capture
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3002
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_capture
+      IAM_SERVICE_URL: http://iam:3001
+      SAG_API_BASE_URL: ${SAG_API_BASE_URL:-}
+      SAG_BFF_SERVICE_TOKEN: ${SAG_BFF_SERVICE_TOKEN:-}
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     volumes:
       - continuum-vault-data:/var/lib/continuum/vault
     depends_on:
@@ -168,12 +207,15 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-jira
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3003
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_jira
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
       PLATFORM_SERVICE_OPS_SECRET: ${PLATFORM_SERVICE_OPS_SECRET:?Set the internal IAM-to-Jira operations secret}
     depends_on:
       redis:
@@ -185,12 +227,15 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-lifecycle
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3004
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_lifecycle
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -201,14 +246,17 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-chat
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3005
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_chat
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
       IAM_SERVICE_URL: http://iam:3001
-      CHAT_ALLOWED_ORIGINS: ${CHAT_ALLOWED_ORIGINS:-http://localhost:3000}
+      CHAT_ALLOWED_ORIGINS: ${CHAT_ALLOWED_ORIGINS:?Set explicit CHAT_ALLOWED_ORIGINS}
       R2_ENDPOINT: ${R2_ENDPOINT:-}
       R2_BUCKET: ${R2_BUCKET:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
@@ -231,12 +279,18 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-handover
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3006
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_handover
+      IAM_SERVICE_URL: http://iam:3001
+      SAG_API_BASE_URL: ${SAG_API_BASE_URL:-}
+      SAG_BFF_SERVICE_TOKEN: ${SAG_BFF_SERVICE_TOKEN:-}
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -247,12 +301,15 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-ingestion
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3007
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_ingestion
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -263,12 +320,16 @@ services:
     <<: *backend-service
     environment:
       <<: *otel-environment
+      NODE_ENV: production
       OTEL_SERVICE_NAME: continuum-notification
       INFRA_ENABLED: "true"
       SERVICE_PORT: 3008
-      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0}
+      MONGODB_MAX_POOL_SIZE: "15"
       SERVICE_DATABASE: continuum_notification
+      IAM_SERVICE_URL: http://iam:3001
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy

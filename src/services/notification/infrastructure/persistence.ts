@@ -27,6 +27,10 @@ export const NOTIFICATION_PERSISTENCE: ServicePersistenceDefinition = {
           { expireAfterSeconds: NOTIFICATION_TTL_SECONDS },
         ),
         index({ recipientId: 1, createdAt: -1 }),
+        index(
+          { recipientId: 1, organizationId: 1, readAt: 1, createdAt: -1 },
+          { name: 'notifications_recipient_org_read_created_desc' },
+        ),
         index({ recipientId: 1, readAt: 1 }),
         index({ recipientId: 1, eventKey: 1 }, { unique: true, sparse: true }),
       ],

@@ -55,6 +55,9 @@ export interface VerifiedGoogleIdentity {
 
 @Injectable()
 export class GoogleOAuthService {
+  private cachedClientKey?: string;
+  private cachedClient?: OAuth2Client;
+
   constructor(private readonly config: ConfigService) {}
 
   async begin(organizationId?: string): Promise<GoogleOAuthStartResult> {
@@ -308,11 +311,21 @@ export class GoogleOAuthService {
     clientSecret: string;
     callbackUrl: string;
   }): OAuth2Client {
-    return new OAuth2Client(
-      configuration.clientId,
-      configuration.clientSecret,
-      configuration.callbackUrl,
-    );
+    const key = `${configuration.clientId}\0${configuration.clientSecret}\0${configuration.callbackUrl}`;
+    if (this.cachedClient && this.cachedClientKey === key) {
+      return this.cachedClient;
+    }
+    const client = new OAuth2Client({
+      clientId: configuration.clientId,
+      clientSecret: configuration.clientSecret,
+      redirectUri: configuration.callbackUrl,
+      transporterOptions: {
+        timeout: 10_000,
+      },
+    });
+    this.cachedClientKey = key;
+    this.cachedClient = client;
+    return client;
   }
 
   private encryptTransaction(

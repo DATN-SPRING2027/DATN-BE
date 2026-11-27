@@ -304,8 +304,10 @@ const chatSchemas: Record<string, Schema> = {
 export function createCollectionSchema(
   definition: ServiceCollectionDefinition,
 ): Schema {
-  const schema =
-    chatSchemas[definition.name] ?? new Schema({}, { strict: true });
+  const baseSchema = chatSchemas[definition.name];
+  const schema = baseSchema
+    ? baseSchema.clone()
+    : new Schema({}, { strict: true });
   schema.set('collection', definition.name);
 
   for (const index of definition.indexes ?? []) {

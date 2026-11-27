@@ -38,12 +38,24 @@ export class MongoInfrastructureModule {
           imports: [ConfigModule],
           connectionName: serviceDatabaseName,
           inject: [ConfigService],
-          useFactory: (config: ConfigService) => ({
-            uri: config.getOrThrow<string>('MONGODB_URI'),
-            dbName: serviceDatabaseName,
-            autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
-            serverSelectionTimeoutMS: 5000,
-          }),
+          useFactory: (config: ConfigService) => {
+            const configuredPool = Number(
+              config.get<string | number>('MONGODB_MAX_POOL_SIZE'),
+            );
+            const maxPoolSize =
+              Number.isFinite(configuredPool) && configuredPool >= 1
+                ? Math.floor(configuredPool)
+                : 15;
+            return {
+              uri: config.getOrThrow<string>('MONGODB_URI'),
+              dbName: serviceDatabaseName,
+              autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
+              serverSelectionTimeoutMS: 5000,
+              maxPoolSize,
+              minPoolSize: 2,
+              socketTimeoutMS: 30000,
+            };
+          },
         }),
         MongooseModule.forFeature(models, serviceDatabaseName),
       ],

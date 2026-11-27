@@ -146,6 +146,8 @@ describe('Follow-up live dependency ACL (R2-BE02)', () => {
       expect(f.repo.revisions.findOne).toHaveBeenCalledWith({
         _id: f.doc.revisionId,
         handoverId: f.handover._id,
+        organizationId: new Types.ObjectId(f.actor.organizationId),
+        projectId: new Types.ObjectId(f.actor.projectId),
       });
       expect(result.body.data).toHaveLength(readable ? 1 : 0);
       if (!readable)
@@ -204,6 +206,26 @@ describe('Follow-up live dependency ACL (R2-BE02)', () => {
     expect(result.etag).toBe(
       `"handover-followup:${f.doc._id.toHexString()}:2"`,
     );
+  });
+
+  it('blocks follow-up resolution when the parent handover is CANCELLED (SEC-BE-017)', async () => {
+    const f = setup(true);
+    f.handover.status = 'CANCELLED';
+    await expect(
+      f.service.resolveHandoverFollowUp(
+        f.actor.projectId,
+        f.handover._id.toHexString(),
+        f.doc._id.toHexString(),
+        { resolutionNote: 'Done', references: [] },
+        {
+          idempotencyKey: randomUUID(),
+          ifMatch: `"handover-followup:${f.doc._id.toHexString()}:1"`,
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'HANDOVER_CANCELLED' },
+    });
+    expect(f.repo.followUps.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
   it('does not leak reason through an optional-exception receipt replay', async () => {

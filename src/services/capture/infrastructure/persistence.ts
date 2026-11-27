@@ -8,6 +8,7 @@ const index = (
     unique?: boolean;
     expireAfterSeconds?: number;
     name?: string;
+    partialFilterExpression?: Record<string, unknown>;
   },
 ) => ({ fields, options });
 
@@ -69,6 +70,19 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
           { organizationId: 1, projectId: 1, taskId: 1, createdAt: -1 },
           { name: 'work_notes_project_task_created_at' },
         ),
+        index(
+          { 'provenance.mdFile.key': 1 },
+          { name: 'capture_work_notes_md_file_key' },
+        ),
+        index(
+          {
+            organizationId: 1,
+            projectId: 1,
+            'provenance.review.status': 1,
+            updatedAt: -1,
+          },
+          { name: 'capture_work_notes_org_project_review_updated' },
+        ),
       ],
     },
     {
@@ -98,6 +112,11 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
           { organizationId: 1, projectId: 1, status: 1, updatedAt: -1 },
           { name: 'project_document_versions_project_status_updated_at' },
         ),
+        index(
+          { organizationId: 1, projectId: 1, 'file.sha256': 1, 'file.size': 1 },
+          { name: 'capture_doc_versions_org_project_sha_size' },
+        ),
+        index({ 'file.key': 1 }, { name: 'capture_doc_versions_file_key' }),
       ],
     },
     {
@@ -135,7 +154,21 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
           { memberUserId: 1, projectId: 1, periodStart: -1 },
           { name: 'work_reports_member_period' },
         ),
-        index({ status: 1, dueAt: 1 }, { name: 'work_reports_status_due_at' }),
+        index(
+          { status: 1, dueAt: 1, _id: 1 },
+          { name: 'capture_work_reports_status_due_cursor' },
+        ),
+        index(
+          { 'file.key': 1 },
+          {
+            name: 'work_reports_file_key',
+            partialFilterExpression: { 'file.key': { $type: 'string' } },
+          },
+        ),
+        index(
+          { 'provenance.mdFile.key': 1 },
+          { name: 'capture_work_reports_md_file_key' },
+        ),
       ],
     },
     {
@@ -248,13 +281,20 @@ export const CAPTURE_PERSISTENCE: ServicePersistenceDefinition = {
         ),
         index(
           { organizationId: 1, userId: 1, occurredAt: -1 },
-          { name: 'ai_token_usage_logs_org_user_occurred_at' },
+          { name: 'ai_token_usage_org_user_occurred_desc' },
         ),
         index(
           { organizationId: 1, taskKind: 1, occurredAt: -1 },
           { name: 'ai_token_usage_logs_org_task_occurred_at' },
         ),
-        index({ dedupeKey: 1 }, { name: 'ai_token_usage_logs_dedupe_key' }),
+        index(
+          { organizationId: 1, dedupeKey: 1, projectId: 1 },
+          {
+            unique: true,
+            name: 'ai_token_usage_org_project_dedupe_unique',
+            partialFilterExpression: { dedupeKey: { $type: 'string' } },
+          },
+        ),
       ],
     },
   ],

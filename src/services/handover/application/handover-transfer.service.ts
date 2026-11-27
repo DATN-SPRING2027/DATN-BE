@@ -133,6 +133,8 @@ export class HandoverTransferService {
     const children = await this.repository.operations
       .find({
         parentOperationId: parent._id,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
         kind: 'TASK_TRANSFER_CHILD',
       })
       .sort({ _id: 1 })
@@ -162,6 +164,8 @@ export class HandoverTransferService {
     const allChildren = await this.repository.operations
       .find({
         parentOperationId: { $in: parentIds },
+        organizationId: handover.organizationId,
+        projectId: handover.projectId,
         kind: 'TASK_TRANSFER_CHILD',
       })
       .sort({ _id: 1 })
@@ -220,6 +224,8 @@ export class HandoverTransferService {
         const children = await this.repository.operations
           .find({
             parentOperationId: existingOp._id,
+            organizationId: input.handover.organizationId,
+            projectId: input.handover.projectId,
             kind: 'TASK_TRANSFER_CHILD',
           })
           .sort({ _id: 1 })
@@ -288,6 +294,8 @@ export class HandoverTransferService {
       .findOne({
         _id: input.handover.publishedRevisionId,
         handoverId: input.handover._id,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
       })
       .lean<StoredRevisionDoc>()
       .exec();
@@ -299,32 +307,36 @@ export class HandoverTransferService {
       });
     }
 
-    if (legacy) {
-      // Verify B has accepted the current published package before transferring tasks!
-      const pkgAcc = await this.repository.acceptances
-        .findOne({
-          handoverId: input.handover._id,
-          revisionId: revision._id,
-          successorUserId: successorUserId.toLowerCase(),
-          assignmentVersion: input.handover.assignmentVersion,
-          kind: 'PACKAGE',
-          decision: 'ACCEPTED',
-        })
-        .lean<StoredAcceptanceDoc>()
-        .exec();
+    // SEC-AUTH-009: Enforce PACKAGE ACCEPTED uniformly for both standard and quick task transfers.
+    const pkgAcc = await this.repository.acceptances
+      .findOne({
+        handoverId: input.handover._id,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
+        revisionId: revision._id,
+        successorUserId: successorUserId.toLowerCase(),
+        assignmentVersion: input.handover.assignmentVersion,
+        kind: 'PACKAGE',
+        decision: 'ACCEPTED',
+      })
+      .lean<StoredAcceptanceDoc>()
+      .exec();
 
-      if (!pkgAcc) {
-        throw new ConflictException({
-          code: 'PACKAGE_NOT_ACCEPTED',
-          message:
-            'Successor B must accept the current published package before task transfer.',
-          details: {},
-        });
-      }
-    } else {
+    if (!pkgAcc) {
+      throw new ConflictException({
+        code: 'PACKAGE_NOT_ACCEPTED',
+        message:
+          'Successor B must accept the current published package before task transfer.',
+        details: {},
+      });
+    }
+
+    if (quick) {
       const active = await this.repository.operations
         .find({
           handoverId: input.handover._id,
+          organizationId: input.handover.organizationId,
+          projectId: input.handover.projectId,
           kind: { $in: ['TASK_TRANSFER', 'TASK_TRANSFER_CHILD'] },
           state: { $in: ['PENDING', 'DISPATCHED', 'UNKNOWN'] },
         })
@@ -386,13 +398,11 @@ export class HandoverTransferService {
           details: { taskId },
         });
       }
-      const alreadyAssigned = live?.assigneeId === successorId;
+      const alreadyAssigned = live?.assigneeId?.toLowerCase() === successorId;
       return {
         taskId,
-        expectedTaskVersion: alreadyAssigned
-          ? live.version!
-          : (legacy?.tasks[index].expectedTaskVersion ??
-            pinned.expectedVersion),
+        expectedTaskVersion:
+          legacy?.tasks[index].expectedTaskVersion ?? pinned.expectedVersion,
         expectedAssigneeId: alreadyAssigned ? successorId : priorOwner,
       };
     });
@@ -404,6 +414,8 @@ export class HandoverTransferService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: input.handover._id,
+            organizationId: input.handover.organizationId,
+            projectId: input.handover.projectId,
             status: 'OPEN',
             version: input.expectedVersion,
           },
@@ -603,7 +615,12 @@ export class HandoverTransferService {
     }
 
     const updatedChildren = await this.repository.operations
-      .find({ parentOperationId: parentId, kind: 'TASK_TRANSFER_CHILD' })
+      .find({
+        parentOperationId: parentId,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
+        kind: 'TASK_TRANSFER_CHILD',
+      })
       .sort({ _id: 1 })
       .lean<StoredOperationDoc[]>()
       .exec();
@@ -614,7 +631,11 @@ export class HandoverTransferService {
 
     const updatedParent = await this.repository.operations
       .findOneAndUpdate(
-        { _id: parentId },
+        {
+          _id: parentId,
+          organizationId: input.handover.organizationId,
+          projectId: input.handover.projectId,
+        },
         {
           $set: {
             state: storedState,
@@ -724,7 +745,12 @@ export class HandoverTransferService {
     }
 
     const children = await this.repository.operations
-      .find({ parentOperationId: parent._id, kind: 'TASK_TRANSFER_CHILD' })
+      .find({
+        parentOperationId: parent._id,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
+        kind: 'TASK_TRANSFER_CHILD',
+      })
       .sort({ _id: 1 })
       .lean<StoredOperationDoc[]>()
       .exec();
@@ -808,7 +834,12 @@ export class HandoverTransferService {
     }
 
     const refreshedChildren = await this.repository.operations
-      .find({ parentOperationId: parent._id, kind: 'TASK_TRANSFER_CHILD' })
+      .find({
+        parentOperationId: parent._id,
+        organizationId: input.handover.organizationId,
+        projectId: input.handover.projectId,
+        kind: 'TASK_TRANSFER_CHILD',
+      })
       .sort({ _id: 1 })
       .lean<StoredOperationDoc[]>()
       .exec();
@@ -822,6 +853,8 @@ export class HandoverTransferService {
       const upd = await this.repository.handovers.updateOne(
         {
           _id: input.handover._id,
+          organizationId: input.handover.organizationId,
+          projectId: input.handover.projectId,
           status: 'OPEN',
           version: input.expectedVersion,
         },
@@ -838,7 +871,11 @@ export class HandoverTransferService {
 
       const updParent = await this.repository.operations
         .findOneAndUpdate(
-          { _id: parent._id },
+          {
+            _id: parent._id,
+            organizationId: input.handover.organizationId,
+            projectId: input.handover.projectId,
+          },
           {
             $set: {
               state: storedState,
@@ -915,6 +952,7 @@ export class HandoverTransferService {
     const parents = await this.repository.operations
       .find({
         handoverId: input.handover._id,
+        organizationId: input.handover.organizationId,
         projectId: input.handover.projectId,
         kind: 'TASK_TRANSFER',
         revisionId: input.revisionId,
@@ -927,7 +965,12 @@ export class HandoverTransferService {
     let mutated = false;
     for (const parent of parents) {
       const children = await this.repository.operations
-        .find({ parentOperationId: parent._id, kind: 'TASK_TRANSFER_CHILD' })
+        .find({
+          parentOperationId: parent._id,
+          organizationId: input.handover.organizationId,
+          projectId: input.handover.projectId,
+          kind: 'TASK_TRANSFER_CHILD',
+        })
         .sort({ _id: 1 })
         .lean<StoredOperationDoc[]>()
         .exec();
@@ -1048,40 +1091,87 @@ export class HandoverTransferService {
     handover: StoredHandoverDoc,
     revision: StoredRevisionDoc,
     children?: StoredOperationDoc[],
+    liveTaskStateMap?: Map<
+      string,
+      {
+        exists: boolean;
+        version: number | null;
+        assigneeId: string | null;
+        status: string | null;
+        key?: string | null;
+        title?: string | null;
+        dueDate?: string | null;
+      }
+    >,
   ): Promise<Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>> {
     const dispositions = new Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>();
     if (!handover.successorUserId || revision.selectedTasks.length === 0) {
       return dispositions;
     }
+    const successorLower = handover.successorUserId.toLowerCase();
     const rows =
       children ??
       (await this.repository.operations
-        .find({ handoverId: handover._id, kind: 'TASK_TRANSFER_CHILD' })
+        .find({
+          handoverId: handover._id,
+          organizationId: handover.organizationId,
+          projectId: handover.projectId,
+          kind: 'TASK_TRANSFER_CHILD',
+          state: 'COMMITTED',
+          revisionId: revision._id,
+          assignmentVersion: handover.assignmentVersion,
+        })
         .lean<StoredOperationDoc[]>()
         .exec());
     const selected = new Set(
       revision.selectedTasks.map((task) => task.taskId.toHexString()),
     );
-    const candidates = rows.filter(
-      (child) =>
-        child.state === 'COMMITTED' &&
-        child.revisionId?.equals(revision._id) &&
-        child.assignmentVersion === handover.assignmentVersion &&
-        child.taskIntent?.targetUserId === handover.successorUserId &&
-        selected.has(child.taskIntent.taskId.toHexString()),
-    );
+    const candidatesByTask = new Map<string, StoredOperationDoc[]>();
+    for (const child of rows) {
+      if (
+        child.state !== 'COMMITTED' ||
+        !child.revisionId?.equals(revision._id) ||
+        child.assignmentVersion !== handover.assignmentVersion ||
+        child.taskIntent?.targetUserId?.toLowerCase() !== successorLower
+      ) {
+        continue;
+      }
+      const taskHex = child.taskIntent.taskId.toHexString();
+      if (!selected.has(taskHex)) continue;
+      if (liveTaskStateMap) {
+        const live = liveTaskStateMap.get(taskHex);
+        if (
+          !live?.exists ||
+          live.assigneeId?.toLowerCase() !== successorLower
+        ) {
+          continue;
+        }
+      }
+      const list = candidatesByTask.get(taskHex);
+      if (list) list.push(child);
+      else candidatesByTask.set(taskHex, [child]);
+    }
     await Promise.all(
-      candidates.map(async (child) => {
-        const intent = this.assignmentInput(child);
-        const proof = await this.taskAssignmentService.reconcileTaskForHandover(
-          intent,
-          true,
+      [...candidatesByTask.entries()].map(async ([taskHex, taskChildren]) => {
+        // Check newest committed child intent first to avoid redundant per-retry reconciliation queries.
+        const ordered = [...taskChildren].sort((a, b) =>
+          b._id.toHexString().localeCompare(a._id.toHexString()),
         );
-        if (proof.state !== 'CONFIRMED') return;
-        if (proof.committedTaskVersion !== intent.expectedTaskVersion) {
-          dispositions.set(intent.taskId, 'TRANSFERRED');
-        } else if (!dispositions.has(intent.taskId)) {
-          dispositions.set(intent.taskId, 'ALREADY_ASSIGNED');
+        for (const child of ordered) {
+          const intent = this.assignmentInput(child);
+          const proof =
+            await this.taskAssignmentService.reconcileTaskForHandover(
+              intent,
+              true,
+            );
+          if (proof.state !== 'CONFIRMED') continue;
+          if (proof.committedTaskVersion !== intent.expectedTaskVersion) {
+            dispositions.set(taskHex, 'TRANSFERRED');
+            return;
+          }
+          if (!dispositions.has(taskHex)) {
+            dispositions.set(taskHex, 'ALREADY_ASSIGNED');
+          }
         }
       }),
     );

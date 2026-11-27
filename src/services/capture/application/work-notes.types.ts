@@ -36,6 +36,7 @@ export interface CaptureRequestHeaders {
   csrfToken?: string;
   organizationId?: string;
   requestId?: string;
+  ifMatch?: string;
 }
 
 export interface WorkNotesActor {
@@ -47,6 +48,7 @@ export interface WorkNotesActor {
   canConfigure: boolean;
   isManager?: boolean;
   isLeader?: boolean;
+  isProjectMember?: boolean;
   joinedAt?: string;
   taskKey?: string;
   taskTitle?: string;

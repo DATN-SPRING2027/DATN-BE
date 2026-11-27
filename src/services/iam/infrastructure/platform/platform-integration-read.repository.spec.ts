@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { ConfigService } from '@nestjs/config';
 import { PlatformIntegrationReadHttpRepository } from './platform-integration-read.repository';
 
@@ -68,9 +69,17 @@ describe('PlatformIntegrationReadHttpRepository', () => {
         'b'.repeat(24) +
         '&status=CONNECTED',
     );
-    expect(
-      new Headers(calledInit?.headers).get('x-platform-ops-signature'),
-    ).toMatch(/^[a-f\d]{64}$/i);
+    const sentHeaders = new Headers(calledInit?.headers);
+    const timestamp = sentHeaders.get('x-platform-ops-timestamp') ?? '';
+    const nonce = sentHeaders.get('x-platform-ops-nonce') ?? '';
+    expect(nonce).toMatch(/^[a-zA-Z0-9._-]{16,128}$/);
+    const expectedCanonical = `${timestamp}\n${nonce}\nGET\n/internal/platform/integrations?page=2&pageSize=5&organizationId=${'b'.repeat(24)}&status=CONNECTED\n`;
+    expect(sentHeaders.get('x-platform-ops-signature')).toBe(
+      createHmac('sha256', 'a'.repeat(48))
+        .update(expectedCanonical)
+        .digest('hex'),
+    );
+    expect(calledInit?.redirect).toBe('error');
     expect(calledInit?.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.stringify(page)).not.toContain('credentialsEncrypted');
   });

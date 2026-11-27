@@ -3,7 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Command } from 'ioredis';
 import {
   bullmqPrefix,
-  createRedisConnection,
+  CONSUME_RATE_LIMIT_LUA,
+  createHttpRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
 
@@ -13,7 +14,7 @@ export class RedisService implements OnModuleDestroy {
   private readonly cachePrefix: string;
 
   constructor(config: ConfigService) {
-    this.client = createRedisConnection(config);
+    this.client = createHttpRedisConnection(config);
     this.cachePrefix = `${bullmqPrefix(config)}:handover:cache:`;
   }
 
@@ -94,9 +95,13 @@ export class RedisService implements OnModuleDestroy {
     windowSeconds: number,
   ): Promise<boolean> {
     await this.connect();
-    const count = await this.client.incr(`rate:${key}`);
-    if (count === 1) await this.client.expire(`rate:${key}`, windowSeconds);
-    return count <= limit;
+    const count = await this.client.eval(
+      CONSUME_RATE_LIMIT_LUA,
+      1,
+      `rate:${key}`,
+      windowSeconds,
+    );
+    return Number(count) <= limit;
   }
   acquireLock(
     key: string,

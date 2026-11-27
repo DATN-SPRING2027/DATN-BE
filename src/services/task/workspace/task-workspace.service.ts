@@ -11,10 +11,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
-import {
-  readCookie,
-  validCsrfPair,
-} from '../../iam/application/authentication/authentication.application.service';
+import { extractCsrfCookie } from '../../../common/security/csrf';
+import { validCsrfPair } from '../../iam/application/authentication/authentication.application.service';
 import { NotificationService } from '../../notification/notification.service';
 import { TaskDeadlineNotificationScheduler } from '../../notification/task-deadline-notification.scheduler';
 import {
@@ -81,10 +79,7 @@ export class TaskWorkspaceService {
   ): void {
     const trimmedHeader =
       typeof csrfHeader === 'string' ? csrfHeader.trim() : '';
-    const cookieToken =
-      readCookie(cookieHeader, '__Host-csrf') ??
-      readCookie(cookieHeader, 'continuum_csrf') ??
-      readCookie(cookieHeader, 'csrf_token');
+    const cookieToken = extractCsrfCookie(cookieHeader);
     if (!validCsrfPair(cookieToken, trimmedHeader)) {
       throw new ForbiddenException({
         code: 'CSRF_TOKEN_INVALID',
@@ -679,6 +674,33 @@ export class TaskWorkspaceService {
     }
   }
 
+  private assertMemberCanAssign(
+    actorRole: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER',
+    actorId: string,
+    assigneeId: string | null,
+  ): void {
+    if (actorRole !== 'MEMBER') return;
+    if (
+      assigneeId !== null &&
+      assigneeId.toLowerCase() !== actorId.toLowerCase()
+    ) {
+      throw new ForbiddenException({
+        code: 'INSUFFICIENT_PERMISSION',
+        message:
+          'Members can only assign tasks to themselves or leave them unassigned.',
+      });
+    }
+  }
+
+  private assertTaskNotCancelled(task: WorkspaceTaskDocument): void {
+    if (task.status === 'CANCELLED') {
+      throw new UnprocessableEntityException({
+        code: 'TASK_CANCELLED_IMMUTABLE',
+        message: 'Cancelled tasks cannot be modified.',
+      });
+    }
+  }
+
   private assertCanManageSprint(
     actorRole: 'ADMIN' | 'TEAM_LEADER' | 'MEMBER',
   ): void {
@@ -900,6 +922,8 @@ export class TaskWorkspaceService {
       raw.assigneeId !== undefined && raw.assigneeId !== null
         ? this.assertObjectId(raw.assigneeId, 'assigneeId')
         : null;
+    // SEC-AUTH-008: Members cannot assign tasks to other users.
+    this.assertMemberCanAssign(ctx.actorRole, ctx.actorId, assigneeId);
     const parentId =
       raw.parentId !== undefined && raw.parentId !== null
         ? this.assertObjectId(raw.parentId, 'parentId')
@@ -1170,6 +1194,8 @@ export class TaskWorkspaceService {
     }
 
     this.assertCanModifyTask(ctx.actorRole, ctx.actorId, existing);
+    // SEC-AUTH-008: Cancelled tasks are read-only for field edits.
+    this.assertTaskNotCancelled(existing);
 
     if (existing.version !== expectedVersion) {
       throw new ConflictException({
@@ -1240,9 +1266,34 @@ export class TaskWorkspaceService {
 
     if (raw.assigneeId !== undefined) {
       if (raw.assigneeId === null) {
+        // SEC-AUTH-008: Members cannot unassign a task currently assigned to someone else.
+        if (
+          ctx.actorRole === 'MEMBER' &&
+          existing.assigneeId !== null &&
+          existing.assigneeId.toHexString().toLowerCase() !==
+            ctx.actorId.toLowerCase()
+        ) {
+          throw new ForbiddenException({
+            code: 'INSUFFICIENT_PERMISSION',
+            message: 'Members cannot reassign tasks assigned to another user.',
+          });
+        }
         updates.assigneeId = null;
       } else {
         const assigneeId = this.assertObjectId(raw.assigneeId, 'assigneeId');
+        // SEC-AUTH-008: Members can only assign to themselves and cannot steal another member's task.
+        this.assertMemberCanAssign(ctx.actorRole, ctx.actorId, assigneeId);
+        if (
+          ctx.actorRole === 'MEMBER' &&
+          existing.assigneeId !== null &&
+          existing.assigneeId.toHexString().toLowerCase() !==
+            ctx.actorId.toLowerCase()
+        ) {
+          throw new ForbiddenException({
+            code: 'INSUFFICIENT_PERMISSION',
+            message: 'Members cannot reassign tasks assigned to another user.',
+          });
+        }
         const isMember = await this.iamBridge.isActiveProjectMember(
           ctx.organizationId,
           ctx.projectId,
@@ -1566,6 +1617,33 @@ export class TaskWorkspaceService {
 
       this.assertCanModifyTask(ctx.actorRole, ctx.actorId, existing);
 
+      const fromStatus = requestedFromStatus ?? existing.status;
+
+      // SEC-AUTH-008: Enforce MEMBER transition boundaries:
+      // 1) Members cannot cancel or reopen cancelled tasks.
+      // 2) Members cannot transition tasks assigned to another user (even if creator).
+      // 3) Moving TODO -> IN_PROGRESS requires an assignee.
+      if (ctx.actorRole === 'MEMBER') {
+        if (toStatus === 'CANCELLED' || fromStatus === 'CANCELLED') {
+          throw new ForbiddenException({
+            code: 'INSUFFICIENT_PERMISSION',
+            message:
+              'Only Team Leaders and Organization Managers can cancel or reopen cancelled tasks.',
+          });
+        }
+        if (
+          existing.assigneeId !== null &&
+          existing.assigneeId.toHexString().toLowerCase() !==
+            ctx.actorId.toLowerCase()
+        ) {
+          throw new ForbiddenException({
+            code: 'INSUFFICIENT_PERMISSION',
+            message:
+              'Members cannot transition tasks assigned to another user.',
+          });
+        }
+      }
+
       if (existing.version !== expectedVersion) {
         throw new ConflictException({
           code: 'TASK_VERSION_CONFLICT',
@@ -1578,7 +1656,6 @@ export class TaskWorkspaceService {
         });
       }
 
-      const fromStatus = requestedFromStatus ?? existing.status;
       if (existing.status !== fromStatus) {
         throw new ConflictException({
           code: 'TASK_STATUS_CONFLICT',
@@ -1596,6 +1673,18 @@ export class TaskWorkspaceService {
         throw new UnprocessableEntityException({
           code: 'TASK_TRANSITION_NOT_ALLOWED',
           message: `Transition from ${fromStatus} to ${toStatus} is not allowed.`,
+        });
+      }
+
+      if (
+        fromStatus === 'TODO' &&
+        toStatus === 'IN_PROGRESS' &&
+        existing.assigneeId === null
+      ) {
+        throw new UnprocessableEntityException({
+          code: 'TASK_ASSIGNEE_REQUIRED',
+          message:
+            'An assignee is required before moving a task to IN_PROGRESS.',
         });
       }
 
@@ -1954,6 +2043,7 @@ export class TaskWorkspaceService {
           message: 'Task not found.',
         });
       }
+      this.assertTaskNotCancelled(task);
 
       const comment = await this.repository.createTaskComment({
         organizationId: ctx.organizationId,
@@ -2159,6 +2249,7 @@ export class TaskWorkspaceService {
           message: 'Task not found.',
         });
       }
+      this.assertTaskNotCancelled(task);
 
       const worklog = await this.repository.createTaskWorklog({
         organizationId: ctx.organizationId,
@@ -2752,11 +2843,13 @@ export class TaskWorkspaceService {
   async listOrganizationTasks(params: {
     authorizationHeader?: string;
     cookieHeader?: string;
+    headerOrgId?: string;
     query: Record<string, unknown>;
   }): Promise<WorkspaceHttpResult> {
     const adminCtx = await this.iamBridge.resolveOrgAdminContext(
       params.authorizationHeader,
       params.cookieHeader,
+      params.headerOrgId,
     );
 
     const parsed = this.parseTaskListQuery(params.query, {
@@ -2775,17 +2868,34 @@ export class TaskWorkspaceService {
       );
     }
 
-    const [projects, { items, isDateRange }] = await Promise.all([
-      this.iamBridge.listOrganizationProjects(adminCtx.organizationId),
-      this.repository.listTasks({
-        organizationId: adminCtx.organizationId,
-        projectId,
-        ...parsed,
-        limit: parsed.limit + 1,
-      }),
-    ]);
-
+    // SEC-AUTH-015: Resolve ACTIVE projects first so ARCHIVED projects never leak into org task lists.
+    const projects = await this.iamBridge.listOrganizationProjects(
+      adminCtx.organizationId,
+    );
     const projectMap = new Map(projects.map((p) => [p.id, p]));
+    const activeProjectIds = projects.map((p) => p.id);
+    if (
+      activeProjectIds.length === 0 ||
+      (projectId !== undefined && !projectMap.has(projectId))
+    ) {
+      return {
+        statusCode: 200,
+        body: {
+          items: [],
+          nextAfterId: null,
+          nextCursor: null,
+        },
+      };
+    }
+
+    const { items, isDateRange } = await this.repository.listTasks({
+      organizationId: adminCtx.organizationId,
+      projectId,
+      projectIds: projectId ? undefined : activeProjectIds,
+      ...parsed,
+      limit: parsed.limit + 1,
+    });
+
     const hasMore = items.length > parsed.limit;
     const pageItems = hasMore ? items.slice(0, parsed.limit) : items;
 
@@ -2842,11 +2952,13 @@ export class TaskWorkspaceService {
   async getOrganizationTaskSummary(params: {
     authorizationHeader?: string;
     cookieHeader?: string;
+    headerOrgId?: string;
     query: Record<string, unknown>;
   }): Promise<WorkspaceHttpResult> {
     const adminCtx = await this.iamBridge.resolveOrgAdminContext(
       params.authorizationHeader,
       params.cookieHeader,
+      params.headerOrgId,
     );
 
     for (const k of Object.keys(params.query)) {
@@ -2888,14 +3000,20 @@ export class TaskWorkspaceService {
     }
 
     const asOf = cursorTuple?.asOf ?? new Date();
-    const [projects, { statusBuckets, overdueBuckets }] = await Promise.all([
-      this.iamBridge.listOrganizationProjects(adminCtx.organizationId),
-      this.repository.getOrganizationTaskAggregates(
-        adminCtx.organizationId,
-        asOf,
-        Boolean(cursorTuple?.asOf),
-      ),
-    ]);
+    // SEC-AUTH-015: Restrict org task summary strictly to ACTIVE projects.
+    const projects = await this.iamBridge.listOrganizationProjects(
+      adminCtx.organizationId,
+    );
+    const activeProjectIds = projects.map((p) => p.id);
+    const { statusBuckets, overdueBuckets } =
+      activeProjectIds.length > 0
+        ? await this.repository.getOrganizationTaskAggregates(
+            adminCtx.organizationId,
+            asOf,
+            Boolean(cursorTuple?.asOf),
+            activeProjectIds,
+          )
+        : { statusBuckets: [], overdueBuckets: [] };
 
     const perProjectMap = new Map<
       string,
@@ -2927,25 +3045,15 @@ export class TaskWorkspaceService {
 
     for (const row of statusBuckets) {
       const pId = row._id.p.toHexString();
+      const entry = perProjectMap.get(pId);
+      // SEC-AUTH-015: Never synthesize archived or non-active projects into summary totals.
+      if (!entry) continue;
       const s = row._id.s;
       orgTotal += row.n;
       if (s === 'IN_PROGRESS' || s === 'IN_REVIEW' || s === 'BLOCKED') {
         orgInProgress += row.n;
       }
 
-      let entry = perProjectMap.get(pId);
-      if (!entry) {
-        entry = {
-          projectId: pId,
-          projectName: 'Project',
-          projectCode: 'TASK',
-          total: 0,
-          inProgress: 0,
-          overdue: 0,
-          statusMap: new Map<string, number>(),
-        };
-        perProjectMap.set(pId, entry);
-      }
       entry.total += row.n;
       entry.statusMap.set(s, (entry.statusMap.get(s) ?? 0) + row.n);
       if (s === 'IN_PROGRESS' || s === 'IN_REVIEW' || s === 'BLOCKED') {
@@ -2956,11 +3064,10 @@ export class TaskWorkspaceService {
     let orgOverdue = 0;
     for (const row of overdueBuckets) {
       const pId = row._id.toHexString();
-      orgOverdue += row.n;
       const entry = perProjectMap.get(pId);
-      if (entry) {
-        entry.overdue = row.n;
-      }
+      if (!entry) continue;
+      orgOverdue += row.n;
+      entry.overdue = row.n;
     }
 
     const sortedProjects = [...perProjectMap.values()].sort((a, b) =>

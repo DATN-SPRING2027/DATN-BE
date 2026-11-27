@@ -3,10 +3,12 @@ import {
   Body,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   HttpCode,
+  HttpException,
   HttpStatus,
+  Inject,
+  Optional,
   Param,
   Patch,
   Post,
@@ -15,12 +17,15 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
+import { resolveExpectedOrganizationHeader } from '../../common/http/organization-header';
+import { assertCookieAuthCsrf } from '../../common/security/csrf';
 import { WorkNotesService } from '../../services/capture/application/work-notes.service';
 import {
-  readCookie,
-  validCsrfPair,
-} from '../../services/iam/application/authentication/authentication.application.service';
+  AUTH_SECURITY_STORE,
+  type AuthSecurityStore,
+} from '../../services/iam/application/authentication/auth-security.store';
 import { AI_CHAT_ALL_PROJECTS_ID, AiChatService } from './ai-chat.service';
 import {
   AI_CHAT_FEEDBACK_REASON_CATEGORIES,
@@ -473,7 +478,52 @@ export class AiChatController {
   constructor(
     private readonly aiChat: AiChatService,
     private readonly workNotes: WorkNotesService,
+    @Optional()
+    @Inject(AUTH_SECURITY_STORE)
+    private readonly securityStore?: AuthSecurityStore,
   ) {}
+
+  private async enforceRateLimit(
+    request: Request,
+    response: Response,
+    bucket: 'llm' | 'standard',
+  ): Promise<void> {
+    if (!this.securityStore) return;
+    const authBasis =
+      headerValue(request.headers.authorization) ??
+      headerValue(request.headers.cookie) ??
+      request.ip ??
+      request.socket?.remoteAddress ??
+      'anonymous';
+    const callerKey = createHash('sha256')
+      .update(authBasis)
+      .digest('hex')
+      .slice(0, 24);
+    const limit = bucket === 'llm' ? 15 : 120;
+    const windowSeconds = 60;
+    let allowed = true;
+    try {
+      allowed = await this.securityStore.consumeRateLimit(
+        `ai-chat:${bucket}:${callerKey}`,
+        limit,
+        windowSeconds,
+      );
+    } catch {
+      // Fail-open on transient Redis error only for standard reads; fail-closed on LLM bursts?
+      // Keep bounded availability if Redis is transiently unreachable in dev/test.
+      allowed = true;
+    }
+    if (!allowed) {
+      response.setHeader('Retry-After', String(windowSeconds));
+      throw new HttpException(
+        {
+          code: 'AI_CHAT_RATE_LIMITED',
+          message: 'Too many AI requests. Please retry shortly.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
 
   @Get('document-sources')
   async listDocumentSources(
@@ -658,6 +708,7 @@ export class AiChatController {
     const validThreadId = validatePathIdentifier(threadId, 'threadId');
     const dto = validateAskBody(body);
     const headers = this.mutationHeaders(request);
+    await this.enforceRateLimit(request, response, 'llm');
 
     await this.pipeSseStream(response, (signal) =>
       this.aiChat.openAskStream(
@@ -821,11 +872,9 @@ export class AiChatController {
     response.setHeader('Cache-Control', 'no-store');
     const validProjectId = validatePathIdentifier(projectId, 'projectId');
     const input = validateGenerateMindMapBody(body);
-    return this.aiChat.generateMindMap(
-      this.mutationHeaders(request),
-      validProjectId,
-      input,
-    );
+    const headers = this.mutationHeaders(request);
+    await this.enforceRateLimit(request, response, 'llm');
+    return this.aiChat.generateMindMap(headers, validProjectId, input);
   }
 
   @Get('knowledge-universe/overview')
@@ -938,6 +987,7 @@ export class AiChatController {
     const validMessageId = validatePathIdentifier(messageId, 'messageId');
     validateEmptyBody(body);
     const headers = this.mutationHeaders(request);
+    await this.enforceRateLimit(request, response, 'llm');
 
     await this.pipeSseStream(response, (signal) =>
       this.aiChat.openRegenerateStream(
@@ -1031,34 +1081,19 @@ export class AiChatController {
       authorization: headerValue(request.headers.authorization),
       cookie: headerValue(request.headers.cookie),
       csrfToken: headerValue(request.headers['x-csrf-token']),
-      organizationId: headerValue(request.headers['x-organization-id']),
+      organizationId: resolveExpectedOrganizationHeader(request.headers),
       requestId: headerValue(request.headers['x-request-id']),
     };
   }
 
   private mutationHeaders(request: Request): AiChatRequestHeaders {
     const headers = this.readHeaders(request);
-    const hasBearer =
-      typeof headers.authorization === 'string' &&
-      /^bearer\s+\S+/i.test(headers.authorization.trim());
-    if (
-      !hasBearer &&
-      typeof headers.cookie === 'string' &&
-      headers.cookie.trim().length > 0
-    ) {
-      const cookieToken =
-        readCookie(headers.cookie, '__Host-csrf') ??
-        readCookie(headers.cookie, 'continuum_csrf') ??
-        readCookie(headers.cookie, 'csrf_token');
-      const csrfHeader =
-        typeof headers.csrfToken === 'string' ? headers.csrfToken.trim() : '';
-      if (!validCsrfPair(cookieToken, csrfHeader)) {
-        throw new ForbiddenException({
-          code: 'CSRF_INVALID',
-          message: 'CSRF token is missing or invalid.',
-        });
-      }
-    }
+    assertCookieAuthCsrf(
+      headers.authorization,
+      headers.cookie,
+      headers.csrfToken,
+      'CSRF_INVALID',
+    );
     return headers;
   }
 }

@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, createHash } from 'node:crypto';
-import { Logger } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import type {
   SecurityGatewayMode,
@@ -98,11 +98,19 @@ let processKey: Buffer | null = null;
 let warnedEphemeralKey = false;
 const logger = new Logger('WorkNoteSecurityPolicy');
 
-function placeholderKey(configured: string | undefined): Buffer {
+function placeholderKey(
+  configured: string | undefined,
+  nodeEnv: string,
+): Buffer {
   if (configured?.trim())
     return createHash('sha256')
       .update(`wn-sec-v1:${configured.trim()}`)
       .digest();
+  if (nodeEnv === 'production') {
+    throw new ServiceUnavailableException(
+      'WORKNOTE_SECURITY_PLACEHOLDER_KEY is required in production.',
+    );
+  }
   if (!processKey) processKey = randomBytes(32);
   if (!warnedEphemeralKey) {
     warnedEphemeralKey = true;
@@ -133,9 +141,9 @@ export function securityPolicyFromConfig(
   )
     .trim()
     .toLowerCase();
-  if (mode === 'off' && nodeEnv === 'production') {
-    throw new Error(
-      'WORKNOTE_SECURITY_GATEWAY_MODE=off is forbidden in production.',
+  if ((mode === 'off' || mode === 'monitor') && nodeEnv === 'production') {
+    throw new ServiceUnavailableException(
+      `WORKNOTE_SECURITY_GATEWAY_MODE=${mode} is forbidden in production.`,
     );
   }
   const max = Number(
@@ -156,6 +164,7 @@ export function securityPolicyFromConfig(
       .filter(Boolean),
     placeholderKey: placeholderKey(
       config.get<string>('WORKNOTE_SECURITY_PLACEHOLDER_KEY'),
+      nodeEnv,
     ),
   };
 }

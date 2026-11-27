@@ -42,10 +42,31 @@ const jiraSchemas: Record<string, Schema> = {
       organizationId: { type: Schema.Types.ObjectId, required: true },
       projectId: { type: Schema.Types.ObjectId, required: true },
       atlassianSiteId: { type: String, required: true },
-      atlassianUrl: { type: String, required: true },
+      atlassianUrl: {
+        type: String,
+        required: true,
+        validate: {
+          validator: (value: string): boolean => {
+            try {
+              const parsed = new URL(value);
+              return (
+                parsed.protocol === 'https:' &&
+                !parsed.username &&
+                !parsed.password &&
+                /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net$/i.test(
+                  parsed.hostname,
+                )
+              );
+            } catch {
+              return false;
+            }
+          },
+          message: 'atlassianUrl must be a valid HTTPS *.atlassian.net URL',
+        },
+      },
       authType: { type: String, enum: ['OAUTH2', 'API_TOKEN'], required: true },
       credentialsEncrypted: { type: String, required: true },
-      webhookSecret: { type: String, required: true },
+      webhookSecretEncrypted: { type: String, required: true },
       status: {
         type: String,
         enum: ['CONNECTED', 'EXPIRED', 'REVOKED'],

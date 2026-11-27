@@ -1,7 +1,8 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  createRedisConnection,
+  CONSUME_RATE_LIMIT_LUA,
+  createHttpRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
 @Injectable()
@@ -9,7 +10,7 @@ export class RedisService implements OnModuleDestroy {
   private readonly client: RedisConnection;
 
   constructor(config: ConfigService) {
-    this.client = createRedisConnection(config);
+    this.client = createHttpRedisConnection(config);
   }
 
   async get(key: string): Promise<string | null> {
@@ -54,15 +55,37 @@ export class RedisService implements OnModuleDestroy {
   ): Promise<boolean> {
     await this.connect();
     const count = await this.client.eval(
-      "local count = redis.call('incr', KEYS[1]); if count == 1 then redis.call('expire', KEYS[1], ARGV[1]); end; return count",
+      CONSUME_RATE_LIMIT_LUA,
       1,
       `rate:${key}`,
       windowSeconds,
     );
     return Number(count) <= limit;
   }
+  async isRateLimited(key: string, limit: number): Promise<boolean> {
+    const raw = await this.get(`rate:${key}`);
+    if (raw === null) return false;
+    const count = Number(raw);
+    return Number.isFinite(count) && count >= limit;
+  }
   clearRateLimit(key: string): Promise<void> {
     return this.delete(`rate:${key}`);
+  }
+  async storeOneTimeToken(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+  ): Promise<void> {
+    await this.set(`ott:${key}`, value, ttlSeconds);
+  }
+  async consumeOneTimeToken(key: string): Promise<string | null> {
+    await this.connect();
+    const raw = await this.client.eval(
+      "local v = redis.call('get', KEYS[1]); if v then redis.call('del', KEYS[1]); end; return v",
+      1,
+      `ott:${key}`,
+    );
+    return typeof raw === 'string' ? raw : null;
   }
   acquireLock(
     key: string,

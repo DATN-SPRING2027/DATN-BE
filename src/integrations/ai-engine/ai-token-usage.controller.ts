@@ -7,6 +7,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { resolveExpectedOrganizationHeader } from '../../common/http/organization-header';
 import { AiTokenUsageService } from './ai-token-usage.service';
 import type { AiChatRequestHeaders } from './ai-chat.types';
 import type { AiTokenUsageResponseDto } from './ai-token-usage.types';
@@ -52,7 +53,7 @@ export class AiTokenUsageController {
       authorization: headerValue(request.headers.authorization),
       cookie: headerValue(request.headers.cookie),
       csrfToken: headerValue(request.headers['x-csrf-token']),
-      organizationId: headerValue(request.headers['x-organization-id']),
+      organizationId: resolveExpectedOrganizationHeader(request.headers),
       requestId: headerValue(request.headers['x-request-id']),
     };
 

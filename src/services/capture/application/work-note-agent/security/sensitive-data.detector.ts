@@ -9,6 +9,12 @@ export type DetectorOptions = Readonly<{
   maskInternalEmail?: boolean;
   internalEmailDomains?: readonly string[];
   rules?: readonly SensitiveRule[];
+  /**
+   * Server-generated literal-protection prefixes (e.g. `__WN_PROTECTED_<nonce>_`)
+   * that are trusted during post-protection residual scans ONLY. User-supplied
+   * `__WN_PROTECTED_...__` tokens are NEVER trusted.
+   */
+  exemptProtectedPrefixes?: readonly string[];
 }>;
 
 const SEVERITY_RANK: Record<SensitiveSeverity, number> = {
@@ -17,9 +23,15 @@ const SEVERITY_RANK: Record<SensitiveSeverity, number> = {
   MEDIUM: 1,
 };
 
-/** Spans that must never be detected/masked again (our own markers). */
-const RESERVED_SPAN =
-  /\[\[WN_SEC:[A-Z_]+:[a-f0-9]{10,16}\]\]|__WN_PROTECTED_[A-Za-z0-9_]+?__/g;
+/** Spans that must never be detected/masked again (strict HMAC placeholders only). */
+const RESERVED_SPAN = /\[\[WN_SEC:[A-Z_]+:[a-f0-9]{10,16}\]\]/g;
+
+/** User-supplied lookalike protection markers that could be abused to hide secrets (SEC-BE-003). */
+const USER_PROTECTED_TOKEN = /__WN_PROTECTED_([A-Za-z0-9_]+?)__/g;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** Invisible characters commonly used to split secrets and evade detection. */
 const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF\u00AD]/g;
@@ -41,43 +53,92 @@ export function detectSensitiveData(
   const reserved: { start: number; end: number }[] = [];
   for (const match of text.matchAll(RESERVED_SPAN))
     reserved.push({ start: match.index, end: match.index + match[0].length });
+  for (const prefix of options.exemptProtectedPrefixes ?? []) {
+    if (!prefix || !/^__WN_PROTECTED_[A-Za-z0-9]+_$/.test(prefix)) continue;
+    const pattern = new RegExp(`${escapeRegExp(prefix)}\\d+__`, 'g');
+    for (const match of text.matchAll(pattern)) {
+      reserved.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
   const overlapsReserved = (start: number, end: number) =>
     reserved.some((r) => start < r.end && end > r.start);
 
   const candidates: { finding: SensitiveFinding; order: number }[] = [];
-  rules.forEach((rule, order) => {
-    const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
-    for (const match of text.matchAll(pattern)) {
-      const value = match[0];
-      if (!value.trim()) continue;
-      const start = match.index;
-      const end = start + value.length;
-      if (overlapsReserved(start, end)) continue;
-      if (
-        rule.validate &&
-        !rule.validate(value, {
-          text,
-          start,
-          end,
-          maskInternalEmail: options.maskInternalEmail ?? false,
-          internalEmailDomains: options.internalEmailDomains ?? [],
-        })
-      )
-        continue;
-      candidates.push({
-        finding: {
-          ruleId: rule.id,
-          category: rule.category,
-          severity: rule.severity,
-          action: rule.action,
-          start,
-          end,
-          value,
-        },
-        order,
-      });
-    }
-  });
+  const scanText = (
+    input: string,
+    offsetMapper?: (
+      localStart: number,
+      localEnd: number,
+    ) => {
+      start: number;
+      end: number;
+      value: string;
+    },
+  ) => {
+    rules.forEach((rule, order) => {
+      const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
+      for (const match of input.matchAll(pattern)) {
+        const rawMatch = match[0];
+        if (!rawMatch.trim()) continue;
+        const localStart = match.index;
+        const localEnd = localStart + rawMatch.length;
+        const mapped = offsetMapper
+          ? offsetMapper(localStart, localEnd)
+          : { start: localStart, end: localEnd, value: rawMatch };
+        if (!offsetMapper && overlapsReserved(mapped.start, mapped.end)) {
+          continue;
+        }
+        if (
+          rule.validate &&
+          !rule.validate(rawMatch, {
+            text: input,
+            start: localStart,
+            end: localEnd,
+            maskInternalEmail: options.maskInternalEmail ?? false,
+            internalEmailDomains: options.internalEmailDomains ?? [],
+          })
+        )
+          continue;
+        candidates.push({
+          finding: {
+            ruleId: rule.id,
+            category: rule.category,
+            severity: rule.severity,
+            action: rule.action,
+            start: mapped.start,
+            end: mapped.end,
+            value: mapped.value,
+          },
+          order,
+        });
+      }
+    });
+  };
+
+  scanText(text);
+
+  // SEC-BE-003: Unwrap non-exempt user-supplied `__WN_PROTECTED_...__` tokens
+  // so `_` word characters around embedded secrets (e.g. AWS/GitHub/OpenAI keys)
+  // cannot defeat `\b` boundaries or hide credentials from DLP scanning.
+  for (const tokenMatch of text.matchAll(USER_PROTECTED_TOKEN)) {
+    const tokenStart = tokenMatch.index;
+    const tokenEnd = tokenStart + tokenMatch[0].length;
+    if (overlapsReserved(tokenStart, tokenEnd)) continue;
+    const inner = tokenMatch[1];
+    if (!inner) continue;
+    const innerOffset = tokenStart + '__WN_PROTECTED_'.length;
+    scanText(` ${inner} `, (localStart, localEnd) => {
+      const adjustedStart = Math.max(0, localStart - 1);
+      const adjustedEnd = Math.min(inner.length, localEnd - 1);
+      const absStart = innerOffset + adjustedStart;
+      const absEnd = innerOffset + adjustedEnd;
+      return {
+        start: absStart,
+        end: absEnd,
+        value: text.slice(absStart, absEnd),
+      };
+    });
+  }
 
   const span = (f: SensitiveFinding) => f.end - f.start;
   candidates.sort(

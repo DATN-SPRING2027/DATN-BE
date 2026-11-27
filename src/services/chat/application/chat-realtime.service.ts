@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   OnModuleDestroy,
   OnModuleInit,
   Optional,
@@ -24,7 +25,31 @@ import {
 
 const presenceLeaseMs = 75_000;
 const heartbeatMs = 20_000;
-const sessionValidationMs = 60_000;
+const defaultSessionValidationMs = 20_000;
+const defaultMaxSocketsPerUser = 10;
+const defaultMaxSocketsGlobal = 10_000;
+const typingThrottleMs = 400;
+
+export type ChatWsRateLimitAction =
+  'subscribe' | 'unsubscribe' | 'presence.watch' | 'typing' | 'heartbeat';
+
+interface TokenBucketConfig {
+  capacity: number;
+  refillPerSecond: number;
+}
+
+const WS_BUCKET_CONFIG: Record<ChatWsRateLimitAction, TokenBucketConfig> = {
+  subscribe: { capacity: 20, refillPerSecond: 5 },
+  unsubscribe: { capacity: 20, refillPerSecond: 5 },
+  'presence.watch': { capacity: 5, refillPerSecond: 0.5 },
+  typing: { capacity: 10, refillPerSecond: 2.5 },
+  heartbeat: { capacity: 10, refillPerSecond: 1 },
+};
+
+interface TokenBucketState {
+  tokens: number;
+  lastRefillAt: number;
+}
 
 interface SocketSession {
   id: string;
@@ -32,8 +57,11 @@ interface SocketSession {
   credentials: ChatCredentials;
   tokenHash: string;
   expiresAt: number;
+  nextValidationAt: number;
   alive: boolean;
-  lastTypingAt: number;
+  lastTypingStartAt: number;
+  lastTypingStopAt: number;
+  buckets: Map<ChatWsRateLimitAction, TokenBucketState>;
   conversations: Set<string>;
   watchedUsers: Set<string>;
 }
@@ -54,6 +82,27 @@ interface PresenceEvent {
   isOnline: boolean;
 }
 
+interface PresenceEvictEvent {
+  type: 'presence.evict';
+  organizationId: string;
+  blockerId: string;
+  blockedUserId: string;
+}
+
+interface ConversationEvictEvent {
+  type: 'conversation.evict';
+  organizationId: string;
+  conversationId: string;
+  userIds: string[];
+}
+
+interface SessionRevokeEvent {
+  type: 'session.revoke';
+  organizationId?: string;
+  userId?: string;
+  tokenHash?: string;
+}
+
 interface NotificationSocketEvent {
   type: 'notification';
   event: 'notification.created' | 'notification.read' | 'notification.read_all';
@@ -62,17 +111,35 @@ interface NotificationSocketEvent {
   data: unknown;
 }
 
+type ChatRealtimeEvent =
+  | ConversationEvent
+  | PresenceEvent
+  | PresenceEvictEvent
+  | ConversationEvictEvent
+  | SessionRevokeEvent
+  | NotificationSocketEvent;
+
 interface SessionValidation {
   checkedAt: number;
   valid: boolean;
   pending?: Promise<boolean>;
 }
 
+function parsePositiveInt(value: unknown, fallback: number): number {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 1 ? Math.floor(num) : fallback;
+}
+
 @Injectable()
 export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ChatRealtimeService.name);
   private readonly redisPrefix: string;
   private readonly eventChannel: string;
   private readonly notificationChannel: string;
+  private readonly iamRevocationChannel: string;
+  private readonly maxSocketsPerUser: number;
+  private readonly maxSocketsGlobal: number;
+  private readonly sessionValidationMs: number;
   private readonly sessions = new Map<WebSocket, SocketSession>();
   private readonly userSockets = new Map<string, Set<WebSocket>>();
   private readonly conversationSockets = new Map<string, Set<WebSocket>>();
@@ -81,8 +148,11 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   private readonly sessionValidations = new Map<string, SessionValidation>();
   private stopSubscriber?: () => void;
   private stopNotificationSubscriber?: () => void;
+  private stopIamRevocationSubscriber?: () => void;
   private stopNotificationBus?: () => void;
-  private heartbeat?: NodeJS.Timeout;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private readonly retryTimers = new Map<string, NodeJS.Timeout>();
+  private destroyed = false;
 
   constructor(
     private readonly redis: RedisService,
@@ -91,14 +161,27 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     private readonly notificationBus?: NotificationRealtimeBus,
   ) {
-    this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
+    const bullmqPrefix = config.get<string>('BULLMQ_PREFIX') ?? 'continuum';
+    this.redisPrefix = `${bullmqPrefix}:chat`;
     this.eventChannel = `${this.redisPrefix}:events:v1`;
-    this.notificationChannel = notificationRealtimeChannel(
-      config.get<string>('BULLMQ_PREFIX') ?? 'continuum',
+    this.notificationChannel = notificationRealtimeChannel(bullmqPrefix);
+    this.iamRevocationChannel = `${bullmqPrefix}:iam:session-revoked:v1`;
+    this.maxSocketsPerUser = parsePositiveInt(
+      config.get<string | number>('CHAT_WS_MAX_SOCKETS_PER_USER'),
+      defaultMaxSocketsPerUser,
+    );
+    this.maxSocketsGlobal = parsePositiveInt(
+      config.get<string | number>('CHAT_WS_MAX_SOCKETS_GLOBAL'),
+      defaultMaxSocketsGlobal,
+    );
+    this.sessionValidationMs = parsePositiveInt(
+      config.get<string | number>('CHAT_WS_SESSION_VALIDATION_MS'),
+      defaultSessionValidationMs,
     );
   }
 
   async onModuleInit(): Promise<void> {
+    this.destroyed = false;
     const useRedis = this.config.get<string>('INFRA_ENABLED') === 'true';
     if (!useRedis) {
       const bus = this.notificationBus ?? new NotificationRealtimeBus();
@@ -114,36 +197,47 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         void this.publish(event);
       });
     } else {
-      try {
-        this.stopSubscriber = await this.redis.subscribe(
-          this.eventChannel,
-          (value) => {
-            this.receive(value);
-          },
-        );
-      } catch {
-        // Realtime pub/sub degrades gracefully when Redis is unavailable at startup.
-      }
-      try {
-        this.stopNotificationSubscriber = await this.redis.subscribe(
+      await Promise.all([
+        this.subscribeWithRetry('event', this.eventChannel, (value) => {
+          this.receive(value);
+        }),
+        this.subscribeWithRetry(
+          'notification',
           this.notificationChannel,
-          (value) => this.receiveNotification(value),
-        );
-      } catch {
-        // Notification polling remains the source of truth while Redis is unavailable.
-      }
+          (value) => {
+            this.receiveNotification(value);
+          },
+        ),
+        this.subscribeWithRetry(
+          'iam-revocation',
+          this.iamRevocationChannel,
+          (value) => {
+            this.receiveIamRevocation(value);
+          },
+        ),
+      ]);
     }
-    this.heartbeat = setInterval(() => {
-      void this.pingAndExpireSessions();
-    }, heartbeatMs);
-    this.heartbeat.unref();
+    this.scheduleHeartbeat();
   }
 
   onModuleDestroy(): void {
-    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.destroyed = true;
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    for (const timer of this.retryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.retryTimers.clear();
     this.stopSubscriber?.();
+    this.stopSubscriber = undefined;
     this.stopNotificationSubscriber?.();
+    this.stopNotificationSubscriber = undefined;
+    this.stopIamRevocationSubscriber?.();
+    this.stopIamRevocationSubscriber = undefined;
     this.stopNotificationBus?.();
+    this.stopNotificationBus = undefined;
   }
 
   async register(
@@ -152,27 +246,48 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     credentials: ChatCredentials,
     tokenHash: string,
     expiresAt: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (Date.now() >= expiresAt) {
+      socket.close(1008, 'Session expired');
+      return false;
+    }
+    if (this.sessions.size >= this.maxSocketsGlobal) {
+      this.logger.warn(
+        `Rejecting Chat WS connection: global cap (${this.maxSocketsGlobal}) reached`,
+      );
+      socket.close(1013, 'Realtime connection limit reached');
+      return false;
+    }
+    const key = this.userKey(actor.organizationId, actor.id);
+    const existingSockets = this.userSockets.get(key);
+    if (existingSockets && existingSockets.size >= this.maxSocketsPerUser) {
+      this.logger.warn(
+        `Rejecting Chat WS connection: user ${actor.id} exceeded max sockets (${this.maxSocketsPerUser})`,
+      );
+      socket.close(1008, 'Too many concurrent realtime connections');
+      return false;
+    }
+
+    const now = Date.now();
+    const initialJitter = Math.floor(Math.random() * this.sessionValidationMs);
     const session: SocketSession = {
       id: randomUUID(),
       actor,
       credentials,
       tokenHash,
       expiresAt,
+      nextValidationAt: now + initialJitter,
       alive: true,
-      lastTypingAt: 0,
+      lastTypingStartAt: 0,
+      lastTypingStopAt: 0,
+      buckets: new Map(),
       conversations: new Set(),
       watchedUsers: new Set(),
     };
     this.sessions.set(socket, session);
-    const userSockets =
-      this.userSockets.get(this.userKey(actor.organizationId, actor.id)) ??
-      new Set();
+    const userSockets = existingSockets ?? new Set<WebSocket>();
     userSockets.add(socket);
-    this.userSockets.set(
-      this.userKey(actor.organizationId, actor.id),
-      userSockets,
-    );
+    this.userSockets.set(key, userSockets);
     socket.on('pong', () => {
       session.alive = true;
       void this.renew(session);
@@ -192,10 +307,45 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         isOnline: true,
       });
     }
+    return true;
   }
 
   getActor(socket: WebSocket): ChatActor | undefined {
-    return this.sessions.get(socket)?.actor;
+    const session = this.sessions.get(socket);
+    if (!session) return undefined;
+    if (Date.now() >= session.expiresAt) {
+      socket.close(1008, 'Session expired');
+      void this.unregister(socket);
+      return undefined;
+    }
+    return session.actor;
+  }
+
+  consumeSocketRateLimit(
+    socket: WebSocket,
+    action: ChatWsRateLimitAction,
+  ): boolean {
+    const session = this.sessions.get(socket);
+    if (!session) return false;
+    const config = WS_BUCKET_CONFIG[action];
+    const now = Date.now();
+    let bucket = session.buckets.get(action);
+    if (!bucket) {
+      bucket = { tokens: config.capacity, lastRefillAt: now };
+      session.buckets.set(action, bucket);
+    } else {
+      const elapsedSeconds = Math.max(0, (now - bucket.lastRefillAt) / 1000);
+      bucket.tokens = Math.min(
+        config.capacity,
+        bucket.tokens + elapsedSeconds * config.refillPerSecond,
+      );
+      bucket.lastRefillAt = now;
+    }
+    if (bucket.tokens < 1) {
+      return false;
+    }
+    bucket.tokens -= 1;
+    return true;
   }
 
   async unregister(socket: WebSocket): Promise<void> {
@@ -255,6 +405,50 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     this.removeFromSet(this.conversationSockets, conversationId, socket);
   }
 
+  async evictBlockedPresence(
+    organizationId: string,
+    blockerId: string,
+    blockedUserId: string,
+  ): Promise<void> {
+    const event: PresenceEvictEvent = {
+      type: 'presence.evict',
+      organizationId,
+      blockerId,
+      blockedUserId,
+    };
+    this.applyPresenceEviction(event);
+    await this.publish(event);
+  }
+
+  async evictConversationMembers(
+    organizationId: string,
+    conversationId: string,
+    userIds: string[],
+  ): Promise<void> {
+    if (userIds.length === 0) return;
+    const event: ConversationEvictEvent = {
+      type: 'conversation.evict',
+      organizationId,
+      conversationId,
+      userIds,
+    };
+    this.applyConversationEviction(event);
+    await this.publish(event);
+  }
+
+  async revokeSessions(input: {
+    organizationId?: string;
+    userId?: string;
+    tokenHash?: string;
+  }): Promise<void> {
+    const event: SessionRevokeEvent = {
+      type: 'session.revoke',
+      ...input,
+    };
+    this.applySessionRevocation(event);
+    await this.publish(event);
+  }
+
   async watchPresence(socket: WebSocket, userIds: string[]) {
     const session = this.sessions.get(socket);
     if (!session) return [];
@@ -273,12 +467,14 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
       sockets.add(socket);
       this.presenceWatchers.set(watcherKey, sockets);
     }
-    const data = await Promise.all(
-      userIds.map(async (userId) => ({
-        userId,
-        isOnline: await this.isOnline(session.actor.organizationId, userId),
-      })),
+    const onlineByUser = await this.areOnlineBatch(
+      session.actor.organizationId,
+      userIds,
     );
+    const data = userIds.map((userId) => ({
+      userId,
+      isOnline: onlineByUser.get(userId) ?? false,
+    }));
     for (const presence of data) {
       this.presenceStates.set(
         this.presenceWatcherKey(session.actor.organizationId, presence.userId),
@@ -293,6 +489,35 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     return this.redis.isPresenceOnline(
       this.presenceKey(organizationId, userId),
     );
+  }
+
+  async areOnlineBatch(
+    organizationId: string,
+    userIds: string[],
+  ): Promise<Map<string, boolean>> {
+    const unique = [...new Set(userIds)];
+    const map = new Map<string, boolean>();
+    if (unique.length === 0) return map;
+    if (typeof this.redis.arePresenceOnlineBatch === 'function') {
+      const keys = unique.map((userId) =>
+        this.presenceKey(organizationId, userId),
+      );
+      const statuses = await this.redis.arePresenceOnlineBatch(keys);
+      unique.forEach((userId, index) => {
+        map.set(userId, statuses[index] ?? false);
+      });
+      return map;
+    }
+    const entries = await Promise.all(
+      unique.map(
+        async (userId) =>
+          [userId, await this.isOnline(organizationId, userId)] as const,
+      ),
+    );
+    for (const [userId, isOnline] of entries) {
+      map.set(userId, isOnline);
+    }
+    return map;
   }
 
   async publishConversationEvent(
@@ -321,9 +546,17 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     const session = this.sessions.get(socket);
     if (!session) return;
     const now = Date.now();
+    if (now >= session.expiresAt) {
+      socket.close(1008, 'Session expired');
+      void this.unregister(socket);
+      return;
+    }
     if (isTyping) {
-      if (now - session.lastTypingAt < 400) return;
-      session.lastTypingAt = now;
+      if (now - session.lastTypingStartAt < typingThrottleMs) return;
+      session.lastTypingStartAt = now;
+    } else {
+      if (now - session.lastTypingStopAt < typingThrottleMs) return;
+      session.lastTypingStopAt = now;
     }
     await this.publishConversationEvent(
       'typing',
@@ -348,23 +581,148 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     socket.send(JSON.stringify({ event, data }));
   }
 
+  private scheduleHeartbeat(): void {
+    if (this.destroyed) return;
+    const jitter = Math.floor((Math.random() - 0.5) * heartbeatMs * 0.2);
+    const delay = Math.max(5_000, heartbeatMs + jitter);
+    this.heartbeatTimer = setTimeout(() => {
+      void this.pingAndExpireSessions().finally(() => {
+        this.scheduleHeartbeat();
+      });
+    }, delay);
+    this.heartbeatTimer.unref();
+  }
+
+  private async subscribeWithRetry(
+    slot: 'event' | 'notification' | 'iam-revocation',
+    channel: string,
+    handler: (value: string) => void,
+    attempt = 0,
+  ): Promise<void> {
+    if (this.destroyed) return;
+    try {
+      const stop = await this.redis.subscribe(channel, handler, () => {
+        if (this.destroyed) return;
+        this.clearSubscriberSlot(slot);
+        this.scheduleSubscribeRetry(slot, channel, handler, 0);
+      });
+      if (this.destroyed) {
+        stop();
+        return;
+      }
+      this.setSubscriberSlot(slot, stop);
+      const existingTimer = this.retryTimers.get(slot);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        this.retryTimers.delete(slot);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Chat Redis pub/sub subscribe failed for ${channel} (attempt ${attempt + 1}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.scheduleSubscribeRetry(slot, channel, handler, attempt + 1);
+    }
+  }
+
+  private scheduleSubscribeRetry(
+    slot: 'event' | 'notification' | 'iam-revocation',
+    channel: string,
+    handler: (value: string) => void,
+    attempt: number,
+  ): void {
+    if (this.destroyed || this.retryTimers.has(slot)) return;
+    const baseDelay = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
+    const jitter = Math.floor(Math.random() * 500);
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(slot);
+      void this.subscribeWithRetry(slot, channel, handler, attempt);
+    }, baseDelay + jitter);
+    timer.unref();
+    this.retryTimers.set(slot, timer);
+  }
+
+  private setSubscriberSlot(
+    slot: 'event' | 'notification' | 'iam-revocation',
+    stop: () => void,
+  ): void {
+    if (slot === 'event') {
+      this.stopSubscriber?.();
+      this.stopSubscriber = stop;
+    } else if (slot === 'notification') {
+      this.stopNotificationSubscriber?.();
+      this.stopNotificationSubscriber = stop;
+    } else {
+      this.stopIamRevocationSubscriber?.();
+      this.stopIamRevocationSubscriber = stop;
+    }
+  }
+
+  private clearSubscriberSlot(
+    slot: 'event' | 'notification' | 'iam-revocation',
+  ): void {
+    if (slot === 'event') {
+      this.stopSubscriber = undefined;
+    } else if (slot === 'notification') {
+      this.stopNotificationSubscriber = undefined;
+    } else {
+      this.stopIamRevocationSubscriber = undefined;
+    }
+  }
+
   private async pingAndExpireSessions(): Promise<void> {
     const now = Date.now();
-    await Promise.all(
-      [...this.sessions.entries()].map(async ([socket, session]) => {
-        let revoked = false;
-        try {
-          revoked = await this.redis.isTokenRevoked(session.tokenHash);
-        } catch {
-          // Redis outages make revocation temporarily unavailable; token expiry still applies.
+    const entries = [...this.sessions.entries()];
+    let revokedByHash = new Map<string, boolean>();
+    let redisRevocationUnavailable = false;
+    if (entries.length > 0) {
+      const tokenHashes = entries.map(([, session]) => session.tokenHash);
+      try {
+        if (typeof this.redis.areTokensRevokedBatch === 'function') {
+          revokedByHash = await this.redis.areTokensRevokedBatch(tokenHashes);
+        } else {
+          const unique = [...new Set(tokenHashes)];
+          const checks = await Promise.all(
+            unique.map(
+              async (hash) =>
+                [hash, await this.redis.isTokenRevoked(hash)] as const,
+            ),
+          );
+          revokedByHash = new Map(checks);
         }
+      } catch (error) {
+        redisRevocationUnavailable = true;
+        this.logger.warn(
+          `Chat WS Redis revocation check failed; forcing IAM session revalidation: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    await Promise.all(
+      entries.map(async ([socket, session]) => {
+        const revoked = revokedByHash.get(session.tokenHash) === true;
+        const needsRevalidation =
+          redisRevocationUnavailable || now >= session.nextValidationAt;
         if (
           now >= session.expiresAt ||
           revoked ||
-          !(await this.isCurrentSession(session, now))
+          (needsRevalidation &&
+            !(await this.isCurrentSession(
+              session,
+              now,
+              redisRevocationUnavailable,
+            )))
         ) {
           socket.close(1008, 'Session expired');
+          void this.unregister(socket);
           return;
+        }
+        if (needsRevalidation) {
+          const jitter = Math.floor(Math.random() * 5_000);
+          session.nextValidationAt = now + this.sessionValidationMs + jitter;
         }
         if (!session.alive) {
           socket.terminate();
@@ -374,6 +732,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         socket.ping();
       }),
     );
+
     const activeTokens = new Set(
       [...this.sessions.values()].map((session) => session.tokenHash),
     );
@@ -387,10 +746,11 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   private async isCurrentSession(
     session: SocketSession,
     now: number,
+    force = false,
   ): Promise<boolean> {
     const cached = this.sessionValidations.get(session.tokenHash);
     if (cached?.pending) return cached.pending;
-    if (cached && now - cached.checkedAt < sessionValidationMs) {
+    if (!force && cached && now - cached.checkedAt < this.sessionValidationMs) {
       return cached.valid;
     }
     const pending = this.iam
@@ -400,7 +760,14 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
           actor.id === session.actor.id &&
           actor.organizationId === session.actor.organizationId,
       )
-      .catch(() => false);
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `Chat WS IAM session revalidation rejected/failed for user ${session.actor.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return false;
+      });
     this.sessionValidations.set(session.tokenHash, {
       checkedAt: now,
       valid: false,
@@ -424,36 +791,156 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async refreshWatchedPresence(): Promise<void> {
+    const watchedEntries = [...this.presenceWatchers.entries()];
+    if (watchedEntries.length === 0) return;
+
+    const byOrg = new Map<
+      string,
+      { watcherKey: string; userId: string; sockets: Set<WebSocket> }[]
+    >();
+    for (const [watcherKey, sockets] of watchedEntries) {
+      const [organizationId, userId] = watcherKey.split(':');
+      if (!organizationId || !userId) continue;
+      const list = byOrg.get(organizationId) ?? [];
+      list.push({ watcherKey, userId, sockets });
+      byOrg.set(organizationId, list);
+    }
+
     await Promise.all(
-      [...this.presenceWatchers.entries()].map(
-        async ([watcherKey, sockets]) => {
-          const [organizationId, userId] = watcherKey.split(':');
-          if (!organizationId || !userId) return;
-          try {
-            const isOnline = await this.isOnline(organizationId, userId);
-            if (this.presenceStates.get(watcherKey) === isOnline) return;
-            this.presenceStates.set(watcherKey, isOnline);
-            for (const socket of sockets) {
-              this.send(socket, 'presence.changed', { userId, isOnline });
+      [...byOrg.entries()].map(async ([organizationId, items]) => {
+        try {
+          const onlineByUser = await this.areOnlineBatch(
+            organizationId,
+            items.map((item) => item.userId),
+          );
+          for (const item of items) {
+            const isOnline = onlineByUser.get(item.userId) ?? false;
+            if (this.presenceStates.get(item.watcherKey) === isOnline) continue;
+            this.presenceStates.set(item.watcherKey, isOnline);
+            for (const socket of item.sockets) {
+              this.send(socket, 'presence.changed', {
+                userId: item.userId,
+                isOnline,
+              });
             }
-          } catch {
-            // A later heartbeat retries this check without changing the last known state.
           }
-        },
-      ),
+        } catch (error) {
+          this.logger.warn(
+            `Chat WS watched-presence refresh failed for org ${organizationId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }),
     );
   }
 
-  private receive(value: string): void {
-    let event: ConversationEvent | PresenceEvent | NotificationSocketEvent;
+  private applyPresenceEviction(event: PresenceEvictEvent): void {
+    const pairs: [string, string][] = [
+      [event.blockerId, event.blockedUserId],
+      [event.blockedUserId, event.blockerId],
+    ];
+    for (const [targetUserId, watcherUserId] of pairs) {
+      const watcherKey = this.presenceWatcherKey(
+        event.organizationId,
+        targetUserId,
+      );
+      const watcherSockets = this.userSockets.get(
+        this.userKey(event.organizationId, watcherUserId),
+      );
+      if (!watcherSockets) continue;
+      for (const socket of watcherSockets) {
+        const session = this.sessions.get(socket);
+        session?.watchedUsers.delete(watcherKey);
+        this.removeFromSet(this.presenceWatchers, watcherKey, socket);
+      }
+      if (!this.presenceWatchers.has(watcherKey)) {
+        this.presenceStates.delete(watcherKey);
+      }
+    }
+  }
+
+  private applyConversationEviction(event: ConversationEvictEvent): void {
+    for (const userId of event.userIds) {
+      const sockets = this.userSockets.get(
+        this.userKey(event.organizationId, userId),
+      );
+      if (!sockets) continue;
+      for (const socket of sockets) {
+        this.unsubscribeConversation(socket, event.conversationId);
+      }
+    }
+  }
+
+  private applySessionRevocation(event: SessionRevokeEvent): void {
+    if (event.tokenHash) {
+      this.sessionValidations.delete(event.tokenHash);
+    }
+    for (const [socket, session] of [...this.sessions.entries()]) {
+      const tokenMatches =
+        event.tokenHash !== undefined && session.tokenHash === event.tokenHash;
+      const userMatches =
+        event.userId !== undefined &&
+        session.actor.id === event.userId &&
+        (event.organizationId === undefined ||
+          session.actor.organizationId === event.organizationId);
+      if (tokenMatches || userMatches) {
+        this.sessionValidations.delete(session.tokenHash);
+        socket.close(1008, 'Session revoked');
+        void this.unregister(socket);
+      }
+    }
+  }
+
+  private receiveIamRevocation(value: string): void {
     try {
-      event = JSON.parse(value) as
-        ConversationEvent | PresenceEvent | NotificationSocketEvent;
+      const decoded = JSON.parse(value) as {
+        userId?: unknown;
+        organizationId?: unknown;
+        tokenHash?: unknown;
+      };
+      if (typeof decoded !== 'object' || decoded === null) return;
+      const userId =
+        typeof decoded.userId === 'string' ? decoded.userId : undefined;
+      const organizationId =
+        typeof decoded.organizationId === 'string'
+          ? decoded.organizationId
+          : undefined;
+      const tokenHash =
+        typeof decoded.tokenHash === 'string' ? decoded.tokenHash : undefined;
+      if (!userId && !tokenHash) return;
+      this.applySessionRevocation({
+        type: 'session.revoke',
+        ...(userId ? { userId } : {}),
+        ...(organizationId ? { organizationId } : {}),
+        ...(tokenHash ? { tokenHash } : {}),
+      });
+    } catch {
+      // Ignore malformed revocation payloads
+    }
+  }
+
+  private receive(value: string): void {
+    let event: ChatRealtimeEvent;
+    try {
+      event = JSON.parse(value) as ChatRealtimeEvent;
     } catch {
       return;
     }
     if (event.type === 'notification') {
       this.deliverNotificationEvent(event);
+      return;
+    }
+    if (event.type === 'presence.evict') {
+      this.applyPresenceEviction(event);
+      return;
+    }
+    if (event.type === 'conversation.evict') {
+      this.applyConversationEviction(event);
+      return;
+    }
+    if (event.type === 'session.revoke') {
+      this.applySessionRevocation(event);
       return;
     }
     if (event.type === 'presence') {
@@ -501,16 +988,23 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private deliverNotificationEvent(event: NotificationSocketEvent): void {
-    if (!Array.isArray(event.recipientIds)) return;
-    const recipientSet = new Set(event.recipientIds);
-    for (const [socket, session] of this.sessions.entries()) {
-      if (!recipientSet.has(session.actor.id)) continue;
-      if (
-        event.organizationId !== null &&
-        event.organizationId !== session.actor.organizationId
-      )
-        continue;
-      this.send(socket, event.event, event.data);
+    // Strictly require matching non-null organizationId (never broadcast null-org across orgs)
+    // and use the O(1) userSockets index instead of scanning all connected sockets.
+    if (
+      typeof event.organizationId !== 'string' ||
+      event.organizationId.trim().length === 0 ||
+      !Array.isArray(event.recipientIds)
+    ) {
+      return;
+    }
+    for (const recipientId of new Set(event.recipientIds)) {
+      const sockets = this.userSockets.get(
+        this.userKey(event.organizationId, recipientId),
+      );
+      if (!sockets) continue;
+      for (const socket of sockets) {
+        this.send(socket, event.event, event.data);
+      }
     }
   }
 
@@ -532,9 +1026,9 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
       const traceCarrier: Record<string, string> = {};
       if (carrier && typeof carrier === 'object') {
         for (const key of ['traceparent', 'tracestate'] as const) {
-          const value = carrier[key];
-          if (typeof value === 'string' && value.length <= 512) {
-            traceCarrier[key] = value;
+          const val = carrier[key];
+          if (typeof val === 'string' && val.length <= 512) {
+            traceCarrier[key] = val;
           }
         }
       }
@@ -567,11 +1061,8 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         };
         if (
           event.recipientIds.length > 0 &&
-          [
-            'notification.created',
-            'notification.read',
-            'notification.read_all',
-          ].includes(event.event)
+          typeof event.organizationId === 'string' &&
+          event.organizationId.trim().length > 0
         ) {
           trace.getTracer('continuum-notifications').startActiveSpan(
             'notification.realtime.consume',
@@ -611,16 +1102,24 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async publish(
-    event: ConversationEvent | PresenceEvent | NotificationSocketEvent,
-  ): Promise<void> {
-    try {
-      await this.redis.publish(this.eventChannel, JSON.stringify(event));
-    } catch {
-      if (event.type === 'notification' && this.stopSubscriber) {
-        this.deliverNotificationEvent(event);
+  private async publish(event: ChatRealtimeEvent): Promise<void> {
+    const serialized = JSON.stringify(event);
+    if (!this.stopSubscriber) {
+      // Deliver locally while Redis subscriber is offline/reconnecting.
+      if (event.type !== 'notification') {
+        this.receive(serialized);
       }
-      // Persisted messages remain readable by cursor after a missed realtime event.
+      try {
+        await this.redis.publish(this.eventChannel, serialized);
+      } catch {
+        // Local delivery already ran; cross-replica fanout resumes once Redis recovers.
+      }
+      return;
+    }
+    try {
+      await this.redis.publish(this.eventChannel, serialized);
+    } catch {
+      this.receive(serialized);
     }
   }
 

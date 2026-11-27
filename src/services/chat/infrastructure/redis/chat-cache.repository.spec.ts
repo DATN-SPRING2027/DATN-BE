@@ -39,6 +39,7 @@ function fixture() {
   } as unknown as ChatRepository;
   return {
     cached: cachedChatRepository(repository, redis, 'test'),
+    redis,
     isMember,
     listMessages,
     setPreferences,
@@ -68,4 +69,20 @@ it('isolates users, preserves history across preference writes and invalidates i
   await cached.setReaction(actor, 'conversation', 'message', '👍', true);
   await cached.listMessages(actor, 'conversation', 10);
   expect(listMessages).toHaveBeenCalledTimes(3);
+});
+it('degrades softly to MongoDB when Redis get/set/increment fail (SEC-BE-012)', async () => {
+  const { cached, redis, listMessages, setPreferences } = fixture();
+  (redis.get as jest.Mock).mockRejectedValue(new Error('ECONNREFUSED'));
+  (redis.set as jest.Mock).mockRejectedValue(new Error('ECONNREFUSED'));
+  (redis.increment as jest.Mock).mockRejectedValue(new Error('ECONNREFUSED'));
+
+  const page = await cached.listMessages(actor, 'conversation', 10);
+  expect(page.data).toHaveLength(1);
+  expect(listMessages).toHaveBeenCalledTimes(1);
+
+  const pref = await cached.setPreferences(actor, 'conversation', {
+    isPinned: true,
+  });
+  expect(pref).toEqual({ isPinned: true });
+  expect(setPreferences).toHaveBeenCalledTimes(1);
 });

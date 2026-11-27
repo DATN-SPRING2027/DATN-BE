@@ -1,7 +1,7 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import {
   mkdir,
   open,
@@ -14,7 +14,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
-import { R2Storage } from './r2.storage';
+import { Readable } from 'node:stream';
+import { R2Storage, type R2UploadUrlOptions } from './r2.storage';
 
 const PROD_VAULT_MOUNT_DIR = '/var/lib/continuum/vault';
 
@@ -45,9 +46,19 @@ export class ProjectDocumentStorage {
       config.get<string>('WORK_NOTE_LOCAL_STORAGE_DIR') ||
       config.get<string>('LOCAL_STORAGE_DIR');
     this.localRoot = resolve(configuredDir || resolveDefaultVaultRoot());
-    // Hardcoded enterprise policy: always store in the dedicated Local Enterprise Vault
-    // across both LOCAL and PROD environments without requiring .env overrides.
-    this.forceLocal = true;
+    // BE-DATA-002: Env-driven storage driver selection. Uses R2/S3 automatically
+    // when R2 credentials are configured unless explicitly opted into local mode
+    // via STORAGE_FORCE_LOCAL=true or STORAGE_MODE=local (falls back cleanly to
+    // Local Vault when R2 credentials are absent for local dev).
+    const storageMode = String(config.get<string>('STORAGE_MODE') ?? '')
+      .trim()
+      .toLowerCase();
+    const forceLocalEnv = String(
+      config.get<string>('STORAGE_FORCE_LOCAL') ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    this.forceLocal = forceLocalEnv === 'true' || storageMode === 'local';
     this.localDisabled =
       String(config.get<string>('LOCAL_STORAGE_DISABLED') ?? '')
         .trim()
@@ -164,6 +175,24 @@ export class ProjectDocumentStorage {
     }
   }
 
+  async getStream(key: string): Promise<Readable> {
+    this.validateKey(key);
+    if (!this.useLocal()) {
+      if (typeof this.r2.getObjectStream === 'function') {
+        return this.r2.getObjectStream(key);
+      }
+      const bytes = await this.r2.getObject(key);
+      return Readable.from([bytes]);
+    }
+    const path = this.localPath(key);
+    const info = await stat(path).catch(() => null);
+    if (info) {
+      return createReadStream(path);
+    }
+    const bytes = await this.get(key);
+    return Readable.from([bytes]);
+  }
+
   async delete(key: string): Promise<void> {
     this.validateKey(key);
     if (!this.useLocal()) return this.r2.deleteObject(key);
@@ -203,6 +232,7 @@ export class ProjectDocumentStorage {
     key: string,
     contentType: string,
     expiresInSeconds = 900,
+    options?: R2UploadUrlOptions,
   ): Promise<string> {
     this.validateKey(key);
     if (!this.isDirectCloudEnabled()) {
@@ -211,7 +241,7 @@ export class ProjectDocumentStorage {
         message: 'Direct cloud object upload is not configured.',
       });
     }
-    return this.r2.createUploadUrl(key, contentType, expiresInSeconds);
+    return this.r2.createUploadUrl(key, contentType, expiresInSeconds, options);
   }
 
   async createDirectDownloadUrl(

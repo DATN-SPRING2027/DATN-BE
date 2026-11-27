@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
   NotFoundException,
@@ -12,6 +13,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { resolveExpectedOrganizationHeader } from '../../../common/http/organization-header';
+import { CsrfGuard } from '../../../common/security/csrf';
 import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import type { AuthenticatedIdentity } from '../application/authentication/authentication.application.service';
 import { ProjectService } from '../application/projects/project.service';
@@ -195,7 +198,7 @@ export class ProjectController {
   ) {}
 
   @Post()
-  @UseGuards(ProjectCreateAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectCreateAuthorizationGuard)
   async create(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -204,7 +207,23 @@ export class ProjectController {
   ) {
     response.setHeader('Cache-Control', 'no-store');
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
-    return this.projects.create(actor, createInput(body));
+    const input = createInput(body);
+    // SEC-AUTH-012: Only Org ADMIN may create PUBLIC projects directly or appoint third-party leaders.
+    const isOrgAdmin =
+      Array.isArray(actor.roles) && actor.roles.includes('ADMIN');
+    if (!isOrgAdmin) {
+      const thirdPartyLeaders = (input.leaderUserIds ?? []).filter(
+        (id) => id.toLowerCase() !== actor.id.toLowerCase(),
+      );
+      if (input.visibility === 'PUBLIC' || thirdPartyLeaders.length > 0) {
+        throw new ForbiddenException({
+          code: 'PROJECT_CREATE_PRIVILEGED_FIELD_FORBIDDEN',
+          message:
+            'Only Organization Admins can create PUBLIC projects or appoint third-party leaders.',
+        });
+      }
+    }
+    return this.projects.create(actor, input);
   }
 
   @Get()
@@ -214,12 +233,18 @@ export class ProjectController {
     @Headers('x-organization-id') headerOrganizationId: string | undefined,
     @Query() query: Record<string, unknown>,
     @Res({ passthrough: true }) response: Response,
+    @Headers('x-expected-organization-id')
+    expectedOrganizationId?: string,
   ) {
     response.setHeader('Cache-Control', 'no-store');
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    const resolvedOrgHeader = resolveExpectedOrganizationHeader({
+      'x-organization-id': headerOrganizationId,
+      'x-expected-organization-id': expectedOrganizationId,
+    });
     assertTrustedOrganization(
       actor,
-      headerOrganizationId,
+      resolvedOrgHeader,
       query.organizationId,
       false,
     );
@@ -244,12 +269,18 @@ export class ProjectController {
     @Headers('x-organization-id') headerOrganizationId: string | undefined,
     @Query() query: Record<string, unknown>,
     @Res({ passthrough: true }) response: Response,
+    @Headers('x-expected-organization-id')
+    expectedOrganizationId?: string,
   ) {
     response.setHeader('Cache-Control', 'no-store');
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    const resolvedOrgHeader = resolveExpectedOrganizationHeader({
+      'x-organization-id': headerOrganizationId,
+      'x-expected-organization-id': expectedOrganizationId,
+    });
     assertTrustedOrganization(
       actor,
-      headerOrganizationId,
+      resolvedOrgHeader,
       query.organizationId,
       false,
     );
@@ -273,12 +304,18 @@ export class ProjectController {
     @Query('organizationId') queryOrganizationId: unknown,
     @Param('projectId') projectId: string,
     @Res({ passthrough: true }) response: Response,
+    @Headers('x-expected-organization-id')
+    expectedOrganizationId?: string,
   ) {
     response.setHeader('Cache-Control', 'no-store');
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
+    const resolvedOrgHeader = resolveExpectedOrganizationHeader({
+      'x-organization-id': headerOrganizationId,
+      'x-expected-organization-id': expectedOrganizationId,
+    });
     assertTrustedOrganization(
       actor,
-      headerOrganizationId,
+      resolvedOrgHeader,
       queryOrganizationId,
       true,
     );

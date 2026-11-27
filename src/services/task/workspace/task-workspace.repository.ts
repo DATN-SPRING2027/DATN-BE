@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   OnModuleInit,
   Optional,
@@ -65,6 +66,7 @@ class SprintRolloverConflictError extends Error {
 export interface ListTasksFilter {
   organizationId: string;
   projectId?: string;
+  projectIds?: string[];
   limit: number;
   afterId?: string;
   dateCursor?: { dueDate: Date; id: string };
@@ -98,6 +100,7 @@ export interface DeadlineNotificationTaskCursor {
 
 @Injectable()
 export class TaskWorkspaceRepository implements OnModuleInit {
+  private readonly logger = new Logger(TaskWorkspaceRepository.name);
   private indexesEnsured = false;
 
   constructor(
@@ -168,6 +171,12 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       }
 
       if (!matched) {
+        if (spec.optionalAdditive) {
+          this.logger.warn(
+            `Additive index ${spec.name} is not yet present on ${collection.collectionName}; falling back to existing indexes until the audit-remediation index migration runs.`,
+          );
+          continue;
+        }
         throw new Error(
           `Index ${spec.name} is missing on ${collection.collectionName}; run the workspace index migration before starting the API.`,
         );
@@ -491,6 +500,16 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     };
     if (filter.projectId) {
       query.projectId = new Types.ObjectId(filter.projectId);
+    } else if (filter.projectIds) {
+      if (filter.projectIds.length === 0) {
+        return {
+          items: [],
+          isDateRange: Boolean(filter.dueFrom || filter.dueTo),
+        };
+      }
+      query.projectId = {
+        $in: filter.projectIds.map((id) => new Types.ObjectId(id)),
+      };
     }
     if (filter.statuses && filter.statuses.length > 0) {
       query.status =
@@ -579,9 +598,10 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       query.$and = andClauses;
     }
 
+    // BE-PERF-010: Omit heavy description/steps fields on list views.
     let cursor = this.db
       .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
-      .find(query)
+      .find(query, { projection: { description: 0, steps: 0 } })
       .sort(isDateRange ? { dueDate: 1, _id: 1 } : { _id: 1 })
       .limit(filter.limit);
 
@@ -730,19 +750,22 @@ export class TaskWorkspaceRepository implements OnModuleInit {
   }
 
   private async verifyParentTaskInSession(
+    orgObjectId: Types.ObjectId,
     projectObjectId: Types.ObjectId,
     parentObjectId: Types.ObjectId,
     session?: mongoose.mongo.ClientSession,
   ): Promise<void> {
-    const parentTask = await this.db
-      .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
-      .findOne(
-        {
-          _id: parentObjectId,
-          projectId: projectObjectId,
-        },
-        session ? { session } : {},
-      );
+    const tasks = this.db.collection<WorkspaceTaskDocument>(
+      WORKSPACE_TASKS_COLLECTION,
+    );
+    const parentTask = await tasks.findOne(
+      {
+        _id: parentObjectId,
+        organizationId: orgObjectId,
+        projectId: projectObjectId,
+      },
+      session ? { session } : {},
+    );
     if (!parentTask) {
       throw new NotFoundException({
         code: 'TASK_NOT_FOUND',
@@ -760,6 +783,75 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         code: 'PARENT_TASK_CANCELLED',
         message: 'Cannot attach a subtask to a cancelled parent task.',
       });
+    }
+    // BE-DATA-005: Acquire a transactional write-conflict fence on the parent task
+    // without incrementing its ETag version so concurrent 2-cycle/depth-2/cancel races serialize.
+    if (session && typeof tasks.findOneAndUpdate === 'function') {
+      const fenced = await tasks.findOneAndUpdate(
+        {
+          _id: parentObjectId,
+          organizationId: orgObjectId,
+          projectId: projectObjectId,
+          parentId: null,
+          status: { $ne: 'CANCELLED' },
+        },
+        { $set: { updatedAt: new Date() } },
+        { session, returnDocument: 'after' },
+      );
+      if (!fenced) {
+        throw new UnprocessableEntityException({
+          code: 'PARENT_TASK_CANCELLED',
+          message: 'Parent task state changed concurrently.',
+        });
+      }
+    }
+  }
+
+  /**
+   * BE-DATA-005: Verify sprint is not COMPLETED inside the transaction and
+   * serialize against concurrent completeProjectSprint via a lightweight counter fence
+   * (without modifying sprint.version ETag).
+   */
+  private async fenceOpenSprintInSession(
+    orgObjectId: Types.ObjectId,
+    projectObjectId: Types.ObjectId,
+    sprintObjectId: Types.ObjectId,
+    session?: mongoose.mongo.ClientSession,
+  ): Promise<void> {
+    const sprints = this.db.collection<WorkspaceProjectSprintDocument>(
+      WORKSPACE_PROJECT_SPRINTS_COLLECTION,
+    );
+    const sprint = await sprints.findOne(
+      {
+        _id: sprintObjectId,
+        organizationId: orgObjectId,
+        projectId: projectObjectId,
+      },
+      session ? { session } : {},
+    );
+    if (!sprint) {
+      throw new NotFoundException({
+        code: 'SPRINT_NOT_FOUND',
+        message: 'Sprint not found in this project.',
+      });
+    }
+    if (sprint.status === 'COMPLETED') {
+      throw new UnprocessableEntityException({
+        code: 'SPRINT_COMPLETED_IMMUTABLE',
+        message: 'Cannot assign tasks to a completed sprint.',
+      });
+    }
+    if (session) {
+      const counters = this.db.collection<{ _id: Types.ObjectId; seq: number }>(
+        WORKSPACE_TASK_COUNTERS_COLLECTION,
+      );
+      if (typeof counters?.findOneAndUpdate === 'function') {
+        await counters.findOneAndUpdate(
+          { _id: sprintObjectId },
+          { $inc: { seq: 1 } },
+          { upsert: true, session },
+        );
+      }
     }
   }
 
@@ -814,8 +906,17 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
       if (input.parentId) {
         await this.verifyParentTaskInSession(
+          orgObjectId,
           projectObjectId,
           new Types.ObjectId(input.parentId),
+          session,
+        );
+      }
+      if (input.sprintId) {
+        await this.fenceOpenSprintInSession(
+          orgObjectId,
+          projectObjectId,
+          new Types.ObjectId(input.sprintId),
           session,
         );
       }
@@ -937,6 +1038,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       if (input.updates.parentId) {
         const childCount = await tasks.countDocuments(
           {
+            organizationId: orgObjectId,
             projectId: projectObjectId,
             parentId: taskObjectId,
           },
@@ -950,22 +1052,32 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           });
         }
         await this.verifyParentTaskInSession(
+          orgObjectId,
           projectObjectId,
           input.updates.parentId,
           session,
         );
       }
+      if (input.updates.sprintId) {
+        await this.fenceOpenSprintInSession(
+          orgObjectId,
+          projectObjectId,
+          input.updates.sprintId,
+          session,
+        );
+      }
 
+      // SEC-BE-010: Include organizationId in mutation filter and never overwrite it via $set.
       const updated = await tasks.findOneAndUpdate(
         {
           _id: taskObjectId,
+          organizationId: orgObjectId,
           projectId: projectObjectId,
           version: input.expectedVersion,
         },
         {
           $set: {
             ...input.updates,
-            organizationId: orgObjectId,
             updatedAt: now,
           },
           $unset: { subtaskCounts: '' },
@@ -979,7 +1091,11 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
       if (!updated) {
         const existing = await tasks.findOne(
-          { _id: taskObjectId, projectId: projectObjectId },
+          {
+            _id: taskObjectId,
+            organizationId: orgObjectId,
+            projectId: projectObjectId,
+          },
           session ? { session } : {},
         );
         if (!existing) return { kind: 'NOT_FOUND' };
@@ -1064,9 +1180,11 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       const completedAt = input.toStatus === 'DONE' ? now : null;
       const nextVersion = input.expectedVersion + 1;
 
+      // SEC-BE-010: Include organizationId in filter predicate and never overwrite it via $set.
       const updated = await tasks.findOneAndUpdate(
         {
           _id: taskObjectId,
+          organizationId: orgObjectId,
           projectId: projectObjectId,
           status: input.fromStatus,
           version: input.expectedVersion,
@@ -1075,7 +1193,6 @@ export class TaskWorkspaceRepository implements OnModuleInit {
           $set: {
             status: input.toStatus,
             completedAt,
-            organizationId: orgObjectId,
             updatedAt: now,
           },
           $unset: { subtaskCounts: '' },
@@ -1089,7 +1206,11 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
       if (!updated) {
         const existing = await tasks.findOne(
-          { _id: taskObjectId, projectId: projectObjectId },
+          {
+            _id: taskObjectId,
+            organizationId: orgObjectId,
+            projectId: projectObjectId,
+          },
           session ? { session } : {},
         );
         if (!existing) return { kind: 'NOT_FOUND' };
@@ -1420,6 +1541,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       )
       .find(filter)
       .sort({ createdAt: -1, _id: -1 })
+      .limit(200)
       .toArray();
 
     if (sprints.length === 0) return [];
@@ -1743,6 +1865,7 @@ export class TaskWorkspaceRepository implements OnModuleInit {
         const updatedSprint = await sprints.findOneAndUpdate(
           {
             _id: sprintObjectId,
+            organizationId: orgObjectId,
             projectId: projectObjectId,
             status: 'ACTIVE',
             version: input.expectedVersion,
@@ -1762,6 +1885,21 @@ export class TaskWorkspaceRepository implements OnModuleInit {
 
         if (!updatedSprint) {
           return { kind: 'VERSION_CONFLICT', currentVersion: existing.version };
+        }
+
+        // BE-DATA-005: Fence the sprint counter so concurrent task creates/updates into this sprint serialize.
+        if (session) {
+          const counters = this.db.collection<{
+            _id: Types.ObjectId;
+            seq: number;
+          }>(WORKSPACE_TASK_COUNTERS_COLLECTION);
+          if (typeof counters?.findOneAndUpdate === 'function') {
+            await counters.findOneAndUpdate(
+              { _id: sprintObjectId },
+              { $inc: { seq: 1 } },
+              { upsert: true, session },
+            );
+          }
         }
 
         // Read all incomplete tasks in this sprint so we can bump each task's version
@@ -1940,60 +2078,82 @@ export class TaskWorkspaceRepository implements OnModuleInit {
       'BLOCKED',
     ];
 
-    const [
-      byStatusRows,
-      byPriorityTypeRows,
-      byAssigneeRows,
-      overdue,
-      dueNext7Days,
-      completedLast7Days,
-      createdLast7Days,
-    ] = await Promise.all([
-      tasks
-        .aggregate<{ _id: string; n: number }>([
-          { $match: baseMatch },
-          { $group: { _id: '$status', n: { $sum: 1 } } },
-        ])
-        .toArray(),
-      tasks
-        .aggregate<{ _id: { p: string; t: string }; n: number }>([
-          { $match: baseMatch },
-          {
-            $group: {
-              _id: { p: '$priority', t: '$type' },
-              n: { $sum: 1 },
-            },
+    // BE-PERF-010: Collapse 7 summary queries into a single $facet aggregation.
+    interface ProjectSummaryFacet {
+      byStatus: Array<{ _id: string; n: number }>;
+      byPriorityType: Array<{ _id: { p: string; t: string }; n: number }>;
+      byAssignee: Array<{ _id: Types.ObjectId | null; n: number }>;
+      overdue: Array<{ n: number }>;
+      dueNext7Days: Array<{ n: number }>;
+      completedLast7Days: Array<{ n: number }>;
+      createdLast7Days: Array<{ n: number }>;
+    }
+    const [facet] = await tasks
+      .aggregate<ProjectSummaryFacet>([
+        { $match: baseMatch },
+        {
+          $facet: {
+            byStatus: [{ $group: { _id: '$status', n: { $sum: 1 } } }],
+            byPriorityType: [
+              {
+                $group: {
+                  _id: { p: '$priority', t: '$type' },
+                  n: { $sum: 1 },
+                },
+              },
+            ],
+            byAssignee: [
+              { $group: { _id: '$assigneeId', n: { $sum: 1 } } },
+              { $sort: { n: -1, _id: 1 } },
+              { $limit: 50 },
+            ],
+            overdue: [
+              {
+                $match: {
+                  status: { $in: openStatuses },
+                  dueDate: { $lt: asOf },
+                },
+              },
+              { $count: 'n' },
+            ],
+            dueNext7Days: [
+              {
+                $match: {
+                  status: { $in: openStatuses },
+                  dueDate: { $gte: asOf, $lt: next7Days },
+                },
+              },
+              { $count: 'n' },
+            ],
+            completedLast7Days: [
+              {
+                $match: {
+                  status: 'DONE',
+                  completedAt: { $gte: prev7Days, $lte: asOf },
+                },
+              },
+              { $count: 'n' },
+            ],
+            createdLast7Days: [
+              {
+                $match: {
+                  createdAt: { $gte: prev7Days, $lte: asOf },
+                },
+              },
+              { $count: 'n' },
+            ],
           },
-        ])
-        .toArray(),
-      tasks
-        .aggregate<{ _id: Types.ObjectId | null; n: number }>([
-          { $match: baseMatch },
-          { $group: { _id: '$assigneeId', n: { $sum: 1 } } },
-          { $sort: { n: -1, _id: 1 } },
-          { $limit: 50 },
-        ])
-        .toArray(),
-      tasks.countDocuments({
-        ...baseMatch,
-        status: { $in: openStatuses },
-        dueDate: { $lt: asOf },
-      }),
-      tasks.countDocuments({
-        ...baseMatch,
-        status: { $in: openStatuses },
-        dueDate: { $gte: asOf, $lt: next7Days },
-      }),
-      tasks.countDocuments({
-        ...baseMatch,
-        status: 'DONE',
-        completedAt: { $gte: prev7Days, $lte: asOf },
-      }),
-      tasks.countDocuments({
-        ...baseMatch,
-        createdAt: { $gte: prev7Days, $lte: asOf },
-      }),
-    ]);
+        },
+      ])
+      .toArray();
+
+    const byStatusRows = facet?.byStatus ?? [];
+    const byPriorityTypeRows = facet?.byPriorityType ?? [];
+    const byAssigneeRows = facet?.byAssignee ?? [];
+    const overdue = facet?.overdue[0]?.n ?? 0;
+    const dueNext7Days = facet?.dueNext7Days[0]?.n ?? 0;
+    const completedLast7Days = facet?.completedLast7Days[0]?.n ?? 0;
+    const createdLast7Days = facet?.createdLast7Days[0]?.n ?? 0;
 
     let total = 0;
     const byStatus = byStatusRows.map((row) => {
@@ -2043,7 +2203,11 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     organizationId: string,
     asOf: Date,
     pinSnapshot = false,
+    activeProjectIds?: string[],
   ) {
+    if (activeProjectIds && activeProjectIds.length === 0) {
+      return { statusBuckets: [], overdueBuckets: [] };
+    }
     const tasks = this.db.collection<WorkspaceTaskDocument>(
       WORKSPACE_TASKS_COLLECTION,
     );
@@ -2056,6 +2220,13 @@ export class TaskWorkspaceRepository implements OnModuleInit {
     ];
     const baseMatch: Record<string, unknown> = {
       organizationId: orgObjectId,
+      ...(activeProjectIds
+        ? {
+            projectId: {
+              $in: activeProjectIds.map((id) => new Types.ObjectId(id)),
+            },
+          }
+        : {}),
       ...(pinSnapshot ? { createdAt: { $lte: asOf } } : {}),
     };
 

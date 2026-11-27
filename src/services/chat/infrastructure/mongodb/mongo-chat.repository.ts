@@ -5,7 +5,7 @@ import {
   NotFoundException,
   Injectable,
 } from '@nestjs/common';
-import type { Connection, Model, PipelineStage } from 'mongoose';
+import type { ClientSession, Connection, Model, PipelineStage } from 'mongoose';
 import { Types } from 'mongoose';
 import {
   autocompleteClause,
@@ -140,37 +140,42 @@ function toMessage(
   actorId: string,
   replyTarget?: MessageDocument,
 ): ChatMessage {
+  const isDeleted = Boolean(message.deletedAt);
   return {
     id: String(message._id),
     conversationId: String(message.conversationId),
     senderId: message.senderId,
     senderName: message.senderName,
     senderAvatarUrl: message.senderAvatarUrl ?? null,
-    content: message.content,
+    content: isDeleted ? '' : message.content,
     createdAt: message.createdAt.toISOString(),
     editedAt: message.editedAt?.toISOString() ?? null,
     deletedAt: message.deletedAt?.toISOString() ?? null,
-    reactions: (message.reactions ?? []).map((reaction) => ({
-      emoji: reaction.emoji,
-      count: reaction.userIds.length,
-      reactedByMe: reaction.userIds.includes(actorId),
-    })),
+    reactions: isDeleted
+      ? []
+      : (message.reactions ?? []).map((reaction) => ({
+          emoji: reaction.emoji,
+          count: reaction.userIds.length,
+          reactedByMe: reaction.userIds.includes(actorId),
+        })),
     replyToMessageId: message.replyToMessageId
       ? String(message.replyToMessageId)
       : null,
     replyTo: replyTarget ? toReplyPreview(replyTarget) : null,
-    mentionUserIds: message.mentionUserIds ?? [],
-    isPinned: message.isPinned ?? false,
-    forwardedFrom: message.forwardedFrom ?? null,
-    attachments: (message.attachments ?? []).map(
-      ({ id, name, contentType, size, kind }) => ({
-        id,
-        name,
-        contentType,
-        size,
-        kind,
-      }),
-    ),
+    mentionUserIds: isDeleted ? [] : (message.mentionUserIds ?? []),
+    isPinned: isDeleted ? false : (message.isPinned ?? false),
+    forwardedFrom: isDeleted ? null : (message.forwardedFrom ?? null),
+    attachments: isDeleted
+      ? []
+      : (message.attachments ?? []).map(
+          ({ id, name, contentType, size, kind }) => ({
+            id,
+            name,
+            contentType,
+            size,
+            kind,
+          }),
+        ),
   };
 }
 
@@ -359,6 +364,7 @@ export class MongoChatRepository
           pipeline: [
             {
               $match: {
+                organizationId: new Types.ObjectId(actor.organizationId),
                 $expr: { $eq: ['$conversationId', '$$conversationId'] },
                 status: ACTIVE,
               },
@@ -397,6 +403,7 @@ export class MongoChatRepository
           pipeline: [
             {
               $match: {
+                organizationId: new Types.ObjectId(actor.organizationId),
                 $expr: {
                   $and: [
                     { $eq: ['$conversationId', '$$conversationId'] },
@@ -417,6 +424,7 @@ export class MongoChatRepository
                 },
               },
             },
+            { $limit: 100 },
             { $count: 'count' },
           ],
           as: 'unread',
@@ -652,27 +660,41 @@ export class MongoChatRepository
     title: string,
   ): Promise<string[]> {
     const id = new Types.ObjectId(conversationId);
-    await this.requireRoomOwner(actor, id);
-    await this.conversations
-      .updateOne(
-        {
-          _id: id,
-          organizationId: new Types.ObjectId(actor.organizationId),
-          type: 'ROOM',
-          status: ACTIVE,
+    const organizationId = new Types.ObjectId(actor.organizationId);
+    const session = await this.connection.startSession();
+    try {
+      await session.withTransaction(
+        async () => {
+          await this.requireRoomOwner(actor, id, session);
+          const updated = await this.conversations
+            .updateOne(
+              {
+                _id: id,
+                organizationId,
+                type: 'ROOM',
+                status: ACTIVE,
+              },
+              { $set: { title } },
+              { session },
+            )
+            .exec();
+          if (!updated.matchedCount) throw this.conversationNotFound();
+          await this.members
+            .updateMany(
+              {
+                conversationId: id,
+                organizationId,
+              },
+              { $set: { searchLabel: title } },
+              { session },
+            )
+            .exec();
         },
-        { $set: { title } },
-      )
-      .exec();
-    await this.members
-      .updateMany(
-        {
-          conversationId: id,
-          organizationId: new Types.ObjectId(actor.organizationId),
-        },
-        { $set: { searchLabel: title } },
-      )
-      .exec();
+        { writeConcern: { w: 'majority', wtimeoutMS: 5_000 } },
+      );
+    } finally {
+      await session.endSession();
+    }
     return this.memberIds(actor, conversationId);
   }
 
@@ -744,10 +766,9 @@ export class MongoChatRepository
             if (existingByUserId.get(person.id) === ACTIVE) continue;
             await this.members
               .updateOne(
-                { conversationId: id, userId: person.id },
+                { organizationId, conversationId: id, userId: person.id },
                 {
                   $set: {
-                    organizationId,
                     displayName: person.fullName,
                     searchLabel: room?.title ?? '',
                     avatarUrl: person.avatarUrl,
@@ -755,7 +776,11 @@ export class MongoChatRepository
                     status: ACTIVE,
                     joinedAt: new Date(),
                   },
-                  $setOnInsert: { conversationId: id, userId: person.id },
+                  $setOnInsert: {
+                    organizationId,
+                    conversationId: id,
+                    userId: person.id,
+                  },
                 },
                 { upsert: true, session },
               )
@@ -775,52 +800,99 @@ export class MongoChatRepository
     conversationId: string,
     userId: string,
   ): Promise<string[]> {
+    if (userId === actor.id) throw this.conversationNotFound();
     const id = new Types.ObjectId(conversationId);
-    await this.requireRoomOwner(actor, id);
-    const result = await this.members
-      .updateOne(
-        {
-          organizationId: new Types.ObjectId(actor.organizationId),
-          conversationId: id,
-          userId,
-          role: 'MEMBER',
-          status: ACTIVE,
+    const organizationId = new Types.ObjectId(actor.organizationId);
+    const session = await this.connection.startSession();
+    try {
+      await session.withTransaction(
+        async () => {
+          await this.requireRoomOwner(actor, id, session);
+          const result = await this.members
+            .updateOne(
+              {
+                organizationId,
+                conversationId: id,
+                userId,
+                role: { $in: ['MEMBER', 'MANAGER'] },
+                status: ACTIVE,
+              },
+              { $set: { status: 'LEFT' } },
+              { session },
+            )
+            .exec();
+          if (!result.modifiedCount) throw this.conversationNotFound();
+          const bumped = await this.conversations
+            .updateOne(
+              {
+                _id: id,
+                organizationId,
+                type: 'ROOM',
+                status: ACTIVE,
+              },
+              { $inc: { membershipVersion: 1 } },
+              { session },
+            )
+            .exec();
+          if (!bumped.matchedCount) throw this.conversationNotFound();
         },
-        { $set: { status: 'LEFT' } },
-      )
-      .exec();
-    if (!result.modifiedCount) throw this.conversationNotFound();
-    await this.conversations
-      .updateOne({ _id: id }, { $inc: { membershipVersion: 1 } })
-      .exec();
+        { writeConcern: { w: 'majority', wtimeoutMS: 5_000 } },
+      );
+    } finally {
+      await session.endSession();
+    }
     return [...(await this.memberIds(actor, conversationId)), userId];
   }
 
   async leaveRoom(actor: ChatActor, conversationId: string): Promise<string[]> {
     const id = new Types.ObjectId(conversationId);
-    const room = await this.conversations.exists({
-      _id: id,
-      organizationId: new Types.ObjectId(actor.organizationId),
-      type: 'ROOM',
-      status: ACTIVE,
-    });
-    if (!room) throw this.conversationNotFound();
-    const result = await this.members
-      .updateOne(
-        {
-          organizationId: new Types.ObjectId(actor.organizationId),
-          conversationId: id,
-          userId: actor.id,
-          role: { $in: ['MEMBER', 'MANAGER'] },
-          status: ACTIVE,
+    const organizationId = new Types.ObjectId(actor.organizationId);
+    const session = await this.connection.startSession();
+    try {
+      await session.withTransaction(
+        async () => {
+          const room = await this.conversations
+            .exists({
+              _id: id,
+              organizationId,
+              type: 'ROOM',
+              status: ACTIVE,
+            })
+            .session(session);
+          if (!room) throw this.conversationNotFound();
+          const result = await this.members
+            .updateOne(
+              {
+                organizationId,
+                conversationId: id,
+                userId: actor.id,
+                role: { $in: ['MEMBER', 'MANAGER'] },
+                status: ACTIVE,
+              },
+              { $set: { status: 'LEFT' } },
+              { session },
+            )
+            .exec();
+          if (!result.modifiedCount) throw this.conversationNotFound();
+          const bumped = await this.conversations
+            .updateOne(
+              {
+                _id: id,
+                organizationId,
+                type: 'ROOM',
+                status: ACTIVE,
+              },
+              { $inc: { membershipVersion: 1 } },
+              { session },
+            )
+            .exec();
+          if (!bumped.matchedCount) throw this.conversationNotFound();
         },
-        { $set: { status: 'LEFT' } },
-      )
-      .exec();
-    if (!result.modifiedCount) throw this.conversationNotFound();
-    await this.conversations
-      .updateOne({ _id: id }, { $inc: { membershipVersion: 1 } })
-      .exec();
+        { writeConcern: { w: 'majority', wtimeoutMS: 5_000 } },
+      );
+    } finally {
+      await session.endSession();
+    }
     return [...(await this.memberIds(actor, conversationId)), actor.id];
   }
 
@@ -1454,7 +1526,8 @@ export class MongoChatRepository
     const messageObjectId = new Types.ObjectId(messageId);
     const organizationId = new Types.ObjectId(actor.organizationId);
     await this.requireMember(actor, conversationObjectId);
-    const message = await this.messages
+    const editedAt = new Date();
+    const previous = await this.messages
       .findOneAndUpdate(
         {
           _id: messageObjectId,
@@ -1468,14 +1541,24 @@ export class MongoChatRepository
             content,
             mentionUserIds,
             links: chatLinks(content),
-            editedAt: new Date(),
+            editedAt,
           },
         },
-        { new: true, runValidators: true },
+        { new: false, runValidators: true },
       )
       .lean()
       .exec();
-    if (!message) throw this.conversationNotFound();
+    if (!previous) throw this.conversationNotFound();
+    const previousMentions = new Set(previous.mentionUserIds ?? []);
+    const newlyMentionedUserIds = mentionUserIds.filter(
+      (id) => !previousMentions.has(id),
+    );
+    const message: MessageDocument = {
+      ...previous,
+      content,
+      mentionUserIds,
+      editedAt,
+    };
     await this.conversations
       .updateOne(
         {
@@ -1489,6 +1572,7 @@ export class MongoChatRepository
     return {
       message: await this.mapMessage(actor, message),
       recipientIds: await this.memberIds(actor, conversationId),
+      newlyMentionedUserIds,
     };
   }
 
@@ -1522,7 +1606,17 @@ export class MongoChatRepository
               senderId: actor.id,
               deletedAt: null,
             },
-            { $set: { content: '', deletedAt: new Date(), reactions: [] } },
+            {
+              $set: {
+                content: '',
+                deletedAt: new Date(),
+                reactions: [],
+                attachments: [],
+                mentionUserIds: [],
+                links: [],
+                isPinned: false,
+              },
+            },
             { new: true },
           )
           .lean()
@@ -1767,6 +1861,26 @@ export class MongoChatRepository
         contacts.add(targetId);
       }
     }
+    if (contacts.size > 0 && this.connection.db) {
+      const contactList = [...contacts];
+      const blocks = await this.connection.db
+        .collection('chat_blocks')
+        .find({
+          organizationId: new Types.ObjectId(actor.organizationId),
+          $or: [
+            { userId: actor.id, targetId: { $in: contactList } },
+            { targetId: actor.id, userId: { $in: contactList } },
+          ],
+        })
+        .toArray();
+      for (const block of blocks) {
+        const blockedPeer =
+          String(block.userId).toLowerCase() === actorId
+            ? String(block.targetId).toLowerCase()
+            : String(block.userId).toLowerCase();
+        contacts.delete(blockedPeer);
+      }
+    }
     return contacts;
   }
 
@@ -1779,7 +1893,7 @@ export class MongoChatRepository
   ): Promise<void> {
     await this.members
       .updateOne(
-        { conversationId, userId: person.id },
+        { organizationId, conversationId, userId: person.id },
         {
           $setOnInsert: {
             searchLabel,
@@ -1860,21 +1974,28 @@ export class MongoChatRepository
   private async requireRoomOwner(
     actor: ChatActor,
     conversationId: Types.ObjectId,
+    session?: ClientSession,
   ): Promise<void> {
     const organizationId = new Types.ObjectId(actor.organizationId);
-    const conversation = await this.conversations.exists({
+    const conversationQuery = this.conversations.exists({
       _id: conversationId,
       organizationId,
       type: 'ROOM',
       status: ACTIVE,
     });
-    const owner = await this.members.exists({
+    const ownerQuery = this.members.exists({
       organizationId,
       conversationId,
       userId: actor.id,
       role: { $in: ['OWNER', 'MANAGER'] },
       status: ACTIVE,
     });
+    const conversation = session
+      ? await conversationQuery.session(session)
+      : await conversationQuery;
+    const owner = session
+      ? await ownerQuery.session(session)
+      : await ownerQuery;
     if (!conversation || !owner) throw this.conversationNotFound();
   }
 

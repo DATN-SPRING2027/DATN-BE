@@ -13,7 +13,29 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { ChatFeaturesService } from '../application/chat-features.service';
+import type { ChatCredentials } from '../application/chat-iam.client';
 import { ChatTrafficGuard } from './chat-traffic.guard';
+
+function readHeader(request: Request, name: string): string | undefined {
+  const value = request.headers[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function requestCredentials(request: Request): ChatCredentials {
+  const authorization = request.headers.authorization;
+  const cookie = request.headers.cookie;
+  const organizationId = readHeader(request, 'x-organization-id');
+  const expectedOrganizationId = readHeader(
+    request,
+    'x-expected-organization-id',
+  );
+  return {
+    ...(authorization ? { authorization } : {}),
+    ...(cookie ? { cookie } : {}),
+    ...(organizationId ? { organizationId } : {}),
+    ...(expectedOrganizationId ? { expectedOrganizationId } : {}),
+  };
+}
 
 @Controller('chat')
 @UseGuards(ChatTrafficGuard)
@@ -27,13 +49,11 @@ export class ChatFeaturesController {
     @Param('conversationId') conversationId: string,
   ) {
     return this.service.conversation(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
     );
   }
+
   @Get('conversations/:conversationId/preferences')
   @Header('Cache-Control', 'no-store')
   preferences0(
@@ -41,10 +61,7 @@ export class ChatFeaturesController {
     @Param('conversationId') conversationId: string,
   ) {
     return this.service.preferences(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
     );
   }
@@ -57,10 +74,7 @@ export class ChatFeaturesController {
     @Body() body: unknown,
   ) {
     return this.service.preferences(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -72,13 +86,7 @@ export class ChatFeaturesController {
     @Req() request: Request,
     @Param('conversationId') conversationId: string,
   ) {
-    return this.service.draft(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
-      conversationId,
-    );
+    return this.service.draft(requestCredentials(request), conversationId);
   }
 
   @Put('conversations/:conversationId/draft')
@@ -89,10 +97,7 @@ export class ChatFeaturesController {
     @Body() body: unknown,
   ) {
     return this.service.draft(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -106,10 +111,7 @@ export class ChatFeaturesController {
     @Body() body: unknown,
   ) {
     return this.service.ownership(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -124,10 +126,7 @@ export class ChatFeaturesController {
     @Body() body: unknown,
   ) {
     return this.service.manager(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       userId,
       body,
@@ -137,13 +136,7 @@ export class ChatFeaturesController {
   @Get('messages/search')
   @Header('Cache-Control', 'no-store')
   search6(@Req() request: Request, @Query() query: Record<string, unknown>) {
-    return this.service.search(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
-      query,
-    );
+    return this.service.search(requestCredentials(request), query);
   }
 
   @Get('conversations/:conversationId/library')
@@ -154,10 +147,7 @@ export class ChatFeaturesController {
     @Query() query: Record<string, unknown>,
   ) {
     return this.service.library(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       query,
     );
@@ -172,10 +162,7 @@ export class ChatFeaturesController {
     @Body() body: unknown,
   ) {
     return this.service.pin(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       messageId,
       body,
@@ -190,10 +177,7 @@ export class ChatFeaturesController {
     @Body() body: unknown,
   ) {
     return this.service.forward(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -207,10 +191,7 @@ export class ChatFeaturesController {
     @Param('messageId') messageId: string,
   ) {
     return this.service.receipts(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       conversationId,
       messageId,
     );
@@ -222,13 +203,7 @@ export class ChatFeaturesController {
     @Req() request: Request,
     @Query() query: Record<string, unknown>,
   ) {
-    return this.service.notifications(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
-      query,
-    );
+    return this.service.notifications(requestCredentials(request), query);
   }
 
   @Put('notifications/:notificationId/read')
@@ -238,10 +213,7 @@ export class ChatFeaturesController {
     @Param('notificationId') notificationId: string,
   ) {
     return this.service.readNotification(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
+      requestCredentials(request),
       notificationId,
     );
   }
@@ -253,25 +225,12 @@ export class ChatFeaturesController {
     @Param('userId') userId: string,
     @Body() body: unknown,
   ) {
-    return this.service.block(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
-      userId,
-      body,
-    );
+    return this.service.block(requestCredentials(request), userId, body);
   }
 
   @Post('reports')
   @Header('Cache-Control', 'no-store')
   report14(@Req() request: Request, @Body() body: unknown) {
-    return this.service.report(
-      {
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      },
-      body,
-    );
+    return this.service.report(requestCredentials(request), body);
   }
 }

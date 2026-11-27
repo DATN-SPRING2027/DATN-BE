@@ -1,16 +1,22 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  CONSUME_RATE_LIMIT_LUA,
+  createHttpRedisConnection,
   createRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
   private readonly client: RedisConnection;
 
   constructor(private readonly config: ConfigService) {
-    this.client = createRedisConnection(config);
+    this.client = createHttpRedisConnection(config);
+    this.client.on('error', (error: Error) => {
+      this.logger.warn(`Chat HTTP Redis error: ${error.message}`);
+    });
   }
 
   async get(key: string): Promise<string | null> {
@@ -70,8 +76,23 @@ export class RedisService implements OnModuleDestroy {
   async subscribe(
     channel: string,
     onMessage: (value: string) => void,
+    onDisconnect?: (error?: Error) => void,
   ): Promise<() => void> {
     const subscriber = createRedisConnection(this.config);
+    let closed = false;
+    subscriber.on('error', (error: Error) => {
+      this.logger.warn(
+        `Chat Redis subscriber error on ${channel}: ${error.message}`,
+      );
+      if (!closed) {
+        onDisconnect?.(error);
+      }
+    });
+    subscriber.on('end', () => {
+      if (!closed) {
+        onDisconnect?.();
+      }
+    });
     try {
       if (subscriber.status === 'wait') await subscriber.connect();
       subscriber.on('message', (receivedChannel, value) => {
@@ -80,8 +101,14 @@ export class RedisService implements OnModuleDestroy {
         }
       });
       await subscriber.subscribe(channel);
-      return () => subscriber.disconnect();
+      return () => {
+        closed = true;
+        if (subscriber.status !== 'end') {
+          subscriber.disconnect();
+        }
+      };
     } catch (error) {
+      closed = true;
       if (subscriber.status !== 'end') {
         subscriber.disconnect();
       }
@@ -133,12 +160,60 @@ export class RedisService implements OnModuleDestroy {
     return Number(count) > 0;
   }
 
+  async arePresenceOnlineBatch(keys: string[]): Promise<boolean[]> {
+    if (keys.length === 0) return [];
+    await this.connect();
+    const now = Date.now();
+    const pipe = this.client.pipeline();
+    for (const key of keys) {
+      pipe.zremrangebyscore(key, '-inf', now);
+      pipe.zcard(key);
+    }
+    const results = await pipe.exec();
+    if (!results) return keys.map(() => false);
+    const statuses: boolean[] = [];
+    for (let index = 0; index < keys.length; index += 1) {
+      const zcardEntry = results[index * 2 + 1];
+      const err = zcardEntry?.[0];
+      if (err) throw err;
+      statuses.push(Number(zcardEntry?.[1] ?? 0) > 0);
+    }
+    return statuses;
+  }
+
   revokeToken(tokenHash: string, ttlSeconds: number): Promise<void> {
     return this.set(`auth:blacklist:${tokenHash}`, '1', ttlSeconds);
   }
+
   async isTokenRevoked(tokenHash: string): Promise<boolean> {
     return (await this.get(`auth:blacklist:${tokenHash}`)) === '1';
   }
+
+  async areTokensRevokedBatch(
+    tokenHashes: string[],
+  ): Promise<Map<string, boolean>> {
+    const unique = [...new Set(tokenHashes)];
+    const map = new Map<string, boolean>();
+    if (unique.length === 0) return map;
+    await this.connect();
+    const pipe = this.client.pipeline();
+    for (const hash of unique) {
+      pipe.get(`auth:blacklist:${hash}`);
+    }
+    const results = await pipe.exec();
+    if (!results) {
+      for (const hash of unique) map.set(hash, false);
+      return map;
+    }
+    for (let index = 0; index < unique.length; index += 1) {
+      const entry = results[index];
+      const err = entry?.[0];
+      if (err) throw err;
+      map.set(unique[index], entry?.[1] === '1');
+    }
+    return map;
+  }
+
   async consumeRateLimit(
     key: string,
     limit: number,
@@ -146,13 +221,14 @@ export class RedisService implements OnModuleDestroy {
   ): Promise<boolean> {
     await this.connect();
     const count = await this.client.eval(
-      "local n = redis.call('incr', KEYS[1]); if n == 1 then redis.call('expire', KEYS[1], ARGV[1]); end; return n",
+      CONSUME_RATE_LIMIT_LUA,
       1,
       `rate:${key}`,
       windowSeconds,
     );
     return Number(count) <= limit;
   }
+
   acquireLock(
     key: string,
     owner: string,
@@ -160,6 +236,7 @@ export class RedisService implements OnModuleDestroy {
   ): Promise<boolean> {
     return this.setIfAbsent(`lock:${key}`, owner, ttlSeconds);
   }
+
   async releaseLock(key: string, owner: string): Promise<boolean> {
     await this.connect();
     const result = await this.client.eval(

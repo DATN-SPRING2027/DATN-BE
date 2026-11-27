@@ -72,15 +72,22 @@ describe('UserDirectoryController', () => {
     });
   });
 
-  it('reads and updates a user through the documented route', async () => {
+  it('reads and updates a user through the documented route and enforces CSRF on cookie-auth writes', async () => {
     const server = app.getHttpServer() as App;
     await request(server)
       .get(`/api/v1/iam/users/${user.id}`)
       .set('Cookie', 'continuum_access=session')
       .expect(200);
+    // SEC-AUTH-005: Cookie-auth PATCH without CSRF token must be rejected
     await request(server)
       .patch(`/api/v1/iam/users/${user.id}`)
       .set('Cookie', 'continuum_access=session')
+      .send({ fullName: 'Renamed' })
+      .expect(403);
+    await request(server)
+      .patch(`/api/v1/iam/users/${user.id}`)
+      .set('Cookie', 'continuum_access=session; continuum_csrf=csrf-token-123')
+      .set('X-CSRF-Token', 'csrf-token-123')
       .send({ fullName: 'Renamed' })
       .expect(200);
     expect(directory.get).toHaveBeenCalledWith(actor, user.id);
@@ -101,7 +108,8 @@ describe('UserDirectoryController', () => {
       .expect(422);
     await request(server)
       .patch(`/api/v1/iam/users/${user.id}`)
-      .set('Cookie', 'continuum_access=session')
+      .set('Cookie', 'continuum_access=session; continuum_csrf=csrf-token-123')
+      .set('X-CSRF-Token', 'csrf-token-123')
       .send({ email: 'injected@example.com' })
       .expect(422);
     expect(directory.update).not.toHaveBeenCalled();

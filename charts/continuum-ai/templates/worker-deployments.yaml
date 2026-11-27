@@ -26,6 +26,11 @@ spec:
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: ["node", "dist/workers/main.js"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           envFrom:
             - configMapRef:
                 name: {{ include "continuum-ai.fullname" $ }}-config
@@ -34,9 +39,16 @@ spec:
               value: {{ $worker.queue | quote }}
             - name: WORKER_CONCURRENCY
               value: {{ $worker.concurrency | quote }}
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.mongodb.auth.existingSecretName }}
+                  key: application-uri
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ $.Values.redis.auth.existingSecretName }}
                   key: password
+          resources:
+            {{- toYaml (default $.Values.workerDefaults.resources $worker.resources) | nindent 12 }}
 {{- end }}

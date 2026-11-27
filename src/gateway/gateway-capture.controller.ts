@@ -12,22 +12,31 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import {
+  buildSafeInternalProxyUrl,
+  collectForwardedRequestHeaders,
+  sendOrStreamUpstreamResponse,
+} from './gateway-proxy.util';
 
+// BE-LOGIC-001: Strip untrusted client `x-auto-sync-sag` header at the Gateway boundary.
 const requestHeaders = [
   'accept',
   'authorization',
   'content-type',
   'cookie',
-  'x-auto-sync-sag',
   'x-content-sha256',
   'x-csrf-token',
+  'x-expected-organization-id',
   'x-file-name',
   'x-organization-id',
   'x-request-id',
+  'traceparent',
 ] as const;
 
 const responseHeaders = [
   'cache-control',
+  'content-length',
+  'content-security-policy',
   'content-type',
   'content-disposition',
   'location',
@@ -462,12 +471,8 @@ export class GatewayCaptureController {
   private async forward(request: Request, response: Response): Promise<void> {
     response.setHeader('cache-control', 'no-store');
     const baseUrl = this.config.getOrThrow<string>('CAPTURE_SERVICE_URL');
-    const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
-    const headers: Record<string, string> = {};
-    for (const name of requestHeaders) {
-      const value = request.headers[name];
-      if (typeof value === 'string') headers[name] = value;
-    }
+    const targetUrl = buildSafeInternalProxyUrl(request.originalUrl, baseUrl);
+    const headers = collectForwardedRequestHeaders(request, requestHeaders);
 
     const fileTransfer =
       /^\/api\/v1\/capture\/projects\/[^/]+\/(?:documents|work-reports|work-notes)\/[^/]+\/file(?:\?|$)/.test(
@@ -485,7 +490,7 @@ export class GatewayCaptureController {
 
     let upstream: globalThis.Response;
     try {
-      upstream = await fetch(new URL(path, baseUrl), {
+      upstream = await fetch(targetUrl, {
         method: request.method,
         headers,
         ...(body === undefined ? {} : { body }),
@@ -515,8 +520,8 @@ export class GatewayCaptureController {
       const value = upstream.headers.get(name);
       if (value) response.setHeader(name, value);
     }
-    response
-      .status(upstream.status)
-      .send(Buffer.from(await upstream.arrayBuffer()));
+    await sendOrStreamUpstreamResponse(upstream, response, {
+      preferStream: fileTransfer && request.method === 'GET',
+    });
   }
 }

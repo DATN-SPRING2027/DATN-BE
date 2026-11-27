@@ -15,6 +15,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { CsrfGuard } from '../../../common/security/csrf';
 import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import { ProjectAccessAuthorizationGuard } from '../application/authorization/project-access-authorization.guard';
 import { RequireProjectAccessPermission } from '../application/authorization/project-access-permission.decorator';
@@ -185,7 +186,7 @@ export class ProjectAccessController {
 
   @Patch()
   @RequireProjectAccessPermission('project.update')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async updateSettings(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -205,7 +206,7 @@ export class ProjectAccessController {
   @Delete()
   @HttpCode(204)
   @RequireProjectAccessPermission('project.delete')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async deleteProject(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -227,7 +228,7 @@ export class ProjectAccessController {
 
   @Patch('visibility')
   @RequireProjectAccessPermission('project.visibility.manage')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async changeVisibility(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -329,7 +330,7 @@ export class ProjectAccessController {
 
   @Post('memberships')
   @RequireProjectAccessPermission('project.members.add')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async addMember(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -348,7 +349,7 @@ export class ProjectAccessController {
   @Delete('memberships/:membershipId')
   @HttpCode(204)
   @RequireProjectAccessPermission('project.members.remove')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async removeMember(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -364,7 +365,7 @@ export class ProjectAccessController {
   @Post('leaders')
   @HttpCode(204)
   @RequireProjectAccessPermission('project.leader.manage')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async assignLeader(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -380,7 +381,7 @@ export class ProjectAccessController {
   @Put('leaders')
   @HttpCode(204)
   @RequireProjectAccessPermission('project.leader.manage')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async changeLeader(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,
@@ -402,7 +403,7 @@ export class ProjectAccessController {
   @Delete('leaders/:userId')
   @HttpCode(204)
   @RequireProjectAccessPermission('project.leader.manage')
-  @UseGuards(ProjectAccessAuthorizationGuard)
+  @UseGuards(CsrfGuard, ProjectAccessAuthorizationGuard)
   async revokeLeader(
     @Headers('authorization') authorization: string | undefined,
     @Headers('cookie') cookie: string | undefined,

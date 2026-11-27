@@ -26,6 +26,15 @@ export const outboxSchema = new Schema(
   { collection: OUTBOX_COLLECTION, timestamps: true },
 );
 
+outboxSchema.index(
+  { status: 1, eventName: 1, occurredAt: 1, _id: 1 },
+  { name: 'capture_outbox_status_event_occurred' },
+);
+outboxSchema.index(
+  { aggregateType: 1, aggregateId: 1, status: 1, occurredAt: 1, _id: 1 },
+  { name: 'capture_outbox_aggregate_status_occurred' },
+);
+
 export const auditSchema = new Schema(
   {
     organizationId: { type: String, index: true },
@@ -256,7 +265,51 @@ const captureSchemas: Record<string, Schema> = {
           return this.contentSchemaVersion === 2;
         },
       },
-      provenance: Schema.Types.Mixed,
+      provenance: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => {
+            if (value === undefined || value === null) return true;
+            if (typeof value !== 'object' || Array.isArray(value)) return false;
+            const prov = value as Record<string, unknown>;
+            if (prov.review !== undefined && prov.review !== null) {
+              if (
+                typeof prov.review !== 'object' ||
+                Array.isArray(prov.review)
+              ) {
+                return false;
+              }
+              const rev = prov.review as Record<string, unknown>;
+              if (
+                rev.status !== undefined &&
+                (typeof rev.status !== 'string' ||
+                  ![
+                    'PENDING_REVIEW',
+                    'APPROVED',
+                    'CHANGES_REQUESTED',
+                    'REJECTED',
+                  ].includes(rev.status))
+              ) {
+                return false;
+              }
+              if (rev.history !== undefined && !Array.isArray(rev.history)) {
+                return false;
+              }
+            }
+            if (
+              prov.knowledgeSync !== undefined &&
+              prov.knowledgeSync !== null &&
+              (typeof prov.knowledgeSync !== 'object' ||
+                Array.isArray(prov.knowledgeSync))
+            ) {
+              return false;
+            }
+            return true;
+          },
+          message:
+            'work_notes.provenance review/knowledgeSync metadata is invalid',
+        },
+      },
       whatDone: {
         type: String,
         required: function (this: { contentSchemaVersion?: number }) {
@@ -308,7 +361,51 @@ const captureSchemas: Record<string, Schema> = {
         },
       },
       contentSchemaVersion: { type: Number, enum: [2] },
-      provenance: Schema.Types.Mixed,
+      provenance: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => {
+            if (value === undefined || value === null) return true;
+            if (typeof value !== 'object' || Array.isArray(value)) return false;
+            const prov = value as Record<string, unknown>;
+            if (prov.review !== undefined && prov.review !== null) {
+              if (
+                typeof prov.review !== 'object' ||
+                Array.isArray(prov.review)
+              ) {
+                return false;
+              }
+              const rev = prov.review as Record<string, unknown>;
+              if (
+                rev.status !== undefined &&
+                (typeof rev.status !== 'string' ||
+                  ![
+                    'PENDING_REVIEW',
+                    'APPROVED',
+                    'CHANGES_REQUESTED',
+                    'REJECTED',
+                  ].includes(rev.status))
+              ) {
+                return false;
+              }
+              if (rev.history !== undefined && !Array.isArray(rev.history)) {
+                return false;
+              }
+            }
+            if (
+              prov.knowledgeSync !== undefined &&
+              prov.knowledgeSync !== null &&
+              (typeof prov.knowledgeSync !== 'object' ||
+                Array.isArray(prov.knowledgeSync))
+            ) {
+              return false;
+            }
+            return true;
+          },
+          message:
+            'work_notes.provenance review/knowledgeSync metadata is invalid',
+        },
+      },
       whatDone: {
         type: String,
         required: function (this: { contentSchemaVersion?: number }) {
@@ -380,7 +477,51 @@ const captureSchemas: Record<string, Schema> = {
       projectId: { type: Schema.Types.ObjectId, required: true },
       documentId: { type: Schema.Types.ObjectId, required: true },
       versionNumber: { type: Number, required: true, min: 1 },
-      provenance: Schema.Types.Mixed,
+      provenance: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => {
+            if (value === undefined || value === null) return true;
+            if (typeof value !== 'object' || Array.isArray(value)) return false;
+            const prov = value as Record<string, unknown>;
+            if (prov.review !== undefined && prov.review !== null) {
+              if (
+                typeof prov.review !== 'object' ||
+                Array.isArray(prov.review)
+              ) {
+                return false;
+              }
+              const rev = prov.review as Record<string, unknown>;
+              if (
+                rev.status !== undefined &&
+                (typeof rev.status !== 'string' ||
+                  ![
+                    'PENDING_REVIEW',
+                    'APPROVED',
+                    'CHANGES_REQUESTED',
+                    'REJECTED',
+                  ].includes(rev.status))
+              ) {
+                return false;
+              }
+              if (rev.history !== undefined && !Array.isArray(rev.history)) {
+                return false;
+              }
+            }
+            if (
+              prov.knowledgeSync !== undefined &&
+              prov.knowledgeSync !== null &&
+              (typeof prov.knowledgeSync !== 'object' ||
+                Array.isArray(prov.knowledgeSync))
+            ) {
+              return false;
+            }
+            return true;
+          },
+          message:
+            'work_notes.provenance review/knowledgeSync metadata is invalid',
+        },
+      },
       title: { type: String, required: true, trim: true, maxlength: 240 },
       description: { type: String, maxlength: 2000 },
       documentType: { type: String, required: true },
@@ -448,7 +589,51 @@ const captureSchemas: Record<string, Schema> = {
           return this.contentSchemaVersion === 2;
         },
       },
-      provenance: Schema.Types.Mixed,
+      provenance: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => {
+            if (value === undefined || value === null) return true;
+            if (typeof value !== 'object' || Array.isArray(value)) return false;
+            const prov = value as Record<string, unknown>;
+            if (prov.review !== undefined && prov.review !== null) {
+              if (
+                typeof prov.review !== 'object' ||
+                Array.isArray(prov.review)
+              ) {
+                return false;
+              }
+              const rev = prov.review as Record<string, unknown>;
+              if (
+                rev.status !== undefined &&
+                (typeof rev.status !== 'string' ||
+                  ![
+                    'PENDING_REVIEW',
+                    'APPROVED',
+                    'CHANGES_REQUESTED',
+                    'REJECTED',
+                  ].includes(rev.status))
+              ) {
+                return false;
+              }
+              if (rev.history !== undefined && !Array.isArray(rev.history)) {
+                return false;
+              }
+            }
+            if (
+              prov.knowledgeSync !== undefined &&
+              prov.knowledgeSync !== null &&
+              (typeof prov.knowledgeSync !== 'object' ||
+                Array.isArray(prov.knowledgeSync))
+            ) {
+              return false;
+            }
+            return true;
+          },
+          message:
+            'work_notes.provenance review/knowledgeSync metadata is invalid',
+        },
+      },
       reportScope: {
         type: String,
         enum: [...WORK_REPORT_SCOPES],
@@ -511,7 +696,51 @@ const captureSchemas: Record<string, Schema> = {
       contentMarkdown: { type: String, required: true, maxlength: 30000 },
       canonicalResult: { type: Schema.Types.Mixed, required: true },
       editedByUserId: { type: Schema.Types.ObjectId, required: true },
-      provenance: Schema.Types.Mixed,
+      provenance: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => {
+            if (value === undefined || value === null) return true;
+            if (typeof value !== 'object' || Array.isArray(value)) return false;
+            const prov = value as Record<string, unknown>;
+            if (prov.review !== undefined && prov.review !== null) {
+              if (
+                typeof prov.review !== 'object' ||
+                Array.isArray(prov.review)
+              ) {
+                return false;
+              }
+              const rev = prov.review as Record<string, unknown>;
+              if (
+                rev.status !== undefined &&
+                (typeof rev.status !== 'string' ||
+                  ![
+                    'PENDING_REVIEW',
+                    'APPROVED',
+                    'CHANGES_REQUESTED',
+                    'REJECTED',
+                  ].includes(rev.status))
+              ) {
+                return false;
+              }
+              if (rev.history !== undefined && !Array.isArray(rev.history)) {
+                return false;
+              }
+            }
+            if (
+              prov.knowledgeSync !== undefined &&
+              prov.knowledgeSync !== null &&
+              (typeof prov.knowledgeSync !== 'object' ||
+                Array.isArray(prov.knowledgeSync))
+            ) {
+              return false;
+            }
+            return true;
+          },
+          message:
+            'work_notes.provenance review/knowledgeSync metadata is invalid',
+        },
+      },
     },
     { collection: 'work_report_versions', timestamps: true, strict: true },
   ),
@@ -526,7 +755,51 @@ const captureSchemas: Record<string, Schema> = {
       contentMarkdown: { type: String, default: '', maxlength: 30000 },
       canonicalResult: { type: Schema.Types.Mixed, required: true },
       editedByUserId: { type: Schema.Types.ObjectId, required: true },
-      provenance: Schema.Types.Mixed,
+      provenance: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => {
+            if (value === undefined || value === null) return true;
+            if (typeof value !== 'object' || Array.isArray(value)) return false;
+            const prov = value as Record<string, unknown>;
+            if (prov.review !== undefined && prov.review !== null) {
+              if (
+                typeof prov.review !== 'object' ||
+                Array.isArray(prov.review)
+              ) {
+                return false;
+              }
+              const rev = prov.review as Record<string, unknown>;
+              if (
+                rev.status !== undefined &&
+                (typeof rev.status !== 'string' ||
+                  ![
+                    'PENDING_REVIEW',
+                    'APPROVED',
+                    'CHANGES_REQUESTED',
+                    'REJECTED',
+                  ].includes(rev.status))
+              ) {
+                return false;
+              }
+              if (rev.history !== undefined && !Array.isArray(rev.history)) {
+                return false;
+              }
+            }
+            if (
+              prov.knowledgeSync !== undefined &&
+              prov.knowledgeSync !== null &&
+              (typeof prov.knowledgeSync !== 'object' ||
+                Array.isArray(prov.knowledgeSync))
+            ) {
+              return false;
+            }
+            return true;
+          },
+          message:
+            'work_notes.provenance review/knowledgeSync metadata is invalid',
+        },
+      },
     },
     {
       collection: 'project_document_editor_versions',

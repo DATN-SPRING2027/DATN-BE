@@ -1,18 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import {
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -21,9 +14,11 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 import type {
   ChatObjectStorage,
   StoredObjectMetadata,
+  StoredObjectStream,
 } from './chat-object-storage';
 
 const PROD_VAULT_MOUNT_DIR = '/var/lib/continuum/vault';
@@ -35,14 +30,19 @@ function resolveDefaultVaultRoot(): string {
   return resolve(process.cwd(), '..', '.data', 'continuum-vault');
 }
 
-async function streamToBuffer(stream: Readable): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(
-      Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array),
-    );
-  }
-  return Buffer.concat(chunks);
+function isForceLocalConfigured(config: ConfigService): boolean {
+  const mode = String(
+    config.get<string>('STORAGE_MODE') ??
+      config.get<string>('CHAT_STORAGE_MODE') ??
+      '',
+  )
+    .trim()
+    .toLowerCase();
+  const forceLocalEnv =
+    String(config.get<string>('STORAGE_FORCE_LOCAL') ?? '')
+      .trim()
+      .toLowerCase() === 'true';
+  return forceLocalEnv || mode === 'local';
 }
 
 @Injectable()
@@ -66,9 +66,7 @@ export class R2Storage implements ChatObjectStorage {
       config.get<string>('WORK_NOTE_LOCAL_STORAGE_DIR') ||
       config.get<string>('LOCAL_STORAGE_DIR');
     this.localRoot = resolve(configuredDir || resolveDefaultVaultRoot());
-    // Hardcoded enterprise policy: always store in the dedicated Local Enterprise Vault
-    // across both LOCAL and PROD environments without requiring .env overrides.
-    this.forceLocal = true;
+    this.forceLocal = isForceLocalConfigured(config);
     this.localDisabled =
       String(config.get<string>('LOCAL_STORAGE_DISABLED') ?? '')
         .trim()
@@ -126,19 +124,13 @@ export class R2Storage implements ChatObjectStorage {
     }
 
     const path = this.localPath(key);
-    const bytes = await streamToBuffer(body);
     const stagingDir = join(this.localRoot, '.staging');
     await mkdir(stagingDir, { recursive: true });
     const stagingPath = join(stagingDir, `${randomUUID()}.part`);
 
     try {
-      const handle = await open(stagingPath, 'wx');
-      try {
-        await handle.writeFile(bytes);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      const output = createWriteStream(stagingPath, { flags: 'wx' });
+      await pipeline(body, output);
       await mkdir(dirname(path), { recursive: true });
       await rename(stagingPath, path);
     } catch (error) {
@@ -146,10 +138,11 @@ export class R2Storage implements ChatObjectStorage {
       throw error;
     }
 
+    const info = await stat(path);
     await writeFile(
       `${path}.meta.json`,
       JSON.stringify({
-        size: bytes.length,
+        size: info.size,
         contentType,
         updatedAt: new Date().toISOString(),
       }),
@@ -195,6 +188,7 @@ export class R2Storage implements ChatObjectStorage {
       contentType: string;
       contentDisposition: 'inline' | 'attachment';
       filename: string;
+      localStreamUrl?: string;
     },
   ): Promise<string> {
     if (!this.useLocal()) {
@@ -203,11 +197,13 @@ export class R2Storage implements ChatObjectStorage {
 
     const path = this.localPath(key);
     try {
-      const bytes = await readFile(path);
-      const meta = await this.headObject(key);
-      const mime =
-        response?.contentType || meta.contentType || 'application/octet-stream';
-      return `data:${mime};base64,${bytes.toString('base64')}`;
+      await stat(path);
+      if (response?.localStreamUrl) {
+        return response.localStreamUrl;
+      }
+      throw new Error(
+        'Local storage requires streaming download endpoint; inline Base64 data URIs are disabled',
+      );
     } catch (localError) {
       const isMissingLocal =
         (localError as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
@@ -243,6 +239,59 @@ export class R2Storage implements ChatObjectStorage {
         }
         throw cloudError;
       }
+    }
+  }
+
+  async openReadStream(key: string): Promise<StoredObjectStream> {
+    if (!this.useLocal()) {
+      const result = await this.client().send(
+        new GetObjectCommand({ Bucket: this.bucketName(), Key: key }),
+      );
+      if (!result.Body) {
+        throw new Error('R2 object body is unavailable');
+      }
+      return {
+        stream: result.Body as Readable,
+        size: result.ContentLength,
+        contentType: result.ContentType,
+      };
+    }
+
+    const path = this.localPath(key);
+    try {
+      const info = await stat(path);
+      let contentType: string | undefined;
+      try {
+        const raw = await readFile(`${path}.meta.json`, 'utf-8');
+        const parsed = JSON.parse(raw) as { contentType?: string };
+        contentType = parsed.contentType;
+      } catch {
+        // Optional metadata file
+      }
+      return {
+        stream: createReadStream(path),
+        size: info.size,
+        contentType,
+      };
+    } catch (localError) {
+      const isMissingLocal =
+        (localError as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+      if (
+        !isMissingLocal ||
+        !this.cloudFallbackEnabled ||
+        !this.hasCloudCredentials()
+      ) {
+        throw localError;
+      }
+      const result = await this.client().send(
+        new GetObjectCommand({ Bucket: this.bucketName(), Key: key }),
+      );
+      if (!result.Body) throw localError;
+      return {
+        stream: result.Body as Readable,
+        size: result.ContentLength,
+        contentType: result.ContentType,
+      };
     }
   }
 
@@ -298,6 +347,11 @@ export class R2Storage implements ChatObjectStorage {
         accessKeyId: this.accessKeyId,
         secretAccessKey: this.secretAccessKey,
       },
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: 5_000,
+        socketTimeout: 30_000,
+      }),
+      maxAttempts: 3,
     });
     return this.clientInstance;
   }

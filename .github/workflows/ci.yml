@@ -4,12 +4,15 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run lint
@@ -38,7 +41,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run test:organization-role-reconciliation
@@ -55,7 +58,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run test:migrations:plan
@@ -70,11 +73,40 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  security-audit:
+    name: BE / Security & dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+
+  container-and-helm:
+    name: BE / Docker build & Helm lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify production Dockerfile build
+        run: docker build --target runtime -t continuum-ai-backend:ci .
+      - uses: azure/setup-helm@v4
+      - name: Lint Continuum AI Helm chart
+        run: helm lint charts/continuum-ai
 
   e2e-tests:
     name: BE / E2E tests
@@ -86,7 +118,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --runInBand
@@ -106,7 +138,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - name: Start MongoDB replica set
@@ -186,7 +218,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - name: Start disposable MongoDB 7 fixture

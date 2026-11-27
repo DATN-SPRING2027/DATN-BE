@@ -11,6 +11,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import {
+  buildSafeInternalProxyUrl,
+  collectForwardedRequestHeaders,
+} from './gateway-proxy.util';
 
 const requestHeaders = [
   'accept',
@@ -20,8 +24,10 @@ const requestHeaders = [
   'idempotency-key',
   'if-match',
   'x-csrf-token',
+  'x-expected-organization-id',
   'x-organization-id',
   'x-request-id',
+  'traceparent',
 ] as const;
 
 const responseHeaders = [
@@ -226,27 +232,29 @@ export class GatewayHandoverController {
 
   private async forward(request: Request, response: Response): Promise<void> {
     response.setHeader('cache-control', 'no-store');
-    const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
     const baseUrl = this.config.getOrThrow<string>('HANDOVER_SERVICE_URL');
-    const headers: Record<string, string> = {};
-    for (const name of requestHeaders) {
-      const value = request.headers[name];
-      if (typeof value === 'string') {
-        headers[name] = value;
-      }
-    }
+    const targetUrl = buildSafeInternalProxyUrl(request.originalUrl, baseUrl);
+    const headers = collectForwardedRequestHeaders(request, requestHeaders);
+    const isLlmAssisted =
+      /\/(?:generations|questions|source-proposals)(?:\?|$)/.test(
+        request.originalUrl,
+      );
+    const timeoutMs = isLlmAssisted
+      ? Math.max(90_000, this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'))
+      : this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS');
 
     let upstream: globalThis.Response;
     try {
-      upstream = await fetch(new URL(path, baseUrl), {
+      upstream = await fetch(targetUrl, {
         method: request.method,
         headers,
-        ...(request.method === 'GET' || request.body === undefined
+        redirect: 'manual',
+        ...(request.method === 'GET' ||
+        request.method === 'HEAD' ||
+        request.body === undefined
           ? {}
           : { body: JSON.stringify(request.body) }),
-        signal: AbortSignal.timeout(
-          this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
-        ),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {

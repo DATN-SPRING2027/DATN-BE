@@ -119,6 +119,8 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
               { sha256?: string; size?: number; key?: string } | undefined;
             return (
               toIdStr(row.organizationId) === toIdStr(filter.organizationId) &&
+              (!filter.projectId ||
+                toIdStr(row.projectId) === toIdStr(filter.projectId)) &&
               file?.sha256 === filter['file.sha256'] &&
               (filter['file.size'] === undefined ||
                 file?.size === filter['file.size']) &&
@@ -185,7 +187,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     };
   }
 
-  it('issues DIRECT_PUT intent, validates 64-byte magic prefix on confirm, and triggers zero-buffer SAG object ingest', async () => {
+  it('issues DIRECT_PUT intent with SHA-256 checksum header, verifies full SHA-256 on confirm without self-approval, and uploads approved files via /upload (E2E-INT-001)', async () => {
     const mongo = createInMemoryMongoStub();
     const authorization = {
       resolveProject: jest.fn().mockResolvedValue({
@@ -199,7 +201,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       }),
     } as unknown as WorkNotesAuthorizationService;
 
-    const storageGetMock = jest.fn();
+    const storageGetMock = jest.fn().mockResolvedValue(pdfBytes);
     const storage = {
       isDirectCloudEnabled: jest.fn().mockReturnValue(true),
       createDirectUploadUrl: jest
@@ -221,8 +223,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       delete: jest.fn().mockResolvedValue(undefined),
     } as unknown as ProjectDocumentStorage;
 
-    const uploadProjectDocumentMock = jest.fn();
-    const ingestProjectDocumentObjectMock = jest.fn().mockResolvedValue({
+    const uploadProjectDocumentMock = jest.fn().mockResolvedValue({
       documentId: 'sag-doc-1',
       versionId: 'sag-ver-1',
       versionNo: 1,
@@ -235,7 +236,6 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     });
     const sagTransport: SagKnowledgeSyncTransport = {
       uploadProjectDocument: uploadProjectDocumentMock,
-      ingestProjectDocumentObject: ingestProjectDocumentObjectMock,
       revokeProjectDocument: jest.fn(),
     };
 
@@ -280,9 +280,13 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     expect(intent.uploadUrl).toBe(
       'https://r2.example.cloudflarestorage.com/presigned-put',
     );
-    expect(intent.headers).toEqual({ 'Content-Type': 'application/pdf' });
+    expect(intent.headers).toEqual({
+      'Content-Type': 'application/pdf',
+      'x-amz-checksum-sha256': Buffer.from(pdfSha256, 'hex').toString('base64'),
+    });
     expect(typeof intent.uploadToken).toBe('string');
 
+    // BE-LOGIC-001: autoSyncSag: true MUST NOT self-approve a DRAFT document!
     const confirmed = await service.confirmDocumentUpload(
       {},
       projectId,
@@ -293,30 +297,32 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       },
     );
 
-    expect(confirmed.status).toBe('APPROVED');
+    expect(confirmed.status).toBe('DRAFT');
     expect(confirmed.file).toEqual({
       name: 'architecture.pdf',
       contentType: 'application/pdf',
       size: pdfBytes.length,
     });
-    expect(confirmed.knowledgeSync).toMatchObject({
+    // SEC-AUTH-002: Full object bytes fetched to verify full SHA-256 hash.
+    expect(storageGetMock).toHaveBeenCalledTimes(1);
+    expect(uploadProjectDocumentMock).not.toHaveBeenCalled();
+
+    // Once approved by an independent reviewer, syncDocumentToSag streams bytes via /upload (E2E-INT-001).
+    mongo.docRow.status = 'APPROVED';
+    mongo.versionRow.status = 'APPROVED';
+    const synced = await service.syncDocumentToSag({}, projectId, documentId);
+    expect(synced).toMatchObject({
       sagDocumentId: 'sag-doc-1',
       sagVersionNo: 1,
       runId: 'sag-run-1',
       status: 'RECEIVED',
     });
-    // Zero-buffer guarantee: DATN-BE never downloaded the full file from R2!
-    expect(storageGetMock).not.toHaveBeenCalled();
-    expect(uploadProjectDocumentMock).not.toHaveBeenCalled();
-    expect(ingestProjectDocumentObjectMock).toHaveBeenCalledWith(
+    expect(uploadProjectDocumentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId,
         documentId,
-        sourceUrl: 'https://r2.example.cloudflarestorage.com/presigned-get',
         fileName: 'architecture.pdf',
         contentType: 'application/pdf',
-        expectedSha256: pdfSha256,
-        expectedSizeBytes: pdfBytes.length,
       }),
     );
   });
@@ -357,10 +363,12 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       .fn()
       .mockResolvedValue('https://r2.example.cloudflarestorage.com/put-spoof');
 
+    const storageGetMock = jest.fn().mockResolvedValue(pdfBytes);
     const storage = {
       isDirectCloudEnabled: jest.fn().mockReturnValue(true),
       createDirectUploadUrl: createUploadUrlMock,
       inspectStoredPrefix: inspectMock,
+      get: storageGetMock,
       delete: deleteMock,
     } as unknown as ProjectDocumentStorage;
 
@@ -402,10 +410,12 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     expect(freshIntent.mode).toBe('DIRECT_PUT');
 
     // Simulate attacker uploading a Windows PE executable ("MZ...") instead of %PDF-
+    const spoofedBytes = Buffer.from('MZ\x90\x00\x03\x00\x00\x00spoofed!');
+    storageGetMock.mockResolvedValueOnce(spoofedBytes);
     inspectMock.mockResolvedValueOnce({
       size: 16,
       contentType: 'application/pdf',
-      prefix: Buffer.from('MZ\x90\x00\x03\x00\x00\x00spoofed!'),
+      prefix: spoofedBytes,
     });
 
     await expect(
@@ -593,7 +603,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       },
     } as unknown as Connection;
 
-    const storageGetSpy = jest.fn();
+    const storageGetSpy = jest.fn().mockResolvedValue(pdfBytes);
     const storage = {
       isDirectCloudEnabled: () => true,
       createDirectDownloadUrl: jest
@@ -603,7 +613,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     } as unknown as ProjectDocumentStorage;
 
     const getStatusSpy = jest.fn();
-    const ingestSpy = jest.fn().mockResolvedValue({
+    const uploadSpy = jest.fn().mockResolvedValue({
       documentId: 'sag-doc-99',
       versionId: 'sag-ver-99',
       versionNo: 1,
@@ -615,8 +625,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     });
 
     const transport: SagKnowledgeSyncTransport = {
-      uploadProjectDocument: jest.fn(),
-      ingestProjectDocumentObject: ingestSpy,
+      uploadProjectDocument: uploadSpy,
       getProjectDocumentVersionStatus: getStatusSpy,
       revokeProjectDocument: jest.fn(),
     };
@@ -647,8 +656,9 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       documentId,
       outcomes: ['PUBLISHED'],
     });
-    expect(storageGetSpy).not.toHaveBeenCalled();
-    expect(ingestSpy).toHaveBeenCalledTimes(1);
+    // E2E-INT-001: Always streams file bytes via /upload (SAG removed /ingest-object).
+    expect(storageGetSpy).toHaveBeenCalledTimes(1);
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
     // Async handoff enabled -> worker does NOT block in 90s status polling loop!
     expect(getStatusSpy).not.toHaveBeenCalled();
     expect(docUpdateOne).toHaveBeenCalledTimes(1);
@@ -1138,17 +1148,13 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
     // 1. Project authorization is resolved ONCE for the entire listDocuments call (no N+1 IAM storm!)
     expect(resolveProjectMock).toHaveBeenCalledTimes(1);
 
-    // 2. Only the in-progress document (35%) is polled in SAG; the 100% SEARCH_READY document is skipped!
-    expect(getVersionStatusMock).toHaveBeenCalledTimes(1);
-    expect(getVersionStatusMock).toHaveBeenCalledWith(
-      expect.objectContaining({ sagDocumentId: 'sag-active-1' }),
-    );
+    // 2. BE-PERF-001: listDocuments serves persisted knowledgeSync WITHOUT synchronous live SAG HTTP calls!
+    expect(getVersionStatusMock).not.toHaveBeenCalled();
     expect(
       listed.data.find((d) => d.id === activeDocId)?.knowledgeSync,
     ).toMatchObject({
-      status: 'SEARCH_READY',
-      progress: 100,
-      chunkCount: 5,
+      status: 'RECEIVED',
+      progress: 35,
     });
   });
 
@@ -1495,41 +1501,25 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
       20,
     );
 
-    // 1. Finalizing 99% doc (knowledgeStatus: QUEUED) IS polled and updated to DATA_READY + knowledgeReady: true
+    // 1. BE-PERF-001: listDocuments does NOT issue 14 synchronous live SAG HTTP calls during list GET!
+    expect(getVersionStatusMock).not.toHaveBeenCalled();
+
+    // 2. Settled DATA_READY and finalizing docs preserve their persisted status on list GET
     expect(
       listed.data.find((d) => d.id === finalizingDocId)?.knowledgeSync,
     ).toMatchObject({
       status: 'SEARCH_READY',
-      knowledgeStatus: 'DATA_READY',
-      knowledgeReady: true,
-      progress: 100,
+      knowledgeStatus: 'QUEUED',
     });
 
-    // 2. Settled DATA_READY doc is NOT re-polled
-    expect(getVersionStatusMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ sagDocumentId: 'sag-settled-1' }),
-    );
-
-    // 3. Stale v1 SAG doc is NEVER polled for v2, and v2 reflects QUEUED_OUTBOX (5%) instead of v1's 100%!
-    expect(getVersionStatusMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ sagDocumentId: 'sag-v1-stale' }),
-    );
+    // 3. Stale v1 SAG doc is NEVER leaked onto v2 during list GET (isolated by version!)
     expect(
       listed.data.find((d) => d.id === v2PendingSyncDocId)?.knowledgeSync,
-    ).toMatchObject({
-      version: 2,
-      status: 'QUEUED_OUTBOX',
-      progress: 5,
-    });
+    ).toBeUndefined();
 
-    // 4. All 12 batch documents (>10) are live-synced from 0% -> 35% PARSE!
+    // 4. All 12 batch documents are returned cleanly without live SAG HTTP fan-out
     for (const batchId of batchDocIds) {
-      expect(
-        listed.data.find((d) => d.id === batchId)?.knowledgeSync,
-      ).toMatchObject({
-        currentStage: 'PARSE',
-        progress: 35,
-      });
+      expect(listed.data.find((d) => d.id === batchId)).toBeDefined();
     }
   });
 
@@ -1566,6 +1556,7 @@ describe('Direct-to-R2 Zero-Buffer Document Upload & SAG Queue Handoff', () => {
         contentType: 'application/pdf',
         prefix: pdfBytes.subarray(0, 16),
       }),
+      get: jest.fn().mockResolvedValue(pdfBytes),
       delete: jest.fn().mockResolvedValue(undefined),
     } as unknown as ProjectDocumentStorage;
 

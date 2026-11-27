@@ -127,10 +127,41 @@ describe('HandoverTaskAssignmentService (C02 / A10 / A11 / A15)', () => {
       },
     };
 
+    const activeMemberIds = new Set<string>([
+      leaderId.toHexString(),
+      departingA.toHexString(),
+      successorB.toHexString(),
+      memberC.toHexString(),
+    ]);
+    const iamDb = {
+      collection: (name: string) => {
+        if (
+          name === 'organization_memberships' ||
+          name === 'project_memberships'
+        ) {
+          return {
+            findOne: jest.fn((filter: Record<string, unknown>) => {
+              const uid = idStr(filter.userId);
+              if (
+                idStr(filter.organizationId) === orgId.toHexString() &&
+                activeMemberIds.has(uid)
+              ) {
+                return Promise.resolve({ _id: new Types.ObjectId() });
+              }
+              return Promise.resolve(null);
+            }),
+          };
+        }
+        throw new Error(`Unexpected IAM collection ${name}`);
+      },
+    };
     const repo = { db };
-    const conn = { startSession: () => Promise.resolve(session) };
+    const conn = {
+      db: iamDb,
+      startSession: () => Promise.resolve(session),
+    };
     const svc = new HandoverTaskAssignmentService(repo as never, conn as never);
-    return { svc, tasks, operations, events, idStr };
+    return { svc, tasks, operations, events, idStr, activeMemberIds };
   }
 
   it('commits assignment atomically with receipt + event and replays idempotently on retry', async () => {
@@ -238,5 +269,48 @@ describe('HandoverTaskAssignmentService (C02 / A10 / A11 / A15)', () => {
     expect(idStr(tasks.get(doneTaskId.toHexString())?.assigneeId)).toBe(
       departingA.toHexString(),
     );
+  });
+
+  it('SEC-AUTH-015: rejects target assignees who are not active members of the project and rejects tasks missing organizationId', async () => {
+    const { svc, tasks, idStr } = createHarness();
+    const outsiderId = new Types.ObjectId('851a2b3c4d5e6f7a8b9c0d99');
+
+    const outsiderRes = await svc.assignTaskForHandover({
+      organizationId: orgId.toHexString(),
+      projectId: projectId.toHexString(),
+      actorId: leaderId.toHexString(),
+      intentId: 'aaaa1111-8123-4abc-9def-001122334455',
+      handoverId: handoverId.toHexString(),
+      revisionId: revisionId.toHexString(),
+      assignmentVersion: 1,
+      taskId: task1Id.toHexString(),
+      expectedTaskVersion: 3,
+      targetAssigneeId: outsiderId.toHexString(),
+    });
+    expect(outsiderRes.state).toBe('FAILED');
+    expect(outsiderRes.safeErrorCode).toBe('TARGET_ASSIGNEE_NOT_IN_PROJECT');
+    expect(idStr(tasks.get(task1Id.toHexString())?.assigneeId)).toBe(
+      departingA.toHexString(),
+    );
+
+    // Task missing organizationId fails closed
+    tasks.set(task1Id.toHexString(), {
+      ...tasks.get(task1Id.toHexString())!,
+      organizationId: undefined,
+    });
+    const missingOrgRes = await svc.assignTaskForHandover({
+      organizationId: orgId.toHexString(),
+      projectId: projectId.toHexString(),
+      actorId: leaderId.toHexString(),
+      intentId: 'aaaa2222-8123-4abc-9def-001122334455',
+      handoverId: handoverId.toHexString(),
+      revisionId: revisionId.toHexString(),
+      assignmentVersion: 1,
+      taskId: task1Id.toHexString(),
+      expectedTaskVersion: 3,
+      targetAssigneeId: successorB.toHexString(),
+    });
+    expect(missingOrgRes.state).toBe('FAILED');
+    expect(missingOrgRes.safeErrorCode).toBe('TASK_NOT_FOUND');
   });
 });

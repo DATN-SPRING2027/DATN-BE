@@ -45,6 +45,7 @@ export interface TaskWorkspaceIamBridgePort {
   resolveOrgAdminContext(
     authorizationHeader: string | undefined,
     cookieHeader: string | undefined,
+    headerOrgId?: string,
   ): Promise<WorkspaceOrgAdminContext>;
   isActiveProjectMember(
     organizationId: string,
@@ -187,10 +188,11 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
       });
     }
 
+    const normalizedProjectId = projectId.toLowerCase();
     const isTeamLeader = assignments.some(
       (a) =>
         a.projectId != null &&
-        String(a.projectId) === projectId &&
+        String(a.projectId).toLowerCase() === normalizedProjectId &&
         a.roleCode === 'TEAM_LEADER',
     );
 
@@ -208,11 +210,22 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
   async resolveOrgAdminContext(
     authorizationHeader: string | undefined,
     cookieHeader: string | undefined,
+    headerOrgId?: string,
   ): Promise<WorkspaceOrgAdminContext> {
     const identity = await this.authentication.getCurrentIdentity(
       authorizationHeader,
       cookieHeader,
     );
+
+    if (
+      headerOrgId !== undefined &&
+      headerOrgId.toLowerCase() !== identity.organizationId.toLowerCase()
+    ) {
+      throw new NotFoundException({
+        code: 'TASK_NOT_FOUND',
+        message: 'Resource not found.',
+      });
+    }
 
     const userObjectId = new Types.ObjectId(identity.id);
     const orgObjectId = new Types.ObjectId(identity.organizationId);
@@ -327,19 +340,18 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
       .collection('users')
       .find(
         { _id: { $in: validIds.map((id) => new Types.ObjectId(id)) } },
-        { projection: { _id: 1, fullName: 1, email: 1 } },
+        { projection: { _id: 1, fullName: 1 } },
       )
       .toArray();
 
     const map = new Map<string, { id: string; fullName: string }>();
     for (const doc of docs) {
       const id = String(doc._id);
+      // SEC-AUTH-008: Never expose raw email addresses as a display-name fallback.
       const fullName =
         typeof doc.fullName === 'string' && doc.fullName.trim().length > 0
           ? doc.fullName.trim()
-          : typeof doc.email === 'string'
-            ? doc.email
-            : id;
+          : 'User';
       map.set(id, { id, fullName });
     }
     return map;

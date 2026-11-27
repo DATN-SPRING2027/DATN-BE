@@ -1,7 +1,8 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  createRedisConnection,
+  CONSUME_RATE_LIMIT_LUA,
+  createHttpRedisConnection,
   RedisConnection,
 } from '../../../../common/redis/redis-connection';
 
@@ -10,7 +11,7 @@ export class RedisService implements OnModuleDestroy {
   private readonly client: RedisConnection;
 
   constructor(config: ConfigService) {
-    this.client = createRedisConnection(config);
+    this.client = createHttpRedisConnection(config);
   }
 
   async get(key: string): Promise<string | null> {
@@ -54,9 +55,13 @@ export class RedisService implements OnModuleDestroy {
     windowSeconds: number,
   ): Promise<boolean> {
     await this.connect();
-    const count = await this.client.incr(`rate:${key}`);
-    if (count === 1) await this.client.expire(`rate:${key}`, windowSeconds);
-    return count <= limit;
+    const count = await this.client.eval(
+      CONSUME_RATE_LIMIT_LUA,
+      1,
+      `rate:${key}`,
+      windowSeconds,
+    );
+    return Number(count) <= limit;
   }
   acquireLock(
     key: string,

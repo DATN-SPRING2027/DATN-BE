@@ -384,6 +384,8 @@ export class HandoverRepository {
       | 'handover_evidence'
       | 'handover_evidence_reviews',
     filter: {
+      organizationId?: Types.ObjectId;
+      projectId?: Types.ObjectId;
       handoverId: Types.ObjectId;
       revisionId: Types.ObjectId;
       successorUserId: string;
@@ -394,6 +396,10 @@ export class HandoverRepository {
   ): Promise<number> {
     const model = this.model<{ sequence: number }>(collection);
     const query: Record<string, unknown> = {
+      ...(filter.organizationId
+        ? { organizationId: filter.organizationId }
+        : {}),
+      ...(filter.projectId ? { projectId: filter.projectId } : {}),
       handoverId: filter.handoverId,
       revisionId: filter.revisionId,
       successorUserId: filter.successorUserId.toLowerCase(),

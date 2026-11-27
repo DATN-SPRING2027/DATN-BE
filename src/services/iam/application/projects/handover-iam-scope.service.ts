@@ -10,9 +10,9 @@ import {
 import { InjectConnection } from '@nestjs/mongoose';
 import { Types, type Connection } from 'mongoose';
 import { IAM_PERSISTENCE } from '../../infrastructure/persistence';
+import { extractCsrfCookie } from '../../../../common/security/csrf';
 import {
   AuthenticationApplicationService,
-  readCookie,
   validCsrfPair,
   type AuthenticatedIdentity,
 } from '../authentication/authentication.application.service';
@@ -61,10 +61,7 @@ export class HandoverIamScopeService {
     csrfHeader: string | undefined,
   ): void {
     const trimmed = typeof csrfHeader === 'string' ? csrfHeader.trim() : '';
-    const cookieToken =
-      readCookie(cookieHeader, '__Host-csrf') ??
-      readCookie(cookieHeader, 'continuum_csrf') ??
-      readCookie(cookieHeader, 'csrf_token');
+    const cookieToken = extractCsrfCookie(cookieHeader);
     if (!validCsrfPair(cookieToken, trimmed)) {
       throw new ForbiddenException({
         code: 'CSRF_TOKEN_INVALID',
