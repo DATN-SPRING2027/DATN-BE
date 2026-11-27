@@ -240,12 +240,42 @@ describe('HttpAiEngineClient', () => {
     const assistHeaders = new Headers(assistInit?.headers);
     expect(assistHeaders.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
 
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sections: [], citations: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    const searchRes = await client.request({
+      path: '/api/v1/search',
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer sag.project.token',
+        'X-SAG-BFF-Service-Token': 'forged-service-token',
+      },
+      body: { query: 'handover runbook', save_exploration: false },
+    });
+    expect(searchRes.status).toBe(200);
+    const searchHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(searchHeaders.get('Authorization')).toBe('Bearer sag.project.token');
+    expect(searchHeaders.get('X-SAG-BFF-Service-Token')).toBeNull();
+
     await expect(
       client.request({
-        path: '/api/v1/search',
+        path: '/api/v1/connectors/sync',
         method: 'POST',
         headers: {},
         body: { query: 'forbidden connector path' },
+      }),
+    ).rejects.toBeInstanceOf(BadGatewayException);
+
+    await expect(
+      client.request({
+        path: '/api/v1/search/eval-compare',
+        method: 'POST',
+        headers: {},
+        body: { query: 'forbidden search subpath' },
       }),
     ).rejects.toBeInstanceOf(BadGatewayException);
   });

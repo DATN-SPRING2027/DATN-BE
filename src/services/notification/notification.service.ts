@@ -138,9 +138,26 @@ export class NotificationService {
   async getUnreadCount(
     userId: string,
     organizationId?: string | null,
+    allowedProjectIds?: readonly string[] | null,
   ): Promise<{ count: number }> {
-    const count = await this.repository.countUnread(userId, organizationId);
+    const count = await this.repository.countUnread(
+      userId,
+      organizationId,
+      allowedProjectIds,
+    );
     return { count };
+  }
+
+  async findForUser(
+    userId: string,
+    notificationId: string,
+    organizationId?: string | null,
+  ): Promise<NotificationItemDto | null> {
+    return this.repository.findByIdForRecipient(
+      userId,
+      notificationId,
+      organizationId,
+    );
   }
 
   async markAsRead(

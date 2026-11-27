@@ -149,6 +149,9 @@ function isAllowedJsonRoute(
   if (method === 'POST' && pathname === UNIVERSE_KNOWLEDGE_RESOLVE_PATH) {
     return true;
   }
+  if (method === 'POST' && pathname === '/api/v1/search') {
+    return true;
+  }
   return false;
 }
 
@@ -232,7 +235,9 @@ export class HttpAiEngineClient implements AiEngineClient {
     const backendTimeoutMs =
       this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS');
     const requestTimeoutMs =
-      request.method === 'POST' && PROJECT_MIND_MAP_PATTERN.test(routePathname)
+      request.method === 'POST' &&
+      (PROJECT_MIND_MAP_PATTERN.test(routePathname) ||
+        routePathname === '/api/v1/search')
         ? Math.max(
             backendTimeoutMs,
             this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60000,

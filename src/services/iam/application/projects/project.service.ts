@@ -92,6 +92,56 @@ export class ProjectService {
     actor: AuthenticatedIdentity,
     query: ProjectListQuery,
   ): Promise<ProjectListPageWithTotals> {
+    const allowed = actor.mcpGrant?.allowedProjectIds;
+    if (Array.isArray(allowed)) {
+      const allowedSet = new Set(allowed.map((id) => id.toLowerCase()));
+      if (allowedSet.size === 0) {
+        return {
+          data: [],
+          pagination: {
+            page: query.page,
+            pageSize: query.pageSize,
+            totalItems: 0,
+            totalPages: 0,
+          },
+        };
+      }
+      const fetchPageSize = 100;
+      const firstPage = await this.repository.listVisible(
+        actor.organizationId,
+        actor.id,
+        { ...query, page: 1, pageSize: fetchPageSize, includeTotal: true },
+      );
+      const collected: ProjectRecord[] = firstPage.data.filter((project) =>
+        allowedSet.has(project.id.toLowerCase()),
+      );
+      const totalVisible = firstPage.totalItems ?? firstPage.data.length;
+      const maxPages = Math.min(Math.ceil(totalVisible / fetchPageSize), 10);
+      for (let page = 2; page <= maxPages; page += 1) {
+        const nextPage = await this.repository.listVisible(
+          actor.organizationId,
+          actor.id,
+          { ...query, page, pageSize: fetchPageSize, includeTotal: false },
+        );
+        for (const project of nextPage.data) {
+          if (allowedSet.has(project.id.toLowerCase())) {
+            collected.push(project);
+          }
+        }
+      }
+      const totalItems = collected.length;
+      const start = (query.page - 1) * query.pageSize;
+      return {
+        data: collected.slice(start, start + query.pageSize),
+        pagination: {
+          page: query.page,
+          pageSize: query.pageSize,
+          totalItems,
+          totalPages: Math.ceil(totalItems / query.pageSize),
+        },
+      };
+    }
+
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
@@ -113,6 +163,18 @@ export class ProjectService {
     actor: AuthenticatedIdentity,
     query: ProjectListQuery & { q: string },
   ): Promise<ProjectListPageWithoutTotals> {
+    const allowed = actor.mcpGrant?.allowedProjectIds;
+    if (Array.isArray(allowed)) {
+      const page = await this.list(actor, query);
+      return {
+        data: page.data,
+        pagination: {
+          page: query.page,
+          pageSize: query.pageSize,
+          hasMore: query.page < page.pagination.totalPages,
+        },
+      };
+    }
     const result = await this.repository.listVisible(
       actor.organizationId,
       actor.id,
@@ -132,6 +194,16 @@ export class ProjectService {
     actor: AuthenticatedIdentity,
     projectId: string,
   ): Promise<ProjectRecord> {
+    const allowed = actor.mcpGrant?.allowedProjectIds;
+    if (
+      Array.isArray(allowed) &&
+      !allowed.some((id) => id.toLowerCase() === projectId.trim().toLowerCase())
+    ) {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
     const project = await this.repository.findVisible(
       actor.organizationId,
       actor.id,

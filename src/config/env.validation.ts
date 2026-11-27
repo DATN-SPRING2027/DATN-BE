@@ -24,11 +24,13 @@ export interface EnvironmentVariables {
   GATEWAY_PORT: number;
   SERVICE_PORT: number;
   IAM_SERVICE_URL: string;
+  MCP_SERVICE_URL?: string;
   CAPTURE_SERVICE_URL: string;
   JIRA_SERVICE_URL: string;
   LIFECYCLE_SERVICE_URL: string;
   CHAT_SERVICE_URL: string;
   CHAT_ALLOWED_ORIGINS: string;
+  CORS_ALLOWED_ORIGINS?: string;
   HANDOVER_SERVICE_URL: string;
   INGESTION_SERVICE_URL: string;
   NOTIFICATION_SERVICE_URL: string;
@@ -119,6 +121,11 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   GATEWAY_PORT: Joi.number().integer().min(1).max(65535).default(3000),
   SERVICE_PORT: Joi.number().integer().min(1).max(65535).default(3001),
   IAM_SERVICE_URL: Joi.string().uri().default('http://127.0.0.1:3001'),
+  MCP_SERVICE_URL: Joi.string()
+    .trim()
+    .uri({ scheme: ['http', 'https'] })
+    .empty('')
+    .optional(),
   CAPTURE_SERVICE_URL: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .default('http://127.0.0.1:3002'),
@@ -134,6 +141,27 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   CHAT_ALLOWED_ORIGINS: Joi.string()
     .default('http://localhost:3000')
     .custom((value: string, helpers) => {
+      const origins = value.split(',').map((origin) => origin.trim());
+      const valid = origins.every((origin) => {
+        try {
+          const parsed = new URL(origin);
+          return (
+            ['http:', 'https:'].includes(parsed.protocol) &&
+            parsed.origin === origin &&
+            parsed.username === '' &&
+            parsed.password === ''
+          );
+        } catch {
+          return false;
+        }
+      });
+      return valid ? value : helpers.error('any.invalid');
+    }),
+  CORS_ALLOWED_ORIGINS: Joi.string()
+    .allow('')
+    .default('')
+    .custom((value: string, helpers) => {
+      if (!value.trim()) return value;
       const origins = value.split(',').map((origin) => origin.trim());
       const valid = origins.every((origin) => {
         try {
@@ -340,6 +368,7 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
 
 const INTERNAL_SERVICE_URL_KEYS = [
   'IAM_SERVICE_URL',
+  'MCP_SERVICE_URL',
   'CAPTURE_SERVICE_URL',
   'JIRA_SERVICE_URL',
   'LIFECYCLE_SERVICE_URL',

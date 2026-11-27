@@ -15,6 +15,45 @@ function isRecord(value: unknown): value is RecordValue {
   return typeof value === 'object' && value !== null;
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return end === value.length ? value : value.slice(0, end);
+}
+
+function isMcpRequestPath(request: Request | undefined): boolean {
+  const rawUrl = request?.originalUrl ?? request?.url ?? '';
+  const pathname = trimTrailingSlashes(rawUrl.split('?')[0] ?? '');
+  return pathname === '/api/v1/mcp' || pathname === '/internal/mcp';
+}
+
+function isBodyParseException(
+  exception: unknown,
+  status: number,
+  body: RecordValue | undefined,
+  message: string,
+): boolean {
+  if (exception instanceof SyntaxError) {
+    return true;
+  }
+  if (
+    isRecord(exception) &&
+    (exception.type === 'entity.parse.failed' ||
+      exception.cause instanceof SyntaxError)
+  ) {
+    return true;
+  }
+  return (
+    status === 400 &&
+    typeof body?.code !== 'string' &&
+    /JSON|Unexpected token|Unexpected end|Expected\s+['",}\]]|position\s+\d+/i.test(
+      message,
+    )
+  );
+}
+
 @Catch()
 export class StructuredExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
@@ -30,7 +69,9 @@ export class StructuredExceptionFilter implements ExceptionFilter {
     const status =
       exception instanceof HttpException
         ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+        : exception instanceof SyntaxError
+          ? HttpStatus.BAD_REQUEST
+          : HttpStatus.INTERNAL_SERVER_ERROR;
     const exceptionBody =
       exception instanceof HttpException ? exception.getResponse() : undefined;
     const body = isRecord(exceptionBody) ? exceptionBody : undefined;
@@ -42,6 +83,35 @@ export class StructuredExceptionFilter implements ExceptionFilter {
         : status >= 500
           ? 'Internal server error'
           : 'Request failed';
+
+    if (isMcpRequestPath(request)) {
+      if (status === 401) {
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('WWW-Authenticate', 'Bearer realm="continuum-mcp"');
+        response.status(HttpStatus.UNAUTHORIZED).json({
+          jsonrpc: '2.0',
+          id: null,
+          error: {
+            code: -32001,
+            message: 'Authentication required.',
+          },
+        });
+        return;
+      }
+
+      if (isBodyParseException(exception, status, body, message)) {
+        response.setHeader('Cache-Control', 'no-store');
+        response.status(HttpStatus.BAD_REQUEST).json({
+          jsonrpc: '2.0',
+          id: null,
+          error: {
+            code: -32700,
+            message: 'Parse error: Invalid JSON payload.',
+          },
+        });
+        return;
+      }
+    }
     const requestId =
       request.requestId ??
       response.getHeader(REQUEST_ID_HEADER)?.toString() ??

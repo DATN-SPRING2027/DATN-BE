@@ -25,6 +25,6 @@ import { AiTokenUsageService } from './ai-token-usage.service';
     AiChatService,
     AiTokenUsageService,
   ],
-  exports: [AI_ENGINE_CLIENT, AiTokenUsageService],
+  exports: [AI_ENGINE_CLIENT, AiChatService, AiTokenUsageService],
 })
 export class AiEngineModule {}

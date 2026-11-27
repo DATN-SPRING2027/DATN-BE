@@ -46,6 +46,18 @@ export class ProjectAccessAuthorizationGuard implements CanActivate {
       request.headers.cookie,
     );
     const projectId = request.params?.projectId;
+    if (
+      Array.isArray(identity.mcpGrant?.allowedProjectIds) &&
+      (typeof projectId !== 'string' ||
+        !identity.mcpGrant.allowedProjectIds.some(
+          (id) => id.toLowerCase() === projectId.trim().toLowerCase(),
+        ))
+    ) {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
     const selectors: unknown[] = [
       request.headers['x-organization-id'],
       request.query?.organizationId,

@@ -2,7 +2,11 @@ import '../common/observability/register-otel';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { GatewayModule } from './gateway.module';
-import { configureApplication, configureSwagger } from '../bootstrap';
+import {
+  configureApplication,
+  configureSwagger,
+  resolveCorsAllowedOrigins,
+} from '../bootstrap';
 
 async function bootstrap() {
   const app = await NestFactory.create(GatewayModule);
@@ -20,7 +24,15 @@ async function bootstrap() {
     throw new Error('GATEWAY_TRUSTED_PROXY_CIDRS is required in production');
   }
 
-  configureApplication(app, trustedProxyCidrs);
+  configureApplication(
+    app,
+    trustedProxyCidrs,
+    resolveCorsAllowedOrigins({
+      corsAllowedOrigins: config.get<string>('CORS_ALLOWED_ORIGINS'),
+      continuumWebBaseUrl: config.get<string>('CONTINUUM_WEB_BASE_URL'),
+      webAppUrl: config.get<string>('WEB_APP_URL'),
+    }),
+  );
 
   if (config.getOrThrow<boolean>('SWAGGER_ENABLED')) {
     configureSwagger(app);
