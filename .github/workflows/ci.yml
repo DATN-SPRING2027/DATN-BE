@@ -104,7 +104,7 @@ jobs:
           persist-credentials: false
       - name: Verify production Dockerfile build
         run: docker build --target runtime -t continuum-ai-backend:ci .
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Lint Continuum AI Helm chart
         run: helm lint charts/continuum-ai
 
