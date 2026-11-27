@@ -257,12 +257,14 @@ function optionsMatch(existing, desired) {
 }
 
 /**
- * Pure planner evaluating existing indexes per `database.collection` and emitting
- * CREATE / NOOP / BLOCK actions with conflict diagnostics.
+ * Pure planner evaluating existing indexes per `database.collection` and optional
+ * duplicate-key preflight findings for unique indexes, emitting CREATE / NOOP / BLOCK
+ * actions, conflict diagnostics, and an additive-only rollback list.
  */
 export function planAuditRemediationIndexes({
   target,
   existingByNamespace,
+  duplicatesByIndexName = {},
   specs = AUDIT_REMEDIATION_INDEX_SPECS,
 }) {
   const entries = specs.map((spec) => {
@@ -279,9 +281,15 @@ export function planAuditRemediationIndexes({
     const conflicts = relevant.filter(
       (idx) => !(keyMatches(idx.key, spec.key) && optionsMatch(idx, spec)),
     );
+    const duplicateGroups =
+      spec.unique && !exact ? (duplicatesByIndexName[spec.name] ?? []) : [];
 
     const action =
-      conflicts.length > 0 ? 'BLOCK' : exact ? 'NOOP' : 'CREATE';
+      conflicts.length > 0 || duplicateGroups.length > 0
+        ? 'BLOCK'
+        : exact
+          ? 'NOOP'
+          : 'CREATE';
     return {
       database: spec.database,
       collection: spec.collection,
@@ -297,6 +305,9 @@ export function planAuditRemediationIndexes({
         name: idx.name ?? null,
         key: idx.key ?? null,
       })),
+      ...(duplicateGroups.length > 0
+        ? { duplicateKeyGroups: duplicateGroups }
+        : {}),
     };
   });
 
@@ -304,6 +315,9 @@ export function planAuditRemediationIndexes({
   const createCount = entries.filter((entry) => entry.action === 'CREATE').length;
   const noopCount = entries.filter((entry) => entry.action === 'NOOP').length;
   const blockCount = entries.filter((entry) => entry.action === 'BLOCK').length;
+  const rollbackDropIndexes = entries
+    .filter((entry) => entry.action === 'CREATE')
+    .map(({ database, collection, name }) => ({ database, collection, name }));
 
   return {
     migration: AUDIT_REMEDIATION_INDEX_MIGRATION,
@@ -316,6 +330,7 @@ export function planAuditRemediationIndexes({
       block: blockCount,
     },
     indexes: entries,
+    rollbackDropIndexes,
   };
 }
 
@@ -357,6 +372,7 @@ async function runMigration() {
 
   async function inspect() {
     const existingByNamespace = {};
+    const existingNamespaces = new Set();
     for (const ns of namespaces) {
       const [dbName, collName] = ns.split('.');
       const db = connection.useDb(dbName, { useCache: true }).db;
@@ -367,12 +383,55 @@ async function runMigration() {
       const listed = await db
         .listCollections({ name: collName }, { nameOnly: true })
         .toArray();
-      existingByNamespace[ns] =
-        listed.length > 0 ? await db.collection(collName).indexes() : [];
+      if (listed.length > 0) {
+        existingNamespaces.add(ns);
+        existingByNamespace[ns] = await db.collection(collName).indexes();
+      } else {
+        existingByNamespace[ns] = [];
+      }
     }
+
+    const duplicatesByIndexName = {};
+    for (const spec of AUDIT_REMEDIATION_INDEX_SPECS) {
+      if (!spec.unique) continue;
+      const ns = `${spec.database}.${spec.collection}`;
+      if (!existingNamespaces.has(ns)) continue;
+      const existing = existingByNamespace[ns] ?? [];
+      const alreadyExists = existing.some(
+        (idx) => keyMatches(idx.key, spec.key) && optionsMatch(idx, spec),
+      );
+      if (alreadyExists) continue;
+      const db = connection.useDb(spec.database, { useCache: true }).db;
+      if (!db) continue;
+      const groupId = Object.fromEntries(
+        Object.keys(spec.key).map((field) => [
+          field.replaceAll('.', '__'),
+          `$${field}`,
+        ]),
+      );
+      const pipeline = [
+        ...(spec.partialFilterExpression
+          ? [{ $match: spec.partialFilterExpression }]
+          : []),
+        { $group: { _id: groupId, count: { $sum: 1 } } },
+        { $match: { count: { $gt: 1 } } },
+        { $limit: 5 },
+      ];
+      const dupes = await db
+        .collection(spec.collection)
+        .aggregate(pipeline)
+        .toArray();
+      if (dupes.length > 0) {
+        duplicatesByIndexName[spec.name] = dupes.map((row) => ({
+          count: row.count,
+        }));
+      }
+    }
+
     const plan = planAuditRemediationIndexes({
       target: fingerprint,
       existingByNamespace,
+      duplicatesByIndexName,
     });
     return { ...plan, reportSha256: hashAuditRemediationPlan(plan) };
   }

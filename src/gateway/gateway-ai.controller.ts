@@ -194,6 +194,21 @@ export class GatewayAiController {
     return this.forward(request, response);
   }
 
+  @Get('ai-engine/projects/:projectId/conflicts')
+  listProjectConflicts(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('ai-engine/projects/:projectId/conflicts/:resolutionId/resolve')
+  resolveProjectConflict(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
+  @Post('ai-engine/projects/:projectId/conflicts/:resolutionId/reopen')
+  reopenProjectConflict(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Get('platform/ai/feedback')
   listPlatformAiFeedback(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);

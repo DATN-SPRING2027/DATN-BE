@@ -3,6 +3,7 @@ import { IamModule } from '../../services/iam/iam.module';
 import { CaptureModule } from '../../services/capture/capture.module';
 import { AiChatController } from './ai-chat.controller';
 import { AiChatService } from './ai-chat.service';
+import { AiConflictsController } from './ai-conflicts.controller';
 import { AiEngineController } from './ai-engine.controller';
 import { AiEngineAuthController } from './ai-engine-auth.controller';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
@@ -16,6 +17,7 @@ import { AiTokenUsageService } from './ai-token-usage.service';
   controllers: [
     AiEngineController,
     AiEngineAuthController,
+    AiConflictsController,
     AiChatController,
     PlatformAiFeedbackController,
     AiTokenUsageController,

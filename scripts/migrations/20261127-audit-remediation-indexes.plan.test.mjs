@@ -95,3 +95,42 @@ test('blocks conflicting index options or mismatched same-name keys without modi
   assert.equal(plan.clean, false);
   assert.equal(plan.summary.block, 2);
 });
+
+test('blocks unique index creation when historical duplicate keys exist and scopes rollback to CREATE-only indexes', () => {
+  const existingByNamespace = {
+    'continuum_iam.projects': [
+      { name: '_id_', key: { _id: 1 } },
+      {
+        name: 'iam_projects_org_status_updated_desc',
+        key: { organizationId: 1, status: 1, updatedAt: -1 },
+      },
+    ],
+  };
+  const plan = planAuditRemediationIndexes({
+    target: 'fingerprint-test',
+    existingByNamespace,
+    duplicatesByIndexName: {
+      ai_token_usage_org_project_dedupe_unique: [{ count: 2 }],
+    },
+  });
+  assert.equal(plan.clean, false);
+  assert.equal(plan.summary.block, 1);
+  const blocked = plan.indexes.find(
+    (entry) => entry.name === 'ai_token_usage_org_project_dedupe_unique',
+  );
+  assert.equal(blocked?.action, 'BLOCK');
+  assert.deepEqual(blocked?.duplicateKeyGroups, [{ count: 2 }]);
+  assert.equal(
+    plan.rollbackDropIndexes.some(
+      (entry) => entry.name === 'iam_projects_org_status_updated_desc',
+    ),
+    false,
+  );
+  assert.equal(
+    plan.rollbackDropIndexes.some(
+      (entry) => entry.name === 'ai_token_usage_org_project_dedupe_unique',
+    ),
+    false,
+  );
+  assert.equal(plan.rollbackDropIndexes.length, plan.summary.create);
+});
