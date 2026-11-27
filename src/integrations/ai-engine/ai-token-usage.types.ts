@@ -73,7 +73,7 @@ export interface AiTokenUsageResponseDto {
 
 export interface RecordAiTokenUsageEventInput {
   readonly organizationId: string;
-  readonly projectId: string;
+  readonly projectId: string | null;
   readonly userId: string;
   readonly taskKind: AiTokenUsageTaskKind;
   readonly inputTokens: number;

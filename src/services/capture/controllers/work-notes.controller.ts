@@ -3,7 +3,6 @@ import {
   Controller,
   BadRequestException,
   Delete,
-  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -18,10 +17,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import {
-  readCookie,
-  validCsrfPair,
-} from '../../iam/application/authentication/authentication.application.service';
+import { resolveExpectedOrganizationHeader } from '../../../common/http/organization-header';
+import { assertCookieAuthCsrf } from '../../../common/security/csrf';
 import type {
   BulkTaskNoteGovernanceAction,
   BulkWorkReportGovernanceAction,
@@ -173,6 +170,8 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+const MAX_PAGINATION_PAGE = 1000;
+
 @Controller('capture/projects/:projectId')
 export class WorkNotesController {
   constructor(private readonly service: WorkNotesService) {}
@@ -184,6 +183,10 @@ export class WorkNotesController {
     @Param('documentId') documentId: string,
   ) {
     const headers = this.mutationHeaders(request);
+    // SEC-BE-007: Authorize caller BEFORE reading up to 20 MB from request stream.
+    if (typeof this.service.assertUploadAuthorized === 'function') {
+      await this.service.assertUploadAuthorized(headers, projectId);
+    }
     const limit = 20 * 1024 * 1024;
     const declaredLength = Number(request.headers['content-length']);
     if (Number.isFinite(declaredLength) && declaredLength > limit)
@@ -208,15 +211,8 @@ export class WorkNotesController {
       throw new BadRequestException({ code: 'DOCUMENT_FILE_INVALID' });
     }
     const expectedSha256 = headerValue(request.headers['x-content-sha256']);
-    const autoSyncSag =
-      headerValue(request.headers['x-auto-sync-sag']) === 'true';
-    const options =
-      expectedSha256 || autoSyncSag
-        ? {
-            ...(expectedSha256 ? { expectedSha256 } : {}),
-            ...(autoSyncSag ? { autoSyncSag: true } : {}),
-          }
-        : undefined;
+    // BE-LOGIC-001: Strip X-Auto-Sync-Sag header shortcut (no upload-time auto-approval).
+    const options = expectedSha256 ? { expectedSha256 } : undefined;
     return options
       ? this.service.uploadDocumentFile(
           headers,
@@ -333,7 +329,9 @@ export class WorkNotesController {
       'Content-Disposition',
       `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
     );
-    return new StreamableFile(file.bytes);
+    return file.stream
+      ? new StreamableFile(file.stream)
+      : new StreamableFile(file.bytes!);
   }
 
   @Get('tasks/:taskId/notes')
@@ -348,7 +346,7 @@ export class WorkNotesController {
       this.requestHeaders(request),
       projectId,
       taskId,
-      positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
+      positiveInteger(rawQuery.page, 1, MAX_PAGINATION_PAGE),
       positiveInteger(rawQuery.pageSize, 20, 100),
     );
   }
@@ -369,18 +367,21 @@ export class WorkNotesController {
   }
 
   @Get('tasks/:taskId/notes/:noteId')
-  getTaskNote(
+  async getTaskNote(
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Param('taskId') taskId: string,
     @Param('noteId') noteId: string,
+    @Res({ passthrough: true }) response?: Response,
   ) {
-    return this.service.getTaskNote(
+    const result = await this.service.getTaskNote(
       this.requestHeaders(request),
       projectId,
       taskId,
       noteId,
     );
+    this.setEntityEtagHeader(response, result?.updatedAt);
+    return result;
   }
 
   @Patch('tasks/:taskId/notes/:noteId')
@@ -462,7 +463,7 @@ export class WorkNotesController {
     return this.service.listProjectTaskNotes(
       this.requestHeaders(request),
       projectId,
-      positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
+      positiveInteger(rawQuery.page, 1, MAX_PAGINATION_PAGE),
       positiveInteger(rawQuery.pageSize, 20, 100),
       hasExtendedFilters
         ? {
@@ -497,16 +498,19 @@ export class WorkNotesController {
   }
 
   @Get('work-notes/:noteId')
-  getProjectTaskNote(
+  async getProjectTaskNote(
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Param('noteId') noteId: string,
+    @Res({ passthrough: true }) response?: Response,
   ) {
-    return this.service.getProjectTaskNote(
+    const result = await this.service.getProjectTaskNote(
       this.requestHeaders(request),
       projectId,
       noteId,
     );
+    this.setEntityEtagHeader(response, result?.updatedAt);
+    return result;
   }
 
   @Delete('work-notes/:noteId')
@@ -756,7 +760,7 @@ export class WorkNotesController {
     return this.service.listDocuments(
       this.requestHeaders(request),
       projectId,
-      positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER),
+      positiveInteger(rawQuery.page, 1, MAX_PAGINATION_PAGE),
       positiveInteger(rawQuery.pageSize, 20, 100),
       optionalStatus(rawQuery.status, documentStatuses),
     );
@@ -776,16 +780,19 @@ export class WorkNotesController {
   }
 
   @Get('documents/:documentId')
-  getDocument(
+  async getDocument(
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Param('documentId') documentId: string,
+    @Res({ passthrough: true }) response?: Response,
   ) {
-    return this.service.getDocument(
+    const result = await this.service.getDocument(
       this.requestHeaders(request),
       projectId,
       documentId,
     );
+    this.setEntityEtagHeader(response, result?.updatedAt);
+    return result;
   }
 
   @Patch('documents/:documentId')
@@ -1070,7 +1077,7 @@ export class WorkNotesController {
     ]);
     const scope = validateReportScope(rawQuery.scope);
     const filters = validateWorkReportsListFilters(rawQuery);
-    const page = positiveInteger(rawQuery.page, 1, Number.MAX_SAFE_INTEGER);
+    const page = positiveInteger(rawQuery.page, 1, MAX_PAGINATION_PAGE);
     const pageSize = positiveInteger(rawQuery.pageSize, 20, 100);
     const status = optionalStatus(rawQuery.status, workReportStatuses);
     if (filters) {
@@ -1184,6 +1191,10 @@ export class WorkNotesController {
     @Param('reportId') reportId: string,
   ) {
     const headers = this.mutationHeaders(request);
+    // SEC-BE-007: Authorize caller BEFORE reading up to 20 MB from request stream.
+    if (typeof this.service.assertUploadAuthorized === 'function') {
+      await this.service.assertUploadAuthorized(headers, projectId);
+    }
     const limit = 20 * 1024 * 1024;
     const declaredLength = Number(request.headers['content-length']);
     if (Number.isFinite(declaredLength) && declaredLength > limit)
@@ -1353,16 +1364,19 @@ export class WorkNotesController {
   }
 
   @Get('work-reports/:reportId')
-  getWorkReport(
+  async getWorkReport(
     @Req() request: Request,
     @Param('projectId') projectId: string,
     @Param('reportId') reportId: string,
+    @Res({ passthrough: true }) response?: Response,
   ) {
-    return this.service.getWorkReport(
+    const result = await this.service.getWorkReport(
       this.requestHeaders(request),
       projectId,
       reportId,
     );
+    this.setEntityEtagHeader(response, result?.updatedAt);
+    return result;
   }
 
   @Patch('work-reports/:reportId')
@@ -1388,7 +1402,6 @@ export class WorkNotesController {
     @Param('reportId') reportId: string,
     @Body() body?: unknown,
   ) {
-    let autoApprove: boolean | undefined;
     if (body && typeof body === 'object' && !Array.isArray(body)) {
       const payload = body as Record<string, unknown>;
       if (Object.keys(payload).some((key) => key !== 'autoApprove')) {
@@ -1400,20 +1413,13 @@ export class WorkNotesController {
       ) {
         invalid();
       }
-      autoApprove = payload.autoApprove;
     }
-    return autoApprove !== undefined
-      ? this.service.submitWorkReport(
-          this.mutationHeaders(request),
-          projectId,
-          reportId,
-          { autoApprove },
-        )
-      : this.service.submitWorkReport(
-          this.mutationHeaders(request),
-          projectId,
-          reportId,
-        );
+    // BE-LOGIC-001: Never forward autoApprove shortcut; always submit for independent review.
+    return this.service.submitWorkReport(
+      this.mutationHeaders(request),
+      projectId,
+      reportId,
+    );
   }
 
   @Post('work-reports/:reportId/approve')
@@ -1467,39 +1473,36 @@ export class WorkNotesController {
     );
   }
 
+  private setEntityEtagHeader(
+    response: Response | undefined,
+    updatedAt: string | undefined,
+  ): void {
+    if (!response || !updatedAt) return;
+    const ms = Date.parse(updatedAt);
+    if (Number.isFinite(ms)) {
+      response.setHeader('ETag', `W/"${ms}"`);
+    }
+  }
+
   private requestHeaders(request: Request) {
     return {
       authorization: headerValue(request.headers.authorization),
       cookie: headerValue(request.headers.cookie),
       csrfToken: headerValue(request.headers['x-csrf-token']),
-      organizationId: headerValue(request.headers['x-organization-id']),
+      organizationId: resolveExpectedOrganizationHeader(request.headers),
       requestId: headerValue(request.headers['x-request-id']),
+      ifMatch: headerValue(request.headers['if-match']),
     };
   }
 
   private mutationHeaders(request: Request) {
     const headers = this.requestHeaders(request);
-    const hasBearer =
-      typeof headers.authorization === 'string' &&
-      /^bearer\s+\S+/i.test(headers.authorization.trim());
-    if (
-      !hasBearer &&
-      typeof headers.cookie === 'string' &&
-      headers.cookie.trim().length > 0
-    ) {
-      const cookieToken =
-        readCookie(headers.cookie, '__Host-csrf') ??
-        readCookie(headers.cookie, 'continuum_csrf') ??
-        readCookie(headers.cookie, 'csrf_token');
-      const csrfHeader =
-        typeof headers.csrfToken === 'string' ? headers.csrfToken.trim() : '';
-      if (!validCsrfPair(cookieToken, csrfHeader)) {
-        throw new ForbiddenException({
-          code: 'CSRF_INVALID',
-          message: 'CSRF token is missing or invalid.',
-        });
-      }
-    }
+    assertCookieAuthCsrf(
+      headers.authorization,
+      headers.cookie,
+      headers.csrfToken,
+      'CSRF_INVALID',
+    );
     return headers;
   }
 }

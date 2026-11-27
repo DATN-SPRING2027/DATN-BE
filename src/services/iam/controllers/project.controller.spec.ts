@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   NotFoundException,
   UnauthorizedException,
   UnprocessableEntityException,
@@ -59,7 +60,27 @@ describe('ProjectController trusted Organization boundary', () => {
     }
     expect(projects.create).toHaveBeenCalledTimes(1);
 
-    await controller.create(
+    // SEC-AUTH-012: Non-ADMIN cannot create PUBLIC projects or appoint third-party leaders
+    await expect(
+      controller.create(
+        undefined,
+        undefined,
+        {
+          name: 'Public Project',
+          code: 'PUB1',
+          visibility: 'PUBLIC',
+          memberUserIds: ['dddddddddddddddddddddddd'],
+          leaderUserIds: ['eeeeeeeeeeeeeeeeeeeeeeee'],
+        },
+        response,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    // Organization ADMIN can create PUBLIC projects and appoint leaders
+    const adminActor = { ...actor, roles: ['ADMIN'] };
+    const adminFixture = fixture();
+    adminFixture.auth.getCurrentIdentity.mockResolvedValue(adminActor);
+    await adminFixture.controller.create(
       undefined,
       undefined,
       {
@@ -69,9 +90,9 @@ describe('ProjectController trusted Organization boundary', () => {
         memberUserIds: ['dddddddddddddddddddddddd', 'DDDDDDDDDDDDDDDDDDDDDDDD'],
         leaderUserIds: ['eeeeeeeeeeeeeeeeeeeeeeee'],
       },
-      response,
+      adminFixture.response,
     );
-    expect(projects.create).toHaveBeenLastCalledWith(actor, {
+    expect(adminFixture.projects.create).toHaveBeenLastCalledWith(adminActor, {
       name: 'Public Project',
       code: 'PUB1',
       visibility: 'PUBLIC',

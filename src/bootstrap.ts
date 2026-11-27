@@ -1,5 +1,6 @@
 import {
   INestApplication,
+  Logger,
   RequestMethod,
   ValidationPipe,
 } from '@nestjs/common';
@@ -14,6 +15,39 @@ import helmet from 'helmet';
 import { requestIdMiddleware } from './common/http/request-id.middleware';
 import { mcpKeyRestMutationGuardMiddleware } from './common/http/mcp-key-rest-guard.middleware';
 import { StructuredExceptionFilter } from './common/http/structured-exception.filter';
+
+const httpAccessLogger = new Logger('HttpAccess');
+
+/**
+ * OBS-004: Lightweight structured JSON HTTP access logger.
+ * Strips query parameters so sensitive OAuth/verification/reset tokens never enter stdout logs.
+ */
+function httpAccessLogMiddleware(
+  req: Request & { requestId?: string },
+  res: Response,
+  next: NextFunction,
+): void {
+  if (process.env.NODE_ENV === 'test') {
+    next();
+    return;
+  }
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    const rawPath = (req.originalUrl ?? req.url ?? '/').split('?')[0];
+    httpAccessLogger.log(
+      JSON.stringify({
+        event: 'http_request',
+        timestamp: new Date().toISOString(),
+        requestId: req.requestId ?? null,
+        method: req.method,
+        path: rawPath,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt,
+      }),
+    );
+  });
+  next();
+}
 
 const mcpPermissiveJsonParser = express.json({ strict: false, limit: '28mb' });
 
@@ -39,11 +73,15 @@ function mcpBodyParserMiddleware(
   next();
 }
 
-export function resolveCorsAllowedOrigins(config: {
-  corsAllowedOrigins?: string;
-  continuumWebBaseUrl?: string;
-  webAppUrl?: string;
-}): string[] {
+export function resolveCorsAllowedOrigins(
+  config: {
+    corsAllowedOrigins?: string;
+    continuumWebBaseUrl?: string;
+    webAppUrl?: string;
+    sagWebBaseUrl?: string;
+  },
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+): string[] {
   const origins = new Set<string>();
   const addOrigin = (raw: string | undefined) => {
     const trimmed = raw?.trim();
@@ -63,11 +101,29 @@ export function resolveCorsAllowedOrigins(config: {
   }
   addOrigin(config.continuumWebBaseUrl);
   addOrigin(config.webAppUrl);
+  addOrigin(config.sagWebBaseUrl);
 
   if (origins.size === 0) {
+    if (nodeEnv === 'production') {
+      return [];
+    }
     return ['http://localhost:3000', 'http://127.0.0.1:3000'];
   }
   return [...origins];
+}
+
+export function resolveAllowedCorsOrigins(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return resolveCorsAllowedOrigins(
+    {
+      corsAllowedOrigins: env.CORS_ALLOWED_ORIGINS,
+      continuumWebBaseUrl: env.CONTINUUM_WEB_BASE_URL,
+      webAppUrl: env.WEB_APP_URL,
+      sagWebBaseUrl: env.SAG_WEB_BASE_URL,
+    },
+    env.NODE_ENV,
+  );
 }
 
 export function configureApplication(
@@ -83,25 +139,27 @@ export function configureApplication(
     exclude: [{ path: 'internal/mcp', method: RequestMethod.ALL }],
   });
   app.use(requestIdMiddleware);
+  app.use(httpAccessLogMiddleware);
   app.use(mcpKeyRestMutationGuardMiddleware);
   app.use(mcpBodyParserMiddleware);
   app.use(
     helmet({
-      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      crossOriginResourcePolicy: { policy: 'same-site' },
     }),
   );
   const resolvedOrigins =
     corsAllowedOrigins.length > 0
       ? [...new Set(corsAllowedOrigins)]
-      : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+      : resolveAllowedCorsOrigins();
   app.enableCors({
-    origin: resolvedOrigins,
+    origin: resolvedOrigins.length > 0 ? resolvedOrigins : false,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
       'X-CSRF-Token',
+      'X-Expected-Organization-Id',
       'X-Organization-Id',
       'X-Request-Id',
       'If-Match',

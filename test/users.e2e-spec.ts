@@ -140,9 +140,19 @@ describe('User directory (e2e)', () => {
       .expect(200);
     expect((detail.body as UserRecord).fullName).toBe('b User');
 
-    const updated = await request(server)
+    const csrfToken = 'e2e-users-csrf-token';
+    const adminMutationCookie = `continuum_access=admin; continuum_csrf=${csrfToken}`;
+
+    await request(server)
       .patch(`/api/v1/iam/users/${memberId}`)
       .set('Cookie', 'continuum_access=admin')
+      .send({ fullName: 'Blocked Without CSRF' })
+      .expect(403);
+
+    const updated = await request(server)
+      .patch(`/api/v1/iam/users/${memberId}`)
+      .set('Cookie', adminMutationCookie)
+      .set('x-csrf-token', csrfToken)
       .send({ fullName: 'Updated Member', status: 'SUSPENDED' })
       .expect(200);
     expect(updated.body).toMatchObject({
@@ -154,6 +164,8 @@ describe('User directory (e2e)', () => {
 
   it('enforces authentication, admin scope, validation and last-admin protection', async () => {
     const server = app.getHttpServer() as App;
+    const csrfToken = 'e2e-users-csrf-token';
+    const adminMutationCookie = `continuum_access=admin; continuum_csrf=${csrfToken}`;
     await request(server).get('/api/v1/iam/users').expect(401);
     await request(server)
       .get('/api/v1/iam/users')
@@ -165,20 +177,23 @@ describe('User directory (e2e)', () => {
       .expect(422);
     await request(server)
       .patch(`/api/v1/iam/users/${adminId}`)
-      .set('Cookie', 'continuum_access=admin')
+      .set('Cookie', adminMutationCookie)
+      .set('x-csrf-token', csrfToken)
       .send({ status: 'SUSPENDED' })
       .expect(403);
 
     users = [user(otherId, ['ADMIN'])];
     await request(server)
       .patch(`/api/v1/iam/users/${otherId}`)
-      .set('Cookie', 'continuum_access=admin')
+      .set('Cookie', adminMutationCookie)
+      .set('x-csrf-token', csrfToken)
       .send({ status: 'SUSPENDED' })
       .expect(409);
     users.unshift(user(adminId, ['ADMIN']));
     await request(server)
       .patch(`/api/v1/iam/users/${otherId}`)
-      .set('Cookie', 'continuum_access=admin')
+      .set('Cookie', adminMutationCookie)
+      .set('x-csrf-token', csrfToken)
       .send({ status: 'SUSPENDED' })
       .expect(200);
   });

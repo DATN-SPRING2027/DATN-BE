@@ -8,6 +8,7 @@ import { GatewayChatController } from './gateway-chat.controller';
 import { GatewayTaskWorkspaceController } from './gateway-task-workspace.controller';
 import { GatewayCaptureController } from './gateway-capture.controller';
 import { GatewayHandoverController } from './gateway-handover.controller';
+import { GatewayAiController } from './gateway-ai.controller';
 import { GatewayMcpController } from './gateway-mcp.controller';
 
 @Module({
@@ -26,6 +27,7 @@ import { GatewayMcpController } from './gateway-mcp.controller';
     GatewayTaskWorkspaceController,
     GatewayCaptureController,
     GatewayHandoverController,
+    GatewayAiController,
     GatewayMcpController,
   ],
 })

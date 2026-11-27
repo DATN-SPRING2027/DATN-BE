@@ -1,4 +1,9 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
 import { SERVICE_DATABASES } from '../../../../common/mongodb/database-names';
@@ -129,6 +134,80 @@ export class NotificationCenterRepository {
     return db.collection(collectionName);
   }
 
+  private unknownIdToString(value: unknown): string {
+    if (value instanceof Types.ObjectId) return value.toHexString();
+    if (typeof value === 'string') return value;
+    return '';
+  }
+
+  private assertMemoryStoreAllowed(): void {
+    // BE-REL-007: Never silently fall back to process-local memoryStore outside test runs.
+    if (process.env.NODE_ENV !== 'test') {
+      throw new ServiceUnavailableException({
+        code: 'NOTIFICATION_DATABASE_UNAVAILABLE',
+        message: 'Notification database is unavailable.',
+      });
+    }
+  }
+
+  private isRoleAssignmentActive(
+    assignment: Record<string, unknown> | null | undefined,
+    now: Date,
+  ): boolean {
+    if (!assignment) return false;
+    if (
+      assignment.status !== undefined &&
+      assignment.status !== null &&
+      assignment.status !== 'ACTIVE'
+    ) {
+      return false;
+    }
+    if (assignment.revokedAt !== undefined && assignment.revokedAt !== null) {
+      return false;
+    }
+    if (assignment.validFrom instanceof Date && assignment.validFrom > now) {
+      return false;
+    }
+    if (assignment.validUntil instanceof Date && assignment.validUntil <= now) {
+      return false;
+    }
+    return true;
+  }
+
+  private redactDeniedItem(
+    item: NotificationItemDto,
+    resolution: NotificationResolveResponseDto | null | undefined,
+  ): NotificationItemDto {
+    // SEC-AUTH-011: Strip title, actorId, and all target/resource IDs when access is revoked or deleted.
+    return {
+      ...item,
+      actorId: null,
+      projectId: null,
+      taskId: null,
+      noteId: null,
+      conversationId: null,
+      title: 'Notification unavailable',
+      message:
+        resolution === null || resolution === undefined
+          ? 'Content is temporarily unavailable.'
+          : resolution.reason === 'DELETED'
+            ? 'Content is no longer available.'
+            : 'This content is no longer available',
+      target: item.target
+        ? {
+            kind: item.target.kind,
+            url: '/notifications',
+            organizationId: null,
+            projectId: null,
+            taskId: null,
+            noteId: null,
+            conversationId: null,
+            messageId: null,
+          }
+        : null,
+    };
+  }
+
   async upsertNotification(
     input: UpsertNotificationRecordInput,
   ): Promise<{ item: NotificationItemDto; created: boolean }> {
@@ -139,6 +218,7 @@ export class NotificationCenterRepository {
         input.organizationId ?? input.target?.organizationId,
       ) ?? null;
     if (!model) {
+      this.assertMemoryStoreAllowed();
       const dedupKey = `${input.recipientId}::${input.eventKey}`;
       const existingId = this.memoryEventIndex.get(dedupKey);
       if (existingId) {
@@ -345,13 +425,431 @@ export class NotificationCenterRepository {
     return { $and: clauses };
   }
 
-  private async sanitizeItemsForListing(
+  private async prefetchAccessLookupsForBatch(
+    recipientId: string,
+    items: readonly NotificationItemDto[],
+    accessLookupCache: Map<string, Promise<unknown>>,
+    activeOrganizationId?: string | null,
+  ): Promise<void> {
+    // BE-PERF-008: Bulk-prefetch cross-DB ACL records via $in so GET /notifications
+    // executes O(1) DB queries per page instead of O(N) per-item queries.
+    const baseConnection = this.activeConnection();
+    if (!baseConnection || typeof baseConnection.useDb !== 'function') {
+      return;
+    }
+    if (!Types.ObjectId.isValid(recipientId)) {
+      return;
+    }
+    const actorObjId = new Types.ObjectId(recipientId);
+    const normalizedActorId = recipientId.toLowerCase();
+    const scopedOrgId = this.normalizeOrganizationId(activeOrganizationId);
+
+    const orgIds = new Set<string>();
+    const projectIds = new Set<string>();
+    const projectOrgPairs = new Map<string, string | null>();
+    const workNoteIds = new Set<string>();
+    const workNoteProjectIds = new Set<string>();
+    const workNoteItems: Array<{
+      noteId: string;
+      projectId: string;
+      orgId: string | null;
+    }> = [];
+    const conversationIds = new Set<string>();
+    const messageIds = new Set<string>();
+    const messageItems: Array<{ messageId: string; conversationId: string }> =
+      [];
+
+    for (const item of items) {
+      const target = item.target;
+      if (!target) continue;
+      const orgId = this.normalizeOrganizationId(
+        target.organizationId ?? item.organizationId ?? scopedOrgId,
+      );
+      if (orgId && Types.ObjectId.isValid(orgId)) {
+        orgIds.add(orgId);
+      }
+      if (
+        target.kind === 'PROJECT' ||
+        target.kind === 'TASK' ||
+        target.kind === 'WORK_NOTE'
+      ) {
+        const pid = target.projectId ?? item.projectId;
+        if (pid && Types.ObjectId.isValid(pid)) {
+          projectIds.add(pid);
+          projectOrgPairs.set(`${orgId ?? ''}:${pid}`, orgId);
+        }
+        if (target.kind === 'WORK_NOTE') {
+          const nid = target.noteId ?? item.noteId;
+          if (
+            nid &&
+            Types.ObjectId.isValid(nid) &&
+            pid &&
+            Types.ObjectId.isValid(pid)
+          ) {
+            workNoteIds.add(nid);
+            workNoteProjectIds.add(pid);
+            workNoteItems.push({ noteId: nid, projectId: pid, orgId });
+          }
+        }
+      } else if (target.kind === 'CHAT') {
+        const cid = target.conversationId ?? item.conversationId;
+        if (cid && Types.ObjectId.isValid(cid)) {
+          conversationIds.add(cid);
+          if (target.messageId && Types.ObjectId.isValid(target.messageId)) {
+            messageIds.add(target.messageId);
+            messageItems.push({
+              messageId: target.messageId,
+              conversationId: cid,
+            });
+          }
+        }
+      }
+    }
+
+    const canFind = (
+      coll: ReturnType<NotificationCenterRepository['dbCollection']>,
+    ): coll is NonNullable<
+      ReturnType<NotificationCenterRepository['dbCollection']>
+    > => Boolean(coll && typeof coll.find === 'function');
+
+    const orgsColl = this.dbCollection(SERVICE_DATABASES.iam, 'organizations');
+    const projectsColl = this.dbCollection(SERVICE_DATABASES.iam, 'projects');
+    const convsColl = this.dbCollection(
+      SERVICE_DATABASES.chat,
+      'chat_conversations',
+    );
+    const workNotesColl = this.dbCollection(
+      SERVICE_DATABASES.capture,
+      'work_notes',
+    );
+    const chatMembersColl = this.dbCollection(
+      SERVICE_DATABASES.chat,
+      'chat_members',
+    );
+    const chatMessagesColl = this.dbCollection(
+      SERVICE_DATABASES.chat,
+      'chat_conversation_messages',
+    );
+
+    // Phase 1: Batch-fetch primary entities (organizations, projects, conversations, work notes, chat members/messages)
+    const [orgRows, projectRows, convRows, noteRows, chatMemberRows, msgRows] =
+      await Promise.all([
+        orgIds.size > 0 && canFind(orgsColl)
+          ? orgsColl
+              .find({
+                _id: { $in: [...orgIds].map((id) => new Types.ObjectId(id)) },
+              })
+              .toArray()
+          : Promise.resolve(null),
+        projectIds.size > 0 && canFind(projectsColl)
+          ? projectsColl
+              .find({
+                _id: {
+                  $in: [...projectIds].map((id) => new Types.ObjectId(id)),
+                },
+              })
+              .toArray()
+          : Promise.resolve(null),
+        conversationIds.size > 0 && canFind(convsColl)
+          ? convsColl
+              .find({
+                _id: {
+                  $in: [...conversationIds].map((id) => new Types.ObjectId(id)),
+                },
+              })
+              .toArray()
+          : Promise.resolve(null),
+        workNoteIds.size > 0 && canFind(workNotesColl)
+          ? workNotesColl
+              .find({
+                _id: {
+                  $in: [...workNoteIds].map((id) => new Types.ObjectId(id)),
+                },
+                projectId: {
+                  $in: [...workNoteProjectIds].map(
+                    (id) => new Types.ObjectId(id),
+                  ),
+                },
+                type: 'TASK_NOTE',
+                status: 'CONFIRMED',
+                taskId: { $type: 'objectId' },
+              })
+              .toArray()
+          : Promise.resolve(null),
+        conversationIds.size > 0 && canFind(chatMembersColl)
+          ? chatMembersColl
+              .find({
+                conversationId: {
+                  $in: [...conversationIds].map((id) => new Types.ObjectId(id)),
+                },
+                userId: { $in: [recipientId, normalizedActorId, actorObjId] },
+                $or: [
+                  { status: 'ACTIVE' },
+                  { status: { $exists: false } },
+                  { status: null },
+                ],
+              })
+              .toArray()
+          : Promise.resolve(null),
+        messageIds.size > 0 && canFind(chatMessagesColl)
+          ? chatMessagesColl
+              .find({
+                _id: {
+                  $in: [...messageIds].map((id) => new Types.ObjectId(id)),
+                },
+                conversationId: {
+                  $in: [...conversationIds].map((id) => new Types.ObjectId(id)),
+                },
+              })
+              .toArray()
+          : Promise.resolve(null),
+      ]);
+
+    if (orgRows) {
+      const orgById = new Map(orgRows.map((row) => [String(row._id), row]));
+      for (const id of orgIds) {
+        accessLookupCache.set(
+          `organization:${id}`,
+          Promise.resolve(orgById.get(id) ?? null),
+        );
+      }
+    }
+
+    const effectiveOrgIds = new Set<string>(orgIds);
+    const projectById = new Map<string, Record<string, unknown>>();
+    if (projectRows) {
+      for (const row of projectRows) {
+        const pid = String(row._id);
+        projectById.set(pid, row);
+        if (
+          row.organizationId &&
+          Types.ObjectId.isValid(String(row.organizationId))
+        ) {
+          effectiveOrgIds.add(String(row.organizationId));
+        }
+      }
+      for (const [pairKey, expectedOrg] of projectOrgPairs.entries()) {
+        const pid = pairKey.slice(pairKey.indexOf(':') + 1);
+        const found = projectById.get(pid) ?? null;
+        const matched =
+          found &&
+          (!expectedOrg || String(found.organizationId) === expectedOrg)
+            ? found
+            : null;
+        accessLookupCache.set(`project:${pairKey}`, Promise.resolve(matched));
+      }
+    }
+
+    if (convRows) {
+      const convById = new Map(convRows.map((row) => [String(row._id), row]));
+      for (const cid of conversationIds) {
+        const conv = convById.get(cid) ?? null;
+        if (
+          conv?.organizationId &&
+          Types.ObjectId.isValid(String(conv.organizationId))
+        ) {
+          effectiveOrgIds.add(String(conv.organizationId));
+        }
+        accessLookupCache.set(`conversation:${cid}`, Promise.resolve(conv));
+      }
+    }
+
+    if (noteRows) {
+      const noteByKey = new Map(
+        noteRows.map((row) => [
+          `${String(row.organizationId ?? '')}:${String(row.projectId)}:${String(row._id)}`,
+          row,
+        ]),
+      );
+      for (const { noteId, projectId, orgId } of workNoteItems) {
+        const proj = projectById.get(projectId);
+        const resolvedOrg =
+          this.unknownIdToString(proj?.organizationId) || (orgId ?? '');
+        const found =
+          noteByKey.get(`${resolvedOrg}:${projectId}:${noteId}`) ?? null;
+        accessLookupCache.set(
+          `work-note:${resolvedOrg}:${projectId}:${noteId}`,
+          Promise.resolve(found),
+        );
+      }
+    }
+
+    if (chatMemberRows) {
+      const memberByConv = new Map(
+        chatMemberRows.map((row) => [String(row.conversationId), row]),
+      );
+      for (const cid of conversationIds) {
+        accessLookupCache.set(
+          `chat-member:${cid}:${recipientId}`,
+          Promise.resolve(memberByConv.get(cid) ?? null),
+        );
+      }
+    }
+
+    if (msgRows) {
+      const msgByKey = new Map(
+        msgRows.map((row) => [
+          `${String(row.conversationId)}:${String(row._id)}`,
+          row,
+        ]),
+      );
+      for (const { conversationId, messageId } of messageItems) {
+        accessLookupCache.set(
+          `chat-message:${conversationId}:${messageId}`,
+          Promise.resolve(
+            msgByKey.get(`${conversationId}:${messageId}`) ?? null,
+          ),
+        );
+      }
+    }
+
+    // Phase 2: Batch-fetch memberships & admin role assignments across all referenced orgs/projects
+    const orgMembershipsColl = this.dbCollection(
+      SERVICE_DATABASES.iam,
+      'organization_memberships',
+    );
+    const projectMembershipsColl = this.dbCollection(
+      SERVICE_DATABASES.iam,
+      'project_memberships',
+    );
+    const roleAssignmentsColl = this.dbCollection(
+      SERVICE_DATABASES.iam,
+      'role_assignments',
+    );
+
+    const orgObjIds = [...effectiveOrgIds].map((id) => new Types.ObjectId(id));
+    const now = new Date();
+    const [orgMemberRows, projMemberRows, adminRoleRows] = await Promise.all([
+      orgObjIds.length > 0 && canFind(orgMembershipsColl)
+        ? orgMembershipsColl
+            .find({
+              organizationId: { $in: orgObjIds },
+              userId: actorObjId,
+              status: 'ACTIVE',
+            })
+            .toArray()
+        : Promise.resolve(null),
+      projectIds.size > 0 &&
+      orgObjIds.length > 0 &&
+      canFind(projectMembershipsColl)
+        ? projectMembershipsColl
+            .find({
+              organizationId: { $in: orgObjIds },
+              projectId: {
+                $in: [...projectIds].map((id) => new Types.ObjectId(id)),
+              },
+              userId: actorObjId,
+              status: 'ACTIVE',
+            })
+            .toArray()
+        : Promise.resolve(null),
+      workNoteIds.size > 0 &&
+      orgObjIds.length > 0 &&
+      canFind(roleAssignmentsColl)
+        ? roleAssignmentsColl
+            .find({
+              organizationId: { $in: orgObjIds },
+              userId: actorObjId,
+              roleCode: 'ADMIN',
+              $and: [
+                {
+                  $or: [{ projectId: { $exists: false } }, { projectId: null }],
+                },
+                {
+                  $or: [
+                    { status: 'ACTIVE' },
+                    { status: { $exists: false } },
+                    { status: null },
+                  ],
+                },
+                {
+                  $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }],
+                },
+                {
+                  $or: [
+                    { validFrom: null },
+                    { validFrom: { $exists: false } },
+                    { validFrom: { $lte: now } },
+                  ],
+                },
+                {
+                  $or: [
+                    { validUntil: null },
+                    { validUntil: { $exists: false } },
+                    { validUntil: { $gt: now } },
+                  ],
+                },
+              ],
+            })
+            .toArray()
+        : Promise.resolve(null),
+    ]);
+
+    if (orgMemberRows) {
+      const byOrg = new Map(
+        orgMemberRows.map((row) => [String(row.organizationId), row]),
+      );
+      for (const oid of effectiveOrgIds) {
+        accessLookupCache.set(
+          `organization-membership:${oid}:${recipientId}`,
+          Promise.resolve(byOrg.get(oid) ?? null),
+        );
+      }
+    }
+
+    if (projMemberRows) {
+      const byOrgProj = new Map(
+        projMemberRows.map((row) => [
+          `${String(row.organizationId)}:${String(row.projectId)}`,
+          row,
+        ]),
+      );
+      for (const pid of projectIds) {
+        const proj = projectById.get(pid);
+        const oid = this.unknownIdToString(proj?.organizationId);
+        if (!oid) continue;
+        accessLookupCache.set(
+          `project-membership:${oid}:${pid}:${recipientId}`,
+          Promise.resolve(byOrgProj.get(`${oid}:${pid}`) ?? null),
+        );
+      }
+    }
+
+    if (adminRoleRows) {
+      const byOrg = new Map<string, Record<string, unknown>>();
+      for (const row of adminRoleRows) {
+        if (this.isRoleAssignmentActive(row, now)) {
+          byOrg.set(String(row.organizationId), row);
+        }
+      }
+      for (const oid of effectiveOrgIds) {
+        accessLookupCache.set(
+          `admin-role:${oid}:${recipientId}`,
+          Promise.resolve(byOrg.get(oid) ?? null),
+        );
+      }
+    }
+  }
+
+  async sanitizeItemsForListing(
     recipientId: string,
     items: NotificationItemDto[],
     activeOrganizationId?: string | null,
   ): Promise<NotificationItemDto[]> {
-    if (!this.activeConnection() || items.length === 0) {
+    if (items.length === 0) {
       return items;
+    }
+    if (!this.activeConnection()) {
+      if (process.env.NODE_ENV === 'test') {
+        return items;
+      }
+      const denied: NotificationResolveResponseDto = {
+        available: false,
+        reason: 'FORBIDDEN',
+        message: 'This content is no longer available',
+        target: null,
+      };
+      return items.map((item) => this.redactDeniedItem(item, denied));
     }
 
     const targetKey = (item: NotificationItemDto) =>
@@ -379,6 +877,12 @@ export class NotificationCenterRepository {
     >();
     const accessLookupCache = new Map<string, Promise<unknown>>();
     const targets = [...uniqueTargets.values()];
+    await this.prefetchAccessLookupsForBatch(
+      recipientId,
+      targets.map((entry) => entry.item),
+      accessLookupCache,
+      activeOrganizationId,
+    );
     const maxConcurrentAclChecks = 12;
     for (
       let offset = 0;
@@ -409,21 +913,7 @@ export class NotificationCenterRepository {
     return items.map((item) => {
       const resolution = resolutions.get(targetKey(item));
       if (resolution?.available) return item;
-      return {
-        ...item,
-        message:
-          resolution === null || resolution === undefined
-            ? 'Content is temporarily unavailable.'
-            : resolution.reason === 'DELETED'
-              ? 'Content is no longer available.'
-              : 'This content is no longer available',
-        target: item.target
-          ? {
-              ...item.target,
-              url: '/notifications',
-            }
-          : null,
-      };
+      return this.redactDeniedItem(item, resolution);
     });
   }
 
@@ -449,6 +939,7 @@ export class NotificationCenterRepository {
     const model = this.notificationsModel();
 
     if (!model) {
+      this.assertMemoryStoreAllowed();
       const allForRecipient = [...this.memoryStore.values()]
         .filter(
           (doc) =>
@@ -587,6 +1078,7 @@ export class NotificationCenterRepository {
         : null;
     const model = this.notificationsModel();
     if (!model) {
+      this.assertMemoryStoreAllowed();
       return [...this.memoryStore.values()].filter(
         (doc) =>
           (doc.recipientId === recipientId ||
@@ -625,6 +1117,7 @@ export class NotificationCenterRepository {
     }
     const model = this.notificationsModel();
     if (!model) {
+      this.assertMemoryStoreAllowed();
       const doc = this.memoryStore.get(notificationId);
       if (
         !doc ||
@@ -693,6 +1186,7 @@ export class NotificationCenterRepository {
         : (maybeNow ?? new Date());
     const model = this.notificationsModel();
     if (!model) {
+      this.assertMemoryStoreAllowed();
       let updatedCount = 0;
       for (const doc of this.memoryStore.values()) {
         if (
@@ -741,6 +1235,7 @@ export class NotificationCenterRepository {
     }
     const model = this.notificationsModel();
     if (!model) {
+      this.assertMemoryStoreAllowed();
       const doc = this.memoryStore.get(notificationId);
       if (
         !doc ||
@@ -929,6 +1424,259 @@ export class NotificationCenterRepository {
     }
   }
 
+  async filterActiveProjectRecipients(
+    organizationId: string,
+    projectId: string,
+    userIds: readonly string[],
+  ): Promise<string[]> {
+    // SEC-AUTH-016: Verify recipient holds both ACTIVE org membership and ACTIVE project membership.
+    try {
+      const baseConnection = this.activeConnection();
+      if (!baseConnection) {
+        return process.env.NODE_ENV === 'test' ? [...userIds] : [];
+      }
+      if (
+        !Types.ObjectId.isValid(organizationId) ||
+        !Types.ObjectId.isValid(projectId)
+      ) {
+        return [];
+      }
+      const orgMemberships = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'organization_memberships',
+      );
+      const projectMemberships = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'project_memberships',
+      );
+      if (!orgMemberships || !projectMemberships) {
+        return [];
+      }
+      const normalized = [
+        ...new Set(
+          userIds
+            .map((id) => String(id ?? '').trim())
+            .filter((id) => Types.ObjectId.isValid(id)),
+        ),
+      ];
+      if (normalized.length === 0) return [];
+      const userObjIds = normalized.map((id) => new Types.ObjectId(id));
+      const orgObjId = new Types.ObjectId(organizationId);
+      const projObjId = new Types.ObjectId(projectId);
+
+      const [orgDocs, projDocs] = await Promise.all([
+        typeof orgMemberships.find === 'function'
+          ? orgMemberships
+              .find(
+                {
+                  organizationId: orgObjId,
+                  userId: { $in: userObjIds },
+                  status: 'ACTIVE',
+                },
+                { projection: { userId: 1 } },
+              )
+              .toArray()
+          : Promise.all(
+              userObjIds.map((uid) =>
+                orgMemberships.findOne({
+                  organizationId: orgObjId,
+                  userId: uid,
+                  status: 'ACTIVE',
+                }),
+              ),
+            ).then((rows) => rows.filter(Boolean)),
+        typeof projectMemberships.find === 'function'
+          ? projectMemberships
+              .find(
+                {
+                  organizationId: orgObjId,
+                  projectId: projObjId,
+                  userId: { $in: userObjIds },
+                  status: 'ACTIVE',
+                },
+                { projection: { userId: 1 } },
+              )
+              .toArray()
+          : Promise.all(
+              userObjIds.map((uid) =>
+                projectMemberships.findOne({
+                  organizationId: orgObjId,
+                  projectId: projObjId,
+                  userId: uid,
+                  status: 'ACTIVE',
+                }),
+              ),
+            ).then((rows) => rows.filter(Boolean)),
+      ]);
+
+      const activeOrgSet = new Set(
+        orgDocs.map((d) =>
+          String((d as { userId?: unknown }).userId).toLowerCase(),
+        ),
+      );
+      const activeProjSet = new Set(
+        projDocs.map((d) =>
+          String((d as { userId?: unknown }).userId).toLowerCase(),
+        ),
+      );
+      return normalized.filter(
+        (id) =>
+          activeOrgSet.has(id.toLowerCase()) &&
+          activeProjSet.has(id.toLowerCase()),
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  async findExistingEventKeys(
+    pairs: ReadonlyArray<{ recipientId: string; eventKey: string }>,
+  ): Promise<Set<string>> {
+    const existing = new Set<string>();
+    if (pairs.length === 0) return existing;
+    const model = this.notificationsModel();
+    if (!model) {
+      this.assertMemoryStoreAllowed();
+      for (const pair of pairs) {
+        const key = `${pair.recipientId}::${pair.eventKey}`;
+        if (this.memoryEventIndex.has(key)) {
+          existing.add(key);
+        }
+      }
+      return existing;
+    }
+
+    const recipients = [...new Set(pairs.map((p) => p.recipientId))];
+    const eventKeys = [...new Set(pairs.map((p) => p.eventKey))];
+    const rows = await model
+      .find(
+        {
+          recipientId: { $in: recipients },
+          eventKey: { $in: eventKeys },
+        },
+        { recipientId: 1, eventKey: 1 },
+      )
+      .lean()
+      .exec();
+    for (const row of rows) {
+      existing.add(`${row.recipientId}::${row.eventKey}`);
+    }
+    return existing;
+  }
+
+  async filterActiveTaskDeadlineMemberships(
+    entries: ReadonlyArray<{
+      organizationId: string;
+      projectId: string;
+      assigneeUserId: string;
+    }>,
+  ): Promise<Set<string>> {
+    const active = new Set<string>();
+    if (entries.length === 0) return active;
+    const baseConnection = this.activeConnection();
+    if (!baseConnection) {
+      if (process.env.NODE_ENV === 'test') {
+        for (const e of entries) {
+          active.add(
+            `${e.organizationId.toLowerCase()}:${e.projectId.toLowerCase()}:${e.assigneeUserId.toLowerCase()}`,
+          );
+        }
+      }
+      return active;
+    }
+
+    const orgMemberships = this.dbCollection(
+      SERVICE_DATABASES.iam,
+      'organization_memberships',
+    );
+    const projectMemberships = this.dbCollection(
+      SERVICE_DATABASES.iam,
+      'project_memberships',
+    );
+    if (!orgMemberships || !projectMemberships) {
+      return active;
+    }
+
+    const validEntries = entries.filter(
+      (e) =>
+        Types.ObjectId.isValid(e.organizationId) &&
+        Types.ObjectId.isValid(e.projectId) &&
+        Types.ObjectId.isValid(e.assigneeUserId),
+    );
+    if (validEntries.length === 0) return active;
+
+    const orgIds = [
+      ...new Set(validEntries.map((e) => e.organizationId.toLowerCase())),
+    ];
+    const projIds = [
+      ...new Set(validEntries.map((e) => e.projectId.toLowerCase())),
+    ];
+    const userIds = [
+      ...new Set(validEntries.map((e) => e.assigneeUserId.toLowerCase())),
+    ];
+
+    try {
+      const [orgRows, projRows] = await Promise.all([
+        typeof orgMemberships.find === 'function'
+          ? orgMemberships
+              .find(
+                {
+                  organizationId: {
+                    $in: orgIds.map((id) => new Types.ObjectId(id)),
+                  },
+                  userId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
+                  status: 'ACTIVE',
+                },
+                { projection: { organizationId: 1, userId: 1 } },
+              )
+              .toArray()
+          : Promise.resolve([]),
+        typeof projectMemberships.find === 'function'
+          ? projectMemberships
+              .find(
+                {
+                  organizationId: {
+                    $in: orgIds.map((id) => new Types.ObjectId(id)),
+                  },
+                  projectId: {
+                    $in: projIds.map((id) => new Types.ObjectId(id)),
+                  },
+                  userId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
+                  status: 'ACTIVE',
+                },
+                { projection: { organizationId: 1, projectId: 1, userId: 1 } },
+              )
+              .toArray()
+          : Promise.resolve([]),
+      ]);
+
+      const orgSet = new Set(
+        orgRows.map(
+          (row) =>
+            `${String(row.organizationId).toLowerCase()}:${String(row.userId).toLowerCase()}`,
+        ),
+      );
+      const projSet = new Set(
+        projRows.map(
+          (row) =>
+            `${String(row.organizationId).toLowerCase()}:${String(row.projectId).toLowerCase()}:${String(row.userId).toLowerCase()}`,
+        ),
+      );
+
+      for (const e of validEntries) {
+        const o = e.organizationId.toLowerCase();
+        const p = e.projectId.toLowerCase();
+        const u = e.assigneeUserId.toLowerCase();
+        if (orgSet.has(`${o}:${u}`) && projSet.has(`${o}:${p}:${u}`)) {
+          active.add(`${o}:${p}:${u}`);
+        }
+      }
+      return active;
+    } catch {
+      return new Set<string>();
+    }
+  }
+
   async resolveTargetAccess(
     actorUserId: string,
     notification: NotificationItemDto,
@@ -972,10 +1720,12 @@ export class NotificationCenterRepository {
 
     const baseConnection = this.activeConnection();
     if (!baseConnection) {
+      // SEC-AUTH-011: Fail closed when database connection is unavailable.
       return {
-        available: true,
-        reason: 'OK',
-        target,
+        available: false,
+        reason: 'FORBIDDEN',
+        message: 'This content is no longer available',
+        target: null,
       };
     }
 
@@ -985,30 +1735,39 @@ export class NotificationCenterRepository {
         notification.type === 'ORGANIZATION_MEMBER_INVITED' ||
         notification.type === 'ORGANIZATION_MEMBER_REMOVED'
       ) {
-        if (orgId && Types.ObjectId.isValid(orgId)) {
-          const orgs = this.dbCollection(
-            SERVICE_DATABASES.iam,
-            'organizations',
-          );
-          if (orgs) {
-            const org = await this.cachedAccessLookup(
-              accessLookupCache,
-              `organization:${orgId}`,
-              () => orgs.findOne({ _id: new Types.ObjectId(orgId) }),
-            );
-            if (
-              !org ||
-              (org.deletedAt !== null && org.deletedAt !== undefined) ||
-              org.status === 'DELETED'
-            ) {
-              return {
-                available: false,
-                reason: 'DELETED',
-                message: 'Content is no longer available.',
-                target: null,
-              };
-            }
-          }
+        if (!orgId || !Types.ObjectId.isValid(orgId)) {
+          return {
+            available: false,
+            reason: 'DELETED',
+            message: 'Content is no longer available.',
+            target: null,
+          };
+        }
+        const orgs = this.dbCollection(SERVICE_DATABASES.iam, 'organizations');
+        if (!orgs) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
+        const org = await this.cachedAccessLookup(
+          accessLookupCache,
+          `organization:${orgId}`,
+          () => orgs.findOne({ _id: new Types.ObjectId(orgId) }),
+        );
+        if (
+          !org ||
+          (org.deletedAt !== null && org.deletedAt !== undefined) ||
+          org.status === 'DELETED'
+        ) {
+          return {
+            available: false,
+            reason: 'DELETED',
+            message: 'Content is no longer available.',
+            target: null,
+          };
         }
         return { available: true, reason: 'OK', target };
       }
@@ -1025,44 +1784,50 @@ export class NotificationCenterRepository {
         SERVICE_DATABASES.iam,
         'organization_memberships',
       );
-      if (orgs && memberships && Types.ObjectId.isValid(actorUserId)) {
-        const [org, membership] = await Promise.all([
-          this.cachedAccessLookup(
-            accessLookupCache,
-            `organization:${orgId}`,
-            () => orgs.findOne({ _id: new Types.ObjectId(orgId) }),
-          ),
-          this.cachedAccessLookup(
-            accessLookupCache,
-            `organization-membership:${orgId}:${actorUserId}`,
-            () =>
-              memberships.findOne({
-                organizationId: new Types.ObjectId(orgId),
-                userId: new Types.ObjectId(actorUserId),
-                status: 'ACTIVE',
-              }),
-          ),
-        ]);
-        if (
-          !org ||
-          (org.deletedAt !== null && org.deletedAt !== undefined) ||
-          org.status === 'DELETED'
-        ) {
-          return {
-            available: false,
-            reason: 'DELETED',
-            message: 'Content is no longer available.',
-            target: null,
-          };
-        }
-        if (!membership) {
-          return {
-            available: false,
-            reason: 'FORBIDDEN',
-            message: 'This content is no longer available',
-            target: null,
-          };
-        }
+      if (!orgs || !memberships || !Types.ObjectId.isValid(actorUserId)) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
+      }
+      const [org, membership] = await Promise.all([
+        this.cachedAccessLookup(
+          accessLookupCache,
+          `organization:${orgId}`,
+          () => orgs.findOne({ _id: new Types.ObjectId(orgId) }),
+        ),
+        this.cachedAccessLookup(
+          accessLookupCache,
+          `organization-membership:${orgId}:${actorUserId}`,
+          () =>
+            memberships.findOne({
+              organizationId: new Types.ObjectId(orgId),
+              userId: new Types.ObjectId(actorUserId),
+              status: 'ACTIVE',
+            }),
+        ),
+      ]);
+      if (
+        !org ||
+        (org.deletedAt !== null && org.deletedAt !== undefined) ||
+        org.status === 'DELETED'
+      ) {
+        return {
+          available: false,
+          reason: 'DELETED',
+          message: 'Content is no longer available.',
+          target: null,
+        };
+      }
+      if (!membership) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
       }
       return { available: true, reason: 'OK', target };
     }
@@ -1089,147 +1854,171 @@ export class NotificationCenterRepository {
       }
 
       const projects = this.dbCollection(SERVICE_DATABASES.iam, 'projects');
-      if (projects) {
-        const project = await this.cachedAccessLookup(
-          accessLookupCache,
-          `project:${orgId ?? ''}:${projectId}`,
-          () =>
-            projects.findOne({
-              _id: new Types.ObjectId(projectId),
-              ...(orgId && Types.ObjectId.isValid(orgId)
-                ? { organizationId: new Types.ObjectId(orgId) }
-                : {}),
-            }),
-        );
-        if (
-          !project ||
-          (project.deletedAt !== null && project.deletedAt !== undefined) ||
-          project.status === 'DELETED' ||
-          project.status === 'ARCHIVED'
-        ) {
-          return {
-            available: false,
-            reason: 'DELETED',
-            message: 'Content is no longer available.',
-            target: null,
-          };
-        }
-
-        const projectOrgId = project.organizationId as Types.ObjectId;
-        if (scopedOrgId && String(projectOrgId) !== scopedOrgId) {
-          return {
-            available: false,
-            reason: 'FORBIDDEN',
-            message: 'This content is no longer available',
-            target: null,
-          };
-        }
-        const memberships = this.dbCollection(
-          SERVICE_DATABASES.iam,
-          'organization_memberships',
-        );
-        const roleAssignments = this.dbCollection(
-          SERVICE_DATABASES.iam,
-          'role_assignments',
-        );
-        const legacyRoleAssignments = this.dbCollection(
-          SERVICE_DATABASES.iam,
-          'user_role_assignments',
-        );
-        const projectMemberships = this.dbCollection(
-          SERVICE_DATABASES.iam,
-          'project_memberships',
-        );
-
-        const adminFilter = {
-          organizationId: projectOrgId,
-          userId: new Types.ObjectId(actorUserId),
-          roleCode: 'ADMIN',
-          $or: [{ projectId: { $exists: false } }, { projectId: null }],
+      if (!projects) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
         };
+      }
+      const project = await this.cachedAccessLookup(
+        accessLookupCache,
+        `project:${orgId ?? ''}:${projectId}`,
+        () =>
+          projects.findOne({
+            _id: new Types.ObjectId(projectId),
+            ...(orgId && Types.ObjectId.isValid(orgId)
+              ? { organizationId: new Types.ObjectId(orgId) }
+              : {}),
+          }),
+      );
+      if (
+        !project ||
+        (project.deletedAt !== null && project.deletedAt !== undefined) ||
+        project.status === 'DELETED' ||
+        project.status === 'ARCHIVED'
+      ) {
+        return {
+          available: false,
+          reason: 'DELETED',
+          message: 'Content is no longer available.',
+          target: null,
+        };
+      }
 
-        const [
-          orgMembership,
-          adminAssignmentPrimary,
-          adminAssignmentLegacy,
-          projectMembership,
-        ] = await Promise.all([
-          memberships
-            ? this.cachedAccessLookup(
-                accessLookupCache,
-                `organization-membership:${String(projectOrgId)}:${actorUserId}`,
-                () =>
-                  memberships.findOne({
-                    organizationId: projectOrgId,
-                    userId: new Types.ObjectId(actorUserId),
-                    status: 'ACTIVE',
-                  }),
-              )
-            : null,
-          roleAssignments
+      const projectOrgId = project.organizationId as Types.ObjectId;
+      if (scopedOrgId && String(projectOrgId) !== scopedOrgId) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
+      }
+      const memberships = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'organization_memberships',
+      );
+      const roleAssignments = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'role_assignments',
+      );
+      const projectMemberships = this.dbCollection(
+        SERVICE_DATABASES.iam,
+        'project_memberships',
+      );
+
+      if (!memberships || !projectMemberships) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
+      }
+
+      const now = new Date();
+      const adminFilter = {
+        organizationId: projectOrgId,
+        userId: new Types.ObjectId(actorUserId),
+        roleCode: 'ADMIN',
+        $and: [
+          { $or: [{ projectId: { $exists: false } }, { projectId: null }] },
+          {
+            $or: [
+              { status: 'ACTIVE' },
+              { status: { $exists: false } },
+              { status: null },
+            ],
+          },
+          { $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }] },
+          {
+            $or: [
+              { validFrom: null },
+              { validFrom: { $exists: false } },
+              { validFrom: { $lte: now } },
+            ],
+          },
+          {
+            $or: [
+              { validUntil: null },
+              { validUntil: { $exists: false } },
+              { validUntil: { $gt: now } },
+            ],
+          },
+        ],
+      };
+
+      const adminRoleCollection =
+        target.kind === 'WORK_NOTE' ? roleAssignments : null;
+      const [orgMembership, rawAdminAssignment, projectMembership] =
+        await Promise.all([
+          this.cachedAccessLookup(
+            accessLookupCache,
+            `organization-membership:${String(projectOrgId)}:${actorUserId}`,
+            () =>
+              memberships.findOne({
+                organizationId: projectOrgId,
+                userId: new Types.ObjectId(actorUserId),
+                status: 'ACTIVE',
+              }),
+          ),
+          adminRoleCollection
             ? this.cachedAccessLookup(
                 accessLookupCache,
                 `admin-role:${String(projectOrgId)}:${actorUserId}`,
-                () => roleAssignments.findOne(adminFilter),
+                () => adminRoleCollection.findOne(adminFilter),
               )
-            : null,
-          legacyRoleAssignments
-            ? this.cachedAccessLookup(
-                accessLookupCache,
-                `legacy-admin-role:${String(projectOrgId)}:${actorUserId}`,
-                () =>
-                  legacyRoleAssignments.findOne({
-                    organizationId: projectOrgId,
-                    projectId: null,
-                    userId: new Types.ObjectId(actorUserId),
-                    roleCode: 'ADMIN',
-                  }),
-              )
-            : null,
-          projectMemberships
-            ? this.cachedAccessLookup(
-                accessLookupCache,
-                `project-membership:${String(projectOrgId)}:${projectId}:${actorUserId}`,
-                () =>
-                  projectMemberships.findOne({
-                    organizationId: projectOrgId,
-                    projectId: new Types.ObjectId(projectId),
-                    userId: new Types.ObjectId(actorUserId),
-                    status: 'ACTIVE',
-                  }),
-              )
-            : null,
+            : Promise.resolve(null),
+          this.cachedAccessLookup(
+            accessLookupCache,
+            `project-membership:${String(projectOrgId)}:${projectId}:${actorUserId}`,
+            () =>
+              projectMemberships.findOne({
+                organizationId: projectOrgId,
+                projectId: new Types.ObjectId(projectId),
+                userId: new Types.ObjectId(actorUserId),
+                status: 'ACTIVE',
+              }),
+          ),
         ]);
-        const adminAssignment =
-          adminAssignmentPrimary ?? adminAssignmentLegacy ?? null;
+      const validAdminAssignment = this.isRoleAssignmentActive(
+        rawAdminAssignment,
+        now,
+      );
 
-        if (!orgMembership) {
-          return {
-            available: false,
-            reason: 'FORBIDDEN',
-            message: 'This content is no longer available',
-            target: null,
-          };
-        }
+      if (!orgMembership) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
+      }
 
-        const isPublic =
-          project.visibility === 'PUBLIC' || project.visibility === 'INTERNAL';
-        const requiresExplicitProjectMembership =
-          notification.type === 'PROJECT_MEMBER_REMOVED' ||
-          target.kind === 'TASK' ||
-          target.kind === 'WORK_NOTE';
-        if (
-          (requiresExplicitProjectMembership || !isPublic) &&
-          !adminAssignment &&
-          !projectMembership
-        ) {
-          return {
-            available: false,
-            reason: 'FORBIDDEN',
-            message: 'This content is no longer available',
-            target: null,
-          };
-        }
+      const isPublic =
+        project.visibility === 'PUBLIC' || project.visibility === 'INTERNAL';
+      const requiresExplicitProjectMembership =
+        notification.type === 'PROJECT_MEMBER_REMOVED' ||
+        target.kind === 'TASK' ||
+        target.kind === 'WORK_NOTE';
+      // SEC-AUTH-011: Drop unchecked legacy user_role_assignments bypass and never grant
+      // blanket Org ADMIN access to TASK or private PROJECT targets; only validated active
+      // Org ADMIN assignments apply to WORK_NOTE targets per policy.
+      const adminAllowedForTarget =
+        target.kind === 'WORK_NOTE' && validAdminAssignment;
+      if (
+        (requiresExplicitProjectMembership || !isPublic) &&
+        !adminAllowedForTarget &&
+        !projectMembership
+      ) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
       }
 
       if (target.kind === 'TASK') {
@@ -1277,31 +2066,38 @@ export class NotificationCenterRepository {
           SERVICE_DATABASES.capture,
           'work_notes',
         );
-        if (notes) {
-          const note = await this.cachedAccessLookup(
-            accessLookupCache,
-            `work-note:${projectId}:${noteId}`,
-            () =>
-              notes.findOne({
-                _id: new Types.ObjectId(noteId),
-                projectId: new Types.ObjectId(projectId),
-                type: 'TASK_NOTE',
-                status: 'CONFIRMED',
-                taskId: { $type: 'objectId' },
-              }),
-          );
-          if (
-            !note ||
-            (note.deletedAt !== null && note.deletedAt !== undefined) ||
-            note.status === 'ARCHIVED'
-          ) {
-            return {
-              available: false,
-              reason: 'DELETED',
-              message: 'Content is no longer available.',
-              target: null,
-            };
-          }
+        if (!notes) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
+        const note = await this.cachedAccessLookup(
+          accessLookupCache,
+          `work-note:${String(projectOrgId)}:${projectId}:${noteId}`,
+          () =>
+            notes.findOne({
+              _id: new Types.ObjectId(noteId),
+              organizationId: projectOrgId,
+              projectId: new Types.ObjectId(projectId),
+              type: 'TASK_NOTE',
+              status: 'CONFIRMED',
+              taskId: { $type: 'objectId' },
+            }),
+        );
+        if (
+          !note ||
+          (note.deletedAt !== null && note.deletedAt !== undefined) ||
+          note.status === 'ARCHIVED'
+        ) {
+          return {
+            available: false,
+            reason: 'DELETED',
+            message: 'Content is no longer available.',
+            target: null,
+          };
         }
       }
 
@@ -1323,30 +2119,57 @@ export class NotificationCenterRepository {
         SERVICE_DATABASES.chat,
         'chat_conversations',
       );
-      if (conversations) {
-        const conv = await this.cachedAccessLookup(
-          accessLookupCache,
-          `conversation:${conversationId}`,
-          () =>
-            conversations.findOne({ _id: new Types.ObjectId(conversationId) }),
+      if (!conversations) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
+      }
+      const conv = await this.cachedAccessLookup(
+        accessLookupCache,
+        `conversation:${conversationId}`,
+        () =>
+          conversations.findOne({ _id: new Types.ObjectId(conversationId) }),
+      );
+      if (
+        !conv ||
+        (conv.deletedAt !== null && conv.deletedAt !== undefined) ||
+        conv.status === 'ARCHIVED'
+      ) {
+        return {
+          available: false,
+          reason: 'DELETED',
+          message: 'Content is no longer available.',
+          target: null,
+        };
+      }
+
+      const convOrgId = conv.organizationId
+        ? String(conv.organizationId)
+        : null;
+      if (scopedOrgId && convOrgId && convOrgId !== scopedOrgId) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
+      }
+
+      const chatOrgId =
+        target.organizationId ?? notification.organizationId ?? convOrgId;
+      if (
+        chatOrgId &&
+        Types.ObjectId.isValid(chatOrgId) &&
+        Types.ObjectId.isValid(actorUserId)
+      ) {
+        const orgMemberships = this.dbCollection(
+          SERVICE_DATABASES.iam,
+          'organization_memberships',
         );
-        if (
-          !conv ||
-          (conv.deletedAt !== null && conv.deletedAt !== undefined) ||
-          conv.status === 'ARCHIVED'
-        ) {
-          return {
-            available: false,
-            reason: 'DELETED',
-            message: 'Content is no longer available.',
-            target: null,
-          };
-        }
-
-        const convOrgId = conv.organizationId
-          ? String(conv.organizationId)
-          : null;
-        if (scopedOrgId && convOrgId && convOrgId !== scopedOrgId) {
+        if (!orgMemberships) {
           return {
             available: false,
             reason: 'FORBIDDEN',
@@ -1354,108 +2177,53 @@ export class NotificationCenterRepository {
             target: null,
           };
         }
-
-        const chatOrgId =
-          target.organizationId ?? notification.organizationId ?? convOrgId;
-        if (
-          chatOrgId &&
-          Types.ObjectId.isValid(chatOrgId) &&
-          Types.ObjectId.isValid(actorUserId)
-        ) {
-          const orgMemberships = this.dbCollection(
-            SERVICE_DATABASES.iam,
-            'organization_memberships',
-          );
-          if (orgMemberships) {
-            const orgMembership = await this.cachedAccessLookup(
-              accessLookupCache,
-              `organization-membership:${chatOrgId}:${actorUserId}`,
-              () =>
-                orgMemberships.findOne({
-                  organizationId: new Types.ObjectId(chatOrgId),
-                  userId: new Types.ObjectId(actorUserId),
-                  status: 'ACTIVE',
-                }),
-            );
-            if (!orgMembership) {
-              return {
-                available: false,
-                reason: 'FORBIDDEN',
-                message: 'This content is no longer available',
-                target: null,
-              };
-            }
-          }
+        const orgMembership = await this.cachedAccessLookup(
+          accessLookupCache,
+          `organization-membership:${chatOrgId}:${actorUserId}`,
+          () =>
+            orgMemberships.findOne({
+              organizationId: new Types.ObjectId(chatOrgId),
+              userId: new Types.ObjectId(actorUserId),
+              status: 'ACTIVE',
+            }),
+        );
+        if (!orgMembership) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
         }
+      }
 
-        const normalizedActorId = actorUserId.toLowerCase();
-        let isMember = false;
-        if (Array.isArray(conv.members)) {
-          isMember = conv.members.some(
-            (m: {
-              userId?: unknown;
-              status?: unknown;
-              deletedAt?: unknown;
-            }) => {
-              const id =
-                typeof m?.userId === 'string'
-                  ? m.userId.toLowerCase()
-                  : m?.userId instanceof Types.ObjectId
-                    ? m.userId.toHexString().toLowerCase()
-                    : '';
-              const statusOk =
-                m?.status === undefined ||
-                m?.status === null ||
-                m?.status === 'ACTIVE';
-              const notDeleted =
-                m?.deletedAt === undefined || m?.deletedAt === null;
-              return id === normalizedActorId && statusOk && notDeleted;
-            },
-          );
-        } else {
-          const chatMembers = this.dbCollection(
-            SERVICE_DATABASES.chat,
-            'chat_members',
-          );
-          if (chatMembers) {
-            const memberDoc = await this.cachedAccessLookup(
-              accessLookupCache,
-              `chat-member:${conversationId}:${actorUserId}`,
-              () =>
-                chatMembers.findOne({
-                  conversationId: new Types.ObjectId(conversationId),
-                  userId: Types.ObjectId.isValid(actorUserId)
-                    ? {
-                        $in: [
-                          actorUserId,
-                          normalizedActorId,
-                          new Types.ObjectId(actorUserId),
-                        ],
-                      }
-                    : actorUserId,
-                  $or: [
-                    { status: 'ACTIVE' },
-                    { status: { $exists: false } },
-                    { status: null },
-                  ],
-                }),
-            );
+      const normalizedActorId = actorUserId.toLowerCase();
+      let isMember = false;
+      if (Array.isArray(conv.members)) {
+        isMember = conv.members.some(
+          (m: { userId?: unknown; status?: unknown; deletedAt?: unknown }) => {
+            const id =
+              typeof m?.userId === 'string'
+                ? m.userId.toLowerCase()
+                : m?.userId instanceof Types.ObjectId
+                  ? m.userId.toHexString().toLowerCase()
+                  : '';
             const statusOk =
-              memberDoc &&
-              (memberDoc.status === undefined ||
-                memberDoc.status === null ||
-                memberDoc.status === 'ACTIVE');
-            isMember = Boolean(
-              memberDoc &&
-              statusOk &&
-              (memberDoc.deletedAt === null ||
-                memberDoc.deletedAt === undefined),
-            );
-          } else {
-            isMember = true;
-          }
-        }
-        if (!isMember) {
+              m?.status === undefined ||
+              m?.status === null ||
+              m?.status === 'ACTIVE';
+            const notDeleted =
+              m?.deletedAt === undefined || m?.deletedAt === null;
+            return id === normalizedActorId && statusOk && notDeleted;
+          },
+        );
+      } else {
+        const chatMembers = this.dbCollection(
+          SERVICE_DATABASES.chat,
+          'chat_members',
+        );
+        if (!chatMembers) {
+          // SEC-AUTH-011: Fail closed when chat_members collection handle is missing.
           return {
             available: false,
             reason: 'FORBIDDEN',
@@ -1463,6 +2231,49 @@ export class NotificationCenterRepository {
             target: null,
           };
         }
+        const memberDoc = await this.cachedAccessLookup(
+          accessLookupCache,
+          `chat-member:${conversationId}:${actorUserId}`,
+          () =>
+            chatMembers.findOne({
+              conversationId: new Types.ObjectId(conversationId),
+              ...(chatOrgId && Types.ObjectId.isValid(chatOrgId)
+                ? { organizationId: new Types.ObjectId(chatOrgId) }
+                : {}),
+              userId: Types.ObjectId.isValid(actorUserId)
+                ? {
+                    $in: [
+                      actorUserId,
+                      normalizedActorId,
+                      new Types.ObjectId(actorUserId),
+                    ],
+                  }
+                : actorUserId,
+              $or: [
+                { status: 'ACTIVE' },
+                { status: { $exists: false } },
+                { status: null },
+              ],
+            }),
+        );
+        const statusOk =
+          memberDoc &&
+          (memberDoc.status === undefined ||
+            memberDoc.status === null ||
+            memberDoc.status === 'ACTIVE');
+        isMember = Boolean(
+          memberDoc &&
+          statusOk &&
+          (memberDoc.deletedAt === null || memberDoc.deletedAt === undefined),
+        );
+      }
+      if (!isMember) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          message: 'This content is no longer available',
+          target: null,
+        };
       }
       if (target.messageId && Types.ObjectId.isValid(target.messageId)) {
         const messageObjectId = new Types.ObjectId(target.messageId);
@@ -1474,15 +2285,35 @@ export class NotificationCenterRepository {
           SERVICE_DATABASES.chat,
           'chat_messages',
         );
+        if (!convMessages && !legacyMessages) {
+          return {
+            available: false,
+            reason: 'FORBIDDEN',
+            message: 'This content is no longer available',
+            target: null,
+          };
+        }
         let msg = convMessages
-          ? await convMessages.findOne({
-              _id: messageObjectId,
-              conversationId: new Types.ObjectId(conversationId),
-            })
+          ? await this.cachedAccessLookup(
+              accessLookupCache,
+              `chat-message:${conversationId}:${target.messageId}`,
+              () =>
+                convMessages.findOne({
+                  _id: messageObjectId,
+                  conversationId: new Types.ObjectId(conversationId),
+                  ...(chatOrgId && Types.ObjectId.isValid(chatOrgId)
+                    ? { organizationId: new Types.ObjectId(chatOrgId) }
+                    : {}),
+                }),
+            )
           : null;
         if (!msg && legacyMessages) {
           msg = await legacyMessages.findOne({
             _id: messageObjectId,
+            conversationId: new Types.ObjectId(conversationId),
+            ...(chatOrgId && Types.ObjectId.isValid(chatOrgId)
+              ? { organizationId: new Types.ObjectId(chatOrgId) }
+              : {}),
           });
         }
         if (!msg || (msg.deletedAt !== null && msg.deletedAt !== undefined)) {
@@ -1497,7 +2328,12 @@ export class NotificationCenterRepository {
       return { available: true, reason: 'OK', target };
     }
 
-    return { available: true, reason: 'OK', target };
+    return {
+      available: false,
+      reason: 'FORBIDDEN',
+      message: 'This content is no longer available',
+      target: null,
+    };
   }
 
   private encodeCursor(createdAt: Date, id: Types.ObjectId): string {

@@ -146,7 +146,7 @@ describe('ProjectAccessAuthorizationGuard', () => {
     );
   });
 
-  it('allows membership administration to an organization ADMIN with the exact permission without an active ProjectMembership', async () => {
+  it('denies unconditional membership administration to a non-member organization ADMIN (SEC-AUTH-004)', async () => {
     const facts = evidence('project.members.add');
     facts.projectMembership = null;
     facts.assignments = [
@@ -160,7 +160,9 @@ describe('ProjectAccessAuthorizationGuard', () => {
       },
     ];
     const { guard, context } = fixture('project.members.add', facts);
-    await expect(guard.canActivate(context)).resolves.toBe(true);
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
   });
 
   it('denies membership administration to an organization ADMIN without the required permission', async () => {
@@ -215,7 +217,7 @@ describe('ProjectAccessAuthorizationGuard', () => {
     );
   });
 
-  it('allows an active Project Leader with project.members.list to read listLeaders while denying leader mutations', async () => {
+  it('allows an active Project Leader with project.members.list to read listLeaders while denying leader mutations and denying regular MEMBERs', async () => {
     const facts = evidence('project.members.list');
     const listLeaders = () => undefined;
     Reflect.defineMetadata(
@@ -232,5 +234,29 @@ describe('ProjectAccessAuthorizationGuard', () => {
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+
+    // SEC-AUTH-004: Regular MEMBER with project.members.list MUST NOT read listLeaders
+    const memberFacts = evidence('project.members.list');
+    memberFacts.assignments = [
+      {
+        userId,
+        organizationId,
+        projectId,
+        roleCode: 'MEMBER',
+        resolvedRoleCode: 'MEMBER',
+        permissions: ['project.members.list'],
+      },
+    ];
+    const { guard: memberGuard, context: memberBaseContext } = fixture(
+      'project.leader.manage',
+      memberFacts,
+    );
+    const memberListLeadersContext = {
+      ...memberBaseContext,
+      getHandler: () => listLeaders,
+    } as unknown as ExecutionContext;
+    await expect(
+      memberGuard.canActivate(memberListLeadersContext),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

@@ -84,7 +84,7 @@ export type RefreshRotationResult =
       userId: string;
       context: 'PLATFORM';
     }
-  | { outcome: 'REPLAYED' | 'INVALID' };
+  | { outcome: 'REPLAYED' | 'INVALID' | 'CONCURRENT_ROTATION' };
 
 export type RefreshSessionLookup =
   | {
@@ -144,6 +144,10 @@ export interface AuthenticationRepositoryPort {
     replacementHash: string,
   ): Promise<boolean>;
   revokeRefreshSessionByHash(tokenHash: string): Promise<boolean>;
+  revokeRefreshSessionBySessionId?(
+    userId: string,
+    sessionId: string,
+  ): Promise<boolean>;
   findRefreshSessionForRotation(
     tokenHash: string,
   ): Promise<RefreshSessionLookup>;
@@ -153,6 +157,7 @@ export interface AuthenticationRepositoryPort {
     expiresAt: Date,
     now: Date,
     sessionId?: string,
+    graceWindowMs?: number,
   ): Promise<RefreshRotationResult>;
   hasActiveRefreshSession(
     userId: string,

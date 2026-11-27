@@ -218,13 +218,23 @@ export class ProjectService {
   }
 
   async listMemberCandidates(actor: AuthenticatedIdentity, search?: string) {
-    const data = this.repository.listOrganizationMemberCandidates
+    const raw = this.repository.listOrganizationMemberCandidates
       ? await this.repository.listOrganizationMemberCandidates(
           actor.organizationId,
           actor.id,
           search,
         )
       : [];
+    // SEC-AUTH-012: Redact organization roleCode for non-ADMIN callers to avoid disclosing org admins.
+    const isOrgAdmin =
+      Array.isArray(actor.roles) && actor.roles.includes('ADMIN');
+    const data = isOrgAdmin
+      ? raw
+      : raw.map((candidate) =>
+          Object.fromEntries(
+            Object.entries(candidate).filter(([key]) => key !== 'roleCode'),
+          ),
+        );
     return { data };
   }
 }

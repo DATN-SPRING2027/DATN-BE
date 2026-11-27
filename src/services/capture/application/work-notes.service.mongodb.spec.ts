@@ -725,6 +725,14 @@ describe('Capture Work Notes Mongo workflows', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    // BE-PERF-001: Obligations are provisioned via scheduled sync, never write-on-read GET.
+    await service.ensureScheduledReportObligations({
+      organizationId,
+      projectId,
+      projectCreatedBy: leaderId,
+      members: [{ userId: memberId, joinedAt }],
+      leaders: [],
+    });
     await service.listWorkReports({}, projectId, 1, 100);
     const memberPeriods = await connection
       .collection('work_reports')
@@ -1022,6 +1030,19 @@ describe('Capture Work Notes Mongo workflows', () => {
     const settings = await service.getWorkReportSettings({}, projectId);
     expect(settings.frequency).toBe('WEEKLY');
     currentActor = { ...currentActor, canReview: true, canConfigure: true };
+    // BE-PERF-001: Provision scheduled obligations via scheduler entry point (no write-on-read GET).
+    await service.ensureScheduledReportObligations({
+      organizationId,
+      projectId,
+      projectCreatedBy: leaderId,
+      members: [
+        {
+          userId: memberId,
+          joinedAt: new Date(Date.now() - 86_400_000).toISOString(),
+        },
+      ],
+      leaders: [],
+    });
     const first = await service.listWorkReports({}, projectId, 1, 100);
     const second = await service.listWorkReports({}, projectId, 1, 100);
     expect(first.data).toHaveLength(1);
@@ -1107,14 +1128,23 @@ describe('Capture Work Notes Mongo workflows', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    const joinedAt = new Date(now - 2 * 86_400_000).toISOString();
     currentActor = {
       ...currentActor,
       userId: memberId,
       canReview: false,
       canConfigure: false,
-      joinedAt: new Date(now - 2 * 86_400_000).toISOString(),
+      joinedAt,
     };
 
+    // BE-PERF-001: Provision scheduled obligations via scheduler entry point (no write-on-read GET).
+    await service.ensureScheduledReportObligations({
+      organizationId,
+      projectId,
+      projectCreatedBy: leaderId,
+      members: [{ userId: memberId, joinedAt }],
+      leaders: [],
+    });
     const memberReports = await service.listWorkReports({}, projectId, 1, 100);
     expect(memberReports.data.length).toBeGreaterThanOrEqual(2);
     expect(memberReports.data.length).toBeLessThanOrEqual(3);
@@ -1286,6 +1316,19 @@ describe('Capture Work Notes Mongo workflows', () => {
   it('supports flexible 1-7 day reporting cadences, Leader-to-Manager reporting, and report file uploads', async () => {
     const managerId = new Types.ObjectId().toHexString();
     const linkedDocId = new Types.ObjectId().toHexString();
+    await connection.collection('project_documents').insertOne({
+      _id: new Types.ObjectId(linkedDocId),
+      organizationId: new Types.ObjectId(organizationId),
+      projectId: new Types.ObjectId(projectId),
+      title: 'Linked Sprint Doc',
+      documentType: 'ARCHITECTURE',
+      createdByUserId: new Types.ObjectId(leaderId),
+      updatedByUserId: new Types.ObjectId(leaderId),
+      currentVersionNumber: 1,
+      status: 'APPROVED',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
 
     currentActor = {
       ...currentActor,
@@ -1654,11 +1697,9 @@ describe('Capture Work Notes Mongo workflows', () => {
     await expect(
       service.updateWorkReportSettings({}, projectId, 'EVERY_3_DAYS', 'MEMBER'),
     ).rejects.toMatchObject({ status: 403 });
-    await expect(
-      service.reviewWorkReport({}, projectId, memberDraft.id, 'APPROVED', {}),
-    ).rejects.toMatchObject({ status: 403 });
 
-    // Pure Manager CAN still monitor MEMBER reports (Read-only) with summary & compliance roster
+    // SEC-AUTH-007: Per 04_WORK_NOTE_WORKFLOWS.md, Pure Manager CANNOT reconfigure MEMBER cadence
+    // when active Leaders exist, but CAN review MEMBER reports alongside Leaders (never self-review).
     const managerMemberMonitor = await service.listWorkReports(
       {},
       projectId,
@@ -1669,7 +1710,7 @@ describe('Capture Work Notes Mongo workflows', () => {
       { period: 'CURRENT', search: 'RBAC' },
     );
     expect(managerMemberMonitor.data).toHaveLength(1);
-    expect(managerMemberMonitor.data[0]?.permissions.canReview).toBe(false);
+    expect(managerMemberMonitor.data[0]?.permissions.canReview).toBe(true);
     expect(managerMemberMonitor.summary?.pendingReview).toBe(1);
     expect(managerMemberMonitor.roster).toEqual([
       expect.objectContaining({
@@ -2241,8 +2282,8 @@ describe('Capture Work Notes Mongo workflows', () => {
     );
     expect(putSpy).toHaveBeenCalledTimes(1);
 
-    // 4. Leader creates TaskNote directly -> Auto-Approved immediately!
-    const leaderAutoNote = await customService.createTaskNote(
+    // 4. BE-LOGIC-001: Leader creating own TaskNote starts in PENDING_REVIEW (self-approval forbidden!)
+    const leaderCreatedNote = await customService.createTaskNote(
       {},
       projectId,
       taskId,
@@ -2253,8 +2294,16 @@ describe('Capture Work Notes Mongo workflows', () => {
         reason: 'Keep storage clean from unapproved drafts.',
       },
     );
-    expect(leaderAutoNote.reviewStatus).toBe('APPROVED');
-    expect(leaderAutoNote.knowledgeSync?.status).toBe('QUEUED_OUTBOX');
+    expect(leaderCreatedNote.reviewStatus).toBe('PENDING_REVIEW');
+    await expect(
+      customService.reviewTaskNote(
+        {},
+        projectId,
+        leaderCreatedNote.id,
+        'APPROVED',
+        {},
+      ),
+    ).rejects.toMatchObject({ status: 403 });
 
     // 5. Leader approves Member Work Report -> outbox queued & .md materialized on download
     const approvedReport = await customService.reviewWorkReport(

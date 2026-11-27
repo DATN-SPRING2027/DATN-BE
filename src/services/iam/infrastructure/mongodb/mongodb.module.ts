@@ -46,6 +46,7 @@ export class MongoInfrastructureModule {
             uri: config.getOrThrow<string>('MONGODB_URI'),
             dbName: serviceDatabaseName,
             autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
+            maxPoolSize: config.get<number>('MONGODB_MAX_POOL_SIZE') ?? 15,
             serverSelectionTimeoutMS: 5000,
           }),
         }),

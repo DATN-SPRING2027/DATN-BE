@@ -215,6 +215,9 @@ class InMemoryTaskWorkspaceRepository {
     );
     if (filter.projectId) {
       docs = docs.filter((t) => t.projectId.toHexString() === filter.projectId);
+    } else if (filter.projectIds) {
+      const allowed = new Set(filter.projectIds);
+      docs = docs.filter((t) => allowed.has(t.projectId.toHexString()));
     }
     if (filter.statuses?.length) {
       docs = docs.filter((t) => filter.statuses!.includes(t.status));
@@ -961,10 +964,13 @@ class InMemoryTaskWorkspaceRepository {
     organizationId: string,
     asOf: Date,
     pinSnapshot = false,
+    activeProjectIds?: string[],
   ) {
+    const allowedProjects = activeProjectIds ? new Set(activeProjectIds) : null;
     const orgTasks = [...this.tasks.values()].filter(
       (t) =>
         t.organizationId.toHexString() === organizationId &&
+        (!allowedProjects || allowedProjects.has(t.projectId.toHexString())) &&
         (!pinSnapshot || t.createdAt <= asOf),
     );
     const statusBuckets: Array<{
@@ -1738,5 +1744,200 @@ describe('TaskWorkspaceController (17 Workspace Task API endpoints)', () => {
       'task_worklogs',
       'tasks',
     ]);
+  });
+
+  it('SEC-AUTH-008 & SEC-AUTH-015: enforces MEMBER RBAC, assignee requirement on TODO->IN_PROGRESS, CANCELLED immutability, signed org summary cursor, and excludes ARCHIVED projects', async () => {
+    // 1. MEMBER cannot assign a new task to another user -> 403
+    await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-sec-member-assign-other')
+      .send({ title: 'Assign to peer', assigneeId: memberBId })
+      .expect(403);
+
+    // 2. MEMBER creates an unassigned task -> cannot move TODO -> IN_PROGRESS without assignee -> 422 TASK_ASSIGNEE_REQUIRED
+    const unassigned = await request(httpServer)
+      .post(`/api/v1/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-sec-unassigned')
+      .send({ title: 'Unassigned task' })
+      .expect(201);
+
+    const noAssigneeTr = await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}/transitions`,
+      )
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', unassigned.headers.etag)
+      .set('Idempotency-Key', 'idem-sec-unassigned-tr')
+      .send({ toStatus: 'IN_PROGRESS' })
+      .expect(422);
+    expect(noAssigneeTr.body.code).toBe('TASK_ASSIGNEE_REQUIRED');
+
+    // 3. MEMBER cannot cancel a task -> 403
+    await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}/transitions`,
+      )
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', unassigned.headers.etag)
+      .set('Idempotency-Key', 'idem-sec-member-cancel')
+      .send({ toStatus: 'CANCELLED', reason: 'Trying to cancel' })
+      .expect(403);
+
+    // 4. Leader assigns task to memberB; memberA (creator) cannot reassign or transition memberB's task -> 403
+    const reassigned = await request(httpServer)
+      .patch(`/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}`)
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', unassigned.headers.etag)
+      .send({ assigneeId: memberBId })
+      .expect(200);
+
+    await request(httpServer)
+      .patch(`/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}`)
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', reassigned.headers.etag)
+      .send({ assigneeId: memberAId })
+      .expect(403);
+
+    await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}/transitions`,
+      )
+      .set('Authorization', 'Bearer memberA')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', reassigned.headers.etag)
+      .set('Idempotency-Key', 'idem-sec-creator-tr-other')
+      .send({ toStatus: 'IN_PROGRESS' })
+      .expect(403);
+
+    // 5. Leader cancels task -> PATCH, comment, worklog on CANCELLED task all rejected with 422 TASK_CANCELLED_IMMUTABLE
+    const cancelled = await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}/transitions`,
+      )
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', reassigned.headers.etag)
+      .set('Idempotency-Key', 'idem-sec-leader-cancel')
+      .send({ toStatus: 'CANCELLED', reason: 'Cancelled by leader' })
+      .expect(200);
+
+    const patchCancelled = await request(httpServer)
+      .patch(`/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}`)
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('If-Match', cancelled.headers.etag)
+      .send({ title: 'Mutating cancelled' })
+      .expect(422);
+    expect(patchCancelled.body.code).toBe('TASK_CANCELLED_IMMUTABLE');
+
+    const commentCancelled = await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}/comments`,
+      )
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-sec-comment-cancelled')
+      .send({ body: 'Comment on cancelled' })
+      .expect(422);
+    expect(commentCancelled.body.code).toBe('TASK_CANCELLED_IMMUTABLE');
+
+    const worklogCancelled = await request(httpServer)
+      .post(
+        `/api/v1/tasks/projects/${projectId}/tasks/${unassigned.body.id}/worklogs`,
+      )
+      .set('Authorization', 'Bearer leader')
+      .set('Cookie', csrfCookie)
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'idem-sec-worklog-cancelled')
+      .send({ minutes: 15, note: 'Worklog on cancelled' })
+      .expect(422);
+    expect(worklogCancelled.body.code).toBe('TASK_CANCELLED_IMMUTABLE');
+
+    // 6. SEC-AUTH-015: Unsigned/tampered org summary cursor is rejected with 400
+    const forgedCursor = Buffer.from(
+      JSON.stringify({
+        v: 2,
+        projectId,
+        asOf: '2020-01-01T00:00:00.000Z',
+      }),
+      'utf8',
+    ).toString('base64url');
+    await request(httpServer)
+      .get(
+        `/api/v1/tasks/organization/task-summary?cursor=${encodeURIComponent(forgedCursor)}`,
+      )
+      .set('Authorization', 'Bearer admin')
+      .expect(400);
+
+    // 7. SEC-AUTH-015: Archived project tasks stored in repo are excluded from org task list and org task summary
+    const archivedProjectId = new Types.ObjectId('65f000000000000000000099');
+    const archivedTaskId = new Types.ObjectId();
+    repo.tasks.set(archivedTaskId.toHexString(), {
+      _id: archivedTaskId,
+      organizationId: new Types.ObjectId(orgId),
+      projectId: archivedProjectId,
+      key: 'ARCH-1',
+      title: 'Archived secret task',
+      description: null,
+      type: 'TASK',
+      status: 'TODO',
+      priority: 'HIGH',
+      assigneeId: null,
+      createdBy: new Types.ObjectId(adminUserId),
+      parentId: null,
+      sprintId: null,
+      labels: [],
+      steps: [],
+      dueDate: null,
+      startDate: null,
+      completedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      version: 1,
+    });
+
+    const orgList = await request(httpServer)
+      .get('/api/v1/tasks/organization/tasks')
+      .set('Authorization', 'Bearer admin')
+      .expect(200);
+    expect(
+      (orgList.body.items as Array<{ projectId: string }>).some(
+        (t) => t.projectId === archivedProjectId.toHexString(),
+      ),
+    ).toBe(false);
+
+    const orgSummary = await request(httpServer)
+      .get('/api/v1/tasks/organization/task-summary')
+      .set('Authorization', 'Bearer admin')
+      .expect(200);
+    expect(
+      (orgSummary.body.projects as Array<{ projectId: string }>).some(
+        (p) => p.projectId === archivedProjectId.toHexString(),
+      ),
+    ).toBe(false);
+
+    // 8. SEC-BE-008: /api/v1/internal/tasks is no longer mounted on public monolith
+    await request(httpServer)
+      .get(`/api/v1/internal/tasks/projects/${projectId}/tasks`)
+      .set('Authorization', 'Bearer admin')
+      .expect(404);
   });
 });

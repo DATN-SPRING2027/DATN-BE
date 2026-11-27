@@ -80,3 +80,12 @@ Never commit `.env` or credentials.
 - `INFRA_ENABLED=false` is the local no-persistence mode. There is no shared `continuum_db` runtime mode.
 - Organization invitation email delivery runs asynchronously from the transactional outbox when `INFRA_ENABLED=true`. Delivery uses the existing SMTP settings and `WEB_APP_URL`; the invitation command persists the invitation, audit, and encrypted delivery event before returning and does not wait for SMTP. An event becomes `PUBLISHED` only after SMTP explicitly accepts the recipient; that same update stores an allowlisted receipt with provider, message ID when available, and acceptance time. Retryable provider failures remain pending, while permanent failures are marked `FAILED` with a safe reason. Receipt and delivery status are internal outbox details and are not returned by invitation APIs. Delivery is at least once: if SMTP accepts but the receipt update cannot be persisted, the expired lease can cause another send. Keep `ORGANIZATION_INVITATION_OUTBOX_KEY` stable while invitation delivery events are pending. If omitted, IAM derives a purpose-specific key from `JWT_SECRET`.
 - Docker Compose and the Helm chart pass `SERVICE_DATABASE` to standalone service containers.
+
+### Capture document storage cutover
+
+Capture defaults to Local Vault. Set STORAGE_MODE=r2 explicitly to write new
+files to R2. While the local vault remains mounted, local files keep using the
+authenticated download proxy. Move and verify existing objects before removing
+the vault. For rollback, switch back to local mode and retain R2 credentials
+while references to R2 objects remain. Document download and ingestion reject
+stored object keys outside the document's organization and project.

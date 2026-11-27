@@ -110,7 +110,8 @@ live('synthetic-only HTTP → MongoDB → real xKiro → Apply → Save', () => 
     await repl?.stop();
   });
   it('persists only the explicitly confirmed canonical text and no conversation/raw input', async () => {
-    const http = () => request(app.getHttpServer());
+    const http = () =>
+      request(app.getHttpServer() as Parameters<typeof request>[0]);
     const created = await http()
       .post(prefix)
       .set('authorization', `Bearer ${token}`)

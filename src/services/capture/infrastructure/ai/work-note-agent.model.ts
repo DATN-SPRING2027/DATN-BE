@@ -312,6 +312,10 @@ export class WorkNoteAgentModel implements OnModuleInit {
       vault: masked.vault,
       rawCorpus: masked.rawCorpus,
       priorFindings: masked.findings,
+      exemptProtectedPrefixes: [
+        prepared.protectedPrefix,
+        '__WN_PROTECTED_example_',
+      ],
     });
     const completion = await new WorkNoteXkiroClient({
       apiKey: key,

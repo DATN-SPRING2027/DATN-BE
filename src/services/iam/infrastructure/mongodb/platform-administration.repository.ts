@@ -544,25 +544,32 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
       (input.organizationId !== undefined && !validId(input.organizationId))
     )
       unavailable();
-    const match: Record<string, unknown> = {};
+    // BE-PERF-011: Push indexed project filters ($match) BEFORE $lookup on organizations.
+    const preMatch: Record<string, unknown> = {};
     if (input.organizationId)
-      match.organizationId = new Types.ObjectId(input.organizationId);
-    if (input.visibility) match.visibility = input.visibility;
-    if (input.status) match.status = input.status;
+      preMatch.organizationId = new Types.ObjectId(input.organizationId);
+    if (input.visibility) preMatch.visibility = input.visibility;
+    if (input.status) preMatch.status = input.status;
+    const searchMatch: PipelineStage[] = [];
     if (input.search) {
       const literal = new RegExp(escapeRegex(input.search), 'i');
-      match.$or = [
-        { name: literal },
-        { code: literal },
-        { 'organization.name': literal },
-        { 'organization.slug': literal },
-      ];
+      searchMatch.push({
+        $match: {
+          $or: [
+            { name: literal },
+            { code: literal },
+            { 'organization.name': literal },
+            { 'organization.slug': literal },
+          ],
+        },
+      });
     }
     const [facet] = await this.projects()
       .aggregate<{
         data: PlatformProjectDocument[];
         total: { count: number }[];
       }>([
+        ...(Object.keys(preMatch).length > 0 ? [{ $match: preMatch }] : []),
         {
           $lookup: {
             from: 'organizations',
@@ -573,7 +580,7 @@ export class MongoPlatformAdministrationRepository implements PlatformAdministra
           },
         },
         { $unwind: '$organization' },
-        { $match: match },
+        ...searchMatch,
         { $sort: { createdAt: -1, _id: -1 } },
         {
           $facet: {

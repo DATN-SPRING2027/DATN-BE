@@ -74,11 +74,12 @@ describe('GoogleOAuthService', () => {
     expect(authUrl.searchParams.get('nonce')).toBeTruthy();
     expect(result.stateCookie).toMatch(/^v1\./);
     expect(mockOAuthClient.generateCodeVerifierAsync).toHaveBeenCalledTimes(1);
-    expect(OAuth2Client).toHaveBeenCalledWith(
-      configValues.GOOGLE_CLIENT_ID,
-      configValues.GOOGLE_CLIENT_SECRET,
-      configValues.GOOGLE_CALLBACK_URL,
-    );
+    expect(OAuth2Client).toHaveBeenCalledWith({
+      clientId: configValues.GOOGLE_CLIENT_ID,
+      clientSecret: configValues.GOOGLE_CLIENT_SECRET,
+      redirectUri: configValues.GOOGLE_CALLBACK_URL,
+      transporterOptions: { timeout: 10_000 },
+    });
   });
 
   it('exchanges the code with the matching transaction and returns a verified Google subject', async () => {

@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
@@ -155,16 +155,19 @@ export class PlatformIntegrationReadHttpRepository implements PlatformIntegratio
     const secret = this.config.get<string>('PLATFORM_SERVICE_OPS_SECRET');
     if (!secret || secret.length < 32) return this.unavailable();
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const canonical = `${timestamp}\nGET\n${url.pathname}${url.search}`;
+    const nonce = randomBytes(16).toString('hex');
+    const canonical = `${timestamp}\n${nonce}\nGET\n${url.pathname}${url.search}\n`;
     const signature = createHmac('sha256', secret)
       .update(canonical)
       .digest('hex');
     try {
       return await fetch(url, {
         method: 'GET',
+        redirect: 'error',
         headers: {
           accept: 'application/json',
           'x-platform-ops-timestamp': timestamp,
+          'x-platform-ops-nonce': nonce,
           'x-platform-ops-signature': signature,
         },
         signal: AbortSignal.timeout(requestTimeoutMs),

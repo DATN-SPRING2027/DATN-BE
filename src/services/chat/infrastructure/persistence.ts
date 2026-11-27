@@ -9,6 +9,7 @@ const index = (
     sparse?: boolean;
     expireAfterSeconds?: number;
     name?: string;
+    partialFilterExpression?: Record<string, unknown>;
   },
 ) => ({ fields, options });
 
@@ -27,6 +28,10 @@ export const CHAT_PERSISTENCE: ServicePersistenceDefinition = {
       name: 'chat_blocks',
       indexes: [
         index({ organizationId: 1, userId: 1, targetId: 1 }, { unique: true }),
+        index(
+          { organizationId: 1, targetId: 1, userId: 1 },
+          { name: 'chat_blocks_org_target_user' },
+        ),
       ],
     },
     {
@@ -61,6 +66,20 @@ export const CHAT_PERSISTENCE: ServicePersistenceDefinition = {
         index(
           { conversationId: 1, senderId: 1, clientMessageId: 1 },
           { unique: true },
+        ),
+        index(
+          { conversationId: 1, isPinned: 1, createdAt: -1 },
+          {
+            name: 'chat_messages_pinned_partial',
+            partialFilterExpression: { isPinned: true },
+          },
+        ),
+        index(
+          { conversationId: 1, 'attachments.kind': 1, createdAt: -1 },
+          {
+            name: 'chat_messages_attachments_kind_partial',
+            partialFilterExpression: { 'attachments.kind': { $exists: true } },
+          },
         ),
       ],
     },

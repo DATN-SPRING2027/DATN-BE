@@ -147,11 +147,17 @@ export class WorkNoteLlmSecurityGateway {
   }
 
   /** Detects across the whole request plus server-side raw corpus (e.g. full draft body). */
-  detect(strings: readonly string[]): SensitiveFinding[] {
+  detect(
+    strings: readonly string[],
+    options?: { exemptProtectedPrefixes?: readonly string[] },
+  ): SensitiveFinding[] {
     return strings.flatMap((s) =>
       detectSensitiveData(stripInvisible(s), {
         maskInternalEmail: this.policy.maskInternalEmail,
         internalEmailDomains: this.policy.internalEmailDomains,
+        ...(options?.exemptProtectedPrefixes?.length
+          ? { exemptProtectedPrefixes: options.exemptProtectedPrefixes }
+          : {}),
       }),
     );
   }
@@ -234,6 +240,8 @@ export class WorkNoteLlmSecurityGateway {
       /** Raw server-side strings (already detected upstream); used for URL/trust checks. */
       rawCorpus?: readonly string[];
       priorFindings?: readonly SensitiveFinding[];
+      /** Server-minted literal-protection prefixes safe to exempt during residual scan. */
+      exemptProtectedPrefixes?: readonly string[];
     } = {},
   ): GuardedRequest {
     const vault = options.vault ?? new MaskVault(this.policy.placeholderKey);
@@ -250,10 +258,13 @@ export class WorkNoteLlmSecurityGateway {
         rawInputText,
       };
 
+    const detectOpts = options.exemptProtectedPrefixes?.length
+      ? { exemptProtectedPrefixes: options.exemptProtectedPrefixes }
+      : undefined;
     const seen = new Set<string>();
     const findings = [
       ...(options.priorFindings ?? []),
-      ...this.detect(messageText),
+      ...this.detect(messageText, detectOpts),
     ].filter((f) => {
       const key = `${f.ruleId}\u0000${f.value}`;
       if (seen.has(key)) return false;
@@ -287,7 +298,7 @@ export class WorkNoteLlmSecurityGateway {
       ? messages.map((m) => transformMessage(m, mask))
       : [...messages];
     // Defense in depth: nothing detectable may remain in what we send.
-    const residual = this.detect(masked.flatMap(messageStrings));
+    const residual = this.detect(masked.flatMap(messageStrings), detectOpts);
     if (residual.length > 0) {
       logger.error(
         JSON.stringify({

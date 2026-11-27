@@ -15,7 +15,10 @@ import {
   buildWorkReportMarkdownArtifact,
 } from '../../application/markdown-artifact.builder';
 import { CAPTURE_PERSISTENCE } from '../persistence';
-import { ProjectDocumentStorage } from '../storage/project-document.storage';
+import {
+  isDocumentStorageKeyInScope,
+  ProjectDocumentStorage,
+} from '../storage/project-document.storage';
 
 export const SAG_KNOWLEDGE_SYNC_TRANSPORT = Symbol(
   'SAG_KNOWLEDGE_SYNC_TRANSPORT',
@@ -237,7 +240,8 @@ export interface KnowledgeOutboxScopedBatchResult {
 }
 
 const POLL_INTERVAL_MS = 2_000;
-const LEASE_MS = 60_000;
+const LEASE_MS = 150_000;
+const LEASE_HEARTBEAT_MS = 20_000;
 const MAX_ATTEMPTS = 5;
 const INITIAL_RETRY_MS = 15_000;
 const MAX_RETRY_MS = 5 * 60_000;
@@ -312,52 +316,6 @@ interface LiveProjectDocumentVersion {
 export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport {
   constructor(private readonly config: ConfigService) {}
 
-  async ingestProjectDocumentObject(
-    input: SagProjectDocumentObjectIngestInput,
-  ): Promise<SagProjectDocumentUploadReceipt> {
-    const { baseUrl, serviceToken, timeoutMs } = this.resolveConfig();
-    const target = new URL(
-      `/api/v1/projects/${encodeURIComponent(input.projectId)}/documents/ingest-object`,
-      `${baseUrl.origin}/`,
-    );
-
-    const headers = this.scopeHeaders(
-      serviceToken,
-      input.actorUserId,
-      input.organizationId,
-      input.projectId,
-    );
-    headers.set('Content-Type', 'application/json');
-    headers.set('Idempotency-Key', input.idempotencyKey);
-
-    const response = await fetch(target, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        source_url: input.sourceUrl,
-        original_filename: input.fileName,
-        content_type: input.contentType,
-        expected_sha256: input.expectedSha256,
-        expected_size_bytes: input.expectedSizeBytes,
-        logical_source_id: input.logicalSourceId,
-      }),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-
-    const body = (await response.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null;
-    if (!response.ok || !body) {
-      throw new Error(
-        `SAG_OBJECT_INGEST_FAILED_${response.status}:${extractErrorDetail(body)}`,
-      );
-    }
-
-    return this.parseUploadReceipt(body);
-  }
-
   async uploadProjectDocument(
     input: SagProjectDocumentUploadInput,
   ): Promise<SagProjectDocumentUploadReceipt> {
@@ -387,6 +345,7 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
       headers,
       body: form,
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -455,6 +414,7 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
       method: 'GET',
       headers,
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -557,6 +517,7 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
         })),
       }),
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
     const body = (await response.json().catch(() => null)) as Record<
@@ -658,6 +619,7 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
       method: 'GET',
       headers,
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -747,28 +709,12 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
       input.projectId,
     );
 
-    let requestBody: string | undefined;
-    if (input.action === 'reprocess' && input.sourceUrl) {
-      headers.set('Content-Type', 'application/json');
-      requestBody = JSON.stringify({
-        source_url: input.sourceUrl,
-        ...(input.fileName ? { original_filename: input.fileName } : {}),
-        ...(input.contentType ? { content_type: input.contentType } : {}),
-        ...(input.expectedSha256
-          ? { expected_sha256: input.expectedSha256 }
-          : {}),
-        ...(typeof input.expectedSizeBytes === 'number' &&
-        input.expectedSizeBytes > 0
-          ? { expected_size_bytes: input.expectedSizeBytes }
-          : {}),
-      });
-    }
-
+    // E2E-INT-001: SAG POST /reprocess ignores JSON request bodies; send empty POST.
     const response = await fetch(target, {
       method: 'POST',
       headers,
-      ...(requestBody ? { body: requestBody } : {}),
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -814,6 +760,7 @@ export class HttpSagKnowledgeSyncTransport implements SagKnowledgeSyncTransport 
         reason: input.reason,
       }),
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -1129,6 +1076,11 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
       return 'FAILED';
     }
 
+    const leaseHeartbeat = setInterval(() => {
+      void this.renewEventLease(event._id, leaseId);
+    }, LEASE_HEARTBEAT_MS);
+    leaseHeartbeat.unref();
+
     try {
       if (event.aggregateType === 'WORK_REPORT') {
         return await this.executeWorkReportEvent(
@@ -1222,6 +1174,17 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        if (
+          targetVersionDoc.file?.key &&
+          !isDocumentStorageKeyInScope(
+            targetVersionDoc.file.key,
+            organizationId,
+            projectId,
+          )
+        ) {
+          throw new Error('DOCUMENT_STORAGE_SCOPE_MISMATCH');
+        }
+
         const actorUserId = String(
           targetVersionDoc.reviewedByUserId ??
             liveDoc.updatedByUserId ??
@@ -1230,69 +1193,25 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
         const logicalSourceId = `continuum:project_document:${documentId}`;
         const idempotencyKey = `continuum:project_document:${documentId}:v${version}`;
 
-        const canDirectObjectIngest = Boolean(
-          targetVersionDoc.file?.key &&
-          targetVersionDoc.file?.name &&
-          targetVersionDoc.file?.contentType &&
-          targetVersionDoc.file?.sha256 &&
-          typeof targetVersionDoc.file?.size === 'number' &&
-          targetVersionDoc.file.size > 0 &&
-          typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-          this.documentStorage.isDirectCloudEnabled() &&
-          typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
-          typeof this.transport.ingestProjectDocumentObject === 'function',
+        // E2E-INT-001: Always stream/upload document bytes via SAG's active
+        // POST /api/v1/projects/{projectId}/documents/upload endpoint (never the removed /ingest-object).
+        const { bytes, fileName, contentType } = await this.loadVersionContent(
+          documentId,
+          liveDoc,
+          targetVersionDoc,
         );
-
-        let receipt: SagProjectDocumentUploadReceipt;
-        if (canDirectObjectIngest && targetVersionDoc.file) {
-          const sagIngestUrlTtlSeconds = Math.max(
-            60,
-            Number(
-              this.config.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
-            ),
-          );
-          const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
-            targetVersionDoc.file.key!,
-            sagIngestUrlTtlSeconds,
-            {
-              fileName: targetVersionDoc.file.name,
-              contentType: targetVersionDoc.file.contentType,
-            },
-          );
-          receipt = await this.transport.ingestProjectDocumentObject!({
-            organizationId,
-            projectId,
-            documentId,
-            version,
-            logicalSourceId,
-            idempotencyKey,
-            actorUserId,
-            sourceUrl,
-            fileName: targetVersionDoc.file.name!,
-            contentType: targetVersionDoc.file.contentType!,
-            expectedSha256: targetVersionDoc.file.sha256!,
-            expectedSizeBytes: targetVersionDoc.file.size!,
-          });
-        } else {
-          const { bytes, fileName, contentType } =
-            await this.loadVersionContent(
-              documentId,
-              liveDoc,
-              targetVersionDoc,
-            );
-          receipt = await this.transport.uploadProjectDocument({
-            organizationId,
-            projectId,
-            documentId,
-            version,
-            logicalSourceId,
-            idempotencyKey,
-            actorUserId,
-            fileName,
-            contentType,
-            bytes,
-          });
-        }
+        const receipt = await this.transport.uploadProjectDocument({
+          organizationId,
+          projectId,
+          documentId,
+          version,
+          logicalSourceId,
+          idempotencyKey,
+          actorUserId,
+          fileName,
+          contentType,
+          bytes,
+        });
 
         if (
           !receipt.documentId ||
@@ -1397,6 +1316,34 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
         attemptCount,
         errorMessage,
       );
+    } finally {
+      clearInterval(leaseHeartbeat);
+    }
+  }
+
+  private async renewEventLease(
+    eventId: Types.ObjectId,
+    leaseId: string,
+  ): Promise<void> {
+    try {
+      const now = new Date();
+      await this.connection
+        .collection<KnowledgeOutboxEventDoc>('outbox_events')
+        .updateOne(
+          {
+            _id: eventId,
+            status: 'PENDING',
+            'payload.delivery.leaseId': leaseId,
+          },
+          {
+            $set: {
+              'payload.delivery.leaseUntil': new Date(now.getTime() + LEASE_MS),
+              updatedAt: now,
+            },
+          },
+        );
+    } catch {
+      // Best-effort heartbeat; main operation error path handles lease expiry.
     }
   }
 
@@ -1557,49 +1504,8 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
     sizeBytes: number;
     inlineBytes?: Buffer;
   }): Promise<SagProjectDocumentUploadReceipt> {
-    const canDirectObjectIngest = Boolean(
-      params.fileKey &&
-      params.fileName &&
-      params.contentType &&
-      params.sha256 &&
-      params.sizeBytes > 0 &&
-      typeof this.documentStorage.isDirectCloudEnabled === 'function' &&
-      this.documentStorage.isDirectCloudEnabled() &&
-      typeof this.documentStorage.createDirectDownloadUrl === 'function' &&
-      typeof this.transport.ingestProjectDocumentObject === 'function',
-    );
-
-    if (canDirectObjectIngest && params.fileKey) {
-      const sagIngestUrlTtlSeconds = Math.max(
-        60,
-        Number(
-          this.config.get<number>('R2_SAG_INGEST_URL_TTL_SECONDS') ?? 1800,
-        ),
-      );
-      const sourceUrl = await this.documentStorage.createDirectDownloadUrl(
-        params.fileKey,
-        sagIngestUrlTtlSeconds,
-        {
-          fileName: params.fileName,
-          contentType: params.contentType,
-        },
-      );
-      return this.transport.ingestProjectDocumentObject!({
-        organizationId: params.organizationId,
-        projectId: params.projectId,
-        documentId: params.documentId,
-        version: params.version,
-        logicalSourceId: params.logicalSourceId,
-        idempotencyKey: params.idempotencyKey,
-        actorUserId: params.actorUserId,
-        sourceUrl,
-        fileName: params.fileName,
-        contentType: params.contentType,
-        expectedSha256: params.sha256,
-        expectedSizeBytes: params.sizeBytes,
-      });
-    }
-
+    // E2E-INT-001: Always upload bytes via POST /api/v1/projects/{projectId}/documents/upload
+    // (never call SAG's deleted /documents/ingest-object endpoint).
     const bytes =
       params.inlineBytes ??
       (params.fileKey ? await this.documentStorage.get(params.fileKey) : null);
@@ -1788,7 +1694,11 @@ export class KnowledgeOutboxConsumer implements OnModuleInit, OnModuleDestroy {
             mdFileVersion: version,
           };
           await reports.updateOne(
-            { _id: new Types.ObjectId(reportId) },
+            {
+              _id: new Types.ObjectId(reportId),
+              organizationId: new Types.ObjectId(organizationId),
+              projectId: new Types.ObjectId(projectId),
+            },
             {
               $set: {
                 file: {

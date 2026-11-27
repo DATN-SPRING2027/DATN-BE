@@ -2573,7 +2573,8 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
         tasks: [
           {
             taskId: taskActiveId.toHexString(),
-            expectedTaskVersion: 3,
+            // transferRev3 was already-assigned to B1 so taskActiveId remained at version 2
+            expectedTaskVersion: 2,
           },
         ],
       })
@@ -3520,6 +3521,58 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .expect(200);
     expect(departing.body).toMatchObject({ data: [] });
 
+    // SEC-AUTH-009: quick-transfer MUST be blocked until Successor B accepts the package.
+    const preAcceptTransfer = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-transfer`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({})
+      .expect(409);
+    expect((preAcceptTransfer.body as { code: string }).code).toBe(
+      'PACKAGE_NOT_ACCEPTED',
+    );
+
+    const preAcceptSuccessorView = await request(server)
+      .get(baseUrl(`/${h5Id}`))
+      .set('Cookie', cookieFor('successorB1'))
+      .expect(200);
+    expect(
+      (
+        preAcceptSuccessorView.body as {
+          participantView: {
+            role: string;
+            packageAccepted: boolean;
+            canQuickAccept: boolean;
+          };
+        }
+      ).participantView,
+    ).toMatchObject({
+      role: 'SUCCESSOR',
+      packageAccepted: false,
+      canQuickAccept: true,
+    });
+
+    // Step 5a: Successor 1-Click Quick Accept BEFORE task transfer (H-15 / SEC-AUTH-009)
+    const quickAcceptRes = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-accept`))
+      .set('Cookie', cookieFor('successorB1'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ note: 'Đã tiếp nhận toàn bộ công việc và tài liệu bàn giao.' })
+      .expect(200);
+
+    etag = quickAcceptRes.headers['etag'];
+    const acceptedDetail = quickAcceptRes.body as {
+      canComplete: boolean;
+      requiredPendingCount: number;
+      publishedRevision: { id: string };
+    };
+    expect(acceptedDetail.requiredPendingCount).toBe(0);
+    expect(acceptedDetail.canComplete).toBe(false);
+
     await request(server)
       .post(baseUrl(`/${h5Id}/quick-transfer`))
       .set('Cookie', cookieFor('leaderD'))
@@ -3528,15 +3581,6 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .set('Idempotency-Key', randomUUID())
       .send({ taskIds: [taskActiveId.toHexString()] })
       .expect(422);
-
-    await request(server)
-      .post(baseUrl(`/${h5Id}/quick-accept`))
-      .set('Cookie', cookieFor('successorB1'))
-      .set('x-csrf-token', csrfToken)
-      .set('If-Match', etag)
-      .set('Idempotency-Key', randomUUID())
-      .send({})
-      .expect(409);
 
     // A pinned task reassigned to a third member must not be overwritten.
     await taskDb
@@ -3561,12 +3605,31 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
     ).toMatchObject({ assigneeId: memberCId, version: 2 });
     etag = conflict.headers['etag'];
 
-    // Step 5a: Leader verifies existing ownership and transfers the remaining task.
+    // SEC-AUTH-009: Even if reassigned back to successorB1 at a drifted version (v3 vs pinned v1),
+    // quick-transfer MUST NOT silently override expectedTaskVersion.
     await taskDb
       .collection(WORKSPACE_TASKS_COLLECTION)
       .updateOne(
         { _id: alreadyAssignedTaskId },
         { $set: { assigneeId: successorB1Id }, $inc: { version: 1 } },
+      );
+    const versionDriftConflict = await request(server)
+      .post(baseUrl(`/${h5Id}/quick-transfer`))
+      .set('Cookie', cookieFor('leaderD'))
+      .set('x-csrf-token', csrfToken)
+      .set('If-Match', etag)
+      .set('Idempotency-Key', randomUUID())
+      .send({ taskIds: [alreadyAssignedTaskId.toHexString()] })
+      .expect(200);
+    expect(versionDriftConflict.body).toMatchObject({ state: 'CONFLICT' });
+    etag = versionDriftConflict.headers['etag'];
+
+    // Step 5b: Restore pinned version (v1) and verify existing ownership + transfer remaining task.
+    await taskDb
+      .collection(WORKSPACE_TASKS_COLLECTION)
+      .updateOne(
+        { _id: alreadyAssignedTaskId },
+        { $set: { assigneeId: successorB1Id, version: 1 } },
       );
     const transferKey = randomUUID();
     const transferEtag = etag;
@@ -3599,7 +3662,7 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       await taskDb
         .collection(WORKSPACE_TASKS_COLLECTION)
         .findOne({ _id: alreadyAssignedTaskId }),
-    ).toMatchObject({ version: 3 });
+    ).toMatchObject({ version: 1 });
     expect(await revisions.findOne({ _id: bundleId })).toEqual(pinnedRevision);
     const replay = await request(server)
       .post(baseUrl(`/${h5Id}/quick-transfer`))
@@ -3616,8 +3679,10 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
       .set('Cookie', cookieFor('successorB1'))
       .expect(200);
     const successorViewDto = successorView.body as {
+      canComplete: boolean;
       participantView: {
         role: string;
+        packageAccepted: boolean;
         canQuickAccept: boolean;
         tasks: Array<{
           id: string;
@@ -3630,8 +3695,10 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
         }>;
       };
     };
+    expect(successorViewDto.canComplete).toBe(true);
     expect(successorViewDto.participantView.role).toBe('SUCCESSOR');
-    expect(successorViewDto.participantView.canQuickAccept).toBe(true);
+    expect(successorViewDto.participantView.packageAccepted).toBe(true);
+    expect(successorViewDto.participantView.canQuickAccept).toBe(false);
     expect(
       successorViewDto.participantView.tasks.some(
         (task) =>
@@ -3644,25 +3711,6 @@ describe('Knowledge Handover End-to-End Acceptance Suite (MongoDB 7 + Strict V2 
           !task.canAddNote,
       ),
     ).toBe(true);
-
-    // Step 5b: Successor 1-Click Quick Accept
-    const quickAcceptRes = await request(server)
-      .post(baseUrl(`/${h5Id}/quick-accept`))
-      .set('Cookie', cookieFor('successorB1'))
-      .set('x-csrf-token', csrfToken)
-      .set('If-Match', etag)
-      .set('Idempotency-Key', randomUUID())
-      .send({ note: 'Đã tiếp nhận toàn bộ công việc và tài liệu bàn giao.' })
-      .expect(200);
-
-    etag = quickAcceptRes.headers['etag'];
-    const acceptedDetail = quickAcceptRes.body as {
-      canComplete: boolean;
-      requiredPendingCount: number;
-      publishedRevision: { id: string };
-    };
-    expect(acceptedDetail.requiredPendingCount).toBe(0);
-    expect(acceptedDetail.canComplete).toBe(true);
 
     // Step 5c: Complete Handover
     const completeRes = await request(server)

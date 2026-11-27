@@ -5,7 +5,6 @@ import {
   Controller,
   Delete,
   Get,
-  Headers,
   Header,
   HttpCode,
   HttpStatus,
@@ -14,19 +13,31 @@ import {
   Patch,
   Put,
   Req,
+  Res,
   Query,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { ChatApplicationService } from '../application/chat.service';
 import type { ChatCredentials } from '../application/chat-iam.client';
 
-function credentials(
-  authorization: string | undefined,
-  cookie: string | undefined,
-): ChatCredentials {
+function readHeader(request: Request, name: string): string | undefined {
+  const value = request.headers[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function requestCredentials(request: Request): ChatCredentials {
+  const authorization = request.headers.authorization;
+  const cookie = request.headers.cookie;
+  const organizationId = readHeader(request, 'x-organization-id');
+  const expectedOrganizationId = readHeader(
+    request,
+    'x-expected-organization-id',
+  );
   return {
     ...(authorization ? { authorization } : {}),
     ...(cookie ? { cookie } : {}),
+    ...(organizationId ? { organizationId } : {}),
+    ...(expectedOrganizationId ? { expectedOrganizationId } : {}),
   };
 }
 
@@ -37,61 +48,41 @@ export class ChatController {
 
   @Get('candidates')
   @Header('Cache-Control', 'no-store')
-  searchCandidates(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
-    @Query('search') search: unknown,
-  ) {
-    return this.service.searchCandidates(
-      credentials(authorization, cookie),
-      search,
-    );
+  searchCandidates(@Req() request: Request, @Query('search') search: unknown) {
+    return this.service.searchCandidates(requestCredentials(request), search);
   }
 
   @Get('conversations')
   @Header('Cache-Control', 'no-store')
   listConversations(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Query() query: Record<string, unknown>,
   ) {
-    return this.service.listConversations(
-      credentials(authorization, cookie),
-      query,
-    );
+    return this.service.listConversations(requestCredentials(request), query);
   }
 
   @Post('direct')
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
-  createDirect(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
-    @Body() body: unknown,
-  ) {
-    return this.service.createDirect(credentials(authorization, cookie), body);
+  createDirect(@Req() request: Request, @Body() body: unknown) {
+    return this.service.createDirect(requestCredentials(request), body);
   }
 
   @Post('rooms')
   @Header('Cache-Control', 'no-store')
-  createRoom(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
-    @Body() body: unknown,
-  ) {
-    return this.service.createRoom(credentials(authorization, cookie), body);
+  createRoom(@Req() request: Request, @Body() body: unknown) {
+    return this.service.createRoom(requestCredentials(request), body);
   }
 
   @Patch('conversations/:conversationId/room')
   @Header('Cache-Control', 'no-store')
   renameRoom(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Body() body: unknown,
   ) {
     return this.service.renameRoom(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -101,13 +92,12 @@ export class ChatController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   addRoomMembers(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Body() body: unknown,
   ) {
     return this.service.addRoomMembers(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -116,13 +106,12 @@ export class ChatController {
   @Delete('conversations/:conversationId/members/:userId')
   @Header('Cache-Control', 'no-store')
   removeRoomMember(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('userId') userId: string,
   ) {
     return this.service.removeRoomMember(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       userId,
     );
@@ -132,26 +121,21 @@ export class ChatController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   leaveRoom(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
   ) {
-    return this.service.leaveRoom(
-      credentials(authorization, cookie),
-      conversationId,
-    );
+    return this.service.leaveRoom(requestCredentials(request), conversationId);
   }
 
   @Get('conversations/:conversationId/messages')
   @Header('Cache-Control', 'no-store')
   listMessages(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Query() query: Record<string, unknown>,
   ) {
     return this.service.listMessages(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       query,
     );
@@ -160,13 +144,12 @@ export class ChatController {
   @Get('conversations/:conversationId/messages/search')
   @Header('Cache-Control', 'no-store')
   searchMessages(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Query() query: Record<string, unknown>,
   ) {
     return this.service.searchMessages(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       query,
     );
@@ -175,13 +158,12 @@ export class ChatController {
   @Post('conversations/:conversationId/uploads')
   @Header('Cache-Control', 'no-store')
   createUpload(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Body() body: unknown,
   ) {
     return this.service.createUpload(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -190,14 +172,12 @@ export class ChatController {
   @Put('conversations/:conversationId/uploads/:uploadId/content')
   @Header('Cache-Control', 'no-store')
   uploadContent(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('uploadId') uploadId: string,
-    @Req() request: Request,
   ) {
     return this.service.uploadContent(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       uploadId,
       request,
@@ -208,13 +188,12 @@ export class ChatController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   completeUpload(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('uploadId') uploadId: string,
   ) {
     return this.service.completeUpload(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       uploadId,
     );
@@ -223,28 +202,64 @@ export class ChatController {
   @Get('conversations/:conversationId/attachments/:attachmentId/download-url')
   @Header('Cache-Control', 'no-store')
   getAttachmentDownloadUrl(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('attachmentId') attachmentId: string,
   ) {
     return this.service.getAttachmentDownloadUrl(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       attachmentId,
     );
   }
 
+  @Get('conversations/:conversationId/attachments/:attachmentId/content')
+  async downloadAttachmentContent(
+    @Req() request: Request,
+    @Param('conversationId') conversationId: string,
+    @Param('attachmentId') attachmentId: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const file = await this.service.getAttachmentStream(
+      requestCredentials(request),
+      conversationId,
+      attachmentId,
+    );
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Content-Type', file.contentType);
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+    );
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', 'sandbox');
+    if (typeof file.size === 'number' && Number.isFinite(file.size)) {
+      response.setHeader('Content-Length', String(file.size));
+    }
+    file.stream.on('error', () => {
+      if (!response.headersSent) {
+        response.status(503).end();
+      } else {
+        response.destroy();
+      }
+    });
+    response.on('close', () => {
+      if (!file.stream.destroyed) {
+        file.stream.destroy();
+      }
+    });
+    file.stream.pipe(response);
+  }
+
   @Post('conversations/:conversationId/messages')
   @Header('Cache-Control', 'no-store')
   sendMessage(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Body() body: unknown,
   ) {
     return this.service.sendMessage(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -253,14 +268,13 @@ export class ChatController {
   @Patch('conversations/:conversationId/messages/:messageId')
   @Header('Cache-Control', 'no-store')
   editMessage(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('messageId') messageId: string,
     @Body() body: unknown,
   ) {
     return this.service.editMessage(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       messageId,
       body,
@@ -270,13 +284,12 @@ export class ChatController {
   @Delete('conversations/:conversationId/messages/:messageId')
   @Header('Cache-Control', 'no-store')
   deleteMessage(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('messageId') messageId: string,
   ) {
     return this.service.deleteMessage(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       messageId,
     );
@@ -285,14 +298,13 @@ export class ChatController {
   @Put('conversations/:conversationId/messages/:messageId/reactions/:emoji')
   @Header('Cache-Control', 'no-store')
   setMessageReaction(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('messageId') messageId: string,
     @Param('emoji') emoji: string,
   ) {
     return this.service.setMessageReaction(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       messageId,
       emoji,
@@ -303,14 +315,13 @@ export class ChatController {
   @Delete('conversations/:conversationId/messages/:messageId/reactions/:emoji')
   @Header('Cache-Control', 'no-store')
   removeMessageReaction(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Param('messageId') messageId: string,
     @Param('emoji') emoji: string,
   ) {
     return this.service.setMessageReaction(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       messageId,
       emoji,
@@ -322,13 +333,12 @@ export class ChatController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   markRead(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Body() body: unknown,
   ) {
     return this.service.markRead(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -338,13 +348,12 @@ export class ChatController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   markDelivered(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
+    @Req() request: Request,
     @Param('conversationId') conversationId: string,
     @Body() body: unknown,
   ) {
     return this.service.markDelivered(
-      credentials(authorization, cookie),
+      requestCredentials(request),
       conversationId,
       body,
     );
@@ -353,10 +362,7 @@ export class ChatController {
   @Post('ws-ticket')
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
-  createWsTicket(
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookie: string | undefined,
-  ) {
-    return this.service.createWsTicket(credentials(authorization, cookie));
+  createWsTicket(@Req() request: Request) {
+    return this.service.createWsTicket(requestCredentials(request));
   }
 }

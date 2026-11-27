@@ -2,8 +2,11 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
+  Optional,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
@@ -16,6 +19,7 @@ import {
   type HandoverProjectActorContext,
 } from '../../iam/application/projects/handover-iam-scope.service';
 import { HandoverTaskAssignmentService } from '../../task/workspace/handover-task-assignment.service';
+import { RedisService } from '../infrastructure/redis/redis.service';
 import { HandoverAiService } from './handover-ai.service';
 import {
   collectItemDependencyRefs,
@@ -102,6 +106,60 @@ import {
 const LEGACY_AUTO_BUNDLE = 'AUTO_BUNDLED_AND_PUBLISHED';
 const SAFE_AUTO_BUNDLE = 'AUTO_BUNDLE_SAFE_V2';
 
+type HandoverRateLimitBucket = 'read' | 'mutate' | 'ai' | 'preview';
+
+const HANDOVER_RATE_LIMITS: Record<
+  HandoverRateLimitBucket,
+  { limit: number; windowSeconds: number }
+> = {
+  ai: { limit: 15, windowSeconds: 60 },
+  preview: { limit: 30, windowSeconds: 60 },
+  mutate: { limit: 60, windowSeconds: 60 },
+  read: { limit: 180, windowSeconds: 60 },
+};
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === 11000
+  );
+}
+
+function isOpenHandoverUniqueDuplicate(err: unknown): boolean {
+  if (!isDuplicateKeyError(err)) return false;
+  const record = err as {
+    message?: unknown;
+    keyPattern?: Record<string, unknown>;
+  };
+  const msg = typeof record.message === 'string' ? record.message : '';
+  if (msg.includes('handover_v2_open_unique')) return true;
+  if (
+    record.keyPattern &&
+    Object.prototype.hasOwnProperty.call(record.keyPattern, 'departingUserId')
+  ) {
+    return true;
+  }
+  if (
+    msg.includes('handover_operation_key_unique') ||
+    (record.keyPattern &&
+      Object.prototype.hasOwnProperty.call(record.keyPattern, 'key'))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isIdempotencyKeyConflictError(err: unknown): boolean {
+  if (!(err instanceof ConflictException)) return false;
+  const res = err.getResponse();
+  return (
+    typeof res === 'object' &&
+    res !== null &&
+    (res as { code?: unknown }).code === 'IDEMPOTENCY_KEY_CONFLICT'
+  );
+}
+
 export interface HttpPayloadWithHeaders<TBody> {
   body: TBody;
   etag?: string;
@@ -117,12 +175,80 @@ export class HandoverWorkflowService {
     private readonly taskAssignmentService: HandoverTaskAssignmentService,
     private readonly aiService: HandoverAiService,
     private readonly transferService: HandoverTransferService,
+    @Optional()
+    private readonly redis?: RedisService,
   ) {}
+
+  private async assertRateLimit(
+    actor: HandoverProjectActorContext,
+    bucket: HandoverRateLimitBucket,
+  ): Promise<void> {
+    if (!this.redis || typeof this.redis.consumeRateLimit !== 'function') {
+      return;
+    }
+    const cfg = HANDOVER_RATE_LIMITS[bucket];
+    let allowed = true;
+    try {
+      allowed = await this.redis.consumeRateLimit(
+        `handover:${bucket}:${actor.organizationId.toLowerCase()}:${actor.userId.toLowerCase()}`,
+        cfg.limit,
+        cfg.windowSeconds,
+      );
+    } catch {
+      // Do not hard-fail requests on transient Redis connection errors.
+      return;
+    }
+    if (!allowed) {
+      throw new HttpException(
+        {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'Too many handover requests. Please retry later.',
+          details: { bucket, retryAfterSeconds: cfg.windowSeconds },
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  private async evaluateSourceRefsForViewers(
+    viewers: readonly HandoverSourceViewer[],
+    refs: readonly SourceRefDto[],
+  ): Promise<Array<Map<string, EvaluatedHandoverSource>>> {
+    if (viewers.length === 0) return [];
+    if (refs.length === 0) {
+      return viewers.map(() => new Map<string, EvaluatedHandoverSource>());
+    }
+    if (
+      typeof this.sourcesService.evaluateSourceRefsMapForViewers === 'function'
+    ) {
+      return this.sourcesService.evaluateSourceRefsMapForViewers(viewers, refs);
+    }
+    const viewerKey = (v: HandoverSourceViewer) =>
+      `${v.organizationId.toLowerCase()}:${v.projectId.toLowerCase()}:${v.userId.toLowerCase()}:${v.isProjectMember ? 1 : 0}:${v.isProjectLeader ? 1 : 0}`;
+    const unique: HandoverSourceViewer[] = [];
+    const indexByKey = new Map<string, number>();
+    const mapIdx: number[] = [];
+    for (const v of viewers) {
+      const k = viewerKey(v);
+      let idx = indexByKey.get(k);
+      if (idx === undefined) {
+        idx = unique.length;
+        indexByKey.set(k, idx);
+        unique.push(v);
+      }
+      mapIdx.push(idx);
+    }
+    const uniqueResults = await Promise.all(
+      unique.map((v) => this.sourcesService.evaluateSourceRefsMap(v, refs)),
+    );
+    return mapIdx.map((idx) => uniqueResults[idx]);
+  }
 
   private async resolveActor(
     projectId: string,
     headers: HandoverRequestHeaders,
     requireCsrf: boolean,
+    rateLimitBucket?: HandoverRateLimitBucket,
   ): Promise<HandoverProjectActorContext> {
     if (requireCsrf) {
       this.iamScope.assertValidCsrf(headers.cookie, headers.csrfToken);
@@ -131,11 +257,16 @@ export class HandoverWorkflowService {
       headers.authorization,
       headers.cookie,
     );
-    return this.iamScope.resolveProjectActorContext({
+    const actor = await this.iamScope.resolveProjectActorContext({
       actor: identity,
       projectId,
       organizationHeader: headers.organizationId,
     });
+    await this.assertRateLimit(
+      actor,
+      rateLimitBucket ?? (requireCsrf ? 'mutate' : 'read'),
+    );
+    return actor;
   }
 
   private assertLeaderAuthority(actor: HandoverProjectActorContext): void {
@@ -206,13 +337,21 @@ export class HandoverWorkflowService {
   ): Promise<void> {
     // Follow-ups outlive the current revision and even parent completion.
     // Resolve the originating snapshot, then apply today's source ACL.
+    const scope = {
+      organizationId: new Types.ObjectId(actor.organizationId),
+      projectId: new Types.ObjectId(actor.projectId),
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: doc.revisionId, handoverId: doc.handoverId })
+      .findOne({ _id: doc.revisionId, handoverId: doc.handoverId, ...scope })
       .lean<StoredRevisionDoc>()
       .exec();
     const item = revision?.items.find((row) => row.itemId.equals(doc.itemId));
     if (item) {
-      const refs = await this.guardedItemDependencies(doc.handoverId, item);
+      const refs = await this.guardedItemDependencies(
+        doc.handoverId,
+        item,
+        scope,
+      );
       const evaluations = await this.sourcesService.evaluateSourceRefsMap(
         actor,
         refs,
@@ -276,11 +415,13 @@ export class HandoverWorkflowService {
   }
 
   private async assertNoTaskTransferFence(
-    handoverId: Types.ObjectId,
+    handover: Pick<StoredHandoverDoc, '_id' | 'organizationId' | 'projectId'>,
   ): Promise<void> {
     const pendingTransfers = await this.repository.operations
       .find({
-        handoverId,
+        handoverId: handover._id,
+        organizationId: handover.organizationId,
+        projectId: handover.projectId,
         kind: { $in: ['TASK_TRANSFER', 'TASK_TRANSFER_CHILD'] },
         state: { $in: ['PENDING', 'DISPATCHED', 'UNKNOWN'] },
       })
@@ -458,7 +599,12 @@ export class HandoverWorkflowService {
       existingOp?.receipt?.resourceId
     ) {
       const existingHandover = await this.repository.handovers
-        .findOne({ _id: existingOp.receipt.resourceId })
+        .findOne({
+          _id: existingOp.receipt.resourceId,
+          organizationId: new Types.ObjectId(actor.organizationId),
+          projectId: new Types.ObjectId(actor.projectId),
+          schemaVersion: 2,
+        })
         .lean<StoredHandoverDoc>()
         .exec();
       if (!existingHandover) {
@@ -492,7 +638,7 @@ export class HandoverWorkflowService {
 
     if (
       dto.successorUserId !== null &&
-      dto.successorUserId === dto.departingUserId
+      dto.successorUserId.toLowerCase() === dto.departingUserId.toLowerCase()
     ) {
       throw new UnprocessableEntityException({
         code: 'SUCCESSOR_CANNOT_BE_DEPARTING_USER',
@@ -521,9 +667,10 @@ export class HandoverWorkflowService {
       );
     }
 
-    const created = await this.repository.withTransaction(async (session) => {
-      const handoverId = new Types.ObjectId();
-      try {
+    let created: StoredHandoverDoc;
+    try {
+      created = await this.repository.withTransaction(async (session) => {
+        const handoverId = new Types.ObjectId();
         const [doc] = await this.repository.handovers.create(
           [
             {
@@ -594,8 +741,56 @@ export class HandoverWorkflowService {
         );
 
         return doc.toObject();
-      } catch (err: unknown) {
-        if ((err as { code?: number })?.code === 11000) {
+      });
+    } catch (err: unknown) {
+      // BE-DATA-007: Re-read handover_operations outside the aborted transaction
+      // so concurrent retries with the same Idempotency-Key replay cleanly instead
+      // of being misclassified as OPEN_HANDOVER_ALREADY_EXISTS.
+      if (isDuplicateKeyError(err) || isIdempotencyKeyConflictError(err)) {
+        const racedOp = await this.repository.findExistingOperation({
+          organizationId: actor.organizationId,
+          projectId: actor.projectId,
+          actorUserId: actor.userId,
+          namespace,
+          key: idempotencyKey,
+        });
+        if (racedOp) {
+          if (
+            this.repository.assertIdempotencyMatchOrReplay(
+              racedOp,
+              fingerprint,
+            ) === 'REPLAY_COMMITTED' &&
+            racedOp.receipt?.resourceId
+          ) {
+            const committedHandover = await this.repository.handovers
+              .findOne({
+                _id: racedOp.receipt.resourceId,
+                organizationId: new Types.ObjectId(actor.organizationId),
+                projectId: new Types.ObjectId(actor.projectId),
+                schemaVersion: 2,
+              })
+              .lean<StoredHandoverDoc>()
+              .exec();
+            if (committedHandover) {
+              const ver = racedOp.receipt.resourceVersion ?? 1;
+              return {
+                body: this.toReceiptDto({
+                  operationId: idempotencyKey,
+                  handover: committedHandover,
+                  versionOverride: ver,
+                  revisionIdOverride: null,
+                  replayed: true,
+                }),
+                etag: formatHandoverEtag(
+                  committedHandover._id.toHexString(),
+                  ver,
+                ),
+                replayed: true,
+              };
+            }
+          }
+        }
+        if (isOpenHandoverUniqueDuplicate(err)) {
           throw new ConflictException({
             code: 'OPEN_HANDOVER_ALREADY_EXISTS',
             message:
@@ -603,9 +798,9 @@ export class HandoverWorkflowService {
             details: {},
           });
         }
-        throw err;
       }
-    });
+      throw err;
+    }
 
     return {
       body: this.toReceiptDto({
@@ -622,12 +817,17 @@ export class HandoverWorkflowService {
   >(
     handoverId: Types.ObjectId,
     items: T[],
+    scope?: { organizationId: Types.ObjectId; projectId: Types.ObjectId },
   ): Promise<{ items: T[]; unverified: Set<string> }> {
     const unverified = new Set<string>();
     if (!items.length) return { items, unverified };
+    const tenantScope = scope
+      ? { organizationId: scope.organizationId, projectId: scope.projectId }
+      : {};
     const receipts = await this.repository.operations
       .find({
         handoverId,
+        ...tenantScope,
         kind: 'COMMAND',
         'receipt.outcome': { $in: [LEGACY_AUTO_BUNDLE, SAFE_AUTO_BUNDLE] },
       })
@@ -645,6 +845,7 @@ export class HandoverWorkflowService {
       ? await this.repository.revisions
           .find({
             handoverId,
+            ...tenantScope,
             _id: {
               $in: [...outcomes.keys()].map((id) => new Types.ObjectId(id)),
             },
@@ -688,10 +889,13 @@ export class HandoverWorkflowService {
   private async guardedItemDependencies(
     handoverId: Types.ObjectId,
     item: StoredHandoverItemSnapshot,
+    scope?: { organizationId: Types.ObjectId; projectId: Types.ObjectId },
   ): Promise<SourceRefDto[]> {
-    const provenance = await this.bindLegacyBundleDependencies(handoverId, [
-      item,
-    ]);
+    const provenance = await this.bindLegacyBundleDependencies(
+      handoverId,
+      [item],
+      scope,
+    );
     if (provenance.unverified.size) {
       throw new ForbiddenException({
         code: 'ITEM_DEPENDENCY_UNAVAILABLE',
@@ -713,7 +917,25 @@ export class HandoverWorkflowService {
     requiredPendingCount: number;
     canComplete: boolean;
     packageAccepted: boolean;
+    children: StoredOperationDoc[];
+    liveTaskStateMap?: Map<
+      string,
+      {
+        exists: boolean;
+        version: number | null;
+        assigneeId: string | null;
+        status: string | null;
+        key?: string | null;
+        title?: string | null;
+        dueDate?: string | null;
+      }
+    >;
+    viewerSourceMap: Map<string, EvaluatedHandoverSource>;
   }> {
+    const scope = {
+      organizationId: input.handover.organizationId,
+      projectId: input.handover.projectId,
+    };
     const [
       acceptances,
       evidences,
@@ -726,6 +948,7 @@ export class HandoverWorkflowService {
         .find({
           handoverId: input.handover._id,
           revisionId: input.revision._id,
+          ...scope,
         })
         .lean<StoredAcceptanceDoc[]>()
         .exec(),
@@ -733,6 +956,7 @@ export class HandoverWorkflowService {
         .find({
           handoverId: input.handover._id,
           revisionId: input.revision._id,
+          ...scope,
         })
         .lean<StoredEvidenceDoc[]>()
         .exec(),
@@ -740,6 +964,7 @@ export class HandoverWorkflowService {
         .find({
           handoverId: input.handover._id,
           revisionId: input.revision._id,
+          ...scope,
         })
         .lean<StoredEvidenceReviewDoc[]>()
         .exec(),
@@ -748,12 +973,14 @@ export class HandoverWorkflowService {
           schemaVersion: 2,
           handoverId: input.handover._id,
           revisionId: input.revision._id,
+          ...scope,
         })
         .lean<StoredFollowUpDoc[]>()
         .exec(),
       this.repository.operations
         .find({
           handoverId: input.handover._id,
+          ...scope,
           kind: 'TASK_TRANSFER',
         })
         .lean<StoredOperationDoc[]>()
@@ -761,6 +988,7 @@ export class HandoverWorkflowService {
       this.repository.operations
         .find({
           handoverId: input.handover._id,
+          ...scope,
           kind: 'TASK_TRANSFER_CHILD',
         })
         .lean<StoredOperationDoc[]>()
@@ -770,6 +998,7 @@ export class HandoverWorkflowService {
     const provenance = await this.bindLegacyBundleDependencies(
       input.handover._id,
       input.revision.items,
+      scope,
     );
     const guardedRevision = { ...input.revision, items: provenance.items };
     const allItemDeps = guardedRevision.items.flatMap(
@@ -777,14 +1006,27 @@ export class HandoverWorkflowService {
     );
 
     const viewerLower = input.viewer.userId.toLowerCase();
-    const hasContentReadAccess =
+    const assignedLeaderLower = input.handover.assignedLeaderId.toLowerCase();
+    const successorLower =
+      input.handover.successorUserId?.toLowerCase() ?? null;
+    const departingLower = input.handover.departingUserId.toLowerCase();
+
+    // SEC-AUTH-010: Full content access is limited to active leader, successor, or departing member.
+    // A regular follow-up owner may ONLY inspect the specific item(s) bound to their follow-up.
+    const hasFullContentReadAccess =
       input.viewer.isProjectMember &&
       (input.viewer.isProjectLeader ||
-        (input.handover.successorUserId !== null &&
-          input.handover.successorUserId.toLowerCase() === viewerLower) ||
-        input.handover.departingUserId.toLowerCase() === viewerLower ||
-        Boolean(input.isFollowUpOwner) ||
-        followUps.some((f) => f.ownerUserId.toLowerCase() === viewerLower));
+        successorLower === viewerLower ||
+        departingLower === viewerLower);
+
+    const ownedFollowUpItemIds = new Set(
+      followUps
+        .filter((f) => f.ownerUserId.toLowerCase() === viewerLower)
+        .map((f) => f.itemId.toHexString()),
+    );
+    const viewerNeedsSourceEval =
+      hasFullContentReadAccess ||
+      (input.viewer.isProjectMember && ownedFollowUpItemIds.size > 0);
 
     const viewerCtx: HandoverSourceViewer = {
       organizationId: input.viewer.organizationId,
@@ -795,18 +1037,28 @@ export class HandoverWorkflowService {
     };
 
     const [leaderScope, successorScope] = await Promise.all([
-      this.iamScope.resolveActiveProjectMemberScope(
-        input.viewer.organizationId,
-        input.viewer.projectId,
-        input.handover.assignedLeaderId,
-      ),
-      input.handover.successorUserId
-        ? this.iamScope.resolveActiveProjectMemberScope(
+      assignedLeaderLower === viewerLower
+        ? Promise.resolve({
+            isProjectMember: input.viewer.isProjectMember,
+            isProjectLeader: input.viewer.isProjectLeader,
+          })
+        : this.iamScope.resolveActiveProjectMemberScope(
             input.viewer.organizationId,
             input.viewer.projectId,
-            input.handover.successorUserId,
-          )
-        : Promise.resolve({ isProjectMember: false, isProjectLeader: false }),
+            input.handover.assignedLeaderId,
+          ),
+      !input.handover.successorUserId
+        ? Promise.resolve({ isProjectMember: false, isProjectLeader: false })
+        : successorLower === viewerLower
+          ? Promise.resolve({
+              isProjectMember: input.viewer.isProjectMember,
+              isProjectLeader: input.viewer.isProjectLeader,
+            })
+          : this.iamScope.resolveActiveProjectMemberScope(
+              input.viewer.organizationId,
+              input.viewer.projectId,
+              input.handover.successorUserId,
+            ),
     ]);
 
     const leaderCtx: HandoverSourceViewer = {
@@ -818,29 +1070,28 @@ export class HandoverWorkflowService {
     };
 
     const successorMemberActive = successorScope.isProjectMember;
+    const evalRefs = hasFullContentReadAccess
+      ? [...allItemDeps, ...input.revision.selectedSources]
+      : allItemDeps;
 
-    const [
-      viewerSourceMap,
-      leaderSourceMap,
-      successorSourceMap,
-      liveTaskStateMap,
-    ] = await Promise.all([
-      hasContentReadAccess
-        ? this.sourcesService.evaluateSourceRefsMap(viewerCtx, allItemDeps)
-        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
-      this.sourcesService.evaluateSourceRefsMap(leaderCtx, allItemDeps),
+    const batchViewers: HandoverSourceViewer[] = [];
+    const viewerBatchIdx = viewerNeedsSourceEval
+      ? batchViewers.push(viewerCtx) - 1
+      : -1;
+    const leaderBatchIdx = batchViewers.push(leaderCtx) - 1;
+    const successorBatchIdx =
       input.handover.successorUserId && successorMemberActive
-        ? this.sourcesService.evaluateSourceRefsMap(
-            {
-              organizationId: input.viewer.organizationId,
-              projectId: input.viewer.projectId,
-              userId: input.handover.successorUserId,
-              isProjectMember: successorScope.isProjectMember,
-              isProjectLeader: successorScope.isProjectLeader,
-            },
-            allItemDeps,
-          )
-        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
+        ? batchViewers.push({
+            organizationId: input.viewer.organizationId,
+            projectId: input.viewer.projectId,
+            userId: input.handover.successorUserId,
+            isProjectMember: successorScope.isProjectMember,
+            isProjectLeader: successorScope.isProjectLeader,
+          }) - 1
+        : -1;
+
+    const [sourceMaps, liveTaskStateMap] = await Promise.all([
+      this.evaluateSourceRefsForViewers(batchViewers, evalRefs),
       input.isCurrent && input.revision.selectedTasks.length > 0
         ? this.taskAssignmentService.inspectTasksCurrentState(
             input.viewer.organizationId,
@@ -850,13 +1101,29 @@ export class HandoverWorkflowService {
         : Promise.resolve(undefined),
     ]);
 
+    const viewerSourceMap =
+      viewerBatchIdx >= 0
+        ? (sourceMaps[viewerBatchIdx] ??
+          new Map<string, EvaluatedHandoverSource>())
+        : new Map<string, EvaluatedHandoverSource>();
+    const leaderSourceMap =
+      sourceMaps[leaderBatchIdx] ?? new Map<string, EvaluatedHandoverSource>();
+    const successorSourceMap =
+      successorBatchIdx >= 0
+        ? (sourceMaps[successorBatchIdx] ??
+          new Map<string, EvaluatedHandoverSource>())
+        : new Map<string, EvaluatedHandoverSource>();
+
     const reviewByItem = new Map(
       input.revision.reviews.map((r) => [r.itemId.toHexString(), r]),
     );
 
     const projectedItems = guardedRevision.items.map((item) => {
       const itemHex = item.itemId.toHexString();
-      if (!hasContentReadAccess || provenance.unverified.has(itemHex)) {
+      const canReadItem =
+        hasFullContentReadAccess ||
+        (input.viewer.isProjectMember && ownedFollowUpItemIds.has(itemHex));
+      if (!canReadItem || provenance.unverified.has(itemHex)) {
         return {
           itemId: itemHex,
           access: 'UNAVAILABLE' as const,
@@ -912,6 +1179,9 @@ export class HandoverWorkflowService {
         readiness.canComplete &&
         provenance.unverified.size === 0,
       packageAccepted: readiness.packageAccepted,
+      children,
+      liveTaskStateMap,
+      viewerSourceMap,
     };
   }
 
@@ -921,10 +1191,26 @@ export class HandoverWorkflowService {
     revision: StoredRevisionDoc | null,
     packageAccepted: boolean,
     verified: Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>,
+    preloadedLiveTasks?: Map<
+      string,
+      {
+        exists: boolean;
+        version: number | null;
+        assigneeId: string | null;
+        status: string | null;
+        key?: string | null;
+        title?: string | null;
+        dueDate?: string | null;
+      }
+    >,
+    preloadedSourceMap?: Map<string, EvaluatedHandoverSource>,
   ): Promise<HandoverParticipantView | undefined> {
     if (!actor.isProjectMember) return;
-    const isSuccessor = handover.successorUserId === actor.userId;
-    if (!isSuccessor && handover.departingUserId !== actor.userId) return;
+    const actorLower = actor.userId.toLowerCase();
+    const isSuccessor = handover.successorUserId?.toLowerCase() === actorLower;
+    if (!isSuccessor && handover.departingUserId.toLowerCase() !== actorLower) {
+      return;
+    }
     const role = isSuccessor ? 'SUCCESSOR' : 'DEPARTING';
     if (!revision && isSuccessor) {
       return {
@@ -935,6 +1221,11 @@ export class HandoverWorkflowService {
         sources: [],
       };
     }
+    const hasAllRevisionSources =
+      Boolean(revision && preloadedSourceMap) &&
+      revision!.selectedSources.every((ref) =>
+        preloadedSourceMap!.has(sourceRefKey(ref)),
+      );
     const [departingTasks, sourceMap] = await Promise.all([
       !revision
         ? this.taskAssignmentService.listDepartingMemberTasksForHandover(
@@ -944,22 +1235,44 @@ export class HandoverWorkflowService {
           )
         : Promise.resolve([]),
       revision
-        ? this.sourcesService.evaluateSourceRefsMap(
-            actor,
-            revision.selectedSources,
-          )
+        ? hasAllRevisionSources
+          ? Promise.resolve(preloadedSourceMap!)
+          : this.sourcesService.evaluateSourceRefsMap(
+              actor,
+              revision.selectedSources,
+            )
         : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
     ]);
     const taskIds = isSuccessor
       ? [...verified.keys()]
       : (revision?.selectedTasks.map((task) => task.taskId.toHexString()) ??
         departingTasks.map((task) => task.id));
+    const hasAllLiveTasks =
+      Boolean(preloadedLiveTasks) &&
+      taskIds.every((id) => preloadedLiveTasks!.has(id));
     const [liveTasks, draftSources] = await Promise.all([
-      this.taskAssignmentService.inspectTasksCurrentState(
-        actor.organizationId,
-        actor.projectId,
-        taskIds,
-      ),
+      taskIds.length === 0
+        ? Promise.resolve(
+            new Map<
+              string,
+              {
+                exists: boolean;
+                version: number | null;
+                assigneeId: string | null;
+                status: string | null;
+                key?: string | null;
+                title?: string | null;
+                dueDate?: string | null;
+              }
+            >(),
+          )
+        : hasAllLiveTasks
+          ? Promise.resolve(preloadedLiveTasks!)
+          : this.taskAssignmentService.inspectTasksCurrentState(
+              actor.organizationId,
+              actor.projectId,
+              taskIds,
+            ),
       revision
         ? Promise.resolve([])
         : this.sourcesService
@@ -975,13 +1288,20 @@ export class HandoverWorkflowService {
     ]);
     const tasks: HandoverParticipantView['tasks'] = taskIds.flatMap((id) => {
       const task = liveTasks.get(id);
+      const taskAssigneeLower = task?.assigneeId?.toLowerCase() ?? null;
+      // SEC-AUTH-010: Enforce current live task read ACL for DEPARTING member as well as SUCCESSOR.
+      const departingCanReadTask =
+        actor.isProjectMember &&
+        (actor.isProjectLeader || taskAssigneeLower === actorLower);
       if (
         !task?.exists ||
         !task.status ||
         !task.title ||
-        (isSuccessor && task.assigneeId !== actor.userId) ||
+        (isSuccessor && taskAssigneeLower !== actorLower) ||
         (!isSuccessor &&
-          (task.status === 'DONE' || task.status === 'CANCELLED'))
+          (!departingCanReadTask ||
+            task.status === 'DONE' ||
+            task.status === 'CANCELLED'))
       )
         return [];
       return [
@@ -996,7 +1316,7 @@ export class HandoverWorkflowService {
           canAddNote:
             !isSuccessor &&
             handover.status === 'OPEN' &&
-            task.assigneeId === actor.userId,
+            taskAssigneeLower === actorLower,
         },
       ];
     });
@@ -1016,8 +1336,7 @@ export class HandoverWorkflowService {
         isSuccessor &&
         revision &&
         handover.status === 'OPEN' &&
-        !packageAccepted &&
-        revision.selectedTasks.length === tasks.length,
+        !packageAccepted,
       ),
     };
   }
@@ -1029,10 +1348,15 @@ export class HandoverWorkflowService {
   ): Promise<HttpPayloadWithHeaders<HandoverDetailDto>> {
     const actor = await this.resolveActor(projectId, headers, false);
     const handover = await this.loadHandoverOrNotFound(actor, handoverId);
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
 
     const ownedFollowUpCount = await this.repository.followUps.countDocuments({
       schemaVersion: 2,
       handoverId: handover._id,
+      ...scope,
       ownerUserId: actor.userId,
     });
     const isFollowUpOwner = ownedFollowUpCount > 0;
@@ -1060,12 +1384,30 @@ export class HandoverWorkflowService {
     let requiredPendingCount = 0;
     let canComplete = false;
     let packageAccepted = false;
+    let preloadedChildren: StoredOperationDoc[] | undefined;
+    let preloadedLiveTasks:
+      | Map<
+          string,
+          {
+            exists: boolean;
+            version: number | null;
+            assigneeId: string | null;
+            status: string | null;
+            key?: string | null;
+            title?: string | null;
+            dueDate?: string | null;
+          }
+        >
+      | undefined;
+    let preloadedViewerSources:
+      Map<string, EvaluatedHandoverSource> | undefined;
 
     if (handover.publishedRevisionId) {
       const revDoc = await this.repository.revisions
         .findOne({
           _id: handover.publishedRevisionId,
           handoverId: handover._id,
+          ...scope,
         })
         .lean<StoredRevisionDoc>()
         .exec();
@@ -1083,6 +1425,9 @@ export class HandoverWorkflowService {
         requiredPendingCount = built.requiredPendingCount;
         canComplete = built.canComplete;
         packageAccepted = built.packageAccepted;
+        preloadedChildren = built.children;
+        preloadedLiveTasks = built.liveTaskStateMap;
+        preloadedViewerSources = built.viewerSourceMap;
       }
     }
 
@@ -1099,10 +1444,13 @@ export class HandoverWorkflowService {
     const verified =
       currentRevision &&
       actor.isProjectMember &&
-      (actor.isProjectLeader || actor.userId === handover.successorUserId)
+      (actor.isProjectLeader ||
+        actor.userId.toLowerCase() === handover.successorUserId?.toLowerCase())
         ? await this.transferService.verifiedTaskDispositions(
             handover,
             currentRevision,
+            preloadedChildren,
+            preloadedLiveTasks,
           )
         : new Map<string, 'TRANSFERRED' | 'ALREADY_ASSIGNED'>();
     const participantView = await this.getParticipantView(
@@ -1111,6 +1459,8 @@ export class HandoverWorkflowService {
       currentRevision,
       packageAccepted,
       verified,
+      preloadedLiveTasks,
+      preloadedViewerSources,
     );
     return {
       body: {
@@ -1146,6 +1496,8 @@ export class HandoverWorkflowService {
     const ownedFollowUpCount = await this.repository.followUps.countDocuments({
       schemaVersion: 2,
       handoverId: handover._id,
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
       ownerUserId: actor.userId,
     });
     const isFollowUpOwner = ownedFollowUpCount > 0;
@@ -1169,6 +1521,8 @@ export class HandoverWorkflowService {
       .findOne({
         _id: new Types.ObjectId(cleanRevId),
         handoverId: handover._id,
+        organizationId: handover.organizationId,
+        projectId: handover.projectId,
       })
       .lean<StoredRevisionDoc>()
       .exec();
@@ -1276,7 +1630,13 @@ export class HandoverWorkflowService {
         }
 
         const upd = await this.repository.handovers.updateOne(
-          { _id: handover._id, status: 'OPEN', version: expectedVersion },
+          {
+            _id: handover._id,
+            organizationId: handover.organizationId,
+            projectId: handover.projectId,
+            status: 'OPEN',
+            version: expectedVersion,
+          },
           { $set: setFields },
           { session },
         );
@@ -1407,11 +1767,12 @@ export class HandoverWorkflowService {
         details: {},
       });
     }
-    await this.assertNoTaskTransferFence(handover._id);
+    await this.assertNoTaskTransferFence(handover);
 
     if (
       dto.successorUserId !== null &&
-      dto.successorUserId === handover.departingUserId
+      dto.successorUserId.toLowerCase() ===
+        handover.departingUserId.toLowerCase()
     ) {
       throw new UnprocessableEntityException({
         code: 'SUCCESSOR_CANNOT_BE_DEPARTING_USER',
@@ -1434,7 +1795,13 @@ export class HandoverWorkflowService {
         const nextEpoch = handover.assignmentVersion + 1;
 
         const upd = await this.repository.handovers.updateOne(
-          { _id: handover._id, status: 'OPEN', version: expectedVersion },
+          {
+            _id: handover._id,
+            organizationId: handover.organizationId,
+            projectId: handover.projectId,
+            status: 'OPEN',
+            version: expectedVersion,
+          },
           {
             $set: {
               successorUserId: dto.successorUserId,
@@ -1602,7 +1969,13 @@ export class HandoverWorkflowService {
       async (session) => {
         const nextVer = expectedVersion + 1;
         const upd = await this.repository.handovers.updateOne(
-          { _id: handover._id, status: 'OPEN', version: expectedVersion },
+          {
+            _id: handover._id,
+            organizationId: handover.organizationId,
+            projectId: handover.projectId,
+            status: 'OPEN',
+            version: expectedVersion,
+          },
           {
             $set: {
               assignedLeaderId: dto.assignedLeaderId,
@@ -1681,8 +2054,12 @@ export class HandoverWorkflowService {
     const handover = await this.loadHandoverOrNotFound(actor, handoverId);
     this.assertLeaderAuthority(actor);
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const draftDocs = await this.repository.draftItems
-      .find({ handoverId: handover._id, schemaVersion: 2 })
+      .find({ handoverId: handover._id, ...scope, schemaVersion: 2 })
       .sort({ _id: 1 })
       .lean<StoredDraftItemDoc[]>()
       .exec();
@@ -1690,6 +2067,7 @@ export class HandoverWorkflowService {
     const provenance = await this.bindLegacyBundleDependencies(
       handover._id,
       draftDocs,
+      scope,
     );
     const allSources = [
       ...handover.selectedSources,
@@ -1895,8 +2273,12 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const existingDraftDocs = await this.repository.draftItems
-      .find({ handoverId: handover._id, schemaVersion: 2 })
+      .find({ handoverId: handover._id, ...scope, schemaVersion: 2 })
       .lean<StoredDraftItemDoc[]>()
       .exec();
     const existingById = new Map<string, StoredHandoverItemSnapshot>(
@@ -1904,7 +2286,11 @@ export class HandoverWorkflowService {
     );
     if (handover.publishedRevisionId) {
       const pubRev = await this.repository.revisions
-        .findOne({ _id: handover.publishedRevisionId })
+        .findOne({
+          _id: handover.publishedRevisionId,
+          handoverId: handover._id,
+          ...scope,
+        })
         .lean<StoredRevisionDoc>()
         .exec();
       for (const pubItem of pubRev?.items ?? []) {
@@ -1984,6 +2370,7 @@ export class HandoverWorkflowService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: handover._id,
+            ...scope,
             status: 'OPEN',
             version: expectedVersion,
             draftVersion: dto.expectedDraftVersion,
@@ -2007,7 +2394,7 @@ export class HandoverWorkflowService {
         }
 
         await this.repository.draftItems.deleteMany(
-          { handoverId: handover._id, schemaVersion: 2 },
+          { handoverId: handover._id, ...scope, schemaVersion: 2 },
           { session },
         );
         if (normalizedItems.length > 0) {
@@ -2154,10 +2541,14 @@ export class HandoverWorkflowService {
         details: {},
       });
     }
-    await this.assertNoTaskTransferFence(handover._id);
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
+    await this.assertNoTaskTransferFence(handover);
 
     const draftDocs = await this.repository.draftItems
-      .find({ handoverId: handover._id, schemaVersion: 2 })
+      .find({ handoverId: handover._id, ...scope, schemaVersion: 2 })
       .sort({ _id: 1 })
       .lean<StoredDraftItemDoc[]>()
       .exec();
@@ -2228,7 +2619,7 @@ export class HandoverWorkflowService {
       );
     }
 
-    // Reverify current source eligibility & readability for the publishing Leader
+    // Reverify current source eligibility & readability for the publishing Leader (and Successor in one batch)
     const allPublishRefs = [
       ...handover.selectedSources,
       ...draftDocs.flatMap((d) => collectItemDependencyRefs(d)),
@@ -2240,10 +2631,34 @@ export class HandoverWorkflowService {
       isProjectMember: actor.isProjectMember,
       isProjectLeader: actor.isProjectLeader,
     };
-    const leaderSourceMap = await this.sourcesService.evaluateSourceRefsMap(
-      leaderViewer,
-      allPublishRefs,
-    );
+    const successorScope = handover.successorUserId
+      ? handover.successorUserId.toLowerCase() === actor.userId.toLowerCase()
+        ? {
+            isProjectMember: actor.isProjectMember,
+            isProjectLeader: actor.isProjectLeader,
+          }
+        : await this.iamScope.resolveActiveProjectMemberScope(
+            actor.organizationId,
+            actor.projectId,
+            handover.successorUserId,
+          )
+      : { isProjectMember: false, isProjectLeader: false };
+
+    const publishViewers: HandoverSourceViewer[] = [leaderViewer];
+    if (handover.successorUserId && successorScope.isProjectMember) {
+      publishViewers.push({
+        organizationId: actor.organizationId,
+        projectId: actor.projectId,
+        userId: handover.successorUserId,
+        isProjectMember: successorScope.isProjectMember,
+        isProjectLeader: successorScope.isProjectLeader,
+      });
+    }
+    const [leaderSourceMap, maybeSuccessorSourceMap] =
+      await this.evaluateSourceRefsForViewers(publishViewers, allPublishRefs);
+    const successorSourceMap =
+      maybeSuccessorSourceMap ?? new Map<string, EvaluatedHandoverSource>();
+
     for (const ref of allPublishRefs) {
       const ev = leaderSourceMap.get(sourceRefKey(ref));
       if (!ev || !ev.eligible || !ev.readable) {
@@ -2260,7 +2675,11 @@ export class HandoverWorkflowService {
     let previousAcceptances: StoredAcceptanceDoc[] = [];
     if (handover.publishedRevisionId) {
       previousRevision = await this.repository.revisions
-        .findOne({ _id: handover.publishedRevisionId })
+        .findOne({
+          _id: handover.publishedRevisionId,
+          handoverId: handover._id,
+          ...scope,
+        })
         .lean<StoredRevisionDoc>()
         .exec();
       if (previousRevision) {
@@ -2288,33 +2707,12 @@ export class HandoverWorkflowService {
           .find({
             handoverId: handover._id,
             revisionId: previousRevision._id,
+            ...scope,
           })
           .lean<StoredAcceptanceDoc[]>()
           .exec();
       }
     }
-
-    const successorScope = handover.successorUserId
-      ? await this.iamScope.resolveActiveProjectMemberScope(
-          actor.organizationId,
-          actor.projectId,
-          handover.successorUserId,
-        )
-      : { isProjectMember: false, isProjectLeader: false };
-
-    const successorSourceMap =
-      handover.successorUserId && successorScope.isProjectMember
-        ? await this.sourcesService.evaluateSourceRefsMap(
-            {
-              organizationId: actor.organizationId,
-              projectId: actor.projectId,
-              userId: handover.successorUserId,
-              isProjectMember: successorScope.isProjectMember,
-              isProjectLeader: successorScope.isProjectLeader,
-            },
-            allPublishRefs,
-          )
-        : new Map<string, EvaluatedHandoverSource>();
 
     const itemSnapshots: StoredHandoverItemSnapshot[] = draftDocs.map((d) => ({
       itemId: d.itemId,
@@ -2340,7 +2738,7 @@ export class HandoverWorkflowService {
     });
 
     const latestRev = await this.repository.revisions
-      .findOne({ handoverId: handover._id })
+      .findOne({ handoverId: handover._id, ...scope })
       .sort({ number: -1 })
       .select({ number: 1 })
       .lean<{ number: number }>()
@@ -2394,6 +2792,7 @@ export class HandoverWorkflowService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: handover._id,
+            ...scope,
             status: 'OPEN',
             version: expectedVersion,
             draftVersion: dto.expectedDraftVersion,
@@ -2606,6 +3005,8 @@ export class HandoverWorkflowService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: handover._id,
+            organizationId: handover.organizationId,
+            projectId: handover.projectId,
             status: 'OPEN',
             version: expectedVersion,
             successorUserId: actor.userId,
@@ -2625,6 +3026,8 @@ export class HandoverWorkflowService {
         const seq = await this.repository.nextSequence(
           'handover_acceptances',
           {
+            organizationId: handover.organizationId,
+            projectId: handover.projectId,
             handoverId: handover._id,
             revisionId,
             successorUserId: actor.userId,
@@ -2816,8 +3219,16 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .findOne({
+        _id: handover.publishedRevisionId,
+        handoverId: handover._id,
+        ...scope,
+      })
       .lean<StoredRevisionDoc>()
       .exec();
     const targetItem = revision?.items.find(
@@ -2838,7 +3249,11 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = await this.guardedItemDependencies(handover._id, targetItem);
+    const deps = await this.guardedItemDependencies(
+      handover._id,
+      targetItem,
+      scope,
+    );
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -2867,6 +3282,7 @@ export class HandoverWorkflowService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: handover._id,
+            ...scope,
             status: 'OPEN',
             version: expectedVersion,
             successorUserId: actor.userId,
@@ -2887,6 +3303,7 @@ export class HandoverWorkflowService {
         const seq = await this.repository.nextSequence(
           'handover_acceptances',
           {
+            ...scope,
             handoverId: handover._id,
             revisionId: revision._id,
             successorUserId: actor.userId,
@@ -2979,7 +3396,11 @@ export class HandoverWorkflowService {
     evidence: StoredEvidenceDoc,
   ): Promise<EvidenceReceiptDto> {
     const latestReview = await this.repository.evidenceReviews
-      .findOne({ evidenceId: evidence._id })
+      .findOne({
+        evidenceId: evidence._id,
+        organizationId: evidence.organizationId,
+        projectId: evidence.projectId,
+      })
       .sort({ sequence: -1 })
       .lean<StoredEvidenceReviewDoc>()
       .exec();
@@ -3033,8 +3454,16 @@ export class HandoverWorkflowService {
       };
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .findOne({
+        _id: handover.publishedRevisionId,
+        handoverId: handover._id,
+        ...scope,
+      })
       .lean<StoredRevisionDoc>()
       .exec();
     const targetItem = revision?.items.find(
@@ -3048,7 +3477,11 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = await this.guardedItemDependencies(handover._id, targetItem);
+    const deps = await this.guardedItemDependencies(
+      handover._id,
+      targetItem,
+      scope,
+    );
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -3075,6 +3508,7 @@ export class HandoverWorkflowService {
     const evidences = await this.repository.evidences
       .find({
         handoverId: handover._id,
+        ...scope,
         revisionId: revision._id,
         successorUserId: handover.successorUserId.toLowerCase(),
         assignmentVersion: handover.assignmentVersion,
@@ -3086,6 +3520,7 @@ export class HandoverWorkflowService {
 
     const reviews = await this.repository.evidenceReviews
       .find({
+        ...scope,
         evidenceId: { $in: evidences.map((e) => e._id) },
       })
       .sort({ sequence: -1 })
@@ -3179,7 +3614,11 @@ export class HandoverWorkflowService {
       existingOp?.receipt?.resourceId
     ) {
       const existingEv = await this.repository.evidences
-        .findOne({ _id: existingOp.receipt.resourceId })
+        .findOne({
+          _id: existingOp.receipt.resourceId,
+          organizationId: handover.organizationId,
+          projectId: handover.projectId,
+        })
         .lean<StoredEvidenceDoc>()
         .exec();
       if (!existingEv) {
@@ -3229,8 +3668,16 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .findOne({
+        _id: handover.publishedRevisionId,
+        handoverId: handover._id,
+        ...scope,
+      })
       .lean<StoredRevisionDoc>()
       .exec();
     const targetItem = revision?.items.find(
@@ -3251,7 +3698,11 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = await this.guardedItemDependencies(handover._id, targetItem);
+    const deps = await this.guardedItemDependencies(
+      handover._id,
+      targetItem,
+      scope,
+    );
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -3280,6 +3731,7 @@ export class HandoverWorkflowService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: handover._id,
+            ...scope,
             status: 'OPEN',
             version: expectedVersion,
             successorUserId: actor.userId,
@@ -3299,6 +3751,7 @@ export class HandoverWorkflowService {
         const seq = await this.repository.nextSequence(
           'handover_evidence',
           {
+            ...scope,
             handoverId: handover._id,
             revisionId: revision._id,
             successorUserId: actor.userId,
@@ -3490,11 +3943,16 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const [revision, evidenceDoc] = await Promise.all([
       this.repository.revisions
         .findOne({
           _id: handover.publishedRevisionId,
           handoverId: handover._id,
+          ...scope,
         })
         .lean<StoredRevisionDoc>()
         .exec(),
@@ -3502,6 +3960,7 @@ export class HandoverWorkflowService {
         .findOne({
           _id: new Types.ObjectId(cleanEvidenceId),
           handoverId: handover._id,
+          ...scope,
           itemId: new Types.ObjectId(cleanItemId),
         })
         .lean<StoredEvidenceDoc>()
@@ -3535,7 +3994,11 @@ export class HandoverWorkflowService {
       });
     }
 
-    const deps = await this.guardedItemDependencies(handover._id, targetItem);
+    const deps = await this.guardedItemDependencies(
+      handover._id,
+      targetItem,
+      scope,
+    );
     const evalMap = await this.sourcesService.evaluateSourceRefsMap(
       {
         organizationId: actor.organizationId,
@@ -3564,7 +4027,12 @@ export class HandoverWorkflowService {
       async (session) => {
         const nextVer = expectedVersion + 1;
         const upd = await this.repository.handovers.updateOne(
-          { _id: handover._id, status: 'OPEN', version: expectedVersion },
+          {
+            _id: handover._id,
+            ...scope,
+            status: 'OPEN',
+            version: expectedVersion,
+          },
           { $set: { version: nextVer } },
           { session },
         );
@@ -3579,6 +4047,7 @@ export class HandoverWorkflowService {
         const seq = await this.repository.nextSequence(
           'handover_evidence_reviews',
           {
+            ...scope,
             handoverId: handover._id,
             revisionId: revision._id,
             successorUserId: handover.successorUserId!,
@@ -3712,7 +4181,12 @@ export class HandoverWorkflowService {
       existingOp?.receipt?.followUpId
     ) {
       const existingFollowUp = await this.repository.followUps
-        .findOne({ _id: existingOp.receipt.followUpId, schemaVersion: 2 })
+        .findOne({
+          _id: existingOp.receipt.followUpId,
+          organizationId: handover.organizationId,
+          projectId: handover.projectId,
+          schemaVersion: 2,
+        })
         .lean<StoredFollowUpDoc>()
         .exec();
       if (!existingFollowUp) {
@@ -3757,8 +4231,16 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .findOne({
+        _id: handover.publishedRevisionId,
+        handoverId: handover._id,
+        ...scope,
+      })
       .lean<StoredRevisionDoc>()
       .exec();
     const targetItem = revision?.items.find(
@@ -3806,7 +4288,12 @@ export class HandoverWorkflowService {
       async (session) => {
         const nextVer = expectedVersion + 1;
         const upd = await this.repository.handovers.updateOne(
-          { _id: handover._id, status: 'OPEN', version: expectedVersion },
+          {
+            _id: handover._id,
+            ...scope,
+            status: 'OPEN',
+            version: expectedVersion,
+          },
           { $set: { version: nextVer } },
           { session },
         );
@@ -3821,6 +4308,7 @@ export class HandoverWorkflowService {
         const existingFollow = await this.repository.followUps
           .findOne({
             schemaVersion: 2,
+            ...scope,
             handoverId: handover._id,
             revisionId: revision._id,
             itemId: targetItem.itemId,
@@ -3833,7 +4321,7 @@ export class HandoverWorkflowService {
         if (existingFollow) {
           const updated = await this.repository.followUps
             .findOneAndUpdate(
-              { _id: existingFollow._id },
+              { _id: existingFollow._id, ...scope },
               {
                 $set: {
                   ownerUserId: dto.ownerUserId,
@@ -3943,9 +4431,14 @@ export class HandoverWorkflowService {
     const handover = await this.loadHandoverOrNotFound(actor, handoverId);
     const { cursor, limit } = parseListPagination(query);
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const ownedCount = await this.repository.followUps.countDocuments({
       schemaVersion: 2,
       handoverId: handover._id,
+      ...scope,
       ownerUserId: actor.userId,
     });
     const caps = resolveHandoverCapabilities({
@@ -3967,10 +4460,11 @@ export class HandoverWorkflowService {
     const filter: Record<string, unknown> = {
       schemaVersion: 2,
       handoverId: handover._id,
+      ...scope,
     };
     const isLeader = actor.isProjectLeader;
     const isCurrentSucc =
-      handover.successorUserId?.toLowerCase() === actor.userId;
+      handover.successorUserId?.toLowerCase() === actor.userId.toLowerCase();
     if (!isLeader && !isCurrentSucc) {
       filter.ownerUserId = actor.userId;
     }
@@ -4034,10 +4528,24 @@ export class HandoverWorkflowService {
     const dto = validateResolveFollowUp(rawBody);
 
     const handover = await this.loadHandoverOrNotFound(actor, cleanHandoverId);
+    // SEC-BE-017: Allow historical follow-up resolution on OPEN and COMPLETED handovers,
+    // but block mutations when the parent handover has been CANCELLED.
+    if (handover.status === 'CANCELLED') {
+      throw new ConflictException({
+        code: 'HANDOVER_CANCELLED',
+        message: 'Cannot resolve follow-up for a cancelled handover.',
+        details: {},
+      });
+    }
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const followUp = await this.repository.followUps
       .findOne({
         _id: new Types.ObjectId(cleanFollowupId),
         handoverId: handover._id,
+        ...scope,
         schemaVersion: 2,
       })
       .lean<StoredFollowUpDoc>()
@@ -4054,7 +4562,7 @@ export class HandoverWorkflowService {
     const canResolve =
       actor.isProjectMember &&
       (actor.isProjectLeader ||
-        followUp.ownerUserId.toLowerCase() === actor.userId);
+        followUp.ownerUserId.toLowerCase() === actor.userId.toLowerCase());
     if (!canResolve) {
       throw new ForbiddenException({
         code: 'FOLLOW_UP_FORBIDDEN',
@@ -4089,7 +4597,7 @@ export class HandoverWorkflowService {
       ) === 'REPLAY_COMMITTED'
     ) {
       const freshFollowUp = await this.repository.followUps
-        .findOne({ _id: followUp._id, schemaVersion: 2 })
+        .findOne({ _id: followUp._id, ...scope, schemaVersion: 2 })
         .lean<StoredFollowUpDoc>()
         .exec();
       const target = freshFollowUp ?? followUp;
@@ -4148,6 +4656,7 @@ export class HandoverWorkflowService {
           .findOneAndUpdate(
             {
               _id: followUp._id,
+              ...scope,
               status: 'OPEN',
               version: expectedFollowUpVersion,
             },
@@ -4334,8 +4843,16 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .findOne({
+        _id: handover.publishedRevisionId,
+        handoverId: handover._id,
+        ...scope,
+      })
       .lean<StoredRevisionDoc>()
       .exec();
     if (!revision) {
@@ -4369,15 +4886,15 @@ export class HandoverWorkflowService {
       liveTaskStateMap,
     ] = await Promise.all([
       this.repository.acceptances
-        .find({ handoverId: handover._id, revisionId: revision._id })
+        .find({ handoverId: handover._id, revisionId: revision._id, ...scope })
         .lean<StoredAcceptanceDoc[]>()
         .exec(),
       this.repository.evidences
-        .find({ handoverId: handover._id, revisionId: revision._id })
+        .find({ handoverId: handover._id, revisionId: revision._id, ...scope })
         .lean<StoredEvidenceDoc[]>()
         .exec(),
       this.repository.evidenceReviews
-        .find({ handoverId: handover._id, revisionId: revision._id })
+        .find({ handoverId: handover._id, revisionId: revision._id, ...scope })
         .lean<StoredEvidenceReviewDoc[]>()
         .exec(),
       this.repository.followUps
@@ -4385,15 +4902,20 @@ export class HandoverWorkflowService {
           schemaVersion: 2,
           handoverId: handover._id,
           revisionId: revision._id,
+          ...scope,
         })
         .lean<StoredFollowUpDoc[]>()
         .exec(),
       this.repository.operations
-        .find({ handoverId: handover._id, kind: 'TASK_TRANSFER' })
+        .find({ handoverId: handover._id, ...scope, kind: 'TASK_TRANSFER' })
         .lean<StoredOperationDoc[]>()
         .exec(),
       this.repository.operations
-        .find({ handoverId: handover._id, kind: 'TASK_TRANSFER_CHILD' })
+        .find({
+          handoverId: handover._id,
+          ...scope,
+          kind: 'TASK_TRANSFER_CHILD',
+        })
         .lean<StoredOperationDoc[]>()
         .exec(),
       this.iamScope.resolveActiveProjectMemberScope(
@@ -4413,32 +4935,31 @@ export class HandoverWorkflowService {
     const provenance = await this.bindLegacyBundleDependencies(
       handover._id,
       revision.items,
+      scope,
     );
     const allDeps = provenance.items.flatMap(collectItemDependencyRefs);
-    const [leaderSourceMap, successorSourceMap] = await Promise.all([
-      this.sourcesService.evaluateSourceRefsMap(
-        {
-          organizationId: actor.organizationId,
-          projectId: actor.projectId,
-          userId: actor.userId,
-          isProjectMember: actor.isProjectMember,
-          isProjectLeader: actor.isProjectLeader,
-        },
-        allDeps,
-      ),
-      successorScope.isProjectMember
-        ? this.sourcesService.evaluateSourceRefsMap(
-            {
-              organizationId: actor.organizationId,
-              projectId: actor.projectId,
-              userId: handover.successorUserId,
-              isProjectMember: successorScope.isProjectMember,
-              isProjectLeader: successorScope.isProjectLeader,
-            },
-            allDeps,
-          )
-        : Promise.resolve(new Map<string, EvaluatedHandoverSource>()),
-    ]);
+    const completionViewers: HandoverSourceViewer[] = [
+      {
+        organizationId: actor.organizationId,
+        projectId: actor.projectId,
+        userId: actor.userId,
+        isProjectMember: actor.isProjectMember,
+        isProjectLeader: actor.isProjectLeader,
+      },
+    ];
+    if (successorScope.isProjectMember) {
+      completionViewers.push({
+        organizationId: actor.organizationId,
+        projectId: actor.projectId,
+        userId: handover.successorUserId,
+        isProjectMember: successorScope.isProjectMember,
+        isProjectLeader: successorScope.isProjectLeader,
+      });
+    }
+    const [leaderSourceMap, maybeSuccessorSourceMap] =
+      await this.evaluateSourceRefsForViewers(completionViewers, allDeps);
+    const successorSourceMap =
+      maybeSuccessorSourceMap ?? new Map<string, EvaluatedHandoverSource>();
 
     const evaluation = evaluateCompletionReadiness({
       handover,
@@ -4480,6 +5001,7 @@ export class HandoverWorkflowService {
         const upd = await this.repository.handovers.updateOne(
           {
             _id: handover._id,
+            ...scope,
             status: 'OPEN',
             version: expectedVersion,
             publishedRevisionId: revision._id,
@@ -4635,7 +5157,11 @@ export class HandoverWorkflowService {
         details: {},
       });
     }
-    await this.assertNoTaskTransferFence(handover._id);
+    await this.assertNoTaskTransferFence(handover);
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
 
     const nextVersion = await this.repository.withTransaction(
       async (session) => {
@@ -4643,7 +5169,12 @@ export class HandoverWorkflowService {
         const now = new Date();
         // Cancel preserves all history, sources, revisions, and committed Task assignments (Scenario A14)
         const upd = await this.repository.handovers.updateOne(
-          { _id: handover._id, status: 'OPEN', version: expectedVersion },
+          {
+            _id: handover._id,
+            ...scope,
+            status: 'OPEN',
+            version: expectedVersion,
+          },
           {
             $set: {
               status: 'CANCELLED',
@@ -4664,7 +5195,7 @@ export class HandoverWorkflowService {
         }
 
         await this.repository.jobs.updateMany(
-          { handoverId: handover._id, state: 'PENDING' },
+          { handoverId: handover._id, ...scope, state: 'PENDING' },
           {
             $set: {
               state: 'CANCELLED',
@@ -4743,7 +5274,7 @@ export class HandoverWorkflowService {
     rawBody: unknown,
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<JobDto>> {
-    const actor = await this.resolveActor(projectId, headers, true);
+    const actor = await this.resolveActor(projectId, headers, true, 'ai');
     const idempotencyKey = validateIdempotencyKeyHeader(headers.idempotencyKey);
     const cleanHandoverId = assertHexId(handoverId, 'handoverId');
     const expectedVersion = parseRequiredIfMatch(
@@ -4775,7 +5306,7 @@ export class HandoverWorkflowService {
     rawBody: unknown,
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<JobDto>> {
-    const actor = await this.resolveActor(projectId, headers, true);
+    const actor = await this.resolveActor(projectId, headers, true, 'ai');
     const idempotencyKey = validateIdempotencyKeyHeader(headers.idempotencyKey);
     const cleanHandoverId = assertHexId(handoverId, 'handoverId');
     const expectedVersion = parseRequiredIfMatch(
@@ -4852,7 +5383,7 @@ export class HandoverWorkflowService {
     rawBody: unknown,
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<JobDto>> {
-    const actor = await this.resolveActor(projectId, headers, true);
+    const actor = await this.resolveActor(projectId, headers, true, 'ai');
     const idempotencyKey = validateIdempotencyKeyHeader(headers.idempotencyKey);
     const cleanHandoverId = assertHexId(handoverId, 'handoverId');
     const cleanJobId = assertHexId(jobId, 'jobId');
@@ -4887,7 +5418,7 @@ export class HandoverWorkflowService {
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<HandoverAnswerDto>> {
     // Read-only bounded AI query: requires CSRF + session + READ, NO If-Match or Idempotency-Key!
-    const actor = await this.resolveActor(projectId, headers, true);
+    const actor = await this.resolveActor(projectId, headers, true, 'ai');
     const dto = validateQuestionRequest(rawBody);
     const handover = await this.loadHandoverOrNotFound(actor, handoverId);
 
@@ -5011,14 +5542,15 @@ export class HandoverWorkflowService {
     query: Record<string, unknown>,
     headers: HandoverRequestHeaders,
   ): Promise<HttpPayloadWithHeaders<DepartingMemberPreviewDto>> {
-    const actor = await this.resolveActor(projectId, headers, false);
+    const actor = await this.resolveActor(projectId, headers, false, 'preview');
     const departingUserId = assertHexId(
       query.departingUserId,
       'departingUserId',
     );
     if (
       !actor.isProjectMember ||
-      (!actor.isProjectLeader && actor.userId !== departingUserId)
+      (!actor.isProjectLeader &&
+        actor.userId.toLowerCase() !== departingUserId.toLowerCase())
     ) {
       throw new ForbiddenException({
         code: 'HANDOVER_FORBIDDEN',
@@ -5028,11 +5560,21 @@ export class HandoverWorkflowService {
       });
     }
 
+    // SEC-AUTH-009: Unconditionally verify departingUserId is/was a member of this project
+    // before reading tasks or enumerating any cross-project memberships.
+    await this.iamScope.assertHistoricalDepartingMember(
+      actor.organizationId,
+      actor.projectId,
+      departingUserId,
+    );
+
     let extraTaskIds: string[] = [];
     if (query.handoverId !== undefined) {
       const handoverId = assertHexId(query.handoverId, 'handoverId');
       const handover = await this.loadHandoverOrNotFound(actor, handoverId);
-      if (handover.departingUserId !== departingUserId) {
+      if (
+        handover.departingUserId.toLowerCase() !== departingUserId.toLowerCase()
+      ) {
         throw new NotFoundException({
           code: 'HANDOVER_NOT_FOUND',
           message: 'Handover not found.',
@@ -5067,26 +5609,13 @@ export class HandoverWorkflowService {
         : Promise.resolve([]),
     ]);
 
-    const projectIds = relatedProjectsRaw.map((p) => p.projectId);
-    const [taskCountsMap, scopeResult] = await Promise.all([
-      this.taskAssignmentService.countDepartingMemberActiveTasksByProjects(
-        actor.organizationId,
-        projectIds,
-        departingUserId,
-      ),
-      this.sourcesService.discoverDepartingMemberFullScope(
-        viewer,
-        departingUserId,
-        tasks.map((task) => task.id),
-        50,
-      ),
-    ]);
-
-    const relatedProjects = await Promise.all(
+    // SEC-AUTH-009: Resolve actor membership per related project and omit ALL
+    // projects where the actor is not an active member so private projects are never enumerated.
+    const resolvedRelatedScopes = await Promise.all(
       relatedProjectsRaw.map(async (project) => {
         const pid = project.projectId;
         const scope =
-          pid === actor.projectId
+          pid.toLowerCase() === actor.projectId.toLowerCase()
             ? viewer
             : {
                 ...viewer,
@@ -5097,22 +5626,47 @@ export class HandoverWorkflowService {
                   actor.userId,
                 )),
               };
+        return { project, scope };
+      }),
+    );
+    const accessibleRelated = resolvedRelatedScopes.filter(
+      ({ scope }) => scope.isProjectMember === true,
+    );
+    const memberProjectIds = accessibleRelated.map(
+      ({ project }) => project.projectId,
+    );
+
+    const [taskCountsMap, scopeResult] = await Promise.all([
+      memberProjectIds.length > 0
+        ? this.taskAssignmentService.countDepartingMemberActiveTasksByProjects(
+            actor.organizationId,
+            memberProjectIds,
+            departingUserId,
+          )
+        : Promise.resolve(new Map<string, number>()),
+      this.sourcesService.discoverDepartingMemberFullScope(
+        viewer,
+        departingUserId,
+        tasks.map((task) => task.id),
+        50,
+      ),
+    ]);
+
+    const relatedProjects = await Promise.all(
+      accessibleRelated.map(async ({ project, scope }) => {
+        const pid = project.projectId;
         const sources =
-          pid === actor.projectId
+          pid.toLowerCase() === actor.projectId.toLowerCase()
             ? scopeResult.sources
-            : scope.isProjectMember
-              ? (
-                  await this.sourcesService.discoverDepartingMemberFullScope(
-                    scope,
-                    departingUserId,
-                  )
-                ).sources
-              : [];
+            : (
+                await this.sourcesService.discoverDepartingMemberFullScope(
+                  scope,
+                  departingUserId,
+                )
+              ).sources;
         return {
           ...project,
-          unfinishedTaskCount: scope.isProjectMember
-            ? (taskCountsMap.get(pid) ?? 0)
-            : 0,
+          unfinishedTaskCount: taskCountsMap.get(pid) ?? 0,
           taskNoteCount: sources.filter((source) => source.kind === 'TASK_NOTE')
             .length,
           documentCount: sources.filter(
@@ -5203,7 +5757,11 @@ export class HandoverWorkflowService {
         details: {},
       });
     }
-    await this.assertNoTaskTransferFence(handover._id);
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
+    await this.assertNoTaskTransferFence(handover);
 
     // 1. Resolve tasks for handover
     const selectedTasks: StoredHandoverTaskRef[] = [];
@@ -5219,7 +5777,8 @@ export class HandoverWorkflowService {
         if (
           !taskInfo.exists ||
           taskInfo.version === null ||
-          taskInfo.assigneeId !== handover.departingUserId ||
+          taskInfo.assigneeId?.toLowerCase() !==
+            handover.departingUserId.toLowerCase() ||
           taskInfo.status === 'DONE' ||
           taskInfo.status === 'CANCELLED'
         ) {
@@ -5398,7 +5957,7 @@ export class HandoverWorkflowService {
     };
 
     const latestRev = await this.repository.revisions
-      .findOne({ handoverId: handover._id })
+      .findOne({ handoverId: handover._id, ...scope })
       .sort({ number: -1 })
       .select({ number: 1 })
       .lean<{ number: number }>()
@@ -5448,6 +6007,7 @@ export class HandoverWorkflowService {
       const upd = await this.repository.handovers.updateOne(
         {
           _id: handover._id,
+          ...scope,
           status: 'OPEN',
           version: expectedVersion,
         },
@@ -5471,7 +6031,7 @@ export class HandoverWorkflowService {
       }
 
       await this.repository.draftItems.deleteMany(
-        { handoverId: handover._id, schemaVersion: 2 },
+        { handoverId: handover._id, ...scope, schemaVersion: 2 },
         { session },
       );
       await this.repository.draftItems.create(
@@ -5631,8 +6191,16 @@ export class HandoverWorkflowService {
       });
     }
 
+    const scope = {
+      organizationId: handover.organizationId,
+      projectId: handover.projectId,
+    };
     const revision = await this.repository.revisions
-      .findOne({ _id: handover.publishedRevisionId, handoverId: handover._id })
+      .findOne({
+        _id: handover.publishedRevisionId,
+        handoverId: handover._id,
+        ...scope,
+      })
       .lean<StoredRevisionDoc>()
       .exec();
     if (!revision) {
@@ -5643,23 +6211,12 @@ export class HandoverWorkflowService {
       });
     }
 
-    await this.assertNoTaskTransferFence(handover._id);
-    const verified = await this.transferService.verifiedTaskDispositions(
-      handover,
-      revision,
-    );
-    if (verified.size !== revision.selectedTasks.length) {
-      throw new ConflictException({
-        code: 'TASK_TRANSFER_NOT_CONFIRMED',
-        message:
-          'The selected task transfer must be confirmed before accepting this package.',
-        details: {},
-      });
-    }
+    await this.assertNoTaskTransferFence(handover);
     const [bundleReceipt, priorAcceptances] = await Promise.all([
       this.repository.operations
         .findOne({
           handoverId: handover._id,
+          ...scope,
           kind: 'COMMAND',
           'receipt.revisionId': revision._id,
           'receipt.outcome': SAFE_AUTO_BUNDLE,
@@ -5669,6 +6226,7 @@ export class HandoverWorkflowService {
       this.repository.acceptances
         .find({
           handoverId: handover._id,
+          ...scope,
           revisionId: revision._id,
           assignmentVersion: handover.assignmentVersion,
           successorUserId: actor.userId,
@@ -5704,6 +6262,7 @@ export class HandoverWorkflowService {
       const upd = await this.repository.handovers.updateOne(
         {
           _id: handover._id,
+          ...scope,
           status: 'OPEN',
           version: expectedVersion,
           successorUserId: actor.userId,
@@ -5722,6 +6281,7 @@ export class HandoverWorkflowService {
       const seqPkg = await this.repository.nextSequence(
         'handover_acceptances',
         {
+          ...scope,
           handoverId: handover._id,
           revisionId: revision._id,
           successorUserId: actor.userId,
@@ -5754,6 +6314,7 @@ export class HandoverWorkflowService {
         const seqItem = await this.repository.nextSequence(
           'handover_acceptances',
           {
+            ...scope,
             handoverId: handover._id,
             revisionId: revision._id,
             successorUserId: actor.userId,

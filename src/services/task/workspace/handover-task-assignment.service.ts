@@ -108,6 +108,48 @@ export class HandoverTaskAssignmentService {
       .digest('hex');
   }
 
+  private hasMatchingOrganization(
+    row: { organizationId?: Types.ObjectId | null } | null | undefined,
+    organizationId: string,
+  ): boolean {
+    if (!row?.organizationId) return false;
+    return (
+      row.organizationId.toHexString().toLowerCase() ===
+      organizationId.toLowerCase()
+    );
+  }
+
+  private async isTargetActiveProjectMember(
+    orgObjId: Types.ObjectId,
+    projectObjId: Types.ObjectId,
+    targetObjId: Types.ObjectId,
+  ): Promise<boolean> {
+    const iamDb = this.iamConnection?.db;
+    if (!iamDb) {
+      return false;
+    }
+    const [orgMembership, projectMembership] = await Promise.all([
+      iamDb.collection('organization_memberships').findOne(
+        {
+          organizationId: orgObjId,
+          userId: targetObjId,
+          status: 'ACTIVE',
+        },
+        { projection: { _id: 1 } },
+      ),
+      iamDb.collection('project_memberships').findOne(
+        {
+          organizationId: orgObjId,
+          projectId: projectObjId,
+          userId: targetObjId,
+          status: 'ACTIVE',
+        },
+        { projection: { _id: 1 } },
+      ),
+    ]);
+    return Boolean(orgMembership && projectMembership);
+  }
+
   async verifyProjectTaskExists(
     organizationId: string,
     projectId: string,
@@ -123,14 +165,14 @@ export class HandoverTaskAssignmentService {
       .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
       .findOne({
         _id: new Types.ObjectId(taskId.toLowerCase()),
+        organizationId: new Types.ObjectId(organizationId.toLowerCase()),
         projectId: new Types.ObjectId(projectId.toLowerCase()),
       });
     if (
       !row ||
       row.isDeleted ||
       row.deletedAt ||
-      (row.organizationId &&
-        row.organizationId.toHexString() !== organizationId.toLowerCase())
+      !this.hasMatchingOrganization(row, organizationId)
     ) {
       return { exists: false, status: null, version: null, assigneeId: null };
     }
@@ -160,11 +202,12 @@ export class HandoverTaskAssignmentService {
     }
 
     const db = this.repository.db;
-    const orgLower = organizationId.toLowerCase();
+    const orgObjId = new Types.ObjectId(organizationId.toLowerCase());
     const rows = await db
       .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
       .find({
         _id: { $in: normalizedIds.map((id) => new Types.ObjectId(id)) },
+        organizationId: orgObjId,
         isDeleted: { $ne: true },
         deletedAt: null,
         projectId: new Types.ObjectId(projectId.toLowerCase()),
@@ -180,10 +223,7 @@ export class HandoverTaskAssignmentService {
       });
     }
     for (const row of rows) {
-      if (
-        row.organizationId &&
-        row.organizationId.toHexString().toLowerCase() !== orgLower
-      ) {
+      if (!this.hasMatchingOrganization(row, organizationId)) {
         continue;
       }
       const hex = row._id.toHexString().toLowerCase();
@@ -228,7 +268,7 @@ export class HandoverTaskAssignmentService {
       return [];
     }
     const db = this.repository.db;
-    const orgLower = organizationId.toLowerCase();
+    const orgObjId = new Types.ObjectId(organizationId.toLowerCase());
     const projectObjId = new Types.ObjectId(projectId.toLowerCase());
     const departingObjId = new Types.ObjectId(departingUserId.toLowerCase());
     const extraObjIds = additionalTaskIds
@@ -236,6 +276,7 @@ export class HandoverTaskAssignmentService {
       .map((id) => new Types.ObjectId(id.toLowerCase()));
 
     const filter: Record<string, unknown> = {
+      organizationId: orgObjId,
       projectId: projectObjId,
       isDeleted: { $ne: true },
       deletedAt: { $in: [null, undefined] },
@@ -256,11 +297,7 @@ export class HandoverTaskAssignmentService {
       .toArray();
 
     return rows
-      .filter(
-        (row) =>
-          !row.organizationId ||
-          row.organizationId.toHexString().toLowerCase() === orgLower,
-      )
+      .filter((row) => this.hasMatchingOrganization(row, organizationId))
       .map((row) => {
         const id = row._id.toHexString().toLowerCase();
         return {
@@ -312,11 +349,12 @@ export class HandoverTaskAssignmentService {
     }
 
     const db = this.repository.db;
-    const orgLower = organizationId.toLowerCase();
+    const orgObjId = new Types.ObjectId(organizationId.toLowerCase());
     const departingObjId = new Types.ObjectId(departingUserId.toLowerCase());
     const rows = await db
       .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
       .find({
+        organizationId: orgObjId,
         projectId: { $in: validProjectIds.map((p) => new Types.ObjectId(p)) },
         assigneeId: departingObjId,
         status: { $nin: ['DONE', 'CANCELLED'] },
@@ -327,10 +365,7 @@ export class HandoverTaskAssignmentService {
       .toArray();
 
     for (const row of rows) {
-      if (
-        row.organizationId instanceof Types.ObjectId &&
-        row.organizationId.toHexString().toLowerCase() !== orgLower
-      ) {
+      if (!this.hasMatchingOrganization(row, organizationId)) {
         continue;
       }
       if (row.projectId instanceof Types.ObjectId) {
@@ -474,9 +509,7 @@ export class HandoverTaskAssignmentService {
           !task ||
           task.isDeleted ||
           task.deletedAt ||
-          (task.organizationId &&
-            task.organizationId.toHexString() !==
-              input.organizationId.toLowerCase())
+          !this.hasMatchingOrganization(task, input.organizationId)
         ) {
           await writeRejected('FAILED', 'TASK_NOT_FOUND');
           return;
@@ -484,6 +517,17 @@ export class HandoverTaskAssignmentService {
 
         if (task.status === 'DONE' || task.status === 'CANCELLED') {
           await writeRejected('FAILED', 'TASK_TERMINAL_STATE');
+          return;
+        }
+
+        // SEC-AUTH-015: Verify target assignee is an active member of this organization & project.
+        const targetIsActiveMember = await this.isTargetActiveProjectMember(
+          orgObjId,
+          projectObjId,
+          targetObjId,
+        );
+        if (!targetIsActiveMember) {
+          await writeRejected('FAILED', 'TARGET_ASSIGNEE_NOT_IN_PROJECT');
           return;
         }
 
@@ -510,6 +554,7 @@ export class HandoverTaskAssignmentService {
           const updateRes = await tasksCol.updateOne(
             {
               _id: taskObjId,
+              organizationId: orgObjId,
               projectId: projectObjId,
               version: input.expectedTaskVersion,
             },
@@ -642,9 +687,7 @@ export class HandoverTaskAssignmentService {
           !currentTask ||
           currentTask.isDeleted ||
           currentTask.deletedAt ||
-          (currentTask.organizationId &&
-            currentTask.organizationId.toHexString() !==
-              input.organizationId.toLowerCase())
+          !this.hasMatchingOrganization(currentTask, input.organizationId)
         ) {
           return {
             state: 'FAILED',
@@ -687,9 +730,7 @@ export class HandoverTaskAssignmentService {
       !currentTask ||
       currentTask.isDeleted ||
       currentTask.deletedAt ||
-      (currentTask.organizationId &&
-        currentTask.organizationId.toHexString() !==
-          input.organizationId.toLowerCase())
+      !this.hasMatchingOrganization(currentTask, input.organizationId)
     ) {
       return {
         state: 'FAILED',

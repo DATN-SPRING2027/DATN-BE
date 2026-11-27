@@ -14,8 +14,27 @@ class Repository extends MongoChatFeatures {
   protected requireMember() {
     return Promise.resolve();
   }
-  protected mapMessages(): Promise<ChatMessage[]> {
-    return Promise.resolve([]);
+  protected mapMessages(
+    _actor: ChatActor,
+    messages: MessageDocument[],
+  ): Promise<ChatMessage[]> {
+    return Promise.resolve(
+      messages.map((m) => ({
+        id: String(m._id),
+        conversationId: String(m.conversationId),
+        senderId: m.senderId,
+        senderName: m.senderName,
+        senderAvatarUrl: null,
+        content: m.content,
+        createdAt: m.createdAt.toISOString(),
+        editedAt: null,
+        deletedAt: null,
+        reactions: [],
+        replyToMessageId: null,
+        replyTo: null,
+        attachments: [],
+      })),
+    );
   }
   notify(message: MessageDocument) {
     return this.createNotifications(actor, message);
@@ -28,6 +47,7 @@ class Repository extends MongoChatFeatures {
     );
   }
 }
+
 it('marks notifications read only through the observed cursor for the current member', async () => {
   const updateMany = jest
     .fn<Promise<unknown>, [Record<string, unknown>, unknown]>()
@@ -50,6 +70,7 @@ it('marks notifications read only through the observed cursor for the current me
   });
   expect(JSON.stringify(filter)).toContain('$lte');
 });
+
 it('transfers the owner role atomically without rewriting the original creator', async () => {
   const changes: { collection: string; update: unknown }[] = [];
   const session = {
@@ -81,6 +102,7 @@ it('transfers the owner role atomically without rewriting the original creator',
   expect(JSON.stringify(changes)).not.toContain('createdBy');
   expect(session.endSession).toHaveBeenCalled();
 });
+
 it('reports observed acknowledgment times separately from cursor timestamps and preserves unknown legacy times', async () => {
   const messageId = new Types.ObjectId('507f1f77bcf86cd799439005');
   const cursorTime = new Date('2026-10-21T10:00:00Z');
@@ -128,6 +150,7 @@ it('reports observed acknowledgment times separately from cursor timestamps and 
     deliveredAt: null,
   });
 });
+
 it('filters live membership before the global-search page limit and excludes deleted messages', async () => {
   const aggregate = jest
     .fn<unknown, [Record<string, unknown>[]]>()
@@ -146,6 +169,7 @@ it('filters live membership before the global-search page limit and excludes del
   expect(JSON.stringify(stages)).toContain('deletedAt');
   expect(JSON.stringify(stages)).toContain('DOCUMENT');
 });
+
 it('does not load source contents when a forwarding caller lacks membership', async () => {
   const collections: string[] = [];
   const session = {
@@ -173,6 +197,90 @@ it('does not load source contents when a forwarding caller lacks membership', as
   expect(collections).not.toContain('chat_conversation_messages');
   expect(session.endSession).toHaveBeenCalled();
 });
+
+it('creates forwarded message notifications inside the MongoDB transaction (BE-DATA-007)', async () => {
+  const session = {
+    withTransaction: jest.fn((action: () => Promise<void>) => action()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+  const bulkWrite = jest.fn().mockResolvedValue(undefined);
+  const findMembers = jest.fn().mockReturnValue({
+    toArray: () =>
+      Promise.resolve([{ userId: 'peer-1', notificationMode: 'ALL' }]),
+  });
+  let msgFindCount = 0;
+  const repository = new Repository({
+    startSession: () => Promise.resolve(session),
+    db: {
+      collection: (name: string) => {
+        if (name === 'chat_members') {
+          return {
+            findOne: () =>
+              Promise.resolve({ userId: actor.id, status: 'ACTIVE' }),
+            find: findMembers,
+          };
+        }
+        if (name === 'chat_conversations') {
+          return {
+            findOne: () => Promise.resolve({ type: 'ROOM', status: 'ACTIVE' }),
+            updateOne: () => Promise.resolve({ matchedCount: 1 }),
+          };
+        }
+        if (name === 'chat_conversation_messages') {
+          return {
+            findOne: () => {
+              msgFindCount += 1;
+              if (msgFindCount === 1) return Promise.resolve(null);
+              return Promise.resolve({
+                _id: new Types.ObjectId('507f1f77bcf86cd799439005'),
+                content: 'forwarded body',
+                senderName: 'Origin',
+                attachments: [],
+                links: [],
+              });
+            },
+            insertOne: () => Promise.resolve({}),
+          };
+        }
+        if (name === 'chat_notifications') {
+          return { bulkWrite };
+        }
+        return { findOne: () => Promise.resolve(null) };
+      },
+    },
+  } as unknown as Connection);
+
+  await repository.forwardMessage(
+    actor,
+    '507f1f77bcf86cd799439003',
+    '507f1f77bcf86cd799439004',
+    '507f1f77bcf86cd799439005',
+    'bb077bf1-0897-499d-9b82-d57510ff3b5d',
+  );
+  expect(session.withTransaction).toHaveBeenCalledTimes(1);
+  expect(bulkWrite).toHaveBeenCalledWith(expect.any(Array), { session });
+  expect(findMembers).toHaveBeenCalledWith(expect.any(Object), { session });
+});
+
+it('applies $sort and bounded $limit BEFORE $lookup stages in notifications (BE-PERF-007)', async () => {
+  const aggregate = jest
+    .fn<unknown, [Record<string, unknown>[]]>()
+    .mockReturnValue({ toArray: () => Promise.resolve([]) });
+  const repository = new Repository({
+    db: { collection: () => ({ aggregate }) },
+  } as unknown as Connection);
+
+  await repository.notifications(actor, 30);
+  const stages = aggregate.mock.calls[0][0];
+  const sortIndex = stages.findIndex((stage) => '$sort' in stage);
+  const firstLimitIndex = stages.findIndex((stage) => '$limit' in stage);
+  const firstLookupIndex = stages.findIndex((stage) => '$lookup' in stage);
+
+  expect(sortIndex).toBeGreaterThan(0);
+  expect(firstLimitIndex).toBeGreaterThan(sortIndex);
+  expect(firstLimitIndex).toBeLessThan(firstLookupIndex);
+});
+
 it('honors mention-only preferences and deduplicates notifications by message and recipient', async () => {
   const bulkWrite = jest.fn().mockResolvedValue(undefined);
   const repository = new Repository({

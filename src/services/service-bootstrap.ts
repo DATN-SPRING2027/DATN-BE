@@ -1,13 +1,19 @@
 import 'dotenv/config';
-import { Type } from '@nestjs/common';
+import { Type, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { ConfigService } from '@nestjs/config';
 import { Transport } from '@nestjs/microservices';
 import { getConnectionToken } from '@nestjs/mongoose';
 import type { Express, Request, Response } from 'express';
+import helmet from 'helmet';
 import mongoose, { type Connection } from 'mongoose';
-import { createRedisConnection } from '../common/redis/redis-connection';
+import { requestIdMiddleware } from '../common/http/request-id.middleware';
+import { StructuredExceptionFilter } from '../common/http/structured-exception.filter';
+import {
+  closeSharedHttpRedisConnections,
+  getSharedHttpRedisConnection,
+} from '../common/redis/redis-connection';
 import {
   resolveServiceDatabaseName,
   type ServiceDatabaseOwner,
@@ -61,9 +67,25 @@ export async function bootstrapService(
   );
 
   const app = await NestFactory.create(serviceModule);
+  app.enableShutdownHooks();
   if (enableWebSockets) app.useWebSocketAdapter(new WsAdapter(app));
   const config = app.get(ConfigService);
   app.setGlobalPrefix('internal');
+  // SEC-BE-008: Apply security headers, request IDs, strict DTO validation, and structured error logging.
+  app.use(requestIdMiddleware);
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'same-site' },
+    }),
+  );
+  app.useGlobalPipes(
+    new ValidationPipe({
+      forbidNonWhitelisted: true,
+      transform: true,
+      whitelist: true,
+    }),
+  );
+  app.useGlobalFilters(new StructuredExceptionFilter());
   const databaseName =
     process.env.INFRA_ENABLED === 'true'
       ? resolveServiceDatabaseName(
@@ -92,14 +114,11 @@ export async function bootstrapService(
           return connection.db.admin().command({ ping: 1 });
         });
 
+        // OBS-005 / BE-PERF-004: Reuse pooled HTTP Redis connection instead of opening a new TCP socket per probe.
         redisAvailable = await probeWithinTimeout(async () => {
-          const redis = createRedisConnection(config);
-          try {
-            if (isRedisWaiting(redis.status)) await redis.connect();
-            return await redis.ping();
-          } finally {
-            redis.disconnect();
-          }
+          const redis = getSharedHttpRedisConnection(config);
+          if (isRedisWaiting(redis.status)) await redis.connect();
+          return await redis.ping();
         });
       }
 
@@ -119,6 +138,18 @@ export async function bootstrapService(
     },
   });
 
+  const cleanup = () => {
+    closeSharedHttpRedisConnections();
+  };
+  process.once('SIGTERM', cleanup);
+  process.once('SIGINT', cleanup);
+
   await app.startAllMicroservices();
-  await app.listen(config.get<number>('SERVICE_PORT') ?? 3001);
+  const host = config.get<string>('SERVICE_HOST')?.trim();
+  const port = config.get<number>('SERVICE_PORT') ?? 3001;
+  if (host) {
+    await app.listen(port, host);
+  } else {
+    await app.listen(port);
+  }
 }

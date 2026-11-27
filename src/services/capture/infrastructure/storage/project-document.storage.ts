@@ -1,7 +1,7 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import {
   mkdir,
   open,
@@ -14,7 +14,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
-import { R2Storage } from './r2.storage';
+import { Readable } from 'node:stream';
+import { R2Storage, type R2UploadUrlOptions } from './r2.storage';
 
 const PROD_VAULT_MOUNT_DIR = '/var/lib/continuum/vault';
 
@@ -31,6 +32,18 @@ export interface StoredDocumentPrefixInspection {
   prefix: Buffer;
 }
 
+export function isDocumentStorageKeyInScope(
+  key: string,
+  organizationId: string,
+  projectId: string,
+): boolean {
+  const [, keyOrganizationId, keyProjectId] = key.toLowerCase().split('/');
+  return (
+    keyOrganizationId === organizationId.toLowerCase() &&
+    keyProjectId === projectId.toLowerCase()
+  );
+}
+
 @Injectable()
 export class ProjectDocumentStorage {
   private readonly localRoot: string;
@@ -45,9 +58,16 @@ export class ProjectDocumentStorage {
       config.get<string>('WORK_NOTE_LOCAL_STORAGE_DIR') ||
       config.get<string>('LOCAL_STORAGE_DIR');
     this.localRoot = resolve(configuredDir || resolveDefaultVaultRoot());
-    // Hardcoded enterprise policy: always store in the dedicated Local Enterprise Vault
-    // across both LOCAL and PROD environments without requiring .env overrides.
-    this.forceLocal = true;
+    // Keep Vault deployments on local storage until an explicit R2 cutover.
+    const storageMode = String(config.get<string>('STORAGE_MODE') ?? '')
+      .trim()
+      .toLowerCase();
+    const forceLocalEnv = String(
+      config.get<string>('STORAGE_FORCE_LOCAL') ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    this.forceLocal = forceLocalEnv === 'true' || storageMode !== 'r2';
     this.localDisabled =
       String(config.get<string>('LOCAL_STORAGE_DISABLED') ?? '')
         .trim()
@@ -137,9 +157,21 @@ export class ProjectDocumentStorage {
     ).catch(() => undefined);
   }
 
+  async hasLocalFile(key: string): Promise<boolean> {
+    if (this.localDisabled) return false;
+    try {
+      return (await stat(this.localPath(key))).isFile();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
   async get(key: string): Promise<Buffer> {
     this.validateKey(key);
-    if (!this.useLocal()) return this.r2.getObject(key);
+    if (!this.useLocal() && !(await this.hasLocalFile(key))) {
+      return this.r2.getObject(key);
+    }
     const path = this.localPath(key);
     try {
       return await readFile(path);
@@ -162,6 +194,24 @@ export class ProjectDocumentStorage {
       }
       throw error;
     }
+  }
+
+  async getStream(key: string): Promise<Readable> {
+    this.validateKey(key);
+    if (!this.useLocal() && !(await this.hasLocalFile(key))) {
+      if (typeof this.r2.getObjectStream === 'function') {
+        return this.r2.getObjectStream(key);
+      }
+      const bytes = await this.r2.getObject(key);
+      return Readable.from([bytes]);
+    }
+    const path = this.localPath(key);
+    const info = await stat(path).catch(() => null);
+    if (info) {
+      return createReadStream(path);
+    }
+    const bytes = await this.get(key);
+    return Readable.from([bytes]);
   }
 
   async delete(key: string): Promise<void> {
@@ -203,6 +253,7 @@ export class ProjectDocumentStorage {
     key: string,
     contentType: string,
     expiresInSeconds = 900,
+    options?: R2UploadUrlOptions,
   ): Promise<string> {
     this.validateKey(key);
     if (!this.isDirectCloudEnabled()) {
@@ -211,7 +262,7 @@ export class ProjectDocumentStorage {
         message: 'Direct cloud object upload is not configured.',
       });
     }
-    return this.r2.createUploadUrl(key, contentType, expiresInSeconds);
+    return this.r2.createUploadUrl(key, contentType, expiresInSeconds, options);
   }
 
   async createDirectDownloadUrl(

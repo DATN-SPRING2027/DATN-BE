@@ -123,6 +123,7 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
   ) {
     super(config, auth, notes, model, redis, connection, audit);
   }
+  private editorStorageVerifiedDb?: unknown;
   protected override async storageReady() {
     const flag = this.config.get<boolean | string>(
       'WORKNOTE_SHARED_EDITOR_ENABLED',
@@ -132,15 +133,17 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
         code: 'WORKNOTE_EDITOR_UNAVAILABLE',
       });
     await super.storageReady();
+    const db = this.db();
+    if (this.editorStorageVerifiedDb === db) return;
     for (const [name, key] of [
       ['work_report_versions', 'reportId'],
       ['project_document_editor_versions', 'documentId'],
     ]) {
       try {
-        const indexes = (await this.db()
-          .collection(name)
-          .listIndexes()
-          .toArray()) as { unique?: boolean; key: unknown }[];
+        const indexes = (await db.collection(name).listIndexes().toArray()) as {
+          unique?: boolean;
+          key: unknown;
+        }[];
         if (
           !indexes.some(
             (i) =>
@@ -156,6 +159,7 @@ export class WorkNoteEditorService extends WorkNoteAgentDraftsService {
         });
       }
     }
+    this.editorStorageVerifiedDb = db;
   }
   protected override async owned(
     headers: CaptureRequestHeaders,

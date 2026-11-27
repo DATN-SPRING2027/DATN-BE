@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Headers,
   Param,
@@ -11,11 +10,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import {
-  AuthenticationApplicationService,
-  readCookie,
-  validCsrfPair,
-} from '../application/authentication/authentication.application.service';
+import { assertCookieAuthCsrf } from '../../../common/security/csrf';
+import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
 import { UserDirectoryService } from '../application/users/user-directory.service';
 import type {
   RoleCode,
@@ -159,14 +155,13 @@ export class UserDirectoryController {
     @Res({ passthrough: true }) response: Response,
   ) {
     response.setHeader('Cache-Control', 'no-store');
-    const csrfCookie = readCookie(cookie, '__Host-csrf');
-    if (
-      !authorization &&
-      (csrfCookie !== undefined || csrfHeader !== undefined) &&
-      !validCsrfPair(csrfHeader, csrfCookie)
-    ) {
-      throw new ForbiddenException({ code: 'CSRF_TOKEN_INVALID' });
-    }
+    // SEC-AUTH-005: Always require valid CSRF on cookie-authenticated mutations (never skip when both absent).
+    assertCookieAuthCsrf(
+      authorization,
+      cookie,
+      csrfHeader,
+      'CSRF_TOKEN_INVALID',
+    );
     const actor = await this.auth.getCurrentIdentity(authorization, cookie);
     return this.directory.update(actor, parseUserId(userId), parseUpdate(body));
   }

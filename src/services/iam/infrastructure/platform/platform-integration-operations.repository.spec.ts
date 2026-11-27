@@ -112,11 +112,16 @@ describe('PlatformIntegrationOperationsHttpRepository', () => {
     const body = typeof request?.body === 'string' ? request.body : '';
     const headers = request?.headers as Record<string, string>;
     const timestamp = headers['x-platform-ops-timestamp'];
+    const nonce = headers['x-platform-ops-nonce'];
+    const actorHeader = headers['x-platform-ops-actor-id'];
+    expect(nonce).toMatch(/^[a-zA-Z0-9._-]{16,128}$/);
+    expect(actorHeader).toBe(actorUserId.toLowerCase());
+    expect(request?.redirect).toBe('error');
     const url =
       target instanceof URL
         ? target
         : new URL(typeof target === 'string' ? target : target.url);
-    const canonical = `${timestamp}\nPOST\n${url.pathname}${url.search}\n${createHash('sha256').update(body).digest('hex')}`;
+    const canonical = `${timestamp}\n${nonce}\nPOST\n${url.pathname}${url.search}\n${actorHeader}\n${createHash('sha256').update(body).digest('hex')}`;
 
     expect(headers['x-platform-ops-signature']).toBe(
       createHmac('sha256', 's'.repeat(48)).update(canonical).digest('hex'),

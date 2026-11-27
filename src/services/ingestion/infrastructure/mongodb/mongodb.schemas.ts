@@ -132,7 +132,6 @@ const ingestionSchemas: Record<string, Schema> = {
       fileSizeBytes: { type: Number, required: true, min: 0 },
       mimeType: { type: String, required: true },
       checksumSha256: { type: String, required: true },
-      presignedPutUrl: { type: String, required: true },
       r2ObjectKey: { type: String, required: true },
       isUsed: { type: Boolean, default: false },
       expiresAt: { type: Date, required: true },

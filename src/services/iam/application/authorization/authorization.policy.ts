@@ -354,22 +354,18 @@ export class AuthorizationPolicy {
       input.projectMembership.status === 'ACTIVE',
     );
     const allowedScopes =
-      permission === 'project.visibility.manage' ||
-      permission === 'project.members.add' ||
-      permission === 'project.members.remove'
-        ? [
-            { roleCode: 'ADMIN', projectId: null },
-            { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
-          ]
-        : permission === 'project.members.list'
+      permission === 'project.leader.manage' || permission === 'project.delete'
+        ? [{ roleCode: 'ADMIN', projectId: null }]
+        : permission === 'project.visibility.manage'
           ? [
               { roleCode: 'ADMIN', projectId: null },
               { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
-              { roleCode: 'MEMBER', projectId: requestedProjectId },
             ]
-          : permission === 'project.leader.manage' ||
-              permission === 'project.delete'
-            ? [{ roleCode: 'ADMIN', projectId: null }]
+          : permission === 'project.members.list'
+            ? [
+                { roleCode: 'TEAM_LEADER', projectId: requestedProjectId },
+                { roleCode: 'MEMBER', projectId: requestedProjectId },
+              ]
             : [{ roleCode: 'TEAM_LEADER', projectId: requestedProjectId }];
     const allowed = allowedScopes.some((scope) => {
       if (scope.projectId !== null && !hasProjectMembership) return false;
@@ -383,15 +379,8 @@ export class AuthorizationPolicy {
               sameObjectId(assignment.projectId, scope.projectId)) &&
           assignment.roleCode === scope.roleCode &&
           assignment.resolvedRoleCode === scope.roleCode &&
-          (permission === 'project.delete'
-            ? Array.isArray(assignment.permissions) &&
-              assignment.permissions.every(
-                (candidate) => typeof candidate === 'string',
-              ) &&
-              (assignment.permissions.includes('project.delete') ||
-                assignment.permissions.includes('project.leader.manage') ||
-                assignment.permissions.includes('project.visibility.manage'))
-            : hasPermission(assignment.permissions, permission)),
+          // SEC-AUTH-004: Require exact permission match — no fallback from leader/visibility perms to project.delete.
+          hasPermission(assignment.permissions, permission),
       );
     });
     return allowed

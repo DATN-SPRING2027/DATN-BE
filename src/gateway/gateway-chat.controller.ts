@@ -12,6 +12,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import {
+  buildSafeInternalProxyUrl,
+  collectForwardedRequestHeaders,
+  sendOrStreamUpstreamResponse,
+} from './gateway-proxy.util';
 
 const requestHeaders = [
   'accept',
@@ -20,13 +25,20 @@ const requestHeaders = [
   'cookie',
   'idempotency-key',
   'x-csrf-token',
+  'x-expected-organization-id',
+  'x-organization-id',
   'x-request-id',
+  'traceparent',
 ] as const;
 const responseHeaders = [
   'cache-control',
+  'content-disposition',
+  'content-length',
+  'content-security-policy',
   'content-type',
   'retry-after',
   'www-authenticate',
+  'x-content-type-options',
   'x-request-id',
 ] as const;
 
@@ -185,6 +197,11 @@ export class GatewayChatController {
     return this.forward(request, response);
   }
 
+  @Get('chat/conversations/:conversationId/attachments/:attachmentId/content')
+  getAttachmentContent(@Req() request: Request, @Res() response: Response) {
+    return this.forward(request, response);
+  }
+
   @Post('chat/conversations/:conversationId/messages')
   sendMessage(@Req() request: Request, @Res() response: Response) {
     return this.forward(request, response);
@@ -232,33 +249,43 @@ export class GatewayChatController {
   private async forward(request: Request, response: Response): Promise<void> {
     response.setHeader('cache-control', 'no-store');
     const baseUrl = this.config.getOrThrow<string>('CHAT_SERVICE_URL');
-    const path = request.originalUrl.replace(/^\/api\/v1\//, '/internal/');
-    const headers: Record<string, string> = {};
-    for (const name of requestHeaders) {
-      const value = request.headers[name];
-      if (typeof value === 'string') headers[name] = value;
-    }
+    const targetUrl = buildSafeInternalProxyUrl(request.originalUrl, baseUrl);
+    const headers = collectForwardedRequestHeaders(request, requestHeaders);
     let upstream: globalThis.Response;
+    const reqPath =
+      request.path ?? targetUrl.pathname.replace(/^\/internal\//, '/api/v1/');
     const isUploadContent =
       request.method === 'PUT' &&
       /^\/api\/v1\/chat\/conversations\/[^/]+\/uploads\/[^/]+\/content$/.test(
-        request.path,
+        reqPath,
       );
+    const isAttachmentDownload =
+      request.method === 'GET' &&
+      /^\/api\/v1\/chat\/conversations\/[^/]+\/attachments\/[^/]+\/content$/.test(
+        reqPath,
+      );
+    const timeoutMs =
+      isUploadContent || isAttachmentDownload
+        ? ((typeof this.config.get === 'function'
+            ? this.config.get<number>('CAPTURE_FILE_TIMEOUT_MS')
+            : undefined) ?? 60_000)
+        : this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS');
     try {
-      upstream = await fetch(new URL(path, baseUrl), {
+      upstream = await fetch(targetUrl, {
         method: request.method,
         headers,
+        redirect: 'manual',
         ...(isUploadContent
           ? {
               body: request as unknown as BodyInit,
               duplex: 'half',
             }
-          : request.body === undefined
+          : request.method === 'GET' ||
+              request.method === 'HEAD' ||
+              request.body === undefined
             ? {}
             : { body: JSON.stringify(request.body) }),
-        signal: AbortSignal.timeout(
-          this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS'),
-        ),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
@@ -270,8 +297,8 @@ export class GatewayChatController {
       const value = upstream.headers.get(name);
       if (value) response.setHeader(name, value);
     }
-    response
-      .status(upstream.status)
-      .send(Buffer.from(await upstream.arrayBuffer()));
+    await sendOrStreamUpstreamResponse(upstream, response, {
+      preferStream: isAttachmentDownload,
+    });
   }
 }

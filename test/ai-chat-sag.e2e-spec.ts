@@ -21,6 +21,7 @@ import { AiChatService } from '../src/integrations/ai-engine/ai-chat.service';
 import { AI_ENGINE_CLIENT } from '../src/integrations/ai-engine/ai-engine.port';
 import { HttpAiEngineClient } from '../src/integrations/ai-engine/http-ai-engine.client';
 import { AuthenticationApplicationService } from '../src/services/iam/application/authentication/authentication.application.service';
+import { IamActorContextService } from '../src/services/iam/application/projects/iam-actor-context.service';
 import { ProjectService } from '../src/services/iam/application/projects/project.service';
 import { WorkNotesService } from '../src/services/capture/application/work-notes.service';
 
@@ -307,6 +308,48 @@ describe('AI Chat <-> SAG BFF (e2e)', () => {
         { provide: AI_ENGINE_CLIENT, useClass: HttpAiEngineClient },
         { provide: AuthenticationApplicationService, useValue: authMock },
         { provide: ProjectService, useValue: projectsMock },
+        {
+          provide: IamActorContextService,
+          useValue: {
+            resolveProjectActorContext: jest.fn(
+              async (input: { actor: typeof actor; projectId: string }) => {
+                const resolved = (await projectsMock.get(
+                  input.actor,
+                  input.projectId,
+                )) as {
+                  id: string;
+                  organizationId: string;
+                  status?: 'ACTIVE' | 'ARCHIVED';
+                };
+                return {
+                  organizationId: resolved.organizationId,
+                  organizationRole: 'ADMIN',
+                  project: {
+                    id: resolved.id,
+                    organizationId: resolved.organizationId,
+                    status: resolved.status ?? 'ACTIVE',
+                    visibility: 'PRIVATE',
+                    name: project.name,
+                    key: project.code,
+                  },
+                  isProjectMember: true,
+                  isProjectLeader: true,
+                  projectRole: 'TEAM_LEADER',
+                };
+              },
+            ),
+            listActiveMemberProjects: jest.fn().mockResolvedValue([
+              {
+                id: project.id,
+                organizationId: project.organizationId,
+                status: 'ACTIVE',
+                visibility: 'PRIVATE',
+                name: project.name,
+                key: project.code,
+              },
+            ]),
+          },
+        },
         {
           provide: WorkNotesService,
           useValue: { listAiChatProjectSources: jest.fn() },

@@ -16,6 +16,7 @@ import {
 import type { AiEngineClient } from './ai-engine.port';
 import type { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
 import type { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
+import type { IamActorContextService } from '../../services/iam/application/projects/iam-actor-context.service';
 import type { ProjectService } from '../../services/iam/application/projects/project.service';
 import type { PlatformAdministrationRepository } from '../../services/iam/application/platform/platform-administration.repository';
 
@@ -38,6 +39,47 @@ describe('AiChatService', () => {
   function setup() {
     const getCurrentIdentity = jest.fn().mockResolvedValue(actor);
     const getProject = jest.fn().mockResolvedValue(project);
+    const resolveProjectActorContext = jest.fn(
+      async (input: {
+        actor: typeof actor;
+        projectId: string;
+        organizationHeader?: string;
+      }) => {
+        if (
+          input.organizationHeader &&
+          input.organizationHeader !== input.actor.organizationId
+        ) {
+          throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
+        }
+        const proj = (await getProject(
+          input.actor,
+          input.projectId,
+        )) as typeof project;
+        if (proj.status !== 'ACTIVE') {
+          throw new NotFoundException({ code: 'PROJECT_NOT_FOUND' });
+        }
+        return {
+          actor: input.actor,
+          project: {
+            ...proj,
+            visibility: 'PRIVATE',
+          },
+          isProjectMember: true,
+          isProjectLeader: false,
+          isOrganizationAdmin: input.actor.roles.includes('ADMIN'),
+        };
+      },
+    );
+    const listActiveMemberProjects = jest.fn().mockResolvedValue([
+      {
+        id: project.id,
+        organizationId: project.organizationId,
+        name: project.name,
+        code: project.code,
+        status: 'ACTIVE' as const,
+        visibility: 'PRIVATE' as const,
+      },
+    ]);
     const requestMock = jest.fn();
     const requestStreamMock = jest.fn();
 
@@ -51,11 +93,25 @@ describe('AiChatService', () => {
       request: requestMock,
       requestStream: requestStreamMock,
     };
-    const service = new AiChatService(auth, projects, aiEngine);
+    const actorContext = {
+      resolveProjectActorContext,
+      listActiveMemberProjects,
+    } as unknown as IamActorContextService;
+    const service = new AiChatService(
+      auth,
+      projects,
+      aiEngine,
+      undefined,
+      undefined,
+      undefined,
+      actorContext,
+    );
     return {
       service,
       getCurrentIdentity,
       getProject,
+      resolveProjectActorContext,
+      listActiveMemberProjects,
       requestMock,
       requestStreamMock,
     };
@@ -1558,13 +1614,54 @@ describe('AiChatService', () => {
     ).toBeDefined();
   });
 
-  it('allows Organization Manager (ADMIN role) to use all-projects scope ("all") while rejecting Leader and Member with 403 Forbidden', async () => {
+  it('SEC-AUTH-001: denies non-member PUBLIC and non-member Org ADMIN PRIVATE access on AI Chat, Mind-Map, and Universe without touching SAG', async () => {
+    const { service, resolveProjectActorContext, requestMock } = setup();
+
+    // Non-member accessing a PUBLIC project -> MUST get 404 without calling SAG
+    resolveProjectActorContext.mockResolvedValueOnce({
+      actor,
+      project: {
+        ...project,
+        visibility: 'PUBLIC',
+      },
+      isProjectMember: false,
+      isProjectLeader: false,
+      isOrganizationAdmin: false,
+    });
+    await expect(
+      service.listThreads({ authorization: 'Bearer non-member' }, project.id, {
+        limit: 20,
+        offset: 0,
+      }),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+
+    // Non-member Org ADMIN accessing a PRIVATE project Mind-Map -> MUST get 404 without calling SAG
+    resolveProjectActorContext.mockResolvedValueOnce({
+      actor: { ...actor, roles: ['ADMIN'] },
+      project: { ...project, visibility: 'PRIVATE' as const },
+      isProjectMember: false,
+      isProjectLeader: false,
+      isOrganizationAdmin: true,
+    });
+    await expect(
+      service.generateMindMap(
+        { authorization: 'Bearer non-member-admin' },
+        project.id,
+        {},
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+
+  it('SEC-AUTH-001: restricts all-projects scope ("all") strictly to joined ACTIVE member projects for ADMIN and rejects Leader/Member', async () => {
     const projA = {
       id: '507f1f77bcf86cd799439033',
       organizationId: actor.organizationId,
       name: 'Continuum Core',
       code: 'CORE',
       status: 'ACTIVE' as const,
+      visibility: 'PRIVATE' as const,
     };
     const projB = {
       id: '507f1f77bcf86cd799439044',
@@ -1572,17 +1669,24 @@ describe('AiChatService', () => {
       name: 'Continuum Mobile',
       code: 'MOB',
       status: 'ACTIVE' as const,
+      visibility: 'PUBLIC' as const,
     };
     const getCurrentIdentity = jest.fn();
-    const listProjects = jest.fn().mockResolvedValue({
-      data: [projB, projA],
-      pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 },
-    });
+    const listActiveMemberProjects = jest
+      .fn()
+      .mockResolvedValue([projB, projA]);
     const requestMock = jest.fn();
     const service = new AiChatService(
       { getCurrentIdentity } as unknown as AuthenticationApplicationService,
-      { get: jest.fn(), list: listProjects } as unknown as ProjectService,
+      { get: jest.fn(), list: jest.fn() } as unknown as ProjectService,
       { request: requestMock, requestStream: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      {
+        resolveProjectActorContext: jest.fn(),
+        listActiveMemberProjects,
+      } as unknown as IamActorContextService,
     );
 
     // 1. Member is forbidden from using "all"
@@ -1610,7 +1714,7 @@ describe('AiChatService', () => {
     ).rejects.toThrow(ForbiddenException);
     expect(requestMock).not.toHaveBeenCalled();
 
-    // 3. Organization Manager (ADMIN) succeeds with sorted allowed_project_ids
+    // 3. Organization Manager (ADMIN) succeeds with sorted joined ACTIVE member allowed_project_ids
     getCurrentIdentity.mockResolvedValueOnce({
       ...actor,
       roles: ['ADMIN'],
@@ -1658,7 +1762,7 @@ describe('AiChatService', () => {
     });
   });
 
-  it('supports exactly 256 active projects in "all" scope and throws BadRequestException when organization has 257 active projects', async () => {
+  it('supports exactly 256 active member projects in "all" scope and throws BadRequestException when member has 257 active projects', async () => {
     const buildProjects = (count: number) =>
       Array.from({ length: count }, (_, idx) => {
         const hexSuffix = (idx + 1).toString(16).padStart(6, '0');
@@ -1668,6 +1772,7 @@ describe('AiChatService', () => {
           name: `Project ${idx + 1}`,
           code: `PRJ-${idx + 1}`,
           status: 'ACTIVE' as const,
+          visibility: 'PRIVATE' as const,
         };
       });
 
@@ -1676,27 +1781,19 @@ describe('AiChatService', () => {
       roles: ['ADMIN'],
     });
 
-    // Case 1: 256 active projects across 3 pages -> succeeds with all 256 projects
+    // Case 1: 256 active member projects -> succeeds with all 256 projects
     const projects256 = buildProjects(256);
-    const listProjects256 = jest
-      .fn()
-      .mockImplementation((_actor: unknown, { page }: { page: number }) => {
-        const start = (page - 1) * 100;
-        return Promise.resolve({
-          data: projects256.slice(start, start + 100),
-          pagination: {
-            page,
-            pageSize: 100,
-            totalItems: 256,
-            totalPages: 3,
-          },
-        });
-      });
-
     const service256 = new AiChatService(
       { getCurrentIdentity } as unknown as AuthenticationApplicationService,
-      { get: jest.fn(), list: listProjects256 } as unknown as ProjectService,
+      { get: jest.fn(), list: jest.fn() } as unknown as ProjectService,
       { request: jest.fn(), requestStream: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      {
+        resolveProjectActorContext: jest.fn(),
+        listActiveMemberProjects: jest.fn().mockResolvedValue(projects256),
+      } as unknown as IamActorContextService,
     );
 
     const ctx256 = await service256.resolveAllProjectsManagerContext({
@@ -1705,28 +1802,20 @@ describe('AiChatService', () => {
     expect(ctx256.projects).toHaveLength(256);
     expect(ctx256.projects[255]?.id).toBe(projects256[255]?.id);
 
-    // Case 2: 257 active projects across 3 pages -> throws explicit BadRequestException (never silently drops 257th project)
+    // Case 2: 257 active member projects -> throws explicit BadRequestException (never silently drops 257th project)
     const projects257 = buildProjects(257);
-    const listProjects257 = jest
-      .fn()
-      .mockImplementation((_actor: unknown, { page }: { page: number }) => {
-        const start = (page - 1) * 100;
-        return Promise.resolve({
-          data: projects257.slice(start, start + 100),
-          pagination: {
-            page,
-            pageSize: 100,
-            totalItems: 257,
-            totalPages: 3,
-          },
-        });
-      });
-
     const request257 = jest.fn();
     const service257 = new AiChatService(
       { getCurrentIdentity } as unknown as AuthenticationApplicationService,
-      { get: jest.fn(), list: listProjects257 } as unknown as ProjectService,
+      { get: jest.fn(), list: jest.fn() } as unknown as ProjectService,
       { request: request257, requestStream: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      {
+        resolveProjectActorContext: jest.fn(),
+        listActiveMemberProjects: jest.fn().mockResolvedValue(projects257),
+      } as unknown as IamActorContextService,
     );
 
     await expect(

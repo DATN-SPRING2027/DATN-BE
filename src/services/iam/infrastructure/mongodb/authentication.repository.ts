@@ -52,8 +52,11 @@ interface RefreshSessionDocument {
   context?: string;
   tokenHash: string;
   isRevoked: boolean;
+  rotatedAt?: Date | null;
   expiresAt: Date;
 }
+
+export const REFRESH_ROTATION_GRACE_WINDOW_MS = 10_000;
 
 function refreshSessionContext(
   row: RefreshSessionDocument,
@@ -448,6 +451,36 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     }
   }
 
+  async revokeRefreshSessionBySessionId(
+    userId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(userId) || !sessionId.trim()) return false;
+    const model = this.getModel<RefreshSessionDocument>(
+      REFRESH_SESSIONS_MODEL,
+      'REFRESH_SESSION_MODEL_UNAVAILABLE',
+    );
+    const alternatives: Record<string, unknown>[] = [{ sessionId }];
+    if (/^[a-f\d]{24}$/i.test(sessionId)) {
+      alternatives.push({
+        _id: new Types.ObjectId(sessionId),
+        sessionId: { $exists: false },
+      });
+    }
+    const result = await model
+      .updateMany(
+        {
+          userId: new Types.ObjectId(userId),
+          $or: alternatives,
+          isRevoked: { $ne: true },
+        },
+        { $set: { isRevoked: true, updatedAt: new Date() } },
+        { timestamps: false },
+      )
+      .exec();
+    return result.modifiedCount > 0;
+  }
+
   async findRefreshSessionForRotation(
     tokenHash: string,
   ): Promise<RefreshSessionLookup> {
@@ -515,6 +548,7 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
     expiresAt: Date,
     now: Date,
     requestedSessionId?: string,
+    graceWindowMs: number = REFRESH_ROTATION_GRACE_WINDOW_MS,
   ): Promise<RefreshRotationResult> {
     const model = this.getModel<RefreshSessionDocument>(
       REFRESH_SESSIONS_MODEL,
@@ -546,6 +580,44 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
           return { outcome: 'INVALID' } as const;
         }
         if (row.isRevoked) {
+          // Concurrent multi-tab refresh grace window (BE-DATA-006 / Trap 3):
+          // Only tokens revoked via normal rotation (rotatedAt set) within the
+          // short grace window whose session family still has an active
+          // successor are treated as concurrent tab races. Explicit logouts
+          // (no rotatedAt) and post-window replays still trigger full replay
+          // invalidation and mutationFence++.
+          const rotatedAtMs =
+            row.rotatedAt instanceof Date &&
+            Number.isFinite(row.rotatedAt.getTime())
+              ? row.rotatedAt.getTime()
+              : null;
+          const elapsedMs =
+            rotatedAtMs !== null ? effectiveNow.getTime() - rotatedAtMs : null;
+          if (
+            graceWindowMs > 0 &&
+            elapsedMs !== null &&
+            elapsedMs >= 0 &&
+            elapsedMs <= graceWindowMs
+          ) {
+            const familySessionId =
+              typeof row.sessionId === 'string'
+                ? row.sessionId
+                : row._id.toHexString();
+            const hasActiveSuccessor = Boolean(
+              await model
+                .exists({
+                  userId: row.userId,
+                  sessionId: familySessionId,
+                  isRevoked: false,
+                  expiresAt: { $gt: effectiveNow },
+                })
+                .session(session)
+                .exec(),
+            );
+            if (hasActiveSuccessor) {
+              return { outcome: 'CONCURRENT_ROTATION' } as const;
+            }
+          }
           await model
             .updateMany(
               { userId: row.userId, isRevoked: false },
@@ -582,7 +654,7 @@ export class AuthenticationRepository implements AuthenticationRepositoryPort {
               isRevoked: false,
               expiresAt: { $gt: effectiveNow },
             },
-            { $set: { isRevoked: true } },
+            { $set: { isRevoked: true, rotatedAt: effectiveNow } },
             { session },
           )
           .exec();

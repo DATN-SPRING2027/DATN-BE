@@ -7,9 +7,11 @@ import {
   configureSwagger,
   resolveCorsAllowedOrigins,
 } from '../bootstrap';
+import { closeSharedHttpRedisConnections } from '../common/redis/redis-connection';
 
 async function bootstrap() {
   const app = await NestFactory.create(GatewayModule);
+  app.enableShutdownHooks();
   const config = app.get(ConfigService);
   const trustedProxyCidrs = (
     config.get<string>('GATEWAY_TRUSTED_PROXY_CIDRS') ?? ''
@@ -31,12 +33,19 @@ async function bootstrap() {
       corsAllowedOrigins: config.get<string>('CORS_ALLOWED_ORIGINS'),
       continuumWebBaseUrl: config.get<string>('CONTINUUM_WEB_BASE_URL'),
       webAppUrl: config.get<string>('WEB_APP_URL'),
+      sagWebBaseUrl: config.get<string>('SAG_WEB_BASE_URL'),
     }),
   );
 
   if (config.getOrThrow<boolean>('SWAGGER_ENABLED')) {
     configureSwagger(app);
   }
+
+  const cleanup = () => {
+    closeSharedHttpRedisConnections();
+  };
+  process.once('SIGTERM', cleanup);
+  process.once('SIGINT', cleanup);
 
   await app.listen(config.getOrThrow<number>('GATEWAY_PORT'));
 }

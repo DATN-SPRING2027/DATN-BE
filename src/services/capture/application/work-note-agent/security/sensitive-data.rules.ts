@@ -30,8 +30,7 @@ export type SensitiveRule = Readonly<{
 export function isDummyValue(raw: string): boolean {
   const value = raw.trim().replace(/^["'`]+|["'`]+$/g, '');
   if (!value) return true;
-  if (/^\[\[WN_SEC:/.test(value) || value.includes('__WN_PROTECTED_'))
-    return true;
+  if (/^\[\[WN_SEC:[A-Z_]+:[a-f0-9]{10,16}\]\]$/.test(value)) return true;
   if (/^(?:\*+|x{3,}|\.{3,}|-+|_+|#+|•+)$/i.test(value)) return true;
   if (/^(?:\$\{?|%[A-Z_]|\{\{|<)/i.test(value)) return true;
   if (
@@ -334,14 +333,15 @@ export const SENSITIVE_RULES: readonly SensitiveRule[] = [
     severity: 'MEDIUM',
     action: 'MASK',
     pattern:
-      /(?<![\d+])(?:\+84|0084|0)[\s.-]?[35789]\d(?:[\s.-]?\d){7}(?![\d])/g,
+      /(?<![A-Za-z0-9+])(?:\+84|0084|0)[\s.-]?[35789]\d(?:[\s.-]?\d){7}(?![A-Za-z0-9])/g,
   },
   {
     id: 'phone-vn-landline',
     category: 'PHONE',
     severity: 'MEDIUM',
     action: 'MASK',
-    pattern: /(?<![\d+])(?:\+84|0084|0)[\s.-]?2\d(?:[\s.-]?\d){8}(?![\d])/g,
+    pattern:
+      /(?<![A-Za-z0-9+])(?:\+84|0084|0)[\s.-]?2\d(?:[\s.-]?\d){8}(?![A-Za-z0-9])/g,
   },
   {
     id: 'national-id-with-label',

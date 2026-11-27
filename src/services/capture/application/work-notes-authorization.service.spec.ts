@@ -453,10 +453,11 @@ describe('WorkNotesAuthorizationService', () => {
     expect(burstActors.every((actor) => actor.userId === userId)).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
 
-    // 2. Immediate follow-up upload-intent / confirm-upload calls hit the short burst cache (0 extra fetches)
+    // 2. SEC-AUTH-007: Sequential follow-up requests do NOT reuse a stale 3s cache
+    // (revoked memberships take effect immediately while in-flight bursts still coalesce)
     const followUp = await service.resolveProject(leaderHeaders, projectId);
     expect(followUp.userId).toBe(userId);
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenCalledTimes(6);
 
     // 3. A different user session is strictly isolated and resolved independently
     const secondUserActor = await service.resolveProject(
@@ -471,7 +472,7 @@ describe('WorkNotesAuthorizationService', () => {
       userId: user2Id,
       canReview: false,
     });
-    expect(fetchSpy).toHaveBeenCalledTimes(7);
+    expect(fetchSpy).toHaveBeenCalledTimes(10);
   });
 
   it('extracts taskParentId in resolveTask and resolves readable parent/child Tasks in the same Project', async () => {

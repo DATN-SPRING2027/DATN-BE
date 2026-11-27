@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Types } from 'mongoose';
 
 export const WORKSPACE_TASK_DATABASE_NAME = 'continuum_task';
@@ -279,18 +280,38 @@ export function decodeDateRangeCursor(
   }
 }
 
+const ORG_SUMMARY_CURSOR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function orgSummaryCursorSecret(): string {
+  const configured =
+    process.env.TASK_CURSOR_HMAC_SECRET?.trim() ||
+    process.env.JWT_SECRET?.trim();
+  if (configured && configured.length >= 16) {
+    return configured;
+  }
+  return 'continuum-task-org-summary-cursor-dev-key';
+}
+
+function signOrgSummaryCursorPayload(payload: string): string {
+  return createHmac('sha256', orgSummaryCursorSecret())
+    .update(payload)
+    .digest('base64url');
+}
+
 export function encodeOrgSummaryCursor(
   projectId: string,
   asOf: string,
 ): string {
-  return Buffer.from(
+  const payload = Buffer.from(
     JSON.stringify({
-      v: 2,
-      projectId,
+      v: 3,
+      projectId: projectId.toLowerCase(),
       asOf,
     }),
     'utf8',
   ).toString('base64url');
+  const sig = signOrgSummaryCursorPayload(payload);
+  return `${payload}.${sig}`;
 }
 
 export function decodeOrgSummaryCursor(cursor: string): {
@@ -298,13 +319,24 @@ export function decodeOrgSummaryCursor(cursor: string): {
   asOf: Date;
 } | null {
   try {
+    const parts = cursor.split('.');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return null;
+    }
+    const [payload, signature] = parts;
+    const expected = signOrgSummaryCursorPayload(payload);
+    const sigBuf = Buffer.from(signature, 'utf8');
+    const expBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
     const raw = JSON.parse(
-      Buffer.from(cursor, 'base64url').toString('utf8'),
+      Buffer.from(payload, 'base64url').toString('utf8'),
     ) as Record<string, unknown>;
     if (
       typeof raw !== 'object' ||
       raw === null ||
-      raw.v !== 2 ||
+      raw.v !== 3 ||
       typeof raw.projectId !== 'string' ||
       !/^[0-9a-f]{24}$/i.test(raw.projectId) ||
       typeof raw.asOf !== 'string'
@@ -313,6 +345,9 @@ export function decodeOrgSummaryCursor(cursor: string): {
     }
     const asOf = new Date(raw.asOf);
     if (!Number.isFinite(asOf.getTime())) return null;
+    if (Math.abs(Date.now() - asOf.getTime()) > ORG_SUMMARY_CURSOR_MAX_AGE_MS) {
+      return null;
+    }
     return {
       projectId: raw.projectId.toLowerCase(),
       asOf,
@@ -328,11 +363,25 @@ export interface WorkspaceIndexSpec {
   unique?: boolean;
   expireAfterSeconds?: number;
   partialFilterExpression?: Record<string, unknown>;
+  /**
+   * Additive performance index introduced after initial schema launch.
+   * Startup logs a warning instead of crashing when this index is not yet created
+   * so rolling deploys can boot before the additive index migration runs.
+   */
+  optionalAdditive?: boolean;
 }
 
 export const WORKSPACE_INDEX_CATALOGUE: Record<string, WorkspaceIndexSpec[]> = {
   [WORKSPACE_TASKS_COLLECTION]: [
     { key: { dueDate: 1, _id: 1 }, name: 'deadline_scan_due_cursor' },
+    {
+      key: { status: 1, dueDate: 1, _id: 1 },
+      name: 'deadline_scan_active_status_due_cursor',
+      partialFilterExpression: {
+        status: { $in: ['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'BLOCKED'] },
+      },
+      optionalAdditive: true,
+    },
     { key: { projectId: 1, _id: 1 }, name: 'task_project_cursor' },
     {
       key: { projectId: 1, status: 1, _id: 1 },

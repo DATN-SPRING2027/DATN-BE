@@ -193,6 +193,14 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     actorId: string,
     projectId: string,
   ): Promise<void> {
+    // SEC-AUTH-004: Hard deletion orphans data across Capture/Task/Handover/Chat/SAG;
+    // keep disabled unless explicitly enabled with cross-service cascade support.
+    if (process.env.PROJECT_HARD_DELETE_ENABLED !== 'true') {
+      throw new ForbiddenException({
+        code: 'PROJECT_DELETE_DISABLED',
+        message: 'Project hard deletion is disabled.',
+      });
+    }
     if (![organizationId, actorId, projectId].every(validId))
       throw projectNotFound();
     const connection = this.requireConnection();
@@ -430,14 +438,17 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     this.assertIds(organizationId, projectId);
     await this.requireActiveProject(organizationId, projectId);
 
-    const userMatch: Record<string, unknown> = { 'user.status': 'ACTIVE' };
-    if (search && search.trim().length > 0) {
-      const sanitized = search.trim();
-      userMatch['user.email'] = new RegExp(
+    // SEC-AUTH-012: Require a non-empty search query (>= 2 chars) to prevent blank org directory dumps.
+    const sanitized = search?.trim() ?? '';
+    if (sanitized.length < 2) return [];
+
+    const userMatch: Record<string, unknown> = {
+      'user.status': 'ACTIVE',
+      'user.email': new RegExp(
         sanitized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
         'i',
-      );
-    }
+      ),
+    };
 
     const pipeline: PipelineStage[] = [
       {
@@ -749,19 +760,20 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
     try {
       let result: ProjectMembershipRecord | undefined;
       await session.withTransaction(async () => {
-        await this.authorizeMutation(
-          organizationId,
-          actorId,
-          projectId,
-          'project.members.add',
-          session,
-        );
         if (role === 'TEAM_LEADER') {
           await this.authorizeMutation(
             organizationId,
             actorId,
             projectId,
             'project.leader.manage',
+            session,
+          );
+        } else {
+          await this.authorizeMutation(
+            organizationId,
+            actorId,
+            projectId,
+            'project.members.add',
             session,
           );
         }
@@ -844,12 +856,18 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           });
 
         if (membership) {
+          // BE-LOGIC-008: Refresh joinedAt on reactivation so re-added members do not inherit historical overdue windows.
+          const rejoinedAt = new Date();
           await this.model<MembershipDocument>('project_memberships').updateOne(
             { _id: membership._id, status: 'INACTIVE' },
-            { $set: { status: 'ACTIVE' } },
+            { $set: { status: 'ACTIVE', joinedAt: rejoinedAt } },
             { session },
           );
-          membership = { ...membership, status: 'ACTIVE' };
+          membership = {
+            ...membership,
+            status: 'ACTIVE',
+            joinedAt: rejoinedAt,
+          };
         } else {
           const [created] = await this.model<MembershipDocument>(
             'project_memberships',
@@ -1072,6 +1090,47 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
           { $set: { status: 'INACTIVE' } },
           { session },
         );
+        // SEC-BE-018 / BE-DATA-004: Clean up residual project-scoped MEMBER role assignments
+        // and project team memberships atomically inside the same transaction.
+        await this.model<RoleAssignmentDocument>('role_assignments')
+          .deleteMany(
+            {
+              organizationId: new Types.ObjectId(organizationId),
+              projectId: new Types.ObjectId(projectId),
+              userId: membership.userId,
+              roleCode: { $ne: 'TEAM_LEADER' },
+            },
+            { session },
+          )
+          .exec();
+        const teamsModel = this.connection?.models[modelName('teams')] as
+          Model<{ _id: Types.ObjectId }> | undefined;
+        const teamMembershipsModel = this.connection?.models[
+          modelName('team_memberships')
+        ] as
+          Model<{ teamId: Types.ObjectId; userId: Types.ObjectId }> | undefined;
+        if (teamsModel && teamMembershipsModel) {
+          const projectTeams = await teamsModel
+            .find({
+              organizationId: new Types.ObjectId(organizationId),
+              projectId: new Types.ObjectId(projectId),
+            })
+            .select({ _id: 1 })
+            .session(session)
+            .lean()
+            .exec();
+          if (projectTeams.length > 0) {
+            await teamMembershipsModel
+              .deleteMany(
+                {
+                  teamId: { $in: projectTeams.map((team) => team._id) },
+                  userId: membership.userId,
+                },
+                { session },
+              )
+              .exec();
+          }
+        }
         await this.audit(session, {
           organizationId,
           projectId,
@@ -1864,16 +1923,13 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       roleCode: 'ADMIN' | 'TEAM_LEADER';
       projectId: string | null;
     }[] =
-      permission === 'project.visibility.manage' ||
-      permission === 'project.members.add' ||
-      permission === 'project.members.remove'
-        ? [
-            { roleCode: 'ADMIN', projectId: null },
-            { roleCode: 'TEAM_LEADER', projectId: projectIdValue },
-          ]
-        : permission === 'project.leader.manage' ||
-            permission === 'project.delete'
-          ? [{ roleCode: 'ADMIN', projectId: null }]
+      permission === 'project.leader.manage' || permission === 'project.delete'
+        ? [{ roleCode: 'ADMIN', projectId: null }]
+        : permission === 'project.visibility.manage'
+          ? [
+              { roleCode: 'ADMIN', projectId: null },
+              { roleCode: 'TEAM_LEADER', projectId: projectIdValue },
+            ]
           : [{ roleCode: 'TEAM_LEADER', projectId: projectIdValue }];
     const authorizationMatch = allowedScopes
       .map((scope) => ({
@@ -1888,11 +1944,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
               : String(assignment.projectId)) === scope.projectId &&
             assignment.roleCode === scope.roleCode &&
             role?.code === scope.roleCode &&
-            (permission === 'project.delete'
-              ? role.permissions.includes('project.delete') ||
-                role.permissions.includes('project.leader.manage') ||
-                role.permissions.includes('project.visibility.manage')
-              : role.permissions.includes(permission))
+            role.permissions.includes(permission)
           );
         }),
       }))
@@ -1960,16 +2012,7 @@ export class MongoProjectAccessRepository implements ProjectAccessRepository {
       {
         _id: authorizationRole._id,
         code: expectedRole,
-        permissions:
-          permission === 'project.delete'
-            ? {
-                $in: [
-                  'project.delete',
-                  'project.leader.manage',
-                  'project.visibility.manage',
-                ],
-              }
-            : permission,
+        permissions: permission,
       },
       session,
     );

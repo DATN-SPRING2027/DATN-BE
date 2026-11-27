@@ -323,7 +323,11 @@ describe('MongoProjectAccessRepository deleteProject', () => {
           {
             _id: adminRoleId,
             code: 'ADMIN',
-            permissions: ['project.visibility.manage', 'project.leader.manage'],
+            permissions: [
+              'project.visibility.manage',
+              'project.leader.manage',
+              'project.delete',
+            ],
           },
           {
             _id: leaderRoleId,
@@ -352,44 +356,67 @@ describe('MongoProjectAccessRepository deleteProject', () => {
 
     const repo = new MongoProjectAccessRepository(connection);
 
-    // 1. Leader (TEAM_LEADER) is denied with ForbiddenException
-    await expect(
-      repo.deleteProject(
-        organizationId.toHexString(),
-        leaderId.toHexString(),
-        projectId.toHexString(),
-      ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(projects.findOneAndDelete).not.toHaveBeenCalled();
-
-    // 2. Manager (Organization ADMIN) succeeds and deletes project + memberships + assignments + writes audit
+    // 0. SEC-AUTH-004: Hard delete is disabled by default even for ADMIN
+    const previousHardDeleteFlag = process.env.PROJECT_HARD_DELETE_ENABLED;
+    delete process.env.PROJECT_HARD_DELETE_ENABLED;
     await expect(
       repo.deleteProject(
         organizationId.toHexString(),
         adminId.toHexString(),
         projectId.toHexString(),
       ),
-    ).resolves.toBeUndefined();
-    expect(projects.findOneAndDelete).toHaveBeenCalledTimes(1);
-    expect(projectMemberships.deleteMany).toHaveBeenCalledWith(
-      { organizationId, projectId },
-      { session },
-    );
-    expect(assignments.deleteMany).toHaveBeenCalledWith(
-      { organizationId, projectId },
-      { session },
-    );
-    expect(insertOne).toHaveBeenCalledWith(
-      expect.objectContaining({
-        organizationId: organizationId.toHexString(),
-        projectId: projectId.toHexString(),
-        actorUserId: adminId.toHexString(),
-        action: 'PROJECT_DELETED',
-        targetResource: 'PROJECT',
-        targetResourceId: projectId.toHexString(),
-      }),
-      { session },
-    );
+    ).rejects.toMatchObject({
+      response: { code: 'PROJECT_DELETE_DISABLED' },
+    });
+    expect(projects.findOneAndDelete).not.toHaveBeenCalled();
+
+    process.env.PROJECT_HARD_DELETE_ENABLED = 'true';
+    try {
+      // 1. Leader (TEAM_LEADER) is denied with ForbiddenException
+      await expect(
+        repo.deleteProject(
+          organizationId.toHexString(),
+          leaderId.toHexString(),
+          projectId.toHexString(),
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(projects.findOneAndDelete).not.toHaveBeenCalled();
+
+      // 2. Manager (Organization ADMIN) with explicit project.delete succeeds and deletes project + memberships + assignments + writes audit
+      await expect(
+        repo.deleteProject(
+          organizationId.toHexString(),
+          adminId.toHexString(),
+          projectId.toHexString(),
+        ),
+      ).resolves.toBeUndefined();
+      expect(projects.findOneAndDelete).toHaveBeenCalledTimes(1);
+      expect(projectMemberships.deleteMany).toHaveBeenCalledWith(
+        { organizationId, projectId },
+        { session },
+      );
+      expect(assignments.deleteMany).toHaveBeenCalledWith(
+        { organizationId, projectId },
+        { session },
+      );
+      expect(insertOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: organizationId.toHexString(),
+          projectId: projectId.toHexString(),
+          actorUserId: adminId.toHexString(),
+          action: 'PROJECT_DELETED',
+          targetResource: 'PROJECT',
+          targetResourceId: projectId.toHexString(),
+        }),
+        { session },
+      );
+    } finally {
+      if (previousHardDeleteFlag === undefined) {
+        delete process.env.PROJECT_HARD_DELETE_ENABLED;
+      } else {
+        process.env.PROJECT_HARD_DELETE_ENABLED = previousHardDeleteFlag;
+      }
+    }
   });
 });
 

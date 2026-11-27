@@ -63,7 +63,107 @@ export class HandoverCaptureSourceService {
     viewer: HandoverSourceViewer,
     ref: { kind: CaptureSourceKind; id: string; version: number },
   ): Promise<EvaluatedHandoverSource> {
-    const unavailable = (): EvaluatedHandoverSource => ({
+    const unavailable: EvaluatedHandoverSource = {
+      kind: ref.kind,
+      id: ref.id.toLowerCase(),
+      version: ref.version,
+      exists: false,
+      eligible: false,
+      readable: false,
+      isCurrent: false,
+      currentVersion: null,
+      title: '',
+      excerpts: [],
+    };
+    if (
+      !viewer.isProjectMember ||
+      !OBJECT_ID_RE.test(viewer.organizationId) ||
+      !OBJECT_ID_RE.test(viewer.projectId) ||
+      !OBJECT_ID_RE.test(ref.id) ||
+      !Number.isSafeInteger(ref.version) ||
+      ref.version < 1
+    ) {
+      return unavailable;
+    }
+
+    const db = this.db();
+    const orgObjId = new Types.ObjectId(viewer.organizationId.toLowerCase());
+    const projectObjId = new Types.ObjectId(viewer.projectId.toLowerCase());
+    const idLower = ref.id.toLowerCase();
+    const idObj = new Types.ObjectId(idLower);
+
+    if (ref.kind === 'PROJECT_DOCUMENT') {
+      const [doc, verDoc] = await Promise.all([
+        db.collection('project_documents').findOne({
+          _id: idObj,
+          organizationId: orgObjId,
+          projectId: projectObjId,
+        }),
+        db.collection('project_document_versions').findOne({
+          organizationId: orgObjId,
+          projectId: projectObjId,
+          documentId: idObj,
+          versionNumber: ref.version,
+        }),
+      ]);
+      return this.evaluateProjectDocumentFromLoaded(
+        ref,
+        doc ?? undefined,
+        verDoc ?? undefined,
+      );
+    }
+
+    if (ref.kind === 'WORK_REPORT') {
+      const report = await db.collection('work_reports').findOne({
+        _id: idObj,
+        organizationId: orgObjId,
+        projectId: projectObjId,
+      });
+      return this.evaluateWorkReportFromLoaded(
+        viewer,
+        ref,
+        report ?? undefined,
+      );
+    }
+
+    const [note, versions] = await Promise.all([
+      db.collection('work_notes').findOne({
+        _id: idObj,
+        organizationId: orgObjId,
+        projectId: projectObjId,
+      }),
+      db.collection('work_note_versions').find({ workNoteId: idObj }).toArray(),
+    ]);
+    return this.evaluateTaskNoteFromLoaded(ref, note ?? undefined, versions);
+  }
+
+  /**
+   * BE-PERF-005: Batched Handover source evaluation for a single viewer using
+   * `$in` queries across Capture collections (eliminates 4x N+1 per-item lookups).
+   */
+  async evaluateSourcesBatch(
+    viewer: HandoverSourceViewer,
+    refs: readonly { kind: CaptureSourceKind; id: string; version: number }[],
+  ): Promise<EvaluatedHandoverSource[]> {
+    const [results] = await this.evaluateSourcesBatchForViewers([viewer], refs);
+    return results;
+  }
+
+  /**
+   * BE-PERF-005: Batched Handover source evaluation across multiple viewers
+   * sharing the same (organizationId, projectId). Fetches underlying Capture
+   * documents/versions ONCE with `$in` queries and projects per-viewer ACL in memory.
+   * Returned matrix is strictly aligned 1:1 with `viewers` x `refs`.
+   */
+  async evaluateSourcesBatchForViewers(
+    viewers: readonly HandoverSourceViewer[],
+    refs: readonly { kind: CaptureSourceKind; id: string; version: number }[],
+  ): Promise<EvaluatedHandoverSource[][]> {
+    const unavailable = (ref: {
+      kind: CaptureSourceKind;
+      id: string;
+      version: number;
+    }): EvaluatedHandoverSource => ({
       kind: ref.kind,
       id: ref.id.toLowerCase(),
       version: ref.version,
@@ -76,112 +176,326 @@ export class HandoverCaptureSourceService {
       excerpts: [],
     });
 
-    if (
-      !OBJECT_ID_RE.test(ref.id) ||
-      !Number.isSafeInteger(ref.version) ||
-      ref.version < 1
-    ) {
-      return unavailable();
+    if (viewers.length === 0) return [];
+    if (refs.length === 0) return viewers.map(() => []);
+
+    const memberViewers = viewers.filter((v) => v.isProjectMember);
+    if (memberViewers.length === 0) {
+      return viewers.map(() => refs.map((ref) => unavailable(ref)));
     }
-    if (!viewer.isProjectMember) {
-      return unavailable();
-    }
+
+    // Group viewers by (organizationId, projectId) to preserve strict tenant scoping.
+    const scopeBuckets = new Map<
+      string,
+      { orgId: string; projectId: string; indices: number[] }
+    >();
+    viewers.forEach((viewer, idx) => {
+      if (!viewer.isProjectMember) return;
+      const orgId = viewer.organizationId.toLowerCase();
+      const projectId = viewer.projectId.toLowerCase();
+      if (!OBJECT_ID_RE.test(orgId) || !OBJECT_ID_RE.test(projectId)) return;
+      const key = `${orgId}:${projectId}`;
+      const existing = scopeBuckets.get(key);
+      if (existing) {
+        existing.indices.push(idx);
+      } else {
+        scopeBuckets.set(key, { orgId, projectId, indices: [idx] });
+      }
+    });
+
+    const matrix: EvaluatedHandoverSource[][] = viewers.map(() =>
+      refs.map((ref) => unavailable(ref)),
+    );
 
     const db = this.db();
-    const orgObjId = new Types.ObjectId(viewer.organizationId.toLowerCase());
-    const projectObjId = new Types.ObjectId(viewer.projectId.toLowerCase());
-    const idObj = new Types.ObjectId(ref.id.toLowerCase());
 
-    if (ref.kind === 'PROJECT_DOCUMENT') {
-      const doc = await db.collection('project_documents').findOne({
-        _id: idObj,
-        organizationId: orgObjId,
-        projectId: projectObjId,
-      });
-      if (
-        !doc ||
-        doc.status === 'ARCHIVED' ||
-        typeof doc.latestApprovedVersionNumber !== 'number' ||
-        doc.latestApprovedVersionNumber < 1
-      ) {
-        return unavailable();
+    for (const bucket of scopeBuckets.values()) {
+      const orgObjId = new Types.ObjectId(bucket.orgId);
+      const projectObjId = new Types.ObjectId(bucket.projectId);
+
+      const docIdSet = new Set<string>();
+      const reportIdSet = new Set<string>();
+      const noteIdSet = new Set<string>();
+      const docVersionFilters: Array<{
+        documentId: Types.ObjectId;
+        versionNumber: number;
+      }> = [];
+      const docVersionFilterKeys = new Set<string>();
+
+      for (const ref of refs) {
+        if (
+          !OBJECT_ID_RE.test(ref.id) ||
+          !Number.isSafeInteger(ref.version) ||
+          ref.version < 1
+        ) {
+          continue;
+        }
+        const idLower = ref.id.toLowerCase();
+        if (ref.kind === 'PROJECT_DOCUMENT') {
+          docIdSet.add(idLower);
+          const pairKey = `${idLower}:${ref.version}`;
+          if (!docVersionFilterKeys.has(pairKey)) {
+            docVersionFilterKeys.add(pairKey);
+            docVersionFilters.push({
+              documentId: new Types.ObjectId(idLower),
+              versionNumber: ref.version,
+            });
+          }
+        } else if (ref.kind === 'WORK_REPORT') {
+          reportIdSet.add(idLower);
+        } else if (ref.kind === 'TASK_NOTE') {
+          noteIdSet.add(idLower);
+        }
       }
-      const verDoc = await db.collection('project_document_versions').findOne({
-        documentId: idObj,
-        organizationId: orgObjId,
-        projectId: projectObjId,
-        versionNumber: ref.version,
-      });
-      if (!verDoc || verDoc.status !== 'APPROVED') {
-        return {
-          ...unavailable(),
-          exists: true,
-          currentVersion: doc.latestApprovedVersionNumber,
-        };
+
+      const [
+        projectDocs,
+        projectDocVersions,
+        workReports,
+        workNotes,
+        workNoteVersions,
+      ] = await Promise.all([
+        docIdSet.size > 0
+          ? db
+              .collection('project_documents')
+              .find({
+                _id: {
+                  $in: [...docIdSet].map((id) => new Types.ObjectId(id)),
+                },
+                organizationId: orgObjId,
+                projectId: projectObjId,
+              })
+              .toArray()
+          : Promise.resolve([]),
+        docVersionFilters.length > 0
+          ? db
+              .collection('project_document_versions')
+              .find({
+                organizationId: orgObjId,
+                projectId: projectObjId,
+                $or: docVersionFilters,
+              })
+              .toArray()
+          : Promise.resolve([]),
+        reportIdSet.size > 0
+          ? db
+              .collection('work_reports')
+              .find({
+                _id: {
+                  $in: [...reportIdSet].map((id) => new Types.ObjectId(id)),
+                },
+                organizationId: orgObjId,
+                projectId: projectObjId,
+              })
+              .toArray()
+          : Promise.resolve([]),
+        noteIdSet.size > 0
+          ? db
+              .collection('work_notes')
+              .find({
+                _id: {
+                  $in: [...noteIdSet].map((id) => new Types.ObjectId(id)),
+                },
+                organizationId: orgObjId,
+                projectId: projectObjId,
+              })
+              .toArray()
+          : Promise.resolve([]),
+        noteIdSet.size > 0
+          ? db
+              .collection('work_note_versions')
+              .find({
+                workNoteId: {
+                  $in: [...noteIdSet].map((id) => new Types.ObjectId(id)),
+                },
+              })
+              .toArray()
+          : Promise.resolve([]),
+      ]);
+
+      const docById = new Map<string, Record<string, unknown>>();
+      for (const row of projectDocs) {
+        docById.set(String(row._id).toLowerCase(), row);
       }
-      const title = String(
-        verDoc.title || doc.title || 'Project Document',
-      ).slice(0, 255);
-      const rawContent = String(
-        verDoc.content || verDoc.description || title,
-      ).trim();
-      const excerpts = this.chunkTextToExcerpts(
-        'SECTION',
-        'doc-body',
-        title,
-        rawContent,
-      );
-      return {
-        kind: 'PROJECT_DOCUMENT',
-        id: ref.id.toLowerCase(),
-        version: ref.version,
-        exists: true,
-        eligible: true,
-        readable: true,
-        isCurrent: doc.latestApprovedVersionNumber === ref.version,
-        currentVersion: doc.latestApprovedVersionNumber,
-        title,
-        logicalSourceId: `project-document:${ref.id.toLowerCase()}`,
-        excerpts,
-      };
+      const docVerByKey = new Map<string, Record<string, unknown>>();
+      for (const row of projectDocVersions) {
+        docVerByKey.set(
+          `${String(row.documentId).toLowerCase()}:${String(row.versionNumber)}`,
+          row,
+        );
+      }
+      const reportById = new Map<string, Record<string, unknown>>();
+      for (const row of workReports) {
+        reportById.set(String(row._id).toLowerCase(), row);
+      }
+      const noteById = new Map<string, Record<string, unknown>>();
+      for (const row of workNotes) {
+        noteById.set(String(row._id).toLowerCase(), row);
+      }
+      const noteVersionsByNoteId = new Map<string, Record<string, unknown>[]>();
+      for (const row of workNoteVersions) {
+        const key = String(row.workNoteId).toLowerCase();
+        const list = noteVersionsByNoteId.get(key);
+        if (list) list.push(row);
+        else noteVersionsByNoteId.set(key, [row]);
+      }
+
+      // Pre-evaluate viewer-independent PROJECT_DOCUMENT and TASK_NOTE results once per bucket.
+      const sharedRefEval = new Map<number, EvaluatedHandoverSource>();
+      refs.forEach((ref, refIdx) => {
+        if (
+          !OBJECT_ID_RE.test(ref.id) ||
+          !Number.isSafeInteger(ref.version) ||
+          ref.version < 1
+        ) {
+          sharedRefEval.set(refIdx, unavailable(ref));
+          return;
+        }
+        const idLower = ref.id.toLowerCase();
+
+        if (ref.kind === 'PROJECT_DOCUMENT') {
+          sharedRefEval.set(
+            refIdx,
+            this.evaluateProjectDocumentFromLoaded(
+              ref,
+              docById.get(idLower),
+              docVerByKey.get(`${idLower}:${ref.version}`),
+            ),
+          );
+          return;
+        }
+
+        if (ref.kind === 'TASK_NOTE') {
+          sharedRefEval.set(
+            refIdx,
+            this.evaluateTaskNoteFromLoaded(
+              ref,
+              noteById.get(idLower),
+              noteVersionsByNoteId.get(idLower) ?? [],
+            ),
+          );
+        }
+      });
+
+      for (const viewerIdx of bucket.indices) {
+        const viewer = viewers[viewerIdx];
+        matrix[viewerIdx] = refs.map((ref, refIdx) => {
+          const shared = sharedRefEval.get(refIdx);
+          if (shared) {
+            return {
+              ...shared,
+              excerpts: shared.excerpts.map((e) => ({ ...e })),
+            };
+          }
+          // WORK_REPORT depends on viewer ACL (author or project leader for MEMBER scope)
+          if (
+            !OBJECT_ID_RE.test(ref.id) ||
+            !Number.isSafeInteger(ref.version) ||
+            ref.version < 1
+          ) {
+            return unavailable(ref);
+          }
+          return this.evaluateWorkReportFromLoaded(
+            viewer,
+            ref,
+            reportById.get(ref.id.toLowerCase()),
+          );
+        });
+      }
     }
 
-    if (ref.kind === 'WORK_REPORT') {
-      const report = await db.collection('work_reports').findOne({
-        _id: idObj,
-        organizationId: orgObjId,
-        projectId: projectObjId,
-      });
-      if (!report || report.status !== 'APPROVED') {
-        return unavailable();
-      }
-      const currentVersion = this.resolveWorkReportCurrentVersion(report);
-      if (ref.version !== currentVersion) {
-        return { ...unavailable(), exists: true, currentVersion };
-      }
-      return this.projectApprovedWorkReport(
-        viewer,
-        report,
-        ref.id,
-        currentVersion,
-      );
-    }
+    return matrix;
+  }
 
-    // TASK_NOTE
-    const note = await db.collection('work_notes').findOne({
-      _id: idObj,
-      organizationId: orgObjId,
-      projectId: projectObjId,
-    });
-    if (!note || note.status !== 'CONFIRMED' || note.deletedAt) {
-      return unavailable();
-    }
-    const versions = await db
-      .collection('work_note_versions')
-      .find({ workNoteId: idObj })
-      .toArray();
+  private evaluateProjectDocumentFromLoaded(
+    ref: { kind: CaptureSourceKind; id: string; version: number },
+    doc: Record<string, unknown> | undefined,
+    verDoc: Record<string, unknown> | undefined,
+  ): EvaluatedHandoverSource {
     const asStr = (val: unknown): string =>
       typeof val === 'string' ? val : '';
+    const idLower = ref.id.toLowerCase();
+    const unavailable: EvaluatedHandoverSource = {
+      kind: ref.kind,
+      id: idLower,
+      version: ref.version,
+      exists: false,
+      eligible: false,
+      readable: false,
+      isCurrent: false,
+      currentVersion: null,
+      title: '',
+      excerpts: [],
+    };
+    if (
+      !doc ||
+      doc.status === 'ARCHIVED' ||
+      typeof doc.latestApprovedVersionNumber !== 'number' ||
+      doc.latestApprovedVersionNumber < 1
+    ) {
+      return unavailable;
+    }
+    if (!verDoc || verDoc.status !== 'APPROVED') {
+      return {
+        ...unavailable,
+        exists: true,
+        currentVersion: doc.latestApprovedVersionNumber,
+      };
+    }
+    const title = (
+      asStr(verDoc.title) ||
+      asStr(doc.title) ||
+      'Project Document'
+    ).slice(0, 255);
+    const rawContent = (
+      asStr(verDoc.content) ||
+      asStr(verDoc.description) ||
+      title
+    ).trim();
+    const excerpts = this.chunkTextToExcerpts(
+      'SECTION',
+      'doc-body',
+      title,
+      rawContent,
+    );
+    return {
+      kind: 'PROJECT_DOCUMENT',
+      id: idLower,
+      version: ref.version,
+      exists: true,
+      eligible: true,
+      readable: true,
+      isCurrent: doc.latestApprovedVersionNumber === ref.version,
+      currentVersion: doc.latestApprovedVersionNumber,
+      title,
+      logicalSourceId: `project-document:${idLower}`,
+      excerpts,
+    };
+  }
+
+  private evaluateTaskNoteFromLoaded(
+    ref: { kind: CaptureSourceKind; id: string; version: number },
+    note: Record<string, unknown> | undefined,
+    versions: Record<string, unknown>[],
+  ): EvaluatedHandoverSource {
+    const asStr = (val: unknown): string =>
+      typeof val === 'string' ? val : '';
+    const idLower = ref.id.toLowerCase();
+    const unavailable: EvaluatedHandoverSource = {
+      kind: ref.kind,
+      id: idLower,
+      version: ref.version,
+      exists: false,
+      eligible: false,
+      readable: false,
+      isCurrent: false,
+      currentVersion: null,
+      title: '',
+      excerpts: [],
+    };
+    if (!note || note.status !== 'CONFIRMED' || note.deletedAt) {
+      return unavailable;
+    }
     let maxHistVer = 0;
     let latestHistDoc: Record<string, unknown> | null = null;
     for (const row of versions) {
@@ -194,8 +508,6 @@ export class HandoverCaptureSourceService {
       }
     }
 
-    // An in-place edit has no durable version identity. Never invent max+1:
-    // multiple edits could otherwise serve different text under the same pin.
     let currentVersion: number | null = null;
     let liveNoteRepresentsCurrentVersion = false;
     if (latestHistDoc && maxHistVer >= 1) {
@@ -216,7 +528,6 @@ export class HandoverCaptureSourceService {
         currentVersion = maxHistVer;
       }
     } else {
-      // Confirmation can occur again after edits; it is not a version counter.
       const baseDate = note.createdAt instanceof Date ? note.createdAt : null;
       const updatedDate =
         note.updatedAt instanceof Date ? note.updatedAt : null;
@@ -231,13 +542,16 @@ export class HandoverCaptureSourceService {
     }
 
     if (currentVersion !== null && ref.version > currentVersion) {
-      return { ...unavailable(), exists: true, currentVersion };
+      return {
+        ...unavailable,
+        exists: true,
+        currentVersion,
+      };
     }
 
     const matchingSnapshot = versions.find(
       (row) => row.versionNumber === ref.version,
     );
-
     let sourceRecord: Record<string, unknown> | null = null;
     if (matchingSnapshot) {
       sourceRecord = matchingSnapshot;
@@ -249,7 +563,11 @@ export class HandoverCaptureSourceService {
     }
 
     if (!sourceRecord) {
-      return { ...unavailable(), exists: true, currentVersion };
+      return {
+        ...unavailable,
+        exists: true,
+        currentVersion,
+      };
     }
 
     const title = (asStr(sourceRecord.title) || 'Task Note').slice(0, 255);
@@ -282,7 +600,7 @@ export class HandoverCaptureSourceService {
     }
     return {
       kind: 'TASK_NOTE',
-      id: ref.id.toLowerCase(),
+      id: idLower,
       version: ref.version,
       exists: true,
       eligible: true,
@@ -292,6 +610,39 @@ export class HandoverCaptureSourceService {
       title,
       excerpts,
     };
+  }
+
+  private evaluateWorkReportFromLoaded(
+    viewer: HandoverSourceViewer,
+    ref: { kind: CaptureSourceKind; id: string; version: number },
+    report: Record<string, unknown> | undefined,
+  ): EvaluatedHandoverSource {
+    const idLower = ref.id.toLowerCase();
+    const unavailable: EvaluatedHandoverSource = {
+      kind: ref.kind,
+      id: idLower,
+      version: ref.version,
+      exists: false,
+      eligible: false,
+      readable: false,
+      isCurrent: false,
+      currentVersion: null,
+      title: '',
+      excerpts: [],
+    };
+    if (!report || report.status !== 'APPROVED') {
+      return unavailable;
+    }
+    const currentVersion = this.resolveWorkReportCurrentVersion(report);
+    if (ref.version !== currentVersion) {
+      return { ...unavailable, exists: true, currentVersion };
+    }
+    return this.projectApprovedWorkReport(
+      viewer,
+      report,
+      ref.id,
+      currentVersion,
+    );
   }
 
   async discoverCandidateSources(
@@ -318,6 +669,11 @@ export class HandoverCaptureSourceService {
       .limit(limit)
       .toArray();
 
+    const docRefs: Array<{
+      kind: 'PROJECT_DOCUMENT';
+      id: string;
+      version: number;
+    }> = [];
     for (const doc of docs) {
       if (
         doc.status === 'ARCHIVED' ||
@@ -326,15 +682,20 @@ export class HandoverCaptureSourceService {
       ) {
         continue;
       }
-      const evaluated = await this.evaluateSource(viewer, {
+      docRefs.push({
         kind: 'PROJECT_DOCUMENT',
         id: String(doc._id),
         version: doc.latestApprovedVersionNumber,
       });
-      if (evaluated.eligible && evaluated.readable) {
-        results.push(evaluated);
+    }
+    if (docRefs.length > 0) {
+      const evaluatedDocs = await this.evaluateSourcesBatch(viewer, docRefs);
+      for (const evaluated of evaluatedDocs) {
+        if (evaluated.eligible && evaluated.readable) {
+          results.push(evaluated);
+        }
+        if (results.length >= limit) return results;
       }
-      if (results.length >= limit) return results;
     }
 
     const reports = await db
@@ -411,6 +772,10 @@ export class HandoverCaptureSourceService {
       .limit(limit)
       .toArray();
 
+    const candidateNotes: Array<{
+      noteId: string;
+      authorHex: string;
+    }> = [];
     for (const note of notes) {
       const noteId = String(note._id).toLowerCase();
       if (!OBJECT_ID_RE.test(noteId)) continue;
@@ -431,36 +796,47 @@ export class HandoverCaptureSourceService {
         authorHex === departingLower ||
         taskIdSet.has(taskHex);
       if (!isDepartingRelated) continue;
+      candidateNotes.push({ noteId, authorHex });
+    }
 
-      const versions = await db
+    if (candidateNotes.length > 0) {
+      const allNoteVersions = await db
         .collection('work_note_versions')
-        .find({ workNoteId: new Types.ObjectId(noteId) })
-        .project({ versionNumber: 1 })
+        .find({
+          workNoteId: {
+            $in: candidateNotes.map((c) => new Types.ObjectId(c.noteId)),
+          },
+        })
+        .project({ workNoteId: 1, versionNumber: 1 })
         .toArray();
-      let maxHistVer = 0;
-      for (const v of versions) {
+      const maxVerByNoteId = new Map<string, number>();
+      for (const v of allNoteVersions) {
+        const key = String(v.workNoteId).toLowerCase();
         if (
           typeof v.versionNumber === 'number' &&
-          v.versionNumber > maxHistVer
+          v.versionNumber > (maxVerByNoteId.get(key) ?? 0)
         ) {
-          maxHistVer = v.versionNumber;
+          maxVerByNoteId.set(key, v.versionNumber);
         }
       }
-      const candidateVer = maxHistVer >= 1 ? maxHistVer : 1;
-      const evaluated = await this.evaluateSource(viewer, {
-        kind: 'TASK_NOTE',
-        id: noteId,
-        version: candidateVer,
-      });
-      if (evaluated.eligible && evaluated.readable && evaluated.isCurrent) {
-        out.push({
-          evaluated,
-          isDepartingAuthor: Boolean(
-            departingLower && authorHex === departingLower,
-          ),
-        });
+      const noteRefs = candidateNotes.map((c) => ({
+        kind: 'TASK_NOTE' as const,
+        id: c.noteId,
+        version: Math.max(1, maxVerByNoteId.get(c.noteId) ?? 1),
+      }));
+      const evaluatedNotes = await this.evaluateSourcesBatch(viewer, noteRefs);
+      for (let i = 0; i < evaluatedNotes.length; i++) {
+        const evaluated = evaluatedNotes[i];
+        if (evaluated.eligible && evaluated.readable && evaluated.isCurrent) {
+          out.push({
+            evaluated,
+            isDepartingAuthor: Boolean(
+              departingLower && candidateNotes[i].authorHex === departingLower,
+            ),
+          });
+        }
+        if (out.length >= limit) return out;
       }
-      if (out.length >= limit) return out;
     }
 
     // 2. PROJECT_DOCUMENT (Approved project documents)
@@ -474,6 +850,11 @@ export class HandoverCaptureSourceService {
       .limit(limit)
       .toArray();
 
+    const candidateDocs: Array<{
+      docId: string;
+      version: number;
+      createdByHex: string;
+    }> = [];
     for (const doc of docs) {
       if (
         doc.status === 'ARCHIVED' ||
@@ -484,26 +865,40 @@ export class HandoverCaptureSourceService {
       }
       const docId = String(doc._id).toLowerCase();
       if (!OBJECT_ID_RE.test(docId)) continue;
-      const evaluated = await this.evaluateSource(viewer, {
-        kind: 'PROJECT_DOCUMENT',
-        id: docId,
+      const createdByHex =
+        doc.createdBy instanceof Types.ObjectId
+          ? doc.createdBy.toHexString().toLowerCase()
+          : typeof doc.createdBy === 'string'
+            ? doc.createdBy.toLowerCase()
+            : '';
+      candidateDocs.push({
+        docId,
         version: doc.latestApprovedVersionNumber,
+        createdByHex,
       });
-      if (evaluated.eligible && evaluated.readable && evaluated.isCurrent) {
-        const createdByHex =
-          doc.createdBy instanceof Types.ObjectId
-            ? doc.createdBy.toHexString().toLowerCase()
-            : typeof doc.createdBy === 'string'
-              ? doc.createdBy.toLowerCase()
-              : '';
-        out.push({
-          evaluated,
-          isDepartingAuthor: Boolean(
-            departingLower && createdByHex === departingLower,
-          ),
-        });
+    }
+    if (candidateDocs.length > 0) {
+      const evaluatedDocs = await this.evaluateSourcesBatch(
+        viewer,
+        candidateDocs.map((d) => ({
+          kind: 'PROJECT_DOCUMENT' as const,
+          id: d.docId,
+          version: d.version,
+        })),
+      );
+      for (let i = 0; i < evaluatedDocs.length; i++) {
+        const evaluated = evaluatedDocs[i];
+        if (evaluated.eligible && evaluated.readable && evaluated.isCurrent) {
+          out.push({
+            evaluated,
+            isDepartingAuthor: Boolean(
+              departingLower &&
+              candidateDocs[i].createdByHex === departingLower,
+            ),
+          });
+        }
+        if (out.length >= limit) return out;
       }
-      if (out.length >= limit) return out;
     }
 
     // 3. WORK_REPORT (Approved work reports of departing member)

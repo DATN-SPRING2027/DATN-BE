@@ -5,16 +5,27 @@ import {
   Get,
   Headers,
   HttpCode,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Optional,
   Param,
   Post,
   Query,
+  Req,
   Res,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import type { Response } from 'express';
-import { AuthenticationApplicationService } from '../application/authentication/authentication.application.service';
+import { ConfigService } from '@nestjs/config';
+import type { Request, Response } from 'express';
+import { verifyGatewaySource } from '../../../common/http/gateway-source';
+import { extractCsrfCookie } from '../../../common/security/csrf';
 import {
-  readCookie,
+  AUTH_SECURITY_STORE,
+  type AuthSecurityStore,
+} from '../application/authentication/auth-security.store';
+import {
+  AuthenticationApplicationService,
   validCsrfPair,
 } from '../application/authentication/authentication.application.service';
 import { OrganizationInvitationService } from '../application/organizations/organization-invitation.service';
@@ -95,6 +106,11 @@ export class AccountInvitationController {
   constructor(
     private readonly auth: AuthenticationApplicationService,
     private readonly invitations: OrganizationInvitationService,
+    @Optional()
+    @Inject(AUTH_SECURITY_STORE)
+    private readonly securityStore?: AuthSecurityStore,
+    @Optional()
+    private readonly config?: ConfigService,
   ) {}
 
   @Post('resolve')
@@ -102,8 +118,35 @@ export class AccountInvitationController {
   async resolve(
     @Body() body: unknown,
     @Res({ passthrough: true }) response: Response,
+    @Req() request?: Request,
   ) {
     response.setHeader('Cache-Control', 'no-store');
+    // SEC-BE-006: Rate-limit public invitation resolution per client IP.
+    if (this.securityStore) {
+      const secret = this.config?.get<string>('IAM_GATEWAY_SECRET');
+      const verifiedIp =
+        request && secret
+          ? verifyGatewaySource(request.headers, secret)
+          : undefined;
+      const clientIp =
+        verifiedIp ||
+        request?.ip ||
+        request?.socket?.remoteAddress ||
+        'unknown';
+      const allowed = await this.securityStore
+        .consumeRateLimit(`invitations:resolve:ip:${clientIp}`, 20, 60)
+        .catch(() => true);
+      if (!allowed) {
+        response.setHeader('Retry-After', '60');
+        throw new HttpException(
+          {
+            code: 'RATE_LIMIT_EXCEEDED',
+            message: 'Too many invitation lookup requests. Please retry later.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
     return this.invitations.resolveToken(parseResolveBody(body));
   }
 
@@ -154,7 +197,7 @@ export class AccountInvitationController {
       authorization,
       cookie,
     );
-    if (!validCsrfPair(readCookie(cookie, '__Host-csrf'), csrfHeader))
+    if (!validCsrfPair(extractCsrfCookie(cookie), csrfHeader))
       throw new ForbiddenException({ code: 'AUTH_CSRF_INVALID' });
     if (
       !objectIdPattern.test(invitationId) ||

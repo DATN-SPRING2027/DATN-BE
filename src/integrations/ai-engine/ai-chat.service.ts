@@ -18,7 +18,10 @@ import {
   type PlatformAdministrationRepository,
 } from '../../services/iam/application/platform/platform-administration.repository';
 import { HandoverIamScopeService } from '../../services/iam/application/projects/handover-iam-scope.service';
-import type { ProjectRecord } from '../../services/iam/application/projects/project.repository';
+import {
+  IamActorContextService,
+  type IamProjectSummary,
+} from '../../services/iam/application/projects/iam-actor-context.service';
 import { ProjectService } from '../../services/iam/application/projects/project.service';
 import { AI_ENGINE_CLIENT } from './ai-engine.port';
 import type { AiEngineClient } from './ai-engine.port';
@@ -69,7 +72,8 @@ type CachedSagSession = Readonly<{
 }>;
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const SAG_SESSION_CACHE_TTL_MS = 5 * 60 * 1000;
+// SEC-AUTH-001: Keep in-memory SAG JWT cache short (60s) and evict on auth revocation.
+const SAG_SESSION_CACHE_TTL_MS = 60 * 1000;
 const MAX_SAG_SESSION_CACHE_ENTRIES = 500;
 
 @Injectable()
@@ -82,10 +86,12 @@ export class AiChatService {
   private readonly inflightActorScopes = new Map<
     string,
     Promise<{
-      actor: Awaited<
-        ReturnType<AuthenticationApplicationService['getCurrentIdentity']>
-      >;
-      project: Awaited<ReturnType<ProjectService['get']>>;
+      actor: AuthenticatedIdentity;
+      project: {
+        id: string;
+        organizationId: string;
+        status: 'ACTIVE' | 'ARCHIVED';
+      };
     }>
   >();
 
@@ -98,7 +104,112 @@ export class AiChatService {
     @Inject(PLATFORM_ADMINISTRATION_REPOSITORY)
     private readonly platformAdmin?: PlatformAdministrationRepository,
     @Optional() private readonly tokenUsage?: AiTokenUsageService,
+    @Optional() private readonly actorContext?: IamActorContextService,
   ) {}
+
+  invalidateActorSessions(userId: string): void {
+    const prefix = `${userId.toLowerCase()}:`;
+    for (const key of this.sessionCache.keys()) {
+      if (key.toLowerCase().startsWith(prefix)) {
+        this.sessionCache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * BE-PERF-006: Evict cached SAG JWT only on authentication/upstream transport
+   * errors — never on client-level 400/404/409/429 responses.
+   */
+  private evictSessionIfAuthOrTransportError(
+    cacheKey: string,
+    error: unknown,
+  ): void {
+    if (error instanceof HttpException) {
+      const status = error.getStatus();
+      if (
+        status === 400 ||
+        status === 404 ||
+        status === 409 ||
+        status === 429
+      ) {
+        return;
+      }
+    }
+    this.sessionCache.delete(cacheKey);
+  }
+
+  private async resolveActiveMemberProject(
+    actor: AuthenticatedIdentity,
+    headers: AiChatRequestHeaders,
+    projectId: string,
+    notFoundCode = 'PROJECT_NOT_FOUND',
+    notFoundMessage = 'Project not found.',
+  ): Promise<{
+    id: string;
+    organizationId: string;
+    status: 'ACTIVE';
+  }> {
+    if (!OBJECT_ID_PATTERN.test(projectId)) {
+      throw new NotFoundException({
+        code: notFoundCode,
+        message: notFoundMessage,
+      });
+    }
+    const requestedOrgId = headers.organizationId?.trim();
+    if (
+      requestedOrgId &&
+      requestedOrgId.toLowerCase() !== actor.organizationId.toLowerCase()
+    ) {
+      throw new NotFoundException({
+        code: notFoundCode,
+        message: notFoundMessage,
+      });
+    }
+
+    if (this.actorContext) {
+      const ctx = await this.actorContext.resolveProjectActorContext({
+        actor,
+        projectId,
+        organizationHeader: requestedOrgId,
+        requireActiveProject: true,
+      });
+      if (!ctx.isProjectMember || ctx.project.status !== 'ACTIVE') {
+        throw new NotFoundException({
+          code: notFoundCode,
+          message: notFoundMessage,
+        });
+      }
+      return {
+        id: ctx.project.id,
+        organizationId: ctx.project.organizationId,
+        status: 'ACTIVE',
+      };
+    }
+
+    if (this.iamScope) {
+      const scope = await this.iamScope.resolveProjectActorContext({
+        actor,
+        projectId,
+        organizationHeader: requestedOrgId,
+      });
+      if (!scope.isProjectMember) {
+        throw new NotFoundException({
+          code: notFoundCode,
+          message: notFoundMessage,
+        });
+      }
+      return {
+        id: scope.projectId,
+        organizationId: scope.organizationId,
+        status: 'ACTIVE',
+      };
+    }
+
+    throw new ServiceUnavailableException({
+      code: 'IAM_SCOPE_UNAVAILABLE',
+      message: 'Project membership verification is temporarily unavailable.',
+    });
+  }
 
   private setSessionCacheEntry(key: string, entry: CachedSagSession): void {
     const now = Date.now();
@@ -142,40 +253,29 @@ export class AiChatService {
     }
   }
 
-  private async listAllActiveOrganizationProjects(
+  private async listAllActiveMemberProjects(
     actor: AuthenticatedIdentity,
-  ): Promise<ProjectRecord[]> {
-    const pageSize = 100;
-    const dedupedById = new Map<string, ProjectRecord>();
-    const collectActive = (items: readonly ProjectRecord[]) => {
-      for (const proj of items) {
-        if (proj.status === 'ACTIVE' && OBJECT_ID_PATTERN.test(proj.id)) {
-          dedupedById.set(proj.id, proj);
-          if (dedupedById.size > MAX_ALL_PROJECTS_COUNT) {
-            return;
-          }
-        }
-      }
-    };
-
-    const firstPage = await this.projects.list(actor, {
-      page: 1,
-      pageSize,
-      status: 'ACTIVE',
-    });
-    collectActive(firstPage.data);
-
-    const totalPages = Math.min(firstPage.pagination.totalPages ?? 1, 10);
-    for (let page = 2; page <= totalPages; page += 1) {
-      if (dedupedById.size > MAX_ALL_PROJECTS_COUNT) break;
-      const next = await this.projects.list(actor, {
-        page,
-        pageSize,
-        status: 'ACTIVE',
+  ): Promise<IamProjectSummary[]> {
+    if (!this.actorContext) {
+      throw new ServiceUnavailableException({
+        code: 'IAM_SCOPE_UNAVAILABLE',
+        message: 'Project membership verification is temporarily unavailable.',
       });
-      collectActive(next.data);
     }
-
+    // SEC-AUTH-001: Restrict "all" scope strictly to ACTIVE projects where
+    // the caller holds an explicit ACTIVE project membership. Never include
+    // unjoined PRIVATE/PUBLIC projects or ARCHIVED projects.
+    const activeMemberProjects =
+      await this.actorContext.listActiveMemberProjects(
+        actor,
+        MAX_ALL_PROJECTS_COUNT,
+      );
+    const dedupedById = new Map<string, IamProjectSummary>();
+    for (const proj of activeMemberProjects) {
+      if (proj.status === 'ACTIVE' && OBJECT_ID_PATTERN.test(proj.id)) {
+        dedupedById.set(proj.id.toLowerCase(), proj);
+      }
+    }
     if (dedupedById.size > MAX_ALL_PROJECTS_COUNT) {
       throw new BadRequestException({
         code: 'AI_CHAT_ALL_PROJECTS_LIMIT_EXCEEDED',
@@ -197,7 +297,7 @@ export class AiChatService {
       headers.cookie,
     );
     this.assertOrganizationManagerForAllProjects(actor, headers);
-    const activeProjects = await this.listAllActiveOrganizationProjects(actor);
+    const activeProjects = await this.listAllActiveMemberProjects(actor);
     return {
       actorId: actor.id,
       organizationId: actor.organizationId,
@@ -218,6 +318,7 @@ export class AiChatService {
     bearerHeaders: Record<string, string>;
     cacheKey: string;
   }> {
+    void options;
     const isAllProjects = this.isAllProjectsScope(projectId);
     let actor: Awaited<
       ReturnType<AuthenticationApplicationService['getCurrentIdentity']>
@@ -232,8 +333,7 @@ export class AiChatService {
         headers.cookie,
       );
       this.assertOrganizationManagerForAllProjects(actor, headers);
-      const activeProjects =
-        await this.listAllActiveOrganizationProjects(actor);
+      const activeProjects = await this.listAllActiveMemberProjects(actor);
       if (activeProjects.length === 0) {
         throw new NotFoundException({
           code: 'PROJECT_NOT_FOUND',
@@ -244,7 +344,7 @@ export class AiChatService {
       resolvedProjectId = AI_CHAT_ALL_PROJECTS_ID;
       allowedProjectIds = activeProjects.map((project) => project.id).sort();
     } else {
-      const scopeInflightKey = `${headers.authorization ?? ''}|${headers.cookie ?? ''}|${projectId}`;
+      const scopeInflightKey = `${headers.authorization ?? ''}|${headers.cookie ?? ''}|${headers.organizationId ?? ''}|${projectId}`;
       let pendingScope = this.inflightActorScopes.get(scopeInflightKey);
       if (!pendingScope) {
         pendingScope = (async () => {
@@ -252,8 +352,9 @@ export class AiChatService {
             headers.authorization,
             headers.cookie,
           );
-          const resolvedProject = await this.projects.get(
+          const resolvedProject = await this.resolveActiveMemberProject(
             resolvedActor,
+            headers,
             projectId,
           );
           return { actor: resolvedActor, project: resolvedProject };
@@ -265,7 +366,7 @@ export class AiChatService {
       const resolvedScope = await pendingScope;
       actor = resolvedScope.actor;
       const project = resolvedScope.project;
-      if (options?.requireActiveProject && project.status !== 'ACTIVE') {
+      if (project.status !== 'ACTIVE') {
         throw new NotFoundException({
           code: 'PROJECT_NOT_FOUND',
           message: 'Project not found.',
@@ -379,7 +480,7 @@ export class AiChatService {
         headers: bearerHeaders,
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -411,7 +512,7 @@ export class AiChatService {
         body: { title: input.title ?? 'New chat' },
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -445,7 +546,7 @@ export class AiChatService {
         body: input.title ? { title: input.title } : {},
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -477,7 +578,7 @@ export class AiChatService {
         body: { title: input.title },
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -506,7 +607,7 @@ export class AiChatService {
         headers: bearerHeaders,
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
   }
@@ -535,7 +636,7 @@ export class AiChatService {
         headers: bearerHeaders,
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -632,8 +733,10 @@ export class AiChatService {
             const actorId = parts[0] ?? '';
             const orgId = parts[1] ?? '';
             const rawScope = parts[2] ?? '';
+            // BE-DATA-008: Keep cross-project ("all") usage at org-level (projectId: null)
+            // rather than falsely billing 100% to allowedProjectIds[0].
             const targetProjectId = rawScope.startsWith('all:')
-              ? (rawScope.slice(4).split(',')[0] ?? '')
+              ? null
               : rawScope;
             const providerUsage = frame.data.usage;
             if (providerUsage && providerUsage.totalTokens > 0) {
@@ -759,7 +862,7 @@ export class AiChatService {
         headers: bearerHeaders,
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -799,7 +902,7 @@ export class AiChatService {
         },
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -830,7 +933,7 @@ export class AiChatService {
         headers: bearerHeaders,
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
   }
@@ -855,7 +958,7 @@ export class AiChatService {
         body: {},
       });
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
 
@@ -884,8 +987,7 @@ export class AiChatService {
     );
     if (this.isAllProjectsScope(projectId)) {
       this.assertOrganizationManagerForAllProjects(actor, headers);
-      const activeProjects =
-        await this.listAllActiveOrganizationProjects(actor);
+      const activeProjects = await this.listAllActiveMemberProjects(actor);
       if (activeProjects.length === 0) {
         throw new NotFoundException({
           code: 'AI_CHAT_SHARE_NOT_FOUND',
@@ -905,37 +1007,21 @@ export class AiChatService {
         },
       };
     }
-    if (!OBJECT_ID_PATTERN.test(projectId)) {
-      throw new NotFoundException({
-        code: 'AI_CHAT_SHARE_NOT_FOUND',
-        message: 'Shared answer was not found.',
-      });
-    }
-    if (!this.iamScope) {
-      throw new ServiceUnavailableException({
-        code: 'IAM_SCOPE_UNAVAILABLE',
-        message: 'Project membership verification is temporarily unavailable.',
-      });
-    }
-    const scope = await this.iamScope.resolveProjectActorContext({
+    const resolved = await this.resolveActiveMemberProject(
       actor,
+      headers,
       projectId,
-      organizationHeader: headers.organizationId,
-    });
-    if (!scope.isProjectMember) {
-      throw new NotFoundException({
-        code: 'AI_CHAT_SHARE_NOT_FOUND',
-        message: 'Shared answer was not found.',
-      });
-    }
+      'AI_CHAT_SHARE_NOT_FOUND',
+      'Shared answer was not found.',
+    );
     return {
-      normalizedProjectId: scope.projectId,
+      normalizedProjectId: resolved.id,
       bffHeaders: {
-        'X-Continuum-User-Id': scope.userId,
-        'X-Continuum-Organization-Id': scope.organizationId,
-        'X-Continuum-Tenant-Id': scope.organizationId,
-        'X-Continuum-Project-Id': scope.projectId,
-        'X-Continuum-Security-Partition': scope.projectId,
+        'X-Continuum-User-Id': actor.id,
+        'X-Continuum-Organization-Id': resolved.organizationId,
+        'X-Continuum-Tenant-Id': resolved.organizationId,
+        'X-Continuum-Project-Id': resolved.id,
+        'X-Continuum-Security-Partition': resolved.id,
       },
     };
   }
@@ -1106,8 +1192,7 @@ export class AiChatService {
         headers.cookie,
       );
       this.assertOrganizationManagerForAllProjects(actor, headers);
-      const activeProjects =
-        await this.listAllActiveOrganizationProjects(actor);
+      const activeProjects = await this.listAllActiveMemberProjects(actor);
       if (activeProjects.length === 0) {
         throw new NotFoundException({
           code: 'PROJECT_NOT_FOUND',
@@ -1127,7 +1212,7 @@ export class AiChatService {
         },
       };
     }
-    const scopeInflightKey = `${headers.authorization ?? ''}|${headers.cookie ?? ''}|${projectId}`;
+    const scopeInflightKey = `${headers.authorization ?? ''}|${headers.cookie ?? ''}|${headers.organizationId ?? ''}|${projectId}`;
     let pendingScope = this.inflightActorScopes.get(scopeInflightKey);
     if (!pendingScope) {
       pendingScope = (async () => {
@@ -1135,8 +1220,9 @@ export class AiChatService {
           headers.authorization,
           headers.cookie,
         );
-        const resolvedProject = await this.projects.get(
+        const resolvedProject = await this.resolveActiveMemberProject(
           resolvedActor,
+          headers,
           projectId,
         );
         return { actor: resolvedActor, project: resolvedProject };
@@ -1212,12 +1298,8 @@ export class AiChatService {
     if (this.tokenUsage && !mapped.cached && mapped.generationMode === 'llm') {
       const actorId = scope.bffHeaders['X-Continuum-User-Id'] ?? '';
       const orgId = scope.bffHeaders['X-Continuum-Organization-Id'] ?? '';
-      const allowedList =
-        scope.bffHeaders['X-Continuum-Allowed-Project-Ids']?.split(',') ?? [];
       const targetProjId =
-        scope.projectId === AI_CHAT_ALL_PROJECTS_ID
-          ? (allowedList[0] ?? '')
-          : scope.projectId;
+        scope.projectId === AI_CHAT_ALL_PROJECTS_ID ? null : scope.projectId;
       const rawBody =
         result.body && typeof result.body === 'object'
           ? (result.body as Record<string, unknown>)
@@ -1278,7 +1360,7 @@ export class AiChatService {
       });
       return result.body;
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
   }
@@ -1318,7 +1400,7 @@ export class AiChatService {
       });
       return result.body;
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
   }
@@ -1345,7 +1427,7 @@ export class AiChatService {
       });
       return result.body;
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
   }
@@ -1373,7 +1455,7 @@ export class AiChatService {
       });
       return result.body;
     } catch (error) {
-      this.sessionCache.delete(cacheKey);
+      this.evictSessionIfAuthOrTransportError(cacheKey, error);
       throw error;
     }
   }

@@ -176,7 +176,9 @@ export class TaskDeadlineNotificationScheduler
     if (!this.taskRepository) return 0;
 
     const now = options?.now ?? new Date();
-    const horizon = new Date(now.getTime() + DEADLINE_APPROACHING_WINDOW_MS);
+    const nowTime = now.getTime();
+    const horizon = new Date(nowTime + DEADLINE_APPROACHING_WINDOW_MS);
+    const terminalStatuses = new Set(['DONE', 'CANCELLED']);
     let cursor: DeadlineNotificationTaskCursor | undefined;
     let totalProcessed = 0;
 
@@ -193,24 +195,121 @@ export class TaskDeadlineNotificationScheduler
         break;
       }
 
+      const candidates: Array<{
+        kind: 'OVERDUE' | 'APPROACHING';
+        taskId: string;
+        organizationId: string;
+        projectId: string;
+        title: string;
+        assigneeUserId: string;
+        dueDateIso: string;
+        eventKey: string;
+      }> = [];
+
       for (const raw of batch) {
         if (options?.shouldContinue?.() === false) break;
-        const rawIdStr = String(raw._id);
         if (!raw.assigneeId || !raw.dueDate) continue;
-        await this.evaluateSingleTask(
-          {
-            id: rawIdStr,
+        totalProcessed += 1;
+        if (raw.deletedAt) continue;
+        const status = typeof raw.status === 'string' ? raw.status : 'TODO';
+        if (terminalStatuses.has(status.toUpperCase())) continue;
+
+        const dueDate =
+          raw.dueDate instanceof Date ? raw.dueDate : new Date(raw.dueDate);
+        if (Number.isNaN(dueDate.getTime())) continue;
+        const dueTime = dueDate.getTime();
+        const dueDateIso = dueDate.toISOString();
+        const taskId = String(raw._id);
+        const assigneeUserId = String(raw.assigneeId);
+
+        if (dueTime <= nowTime) {
+          candidates.push({
+            kind: 'OVERDUE',
+            taskId,
             organizationId: String(raw.organizationId),
             projectId: String(raw.projectId),
             title: typeof raw.title === 'string' ? raw.title : 'Task',
-            status: typeof raw.status === 'string' ? raw.status : 'TODO',
-            assigneeId: String(raw.assigneeId),
-            dueDate: raw.dueDate,
-            deletedAt: raw.deletedAt ?? null,
-          },
-          now,
+            assigneeUserId,
+            dueDateIso,
+            eventKey: `task_deadline_overdue:${taskId}:${dueDateIso}`,
+          });
+        } else if (dueTime <= nowTime + DEADLINE_APPROACHING_WINDOW_MS) {
+          candidates.push({
+            kind: 'APPROACHING',
+            taskId,
+            organizationId: String(raw.organizationId),
+            projectId: String(raw.projectId),
+            title: typeof raw.title === 'string' ? raw.title : 'Task',
+            assigneeUserId,
+            dueDateIso,
+            eventKey: `task_deadline_approaching:${taskId}:${dueDateIso}`,
+          });
+        }
+      }
+
+      // BE-PERF-008 & SEC-AUTH-016: Batch dedupe existing eventKeys + batch verify
+      // active org/project memberships per 200-task page instead of N sequential DB hits.
+      if (candidates.length > 0 && options?.shouldContinue?.() !== false) {
+        const existingKeys =
+          typeof this.notificationService.findExistingDeadlineEventKeys ===
+          'function'
+            ? await this.notificationService.findExistingDeadlineEventKeys(
+                candidates.map((c) => ({
+                  recipientId: c.assigneeUserId,
+                  eventKey: c.eventKey,
+                })),
+              )
+            : new Set<string>();
+
+        const unnotified = candidates.filter(
+          (c) => !existingKeys.has(`${c.assigneeUserId}::${c.eventKey}`),
         );
-        totalProcessed += 1;
+
+        if (unnotified.length > 0 && options?.shouldContinue?.() !== false) {
+          const hasBatchMembershipFilter =
+            typeof this.notificationService
+              .filterActiveTaskDeadlineMemberships === 'function';
+          const activeMemberships = hasBatchMembershipFilter
+            ? await this.notificationService.filterActiveTaskDeadlineMemberships(
+                unnotified.map((c) => ({
+                  organizationId: c.organizationId,
+                  projectId: c.projectId,
+                  assigneeUserId: c.assigneeUserId,
+                })),
+              )
+            : null;
+
+          for (const candidate of unnotified) {
+            if (options?.shouldContinue?.() === false) break;
+            if (activeMemberships) {
+              const memberKey = `${candidate.organizationId.toLowerCase()}:${candidate.projectId.toLowerCase()}:${candidate.assigneeUserId.toLowerCase()}`;
+              if (!activeMemberships.has(memberKey)) {
+                continue;
+              }
+            }
+            if (candidate.kind === 'OVERDUE') {
+              await this.notificationService.notifyTaskDeadlineOverdue({
+                assigneeUserId: candidate.assigneeUserId,
+                organizationId: candidate.organizationId,
+                projectId: candidate.projectId,
+                taskId: candidate.taskId,
+                taskTitle: candidate.title,
+                dueDateIso: candidate.dueDateIso,
+                skipMembershipCheck: hasBatchMembershipFilter,
+              });
+            } else {
+              await this.notificationService.notifyTaskDeadlineApproaching({
+                assigneeUserId: candidate.assigneeUserId,
+                organizationId: candidate.organizationId,
+                projectId: candidate.projectId,
+                taskId: candidate.taskId,
+                taskTitle: candidate.title,
+                dueDateIso: candidate.dueDateIso,
+                skipMembershipCheck: hasBatchMembershipFilter,
+              });
+            }
+          }
+        }
       }
 
       const last = batch.at(-1);

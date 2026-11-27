@@ -1,11 +1,33 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-type RequestMemoStore = Map<string, Promise<unknown>>;
+interface RequestContextState {
+  memo: Map<string, Promise<unknown>>;
+  requestId?: string;
+  traceparent?: string;
+}
 
-const requestMemoStorage = new AsyncLocalStorage<RequestMemoStore>();
+const requestContextStorage = new AsyncLocalStorage<RequestContextState>();
 
-export function runWithRequestContext<T>(callback: () => T): T {
-  return requestMemoStorage.run(new Map<string, Promise<unknown>>(), callback);
+export function runWithRequestContext<T>(
+  callback: () => T,
+  metadata?: { requestId?: string; traceparent?: string },
+): T {
+  return requestContextStorage.run(
+    {
+      memo: new Map<string, Promise<unknown>>(),
+      requestId: metadata?.requestId,
+      traceparent: metadata?.traceparent,
+    },
+    callback,
+  );
+}
+
+export function getCurrentRequestId(): string | undefined {
+  return requestContextStorage.getStore()?.requestId;
+}
+
+export function getCurrentTraceparent(): string | undefined {
+  return requestContextStorage.getStore()?.traceparent;
 }
 
 export function memoizeInRequest<T>(
@@ -13,7 +35,7 @@ export function memoizeInRequest<T>(
   key: string,
   compute: () => Promise<T>,
 ): Promise<T> {
-  const store = requestMemoStorage.getStore();
+  const store = requestContextStorage.getStore()?.memo;
   if (!store) {
     return compute();
   }
@@ -35,7 +57,7 @@ export function memoizeInRequest<T>(
 }
 
 export function clearRequestMemo(namespacePrefix?: string): void {
-  const store = requestMemoStorage.getStore();
+  const store = requestContextStorage.getStore()?.memo;
   if (!store) return;
 
   if (!namespacePrefix) {

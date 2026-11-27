@@ -10,8 +10,9 @@ data:
     cluster-config-file nodes.conf
     cluster-node-timeout 5000
     appendonly yes
+    appendfsync everysec
     maxmemory 512mb
-    maxmemory-policy allkeys-lru
+    maxmemory-policy noeviction
 ---
 apiVersion: v1
 kind: Service
@@ -81,6 +82,8 @@ spec:
           livenessProbe:
             exec: { command: ["redis-cli", "ping"] }
             periodSeconds: 10
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/redis

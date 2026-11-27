@@ -7,6 +7,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  getCurrentRequestId,
+  getCurrentTraceparent,
+} from '../../common/http/request-context';
 import type {
   AiEngineClient,
   AiEngineHttpMethod,
@@ -222,6 +226,14 @@ export class HttpAiEngineClient implements AiEngineClient {
     }
 
     const headers = new Headers(request.headers);
+    const activeRequestId = getCurrentRequestId();
+    if (activeRequestId && !headers.has('X-Request-Id')) {
+      headers.set('X-Request-Id', activeRequestId);
+    }
+    const activeTraceparent = getCurrentTraceparent();
+    if (activeTraceparent && !headers.has('traceparent')) {
+      headers.set('traceparent', activeTraceparent);
+    }
     if (requiresBffServiceToken(routePathname, request.method)) {
       headers.set('X-SAG-BFF-Service-Token', serviceToken);
     } else {
@@ -234,15 +246,32 @@ export class HttpAiEngineClient implements AiEngineClient {
 
     const backendTimeoutMs =
       this.config.getOrThrow<number>('BACKEND_TIMEOUT_MS');
-    const requestTimeoutMs =
+    const isMindMapGenerate =
+      request.method === 'POST' && PROJECT_MIND_MAP_PATTERN.test(routePathname);
+    const isHandoverAssist =
       request.method === 'POST' &&
-      (PROJECT_MIND_MAP_PATTERN.test(routePathname) ||
-        routePathname === '/api/v1/search')
+      /^\/api\/v1\/projects\/[^/]+\/handover\/assist$/.test(routePathname);
+    const isSagSearch =
+      request.method === 'POST' && routePathname === '/api/v1/search';
+    const isKnowledgeUniverse = routePathname.startsWith(
+      '/api/v1/universe/knowledge/',
+    );
+    const requestTimeoutMs = isMindMapGenerate
+      ? Math.max(
+          backendTimeoutMs,
+          this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60_000,
+        )
+      : isHandoverAssist || isSagSearch
         ? Math.max(
             backendTimeoutMs,
-            this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60000,
+            this.config.get<number>('SAG_LLM_TIMEOUT_MS') ?? 90_000,
           )
-        : backendTimeoutMs;
+        : isKnowledgeUniverse
+          ? Math.max(
+              backendTimeoutMs,
+              this.config.get<number>('SAG_UNIVERSE_TIMEOUT_MS') ?? 60_000,
+            )
+          : backendTimeoutMs;
 
     let response: Response;
     try {
@@ -253,6 +282,7 @@ export class HttpAiEngineClient implements AiEngineClient {
           ? {}
           : { body: JSON.stringify(request.body) }),
         cache: 'no-store',
+        redirect: 'error',
         signal: AbortSignal.timeout(requestTimeoutMs),
       });
     } catch (error) {
@@ -299,6 +329,14 @@ export class HttpAiEngineClient implements AiEngineClient {
     }
 
     const headers = new Headers(request.headers);
+    const activeRequestId = getCurrentRequestId();
+    if (activeRequestId && !headers.has('X-Request-Id')) {
+      headers.set('X-Request-Id', activeRequestId);
+    }
+    const activeTraceparent = getCurrentTraceparent();
+    if (activeTraceparent && !headers.has('traceparent')) {
+      headers.set('traceparent', activeTraceparent);
+    }
     if (requiresBffServiceToken(routePathname, request.method)) {
       headers.set('X-SAG-BFF-Service-Token', serviceToken);
     } else {
@@ -325,6 +363,7 @@ export class HttpAiEngineClient implements AiEngineClient {
           ? {}
           : { body: JSON.stringify(request.body) }),
         cache: 'no-store',
+        redirect: 'error',
         signal,
       });
     } catch (error) {

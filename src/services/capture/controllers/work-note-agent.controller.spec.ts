@@ -26,9 +26,11 @@ describe('Agent controller HTTP boundary', () => {
   afterAll(async () => {
     await app?.close();
   });
+  const http = () =>
+    request(app.getHttpServer() as Parameters<typeof request>[0]);
   beforeEach(() => create.mockClear());
   it('uses the existing internal Capture prefix and rejects caller-supplied authority', async () => {
-    await request(app.getHttpServer())
+    await http()
       .post(`/internal/capture/projects/${project}/work-note-drafts`)
       .set('authorization', 'Bearer synthetic-session')
       .send({
@@ -38,7 +40,7 @@ describe('Agent controller HTTP boundary', () => {
       })
       .expect(422);
     expect(create).not.toHaveBeenCalled();
-    const response = await request(app.getHttpServer())
+    const response = await http()
       .post(`/internal/capture/projects/${project}/work-note-drafts`)
       .set('authorization', 'Bearer synthetic-session')
       .send({ operationId: randomUUID(), taskId: task })
@@ -47,7 +49,7 @@ describe('Agent controller HTTP boundary', () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
   it('enforces existing cookie CSRF before a mutation reaches application code', async () => {
-    await request(app.getHttpServer())
+    await http()
       .post(`/internal/capture/projects/${project}/work-note-drafts`)
       .set('Cookie', '__Host-session=synthetic-session')
       .send({ operationId: randomUUID(), taskId: task })
@@ -55,7 +57,7 @@ describe('Agent controller HTTP boundary', () => {
     expect(create).not.toHaveBeenCalled();
   });
   it('serializes a missing resumable draft as JSON null, allowing the client to create one', async () => {
-    await request(app.getHttpServer())
+    await http()
       .get(
         `/internal/capture/projects/${project}/work-note-drafts?taskId=${task}`,
       )

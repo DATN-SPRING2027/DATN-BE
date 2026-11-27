@@ -6,7 +6,40 @@ image:
 gateway:
   replicas: 2
   port: 3000
-  resources: {}
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+cors:
+  allowedOrigins: "https://app.continuum.local"
+
+sag:
+  serviceUrl: "http://sag-api:8000"
+
+metrics:
+  authSecretKey: metrics-auth-token
+
+serviceDefaults:
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+workerDefaults:
+  resources:
+    requests:
+      cpu: 150m
+      memory: 256Mi
+    limits:
+      cpu: 750m
+      memory: 768Mi
 
 auth:
   # Pre-create this Secret with jwt-secret and gateway-source-secret keys.
@@ -44,16 +77,23 @@ services:
   notification: { port: 3008, database: continuum_notification, replicas: 1 }
 
 workers:
-  ingestion: { queue: ingestion-queue, replicas: 0, concurrency: 2 }
-  jira: { queue: jira-sync-queue, replicas: 0, concurrency: 2 }
-  mail: { queue: mail-queue, replicas: 0, concurrency: 2 }
-  handover: { queue: handover-queue, replicas: 0, concurrency: 2 }
-  universe: { queue: universe-projection, replicas: 0, concurrency: 2 }
+  notifications: { queue: notifications, replicas: 0, concurrency: 4 }
+  outbox: { queue: outbox, replicas: 0, concurrency: 4 }
+  ingestion: { queue: ingestion, replicas: 0, concurrency: 2 }
+  handover: { queue: handover, replicas: 0, concurrency: 2 }
+  dlq: { queue: dlq, replicas: 0, concurrency: 1 }
 
 redis:
   image: redis:7.2-alpine
   replicas: 6
   port: 6379
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 640Mi
   auth:
     # Pre-create this Secret with a high-entropy `password` key.
     existingSecretName: continuum-redis-auth

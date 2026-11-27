@@ -1,4 +1,6 @@
 import {
+  ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
@@ -12,6 +14,8 @@ import type { ChatActor, ChatCandidate } from './chat.repository';
 export interface ChatCredentials {
   authorization?: string;
   cookie?: string;
+  organizationId?: string;
+  expectedOrganizationId?: string;
 }
 
 export interface ChatSessionBinding {
@@ -21,6 +25,12 @@ export interface ChatSessionBinding {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeHeader(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 @Injectable()
@@ -36,7 +46,11 @@ export class ChatIamClient {
   }
 
   async getActor(credentials: ChatCredentials): Promise<ChatActor> {
-    const memoKey = `${credentials.authorization ?? ''}\0${credentials.cookie ?? ''}`;
+    const orgHeader = normalizeHeader(credentials.organizationId);
+    const expectedOrgHeader = normalizeHeader(
+      credentials.expectedOrganizationId,
+    );
+    const memoKey = `${credentials.authorization ?? ''}\0${credentials.cookie ?? ''}\0${orgHeader ?? ''}\0${expectedOrgHeader ?? ''}`;
     return memoizeInRequest('chat:actor', memoKey, async () => {
       const identity = await this.request('/internal/auth/me', credentials);
       if (
@@ -52,6 +66,7 @@ export class ChatIamClient {
           message: 'Identity service returned an invalid response.',
         });
       }
+      this.assertOrganizationContext(identity.organizationId, credentials);
       const avatarUrl =
         typeof identity.avatarUrl === 'string' ? identity.avatarUrl : null;
       return {
@@ -92,6 +107,7 @@ export class ChatIamClient {
         message: 'Identity service returned an invalid response.',
       });
     }
+    this.assertOrganizationContext(result.actor.organizationId, credentials);
     return {
       actorId: result.actor.id,
       organizationId: result.actor.organizationId,
@@ -128,6 +144,7 @@ export class ChatIamClient {
         message: 'Identity service returned an invalid response.',
       });
     }
+    this.assertOrganizationContext(result.actor.organizationId, credentials);
     return {
       actor: {
         id: result.actor.id,
@@ -166,7 +183,42 @@ export class ChatIamClient {
   }
 
   getSessionCredential(credentials: ChatCredentials): ChatCredentials {
-    return { authorization: `Bearer ${this.getAccessToken(credentials)}` };
+    const organizationId = normalizeHeader(credentials.organizationId);
+    const expectedOrganizationId = normalizeHeader(
+      credentials.expectedOrganizationId,
+    );
+    return {
+      authorization: `Bearer ${this.getAccessToken(credentials)}`,
+      ...(organizationId ? { organizationId } : {}),
+      ...(expectedOrganizationId ? { expectedOrganizationId } : {}),
+    };
+  }
+
+  private assertOrganizationContext(
+    actualOrganizationId: string,
+    credentials: ChatCredentials,
+  ): void {
+    const expectedOrg = normalizeHeader(credentials.expectedOrganizationId);
+    if (
+      expectedOrg !== undefined &&
+      expectedOrg.toLowerCase() !== actualOrganizationId.toLowerCase()
+    ) {
+      throw new ConflictException({
+        code: 'ORGANIZATION_CONTEXT_MISMATCH',
+        message: 'The active organization changed. Refresh and retry.',
+      });
+    }
+    const requestedOrg = normalizeHeader(credentials.organizationId);
+    if (
+      requestedOrg !== undefined &&
+      requestedOrg.toLowerCase() !== actualOrganizationId.toLowerCase()
+    ) {
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_CONTEXT_MISMATCH',
+        message:
+          'Requested organization does not match the active session organization.',
+      });
+    }
   }
 
   private getAccessToken(credentials: ChatCredentials): string {
@@ -211,12 +263,32 @@ export class ChatIamClient {
     credentials: ChatCredentials,
     options: RequestInit = {},
   ): Promise<unknown> {
+    const organizationId = normalizeHeader(credentials.organizationId);
+    const expectedOrganizationId = normalizeHeader(
+      credentials.expectedOrganizationId,
+    );
+    if (
+      organizationId &&
+      expectedOrganizationId &&
+      organizationId.toLowerCase() !== expectedOrganizationId.toLowerCase()
+    ) {
+      throw new ConflictException({
+        code: 'ORGANIZATION_CONTEXT_MISMATCH',
+        message: 'Conflicting organization headers supplied.',
+      });
+    }
     const headers = new Headers(options.headers);
     headers.set('accept', 'application/json');
     if (credentials.authorization) {
       headers.set('authorization', credentials.authorization);
     }
     if (credentials.cookie) headers.set('cookie', credentials.cookie);
+    if (organizationId) {
+      headers.set('x-organization-id', organizationId);
+    }
+    if (expectedOrganizationId) {
+      headers.set('x-expected-organization-id', expectedOrganizationId);
+    }
     let response: Response;
     const isInternalPath = path.startsWith('/internal/');
     const primaryPath =
@@ -248,6 +320,12 @@ export class ChatIamClient {
       throw new ServiceUnavailableException({
         code: 'CHAT_IDENTITY_UNAVAILABLE',
         message: 'Identity service is unavailable.',
+      });
+    }
+    if (response.status === 409) {
+      throw new ConflictException({
+        code: 'ORGANIZATION_CONTEXT_MISMATCH',
+        message: 'The active organization changed. Refresh and retry.',
       });
     }
     if (response.status === 401 || response.status === 403) {

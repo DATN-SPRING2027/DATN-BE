@@ -26,6 +26,11 @@ spec:
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: ["node", "dist/services/{{ $name }}/main.js"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: {{ $service.port }}
@@ -116,13 +121,15 @@ spec:
                   key: gateway-source-secret
             {{- end }}
           readinessProbe:
-            httpGet: { path: /internal/health, port: http }
+            httpGet: { path: /internal/health/ready, port: http }
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet: { path: /internal/health, port: http }
             initialDelaySeconds: 20
             periodSeconds: 20
+          resources:
+            {{- toYaml (default $.Values.serviceDefaults.resources $service.resources) | nindent 12 }}
 ---
 apiVersion: v1
 kind: Service

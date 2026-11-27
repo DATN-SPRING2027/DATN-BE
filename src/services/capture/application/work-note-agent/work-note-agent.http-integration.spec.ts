@@ -208,7 +208,8 @@ describe('WorkNote Gateway → Capture → authorization HTTP → MongoDB', () =
     active = true;
     model.rewrite.mockClear();
   });
-  const http = () => request(gateway.getHttpServer());
+  const http = () =>
+    request(gateway.getHttpServer() as Parameters<typeof request>[0]);
   async function create() {
     const r = await http()
       .post(root)

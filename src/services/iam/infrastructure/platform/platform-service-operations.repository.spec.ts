@@ -72,4 +72,73 @@ describe('HttpPlatformServiceOperationsRepository', () => {
     });
     expect(JSON.stringify(service)).not.toContain('do-not-leak');
   });
+
+  it('falls back to /api/v1/health/ready when /internal/health/ready returns 404', async () => {
+    const repository = new HttpPlatformServiceOperationsRepository({
+      get: (key: string) =>
+        key === 'IAM_SERVICE_URL' ? 'http://127.0.0.1:3001' : undefined,
+    } as unknown as ConfigService);
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation((input: RequestInfo | URL) => {
+        const url = requestUrl(input);
+        if (url.endsWith('/internal/health/ready')) {
+          return Promise.resolve(new Response('Not Found', { status: 404 }));
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              status: 'READY',
+              liveness: 'ALIVE',
+              dependencies: { mongodb: 'AVAILABLE', redis: 'AVAILABLE' },
+            }),
+            { status: 200 },
+          ),
+        );
+      });
+
+    const service = await repository.findService('iam');
+
+    expect(service).toMatchObject({
+      id: 'iam',
+      status: 'READY',
+      availability: 'AVAILABLE',
+      liveness: 'ALIVE',
+      readiness: 'READY',
+      dependencies: { mongodb: 'AVAILABLE', redis: 'AVAILABLE' },
+    });
+    expect(fetchSpy.mock.calls.map(([target]) => requestUrl(target))).toEqual([
+      'http://127.0.0.1:3001/internal/health/ready',
+      'http://127.0.0.1:3001/api/v1/health/ready',
+    ]);
+  });
+
+  it('probes monolith /api/v1/health/ready once across all hosted services in monolith runtime mode', async () => {
+    const repository = new HttpPlatformServiceOperationsRepository({
+      get: (key: string) => {
+        if (key === 'CONTINUUM_RUNTIME_MODE') return 'monolith';
+        if (key === 'IAM_SERVICE_URL') return 'http://127.0.0.1:3001';
+        return undefined;
+      },
+    } as unknown as ConfigService);
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'READY',
+          liveness: 'ALIVE',
+          dependencies: { mongodb: 'AVAILABLE', redis: 'AVAILABLE' },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await repository.listServices();
+
+    expect(result.data).toHaveLength(8);
+    expect(result.data.every((svc) => svc.status === 'READY')).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(requestUrl(fetchSpy.mock.calls[0]?.[0])).toBe(
+      'http://127.0.0.1:3001/api/v1/health/ready',
+    );
+  });
 });

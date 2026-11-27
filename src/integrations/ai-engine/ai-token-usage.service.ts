@@ -33,7 +33,10 @@ import {
 const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
 const HOUR_MS = 3_600_000;
 const LOOKBACK_DAYS = 400; // Covers 53-week heatmap + 12 months chart
+const MAX_PROJECTS_CACHE_ENTRIES = 500;
+const MAX_FALLBACK_FIND_ROWS = 10_000;
 export const AI_TOKEN_USAGE_LOGS_COLLECTION = 'ai_token_usage_logs';
+const ORG_WIDE_OWNER_KEY = 'all';
 
 const TASK_INDEX_MAP: Readonly<Record<AiTokenUsageTaskKind, number>> = {
   ai_chat: 0,
@@ -48,7 +51,7 @@ const TASK_META_LIST: readonly AiTokenUsageTaskMetaDto[] =
 
 interface RawTokenSample {
   readonly timestampMs: number;
-  readonly projectId: string;
+  readonly projectId: string | null;
   readonly userId: string;
   readonly taskKind: AiTokenUsageTaskKind;
   readonly inputTokens: number;
@@ -130,8 +133,19 @@ export class AiTokenUsageService {
         .catch(() => undefined);
       void col
         .createIndex(
-          { organizationId: 1, projectId: 1, dedupeKey: 1 },
-          { background: true, sparse: true },
+          { organizationId: 1, userId: 1, occurredAt: -1 },
+          { background: true },
+        )
+        .catch(() => undefined);
+      void col
+        .createIndex(
+          { organizationId: 1, dedupeKey: 1, projectId: 1 },
+          {
+            name: 'ai_token_usage_org_project_dedupe_unique',
+            background: true,
+            unique: true,
+            partialFilterExpression: { dedupeKey: { $type: 'string' } },
+          },
         )
         .catch(() => undefined);
     }
@@ -142,9 +156,17 @@ export class AiTokenUsageService {
     if (!db) return;
     if (
       !OBJECT_ID_PATTERN.test(input.organizationId) ||
-      !OBJECT_ID_PATTERN.test(input.projectId) ||
       !OBJECT_ID_PATTERN.test(input.userId)
     ) {
+      return;
+    }
+    const projectObjId =
+      input.projectId === null
+        ? null
+        : OBJECT_ID_PATTERN.test(input.projectId)
+          ? new Types.ObjectId(input.projectId.toLowerCase())
+          : undefined;
+    if (projectObjId === undefined) {
       return;
     }
     const inputTokens = toSafeNonNegativeInt(input.inputTokens);
@@ -164,7 +186,7 @@ export class AiTokenUsageService {
           : undefined;
       const doc = {
         organizationId: new Types.ObjectId(input.organizationId.toLowerCase()),
-        projectId: new Types.ObjectId(input.projectId.toLowerCase()),
+        projectId: projectObjId,
         userId: new Types.ObjectId(input.userId.toLowerCase()),
         taskKind: input.taskKind,
         inputTokens,
@@ -235,6 +257,19 @@ export class AiTokenUsageService {
       }
     }
     const result = [...deduped.values()];
+    if (this.projectsCache.size >= MAX_PROJECTS_CACHE_ENTRIES) {
+      for (const [k, v] of this.projectsCache) {
+        if (v.expiresAt <= now) {
+          this.projectsCache.delete(k);
+        }
+      }
+      if (this.projectsCache.size >= MAX_PROJECTS_CACHE_ENTRIES) {
+        for (const firstKey of this.projectsCache.keys()) {
+          this.projectsCache.delete(firstKey);
+          break;
+        }
+      }
+    }
     this.projectsCache.set(cacheKey, {
       expiresAt: now + 30_000,
       data: result,
@@ -421,16 +456,10 @@ export class AiTokenUsageService {
     const isOrgManager =
       Array.isArray(actor.roles) && actor.roles.includes('ADMIN');
 
-    // Run project listing and token usage log fetch IN PARALLEL to minimize latency
-    const [visibleProjects, rawOrgSamples] = await Promise.all([
-      this.listVisibleActiveProjects(actor),
-      this.fetchExplicitUsageLogs({
-        organizationId: actor.organizationId.toLowerCase(),
-        // When pure MEMBER or explicit 'personal' scope, filter by userId right at the DB index level
-        restrictToUserId:
-          rawScope === 'personal' ? actor.id.toLowerCase() : null,
-      }),
-    ]);
+    // SEC-BE-006 / BE-PERF-006: Resolve visible projects & effective RBAC scope
+    // BEFORE querying MongoDB so pure MEMBER callers ALWAYS push `userId` and
+    // allowed `projectId` predicates into the MongoDB query/aggregation.
+    const visibleProjects = await this.listVisibleActiveProjects(actor);
 
     const projectOptions: AiTokenUsageProjectOptionDto[] = visibleProjects.map(
       (proj) => ({
@@ -528,49 +557,60 @@ export class AiTokenUsageService {
     const ownerGroupKind: AiTokenUsageOwnerKind =
       effectiveScope === 'project' ? 'member' : 'project';
 
-    let owners: AiTokenUsageOwnerDto[] = [];
-    const ownerIndexById = new Map<string, number>();
-
-    if (effectiveScope === 'project' && selectedProjectId) {
-      const projRecord = recordById.get(selectedProjectId);
-      const memberMap = projRecord
-        ? await this.loadProjectMemberDirectory(
-            actor.organizationId,
-            projRecord,
-          )
-        : new Map<string, AiTokenUsageOwnerDto>();
-
-      const actorIdLower = actor.id.toLowerCase();
-      if (!memberMap.has(actorIdLower)) {
-        memberMap.set(actorIdLower, {
-          id: actorIdLower,
-          name: actor.name || 'Bạn',
-          subtitle: isOrgManager ? 'Manager' : 'Team Leader',
-          kind: 'member',
-        });
-      }
-      owners = [...memberMap.values()];
-      owners.forEach((owner, idx) => ownerIndexById.set(owner.id, idx));
-    } else {
-      owners = projectOptions.map((proj) => ({
-        id: proj.id,
-        name: proj.name,
-        code: proj.code,
-        subtitle: proj.code,
-        kind: 'project',
-      }));
-      owners.forEach((owner, idx) => ownerIndexById.set(owner.id, idx));
-    }
-
-    const allowedProjectSet = new Set(
+    const allowedProjectIds =
       effectiveScope === 'project' && selectedProjectId
         ? [selectedProjectId]
-        : projectOptions.map((p) => p.id),
-    );
+        : projectOptions.map((p) => p.id);
+    const allowedProjectSet = new Set(allowedProjectIds);
 
-    // CRITICAL RBAC: In 'personal' scope (including all MEMBER requests), strictly filter by actor.id!
+    // CRITICAL RBAC: In 'personal' scope (including all MEMBER requests), strictly filter by actor.id AT DB LEVEL!
     const restrictToUserId =
       effectiveScope === 'personal' ? actor.id.toLowerCase() : null;
+    const includeNullProject = effectiveScope !== 'project';
+
+    // Run member directory lookup (if needed) and DB-scoped usage query in parallel
+    const [ownersResult, rawOrgSamples] = await Promise.all([
+      (async () => {
+        if (effectiveScope === 'project' && selectedProjectId) {
+          const projRecord = recordById.get(selectedProjectId);
+          const memberMap = projRecord
+            ? await this.loadProjectMemberDirectory(
+                actor.organizationId,
+                projRecord,
+              )
+            : new Map<string, AiTokenUsageOwnerDto>();
+
+          const actorIdLower = actor.id.toLowerCase();
+          if (!memberMap.has(actorIdLower)) {
+            memberMap.set(actorIdLower, {
+              id: actorIdLower,
+              name: actor.name || 'Bạn',
+              subtitle: isOrgManager ? 'Manager' : 'Team Leader',
+              kind: 'member',
+            });
+          }
+          return [...memberMap.values()];
+        }
+        return projectOptions.map((proj) => ({
+          id: proj.id,
+          name: proj.name,
+          code: proj.code,
+          subtitle: proj.code,
+          kind: 'project' as const,
+        }));
+      })(),
+      this.fetchExplicitUsageLogs({
+        organizationId: actor.organizationId.toLowerCase(),
+        restrictToUserId,
+        allowedProjectIds,
+        includeNullProject,
+        groupBy: ownerGroupKind,
+      }),
+    ]);
+
+    const owners: AiTokenUsageOwnerDto[] = ownersResult;
+    const ownerIndexById = new Map<string, number>();
+    owners.forEach((owner, idx) => ownerIndexById.set(owner.id, idx));
 
     // Aggregate into compact hourly buckets: [hourEpoch, ownerIdx, taskIdx, input, cacheRead, cacheWrite, output, calls]
     const bucketMap = new Map<
@@ -579,7 +619,13 @@ export class AiTokenUsageService {
     >();
 
     for (const sample of rawOrgSamples) {
-      if (!allowedProjectSet.has(sample.projectId.toLowerCase())) {
+      const sampleProjectId = sample.projectId
+        ? sample.projectId.toLowerCase()
+        : null;
+      if (sampleProjectId !== null && !allowedProjectSet.has(sampleProjectId)) {
+        continue;
+      }
+      if (sampleProjectId === null && !includeNullProject) {
         continue;
       }
       if (
@@ -592,7 +638,7 @@ export class AiTokenUsageService {
       const ownerKey =
         ownerGroupKind === 'member'
           ? sample.userId.toLowerCase()
-          : sample.projectId.toLowerCase();
+          : (sampleProjectId ?? ORG_WIDE_OWNER_KEY);
 
       let ownerIdx = ownerIndexById.get(ownerKey);
       if (ownerIdx === undefined) {
@@ -603,6 +649,19 @@ export class AiTokenUsageService {
             name: `Thành viên (${ownerKey.slice(-4)})`,
             subtitle: 'Member',
             kind: 'member',
+          });
+          ownerIndexById.set(ownerKey, ownerIdx);
+        } else if (
+          ownerGroupKind === 'project' &&
+          ownerKey === ORG_WIDE_OWNER_KEY
+        ) {
+          ownerIdx = owners.length;
+          owners.push({
+            id: ORG_WIDE_OWNER_KEY,
+            name: 'Toàn tổ chức',
+            code: 'ALL',
+            subtitle: 'All projects',
+            kind: 'project',
           });
           ownerIndexById.set(ownerKey, ownerIdx);
         } else {
@@ -659,12 +718,15 @@ export class AiTokenUsageService {
   }
 
   /**
-   * Queries ONLY the dedicated `ai_token_usage_logs` collection using its compound index.
-   * Never scans or fabricates heuristic tokens from unrelated document/note collections.
+   * Queries ONLY the dedicated `ai_token_usage_logs` collection using compound
+   * tenant/user indexes and server-side hourly `$group` aggregation when available.
    */
   private async fetchExplicitUsageLogs(params: {
     organizationId: string;
     restrictToUserId: string | null;
+    allowedProjectIds: readonly string[];
+    includeNullProject: boolean;
+    groupBy: AiTokenUsageOwnerKind;
   }): Promise<RawTokenSample[]> {
     const db = this.captureConnection?.db;
     if (!db || !OBJECT_ID_PATTERN.test(params.organizationId)) {
@@ -678,17 +740,93 @@ export class AiTokenUsageService {
       params.restrictToUserId && OBJECT_ID_PATTERN.test(params.restrictToUserId)
         ? new Types.ObjectId(params.restrictToUserId)
         : null;
+    const projectObjIds = params.allowedProjectIds
+      .filter((id) => OBJECT_ID_PATTERN.test(id))
+      .map((id) => new Types.ObjectId(id));
+    if (projectObjIds.length === 0 && !params.includeNullProject) {
+      return [];
+    }
     const sinceDate = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000);
+    const matchFilter: Record<string, unknown> = {
+      organizationId: orgObjId,
+      ...(userObjId ? { userId: userObjId } : {}),
+      occurredAt: { $gte: sinceDate },
+      projectId: params.includeNullProject
+        ? { $in: [...projectObjIds, null] }
+        : { $in: projectObjIds },
+    };
+
+    const col = db.collection(AI_TOKEN_USAGE_LOGS_COLLECTION);
     const samples: RawTokenSample[] = [];
 
     try {
-      const explicitLogs = await db
-        .collection(AI_TOKEN_USAGE_LOGS_COLLECTION)
-        .find({
-          organizationId: orgObjId,
-          ...(userObjId ? { userId: userObjId } : {}),
-          occurredAt: { $gte: sinceDate },
-        })
+      if (typeof col.aggregate === 'function') {
+        const grouped = await col
+          .aggregate<{
+            _id: {
+              hourEpoch: number;
+              projectId: Types.ObjectId | null;
+              userId: Types.ObjectId | null;
+              taskKind: string;
+            };
+            inputTokens: number;
+            cacheReadTokens: number;
+            cacheWriteTokens: number;
+            outputTokens: number;
+            calls: number;
+          }>([
+            { $match: matchFilter },
+            {
+              $group: {
+                _id: {
+                  hourEpoch: {
+                    $floor: {
+                      $divide: [{ $toLong: '$occurredAt' }, HOUR_MS],
+                    },
+                  },
+                  projectId:
+                    params.groupBy === 'project' ? '$projectId' : '$projectId',
+                  userId: params.groupBy === 'member' ? '$userId' : '$userId',
+                  taskKind: '$taskKind',
+                },
+                inputTokens: { $sum: { $ifNull: ['$inputTokens', 0] } },
+                cacheReadTokens: { $sum: { $ifNull: ['$cacheReadTokens', 0] } },
+                cacheWriteTokens: {
+                  $sum: { $ifNull: ['$cacheWriteTokens', 0] },
+                },
+                outputTokens: { $sum: { $ifNull: ['$outputTokens', 0] } },
+                calls: { $sum: { $ifNull: ['$calls', 1] } },
+              },
+            },
+          ])
+          .toArray();
+        for (const row of grouped) {
+          const taskKind = row._id?.taskKind as AiTokenUsageTaskKind;
+          if (!(taskKind in TASK_INDEX_MAP)) continue;
+          const hourEpoch = row._id?.hourEpoch;
+          if (typeof hourEpoch !== 'number' || !Number.isFinite(hourEpoch))
+            continue;
+          const projId =
+            row._id?.projectId === null ? null : idString(row._id?.projectId);
+          const uid = idString(row._id?.userId);
+          if (!uid || (projId !== null && !projId)) continue;
+          samples.push({
+            timestampMs: hourEpoch * HOUR_MS,
+            projectId: projId,
+            userId: uid,
+            taskKind,
+            inputTokens: toSafeNonNegativeInt(row.inputTokens),
+            cacheReadTokens: toSafeNonNegativeInt(row.cacheReadTokens),
+            cacheWriteTokens: toSafeNonNegativeInt(row.cacheWriteTokens),
+            outputTokens: toSafeNonNegativeInt(row.outputTokens),
+            calls: Math.max(1, toSafeNonNegativeInt(row.calls ?? 1)),
+          });
+        }
+        return samples;
+      }
+
+      const explicitLogs = await col
+        .find(matchFilter)
         .project({
           projectId: 1,
           userId: 1,
@@ -701,6 +839,7 @@ export class AiTokenUsageService {
           dedupeKey: 1,
           occurredAt: 1,
         })
+        .limit(MAX_FALLBACK_FIND_ROWS)
         .toArray();
 
       const seenDedupeKeys = new Set<string>();
@@ -717,9 +856,9 @@ export class AiTokenUsageService {
         const taskKind = row.taskKind as AiTokenUsageTaskKind;
         if (!(taskKind in TASK_INDEX_MAP)) continue;
         const ts = toTimestampMs(row.occurredAt);
-        const projId = idString(row.projectId);
+        const projId = row.projectId === null ? null : idString(row.projectId);
         const uid = idString(row.userId);
-        if (!ts || !projId || !uid) continue;
+        if (!ts || !uid || (projId !== null && !projId)) continue;
         samples.push({
           timestampMs: ts,
           projectId: projId,

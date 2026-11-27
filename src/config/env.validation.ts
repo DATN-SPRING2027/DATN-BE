@@ -67,6 +67,14 @@ export interface EnvironmentVariables {
   BACKEND_TIMEOUT_MS: number;
   CAPTURE_FILE_TIMEOUT_MS: number;
   SAG_CHAT_STREAM_TIMEOUT_MS: number;
+  SAG_LLM_TIMEOUT_MS?: number;
+  SAG_UNIVERSE_TIMEOUT_MS?: number;
+  AI_ENGINE_SERVICE_URL?: string;
+  SERVICE_HOST?: string;
+  MONGODB_MAX_POOL_SIZE?: number;
+  METRICS_AUTH_TOKEN?: string;
+  TASK_CURSOR_HMAC_SECRET?: string;
+  PROJECT_HARD_DELETE_ENABLED?: boolean;
   SAG_API_BASE_URL?: string;
   SAG_BFF_SERVICE_TOKEN?: string;
   CONTINUUM_WEB_BASE_URL?: string;
@@ -275,6 +283,28 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .min(5000)
     .max(300000)
     .default(120000),
+  SAG_LLM_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(300000)
+    .default(90000),
+  SAG_UNIVERSE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(300000)
+    .default(60000),
+  AI_ENGINE_SERVICE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .allow('')
+    .optional(),
+  SERVICE_HOST: Joi.string().trim().allow('').optional(),
+  MONGODB_MAX_POOL_SIZE: Joi.number().integer().min(2).max(100).default(15),
+  METRICS_AUTH_TOKEN: Joi.string().trim().min(16).allow('').optional(),
+  TASK_CURSOR_HMAC_SECRET: Joi.string().trim().min(16).allow('').optional(),
+  PROJECT_HARD_DELETE_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
   SAG_API_BASE_URL: Joi.string()
     .trim()
     .uri({ scheme: ['http', 'https'] })

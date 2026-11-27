@@ -46,6 +46,57 @@ const ISO_DATETIME_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const HTTPS_LINK_RE = /^https:\/\/[^\s]+$/;
 
+function isPrivateOrLocalHostname(rawHost: string): boolean {
+  const host = rawHost.trim().toLowerCase().replace(/\.+$/, '');
+  if (!host) return true;
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host.endsWith('.home.arpa') ||
+    !host.includes('.')
+  ) {
+    return true;
+  }
+  // Reject IPv6 literals (loopback ::1, ULA fc00::/7, link-local fe80::/10, v4-mapped ::ffff:*, etc.)
+  if (host.startsWith('[') || host.endsWith(']') || host.includes(':')) {
+    return true;
+  }
+  // Reject obfuscated single-integer / hex / octal IPv4 forms (e.g. 2130706433, 0x7f000001, 0177.0.0.1)
+  if (/^(?:0x[0-9a-f]+|\d+)$/i.test(host)) {
+    return true;
+  }
+  const labels = host.split('.');
+  if (labels.every((part) => /^(?:0x[0-9a-f]+|0[0-7]+|\d+)$/i.test(part))) {
+    // Any numeric dotted IPv4 (including octal/hex/short-form 127.1): parse strict octets and reject private/reserved/non-4-part
+    if (labels.length !== 4) return true;
+    const octets = labels.map((part) => {
+      if (/^0x/i.test(part) || (part.length > 1 && part.startsWith('0'))) {
+        return -1;
+      }
+      const n = Number(part);
+      return Number.isInteger(n) && n >= 0 && n <= 255 ? n : -1;
+    });
+    if (octets.some((o) => o < 0)) return true;
+    const [a, b] = octets;
+    if (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const SOURCE_KINDS = new Set([
   'TASK_NOTE',
   'PROJECT_DOCUMENT',
@@ -706,10 +757,22 @@ export function validateSubmitEvidence(value: unknown): SubmitEvidenceDto {
       }
       try {
         const parsed = new URL(link);
-        if (parsed.protocol !== 'https:' || !parsed.hostname) {
-          badRequest(`links[${i}] must use https://.`, `links[${i}]`);
+        if (
+          parsed.protocol !== 'https:' ||
+          !parsed.hostname ||
+          parsed.username ||
+          parsed.password ||
+          isPrivateOrLocalHostname(parsed.hostname)
+        ) {
+          badRequest(
+            `links[${i}] must be a public https:// URL without credentials or private/local hosts.`,
+            `links[${i}]`,
+          );
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof BadRequestException) {
+          throw err;
+        }
         badRequest(`links[${i}] is not a valid URL.`, `links[${i}]`);
       }
       return link;

@@ -3,10 +3,22 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Types, type Connection } from 'mongoose';
+import { EXPECTED_ORGANIZATION_ID_HEADER } from '../../../common/http/organization-header';
+import { IamActorContextService } from '../../iam/application/projects/iam-actor-context.service';
+import { IAM_PERSISTENCE } from '../../iam/infrastructure/persistence';
+import { TaskWorkspaceRepository } from '../../task/workspace/task-workspace.repository';
+import {
+  WORKSPACE_TASKS_COLLECTION,
+  type WorkspaceTaskDocument,
+} from '../../task/workspace/task-workspace.types';
 import type {
   CaptureRequestHeaders,
   RelatedTaskRef,
@@ -14,8 +26,6 @@ import type {
 } from './work-notes.types';
 
 const validId = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
-const PROJECT_AUTH_CACHE_TTL_MS = 3_000;
-const PROJECT_AUTH_CACHE_MAX_ENTRIES = 512;
 
 interface IdentityResponse {
   id?: string;
@@ -28,24 +38,94 @@ interface MembershipResponse {
   data?: Array<{
     userId?: string;
     joinedAt?: string;
+    reactivatedAt?: string;
     user?: { fullName?: string; email?: string } | null;
   }>;
   pagination?: { totalPages?: number };
 }
 
+function resolveEffectiveJoinedAt(
+  membership: { joinedAt?: string; reactivatedAt?: string },
+  fallback?: string,
+): string | undefined {
+  const joinedMs =
+    membership.joinedAt && Number.isFinite(Date.parse(membership.joinedAt))
+      ? Date.parse(membership.joinedAt)
+      : NaN;
+  const reactivatedMs =
+    membership.reactivatedAt &&
+    Number.isFinite(Date.parse(membership.reactivatedAt))
+      ? Date.parse(membership.reactivatedAt)
+      : NaN;
+  if (Number.isFinite(reactivatedMs) && Number.isFinite(joinedMs)) {
+    return reactivatedMs >= joinedMs
+      ? membership.reactivatedAt
+      : membership.joinedAt;
+  }
+  if (Number.isFinite(reactivatedMs)) return membership.reactivatedAt;
+  if (Number.isFinite(joinedMs)) return membership.joinedAt;
+  return fallback;
+}
+
 @Injectable()
 export class WorkNotesAuthorizationService {
-  private readonly projectActorCache = new Map<
-    string,
-    { actor: WorkNotesActor; expiresAt: number }
-  >();
-
   private readonly inFlightProjectResolutions = new Map<
     string,
     Promise<WorkNotesActor>
   >();
+  private resolvedIamActorContext?: IamActorContextService | null;
+  private resolvedTaskWorkspaceRepo?: TaskWorkspaceRepository | null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly moduleRef?: ModuleRef,
+    @Optional()
+    @InjectConnection(IAM_PERSISTENCE.databaseName)
+    private readonly iamConnection?: Connection,
+    @Optional() iamActorContextOverride?: IamActorContextService,
+    @Optional() taskWorkspaceRepoOverride?: TaskWorkspaceRepository,
+  ) {
+    if (iamActorContextOverride) {
+      this.resolvedIamActorContext = iamActorContextOverride;
+    }
+    if (taskWorkspaceRepoOverride) {
+      this.resolvedTaskWorkspaceRepo = taskWorkspaceRepoOverride;
+    }
+  }
+
+  private getIamActorContext(): IamActorContextService | null {
+    if (this.resolvedIamActorContext !== undefined) {
+      return this.resolvedIamActorContext;
+    }
+    if (!this.moduleRef) {
+      this.resolvedIamActorContext = null;
+      return null;
+    }
+    try {
+      this.resolvedIamActorContext =
+        this.moduleRef.get(IamActorContextService, { strict: false }) ?? null;
+    } catch {
+      this.resolvedIamActorContext = null;
+    }
+    return this.resolvedIamActorContext;
+  }
+
+  private getTaskWorkspaceRepository(): TaskWorkspaceRepository | null {
+    if (this.resolvedTaskWorkspaceRepo !== undefined) {
+      return this.resolvedTaskWorkspaceRepo;
+    }
+    if (!this.moduleRef) {
+      this.resolvedTaskWorkspaceRepo = null;
+      return null;
+    }
+    try {
+      this.resolvedTaskWorkspaceRepo =
+        this.moduleRef.get(TaskWorkspaceRepository, { strict: false }) ?? null;
+    } catch {
+      this.resolvedTaskWorkspaceRepo = null;
+    }
+    return this.resolvedTaskWorkspaceRepo;
+  }
 
   async resolveProject(
     headers: CaptureRequestHeaders,
@@ -63,15 +143,9 @@ export class WorkNotesAuthorizationService {
       return this.resolveProjectUncached(headers, normalizedProjectId);
     }
 
-    const now = Date.now();
-    const cached = this.projectActorCache.get(cacheKey);
-    if (cached) {
-      if (cached.expiresAt > now) {
-        return { ...cached.actor };
-      }
-      this.projectActorCache.delete(cacheKey);
-    }
-
+    // SEC-AUTH-007: Do NOT cache authorization decisions across sequential
+    // requests (eliminates 3s stale-revocation window). Keep in-flight request
+    // coalescing for simultaneous bursts only.
     const existingInFlight = this.inFlightProjectResolutions.get(cacheKey);
     if (existingInFlight) {
       const sharedActor = await existingInFlight;
@@ -85,7 +159,6 @@ export class WorkNotesAuthorizationService {
     this.inFlightProjectResolutions.set(cacheKey, resolutionPromise);
     try {
       const actor = await resolutionPromise;
-      this.storeCachedProjectActor(cacheKey, actor);
       return { ...actor };
     } finally {
       this.inFlightProjectResolutions.delete(cacheKey);
@@ -107,34 +180,48 @@ export class WorkNotesAuthorizationService {
     return `${credentialDigest}:${headers.organizationId ?? ''}:${normalizedProjectId}`;
   }
 
-  private storeCachedProjectActor(
-    cacheKey: string,
-    actor: WorkNotesActor,
-  ): void {
-    const now = Date.now();
-    if (this.projectActorCache.size >= PROJECT_AUTH_CACHE_MAX_ENTRIES) {
-      for (const [key, entry] of this.projectActorCache) {
-        if (entry.expiresAt <= now) {
-          this.projectActorCache.delete(key);
-        }
-      }
-      if (this.projectActorCache.size >= PROJECT_AUTH_CACHE_MAX_ENTRIES) {
-        for (const oldestKey of this.projectActorCache.keys()) {
-          this.projectActorCache.delete(oldestKey);
-          break;
-        }
-      }
-    }
-    this.projectActorCache.set(cacheKey, {
-      actor: { ...actor },
-      expiresAt: now + PROJECT_AUTH_CACHE_TTL_MS,
-    });
-  }
-
   private async resolveProjectUncached(
     headers: CaptureRequestHeaders,
     normalizedProjectId: string,
   ): Promise<WorkNotesActor> {
+    // BE-PERF-003: Prefer in-process IamActorContextService in monolith mode
+    // (1 parallel DB roundtrip, zero loopback HTTP hops, still per-request fresh
+    // with no cross-request stale revocation cache per SEC-AUTH-007).
+    const iamActorContext = this.getIamActorContext();
+    if (iamActorContext) {
+      const ctx = await iamActorContext.resolveProjectActorContext({
+        authorization: headers.authorization,
+        cookie: headers.cookie,
+        projectId: normalizedProjectId,
+        organizationHeader: headers.organizationId,
+        requireActiveProject: true,
+      });
+      if (
+        Array.isArray(ctx.actor.roles) &&
+        ctx.actor.roles.includes('PLATFORM_OPERATOR')
+      ) {
+        throw new ForbiddenException({
+          code: 'PLATFORM_OPERATOR_PROJECT_ACCESS_FORBIDDEN',
+          message: 'Platform operators cannot access project Work Reports.',
+        });
+      }
+      if (!ctx.isProjectMember && !ctx.isManager) {
+        throw this.projectNotFound();
+      }
+      return {
+        userId: ctx.actor.id,
+        userName: typeof ctx.actor.name === 'string' ? ctx.actor.name : '',
+        organizationId: ctx.actor.organizationId,
+        projectId: normalizedProjectId,
+        canReview: ctx.canReview,
+        canConfigure: ctx.canReview,
+        isManager: ctx.isManager,
+        isLeader: ctx.isLeader,
+        isProjectMember: ctx.isProjectMember,
+        ...(ctx.joinedAt ? { joinedAt: ctx.joinedAt } : {}),
+      };
+    }
+
     const identity = await this.request<IdentityResponse>(
       '/api/v1/auth/me',
       headers,
@@ -215,38 +302,28 @@ export class WorkNotesAuthorizationService {
     };
   }
 
-  async resolveTask(
-    headers: CaptureRequestHeaders,
-    projectId: string,
-    taskId: string,
-  ): Promise<WorkNotesActor> {
-    const actor = await this.resolveProject(headers, projectId);
-    if (!validId(taskId)) {
-      throw new NotFoundException({
-        code: 'TASK_NOT_FOUND',
-        message: 'Task not found.',
-      });
-    }
+  private normalizeTaskDoc(
+    doc: WorkspaceTaskDocument,
+  ): Record<string, unknown> {
+    return {
+      id: doc._id.toHexString(),
+      projectId: doc.projectId.toHexString(),
+      organizationId: doc.organizationId.toHexString(),
+      key: doc.key,
+      title: doc.title,
+      description: doc.description ?? null,
+      status: doc.status,
+      version: doc.version,
+      parentId: doc.parentId ? doc.parentId.toHexString() : null,
+      steps: doc.steps,
+    };
+  }
 
-    const normalizedTaskId = taskId.toLowerCase();
-    const taskServiceConfigured = Boolean(
-      this.config.get<string>('TASK_SERVICE_URL'),
-    );
-    const task = await this.request<Record<string, unknown>>(
-      `${taskServiceConfigured ? '' : '/api/v1'}/internal/tasks/projects/${actor.projectId}/tasks/${normalizedTaskId}`,
-      headers,
-      { service: 'task' },
-    );
-    if (
-      !task ||
-      String(task.id).toLowerCase() !== normalizedTaskId ||
-      String(task.projectId).toLowerCase() !== actor.projectId
-    ) {
-      throw new NotFoundException({
-        code: 'TASK_NOT_FOUND',
-        message: 'Task not found.',
-      });
-    }
+  private mapTaskToActor(
+    actor: WorkNotesActor,
+    normalizedTaskId: string,
+    task: Record<string, unknown>,
+  ): WorkNotesActor {
     const taskKey =
       typeof task.key === 'string' && task.key.trim().length > 0
         ? task.key.trim()
@@ -315,6 +392,165 @@ export class WorkNotesAuthorizationService {
           }
         : {}),
     };
+  }
+
+  private async resolveTaskForActor(
+    headers: CaptureRequestHeaders,
+    actor: WorkNotesActor,
+    normalizedTaskId: string,
+  ): Promise<WorkNotesActor> {
+    const taskRepo = this.getTaskWorkspaceRepository();
+    if (taskRepo) {
+      const taskDoc = await taskRepo.getTaskById(
+        actor.projectId,
+        normalizedTaskId,
+      );
+      if (
+        !taskDoc ||
+        taskDoc.organizationId.toHexString().toLowerCase() !==
+          actor.organizationId.toLowerCase() ||
+        taskDoc.deletedAt
+      ) {
+        throw new NotFoundException({
+          code: 'TASK_NOT_FOUND',
+          message: 'Task not found.',
+        });
+      }
+      return this.mapTaskToActor(
+        actor,
+        normalizedTaskId,
+        this.normalizeTaskDoc(taskDoc),
+      );
+    }
+
+    const taskServiceConfigured = Boolean(
+      this.config.get<string>('TASK_SERVICE_URL'),
+    );
+    const task = await this.request<Record<string, unknown>>(
+      `${taskServiceConfigured ? '' : '/api/v1'}/internal/tasks/projects/${actor.projectId}/tasks/${normalizedTaskId}`,
+      headers,
+      { service: 'task' },
+    );
+    if (
+      !task ||
+      String(task.id).toLowerCase() !== normalizedTaskId ||
+      String(task.projectId).toLowerCase() !== actor.projectId
+    ) {
+      throw new NotFoundException({
+        code: 'TASK_NOT_FOUND',
+        message: 'Task not found.',
+      });
+    }
+    return this.mapTaskToActor(actor, normalizedTaskId, task);
+  }
+
+  async resolveTask(
+    headers: CaptureRequestHeaders,
+    projectId: string,
+    taskId: string,
+  ): Promise<WorkNotesActor> {
+    const actor = await this.resolveProject(headers, projectId);
+    if (!validId(taskId)) {
+      throw new NotFoundException({
+        code: 'TASK_NOT_FOUND',
+        message: 'Task not found.',
+      });
+    }
+    return this.resolveTaskForActor(headers, actor, taskId.toLowerCase());
+  }
+
+  /**
+   * BE-PERF-001 / BE-PERF-003: Resolve task metadata/existence for a batch of
+   * taskIds using an already-authorized project actor. Uses ONE `$in` MongoDB
+   * query in monolith mode (zero loopback HTTP calls, zero repeated IAM auth).
+   */
+  async resolveTasksBatch(
+    headers: CaptureRequestHeaders,
+    actor: WorkNotesActor,
+    taskIds: readonly string[],
+  ): Promise<Map<string, WorkNotesActor | null>> {
+    const results = new Map<string, WorkNotesActor | null>();
+    const uniqueTaskIds = [
+      ...new Set(
+        taskIds
+          .map((id) => id.trim().toLowerCase())
+          .filter((id) => validId(id)),
+      ),
+    ];
+    if (uniqueTaskIds.length === 0) return results;
+
+    const taskRepo = this.getTaskWorkspaceRepository();
+    if (taskRepo) {
+      for (const id of uniqueTaskIds) {
+        results.set(id, null);
+      }
+      const rows = await taskRepo.db
+        .collection<WorkspaceTaskDocument>(WORKSPACE_TASKS_COLLECTION)
+        .find(
+          {
+            _id: { $in: uniqueTaskIds.map((id) => new Types.ObjectId(id)) },
+            organizationId: new Types.ObjectId(actor.organizationId),
+            projectId: new Types.ObjectId(actor.projectId),
+            deletedAt: { $in: [null, undefined] },
+          },
+          {
+            projection: {
+              _id: 1,
+              organizationId: 1,
+              projectId: 1,
+              key: 1,
+              title: 1,
+              description: 1,
+              status: 1,
+              version: 1,
+              parentId: 1,
+              steps: 1,
+            },
+          },
+        )
+        .toArray();
+      for (const doc of rows) {
+        const normalizedId = doc._id.toHexString().toLowerCase();
+        results.set(
+          normalizedId,
+          this.mapTaskToActor(actor, normalizedId, this.normalizeTaskDoc(doc)),
+        );
+      }
+      return results;
+    }
+
+    // Standalone microservice fallback: reuse already-resolved actor (never re-call resolveProject per task!)
+    const concurrency = 6;
+    let cursor = 0;
+    await Promise.all(
+      Array.from(
+        { length: Math.min(concurrency, uniqueTaskIds.length) },
+        async () => {
+          while (cursor < uniqueTaskIds.length) {
+            const candidateId = uniqueTaskIds[cursor];
+            cursor += 1;
+            try {
+              const resolved = await this.resolveTaskForActor(
+                headers,
+                actor,
+                candidateId,
+              );
+              results.set(candidateId, resolved);
+            } catch (err) {
+              if (
+                err instanceof NotFoundException ||
+                err instanceof ForbiddenException
+              ) {
+                results.set(candidateId, null);
+                continue;
+              }
+              throw err;
+            }
+          }
+        },
+      ),
+    );
+    return results;
   }
 
   /**
@@ -388,10 +624,18 @@ export class WorkNotesAuthorizationService {
     return related;
   }
 
-  async listActiveMembers(
+  /**
+   * BE-PERF-003: Fetch active project members and leaders in one combined pass
+   * (parallelizing memberships page 1 + leaders) instead of separate redundant
+   * IAM roster traversals.
+   */
+  async listActiveRoster(
     actor: WorkNotesActor,
     headers: CaptureRequestHeaders,
-  ): Promise<Array<{ userId: string; fullName: string; joinedAt: string }>> {
+  ): Promise<{
+    members: Array<{ userId: string; fullName: string; joinedAt: string }>;
+    leaders: Array<{ userId: string; fullName: string; joinedAt: string }>;
+  }> {
     if (!actor.canReview) {
       throw new ForbiddenException({
         code: 'PROJECT_REVIEW_PERMISSION_REQUIRED',
@@ -404,26 +648,196 @@ export class WorkNotesAuthorizationService {
         ? actor.joinedAt
         : new Date().toISOString();
 
-    const members = new Map<string, { fullName: string; joinedAt: string }>();
-    let page = 1;
-    let totalPages = 1;
-    do {
-      const result = await this.request<MembershipResponse>(
-        `/api/v1/iam/projects/${actor.projectId}/memberships?page=${page}&pageSize=100&status=ACTIVE`,
-        headers,
+    // BE-PERF-003: In monolith mode, read active roster directly via IAM
+    // MongoDB connection in 2 small parallel batches (0 loopback HTTP calls).
+    const iamDb = this.iamConnection?.db;
+    if (iamDb && validId(actor.organizationId) && validId(actor.projectId)) {
+      const orgObjId = new Types.ObjectId(actor.organizationId.toLowerCase());
+      const projObjId = new Types.ObjectId(actor.projectId.toLowerCase());
+      const [projectMemberships, leaderAssignments] = await Promise.all([
+        iamDb
+          .collection('project_memberships')
+          .find(
+            {
+              organizationId: orgObjId,
+              projectId: projObjId,
+              status: 'ACTIVE',
+            },
+            { projection: { userId: 1, joinedAt: 1, reactivatedAt: 1 } },
+          )
+          .toArray(),
+        iamDb
+          .collection('role_assignments')
+          .find(
+            {
+              organizationId: orgObjId,
+              projectId: projObjId,
+              roleCode: 'TEAM_LEADER',
+              status: { $ne: 'REVOKED' },
+              revokedAt: { $in: [null, undefined] },
+            },
+            { projection: { userId: 1, roleId: 1 } },
+          )
+          .toArray(),
+      ]);
+
+      const userObjIds = [
+        ...new Set(
+          projectMemberships
+            .map((m) => String(m.userId ?? '').toLowerCase())
+            .filter(validId),
+        ),
+      ].map((id) => new Types.ObjectId(id));
+      const roleObjIds = [
+        ...new Set(
+          leaderAssignments
+            .map((r) => String(r.roleId ?? '').toLowerCase())
+            .filter(validId),
+        ),
+      ].map((id) => new Types.ObjectId(id));
+
+      const [orgMemberships, activeUsers, validLeaderRoles] = await Promise.all(
+        [
+          userObjIds.length > 0
+            ? iamDb
+                .collection('organization_memberships')
+                .find(
+                  {
+                    organizationId: orgObjId,
+                    userId: { $in: userObjIds },
+                    status: 'ACTIVE',
+                  },
+                  { projection: { userId: 1 } },
+                )
+                .toArray()
+            : Promise.resolve([]),
+          userObjIds.length > 0
+            ? iamDb
+                .collection('users')
+                .find(
+                  { _id: { $in: userObjIds }, status: 'ACTIVE' },
+                  { projection: { _id: 1, fullName: 1, name: 1, email: 1 } },
+                )
+                .toArray()
+            : Promise.resolve([]),
+          roleObjIds.length > 0
+            ? iamDb
+                .collection('roles')
+                .find(
+                  { _id: { $in: roleObjIds }, code: 'TEAM_LEADER' },
+                  { projection: { _id: 1 } },
+                )
+                .toArray()
+            : Promise.resolve([]),
+        ],
       );
-      if (!Array.isArray(result?.data)) {
-        throw this.membersUnavailable();
+
+      const activeOrgUserIds = new Set(
+        orgMemberships.map((row) => String(row.userId).toLowerCase()),
+      );
+      const userById = new Map<string, string>();
+      for (const u of activeUsers) {
+        const uid = String(u._id).toLowerCase();
+        const displayName =
+          (typeof u.fullName === 'string' && u.fullName.trim()) ||
+          (typeof u.name === 'string' && u.name.trim()) ||
+          (typeof u.email === 'string' && u.email.trim()) ||
+          uid;
+        userById.set(uid, displayName);
       }
-      for (const membership of result.data) {
+      const validLeaderRoleIds = new Set(
+        validLeaderRoles.map((r) => String(r._id).toLowerCase()),
+      );
+      const leaderUserIds = new Set(
+        leaderAssignments
+          .filter(
+            (a) =>
+              !a.roleId ||
+              validLeaderRoleIds.has(String(a.roleId).toLowerCase()),
+          )
+          .map((a) => String(a.userId).toLowerCase()),
+      );
+
+      const members: Array<{
+        userId: string;
+        fullName: string;
+        joinedAt: string;
+      }> = [];
+      const leaders: Array<{
+        userId: string;
+        fullName: string;
+        joinedAt: string;
+      }> = [];
+      for (const membership of projectMemberships) {
+        const uid = String(membership.userId ?? '').toLowerCase();
+        if (!validId(uid) || !activeOrgUserIds.has(uid) || !userById.has(uid)) {
+          continue;
+        }
+        const joinedIso =
+          membership.joinedAt instanceof Date
+            ? membership.joinedAt.toISOString()
+            : typeof membership.joinedAt === 'string'
+              ? membership.joinedAt
+              : undefined;
+        const reactivatedIso =
+          membership.reactivatedAt instanceof Date
+            ? membership.reactivatedAt.toISOString()
+            : typeof membership.reactivatedAt === 'string'
+              ? membership.reactivatedAt
+              : undefined;
+        const effectiveJoinedAt =
+          resolveEffectiveJoinedAt(
+            { joinedAt: joinedIso, reactivatedAt: reactivatedIso },
+            fallbackJoinedAt,
+          ) ?? fallbackJoinedAt;
+        const entry = {
+          userId: uid,
+          fullName: userById.get(uid) ?? uid,
+          joinedAt: effectiveJoinedAt,
+        };
+        if (leaderUserIds.has(uid)) {
+          leaders.push(entry);
+        } else {
+          members.push(entry);
+        }
+      }
+      return { members, leaders };
+    }
+
+    const membersMap = new Map<
+      string,
+      { fullName: string; joinedAt: string }
+    >();
+    const [firstPage, leadersResponse] = await Promise.all([
+      this.request<MembershipResponse>(
+        `/api/v1/iam/projects/${actor.projectId}/memberships?page=1&pageSize=100&status=ACTIVE`,
+        headers,
+      ),
+      this.request<{
+        data?: Array<{
+          userId?: string;
+          fullName?: string;
+          email?: string;
+          status?: string;
+        }>;
+      }>(`/api/v1/iam/projects/${actor.projectId}/leaders`, headers),
+    ]);
+
+    if (
+      !Array.isArray(firstPage?.data) ||
+      !Array.isArray(leadersResponse?.data)
+    ) {
+      throw this.membersUnavailable();
+    }
+
+    const ingestPage = (result: MembershipResponse) => {
+      for (const membership of result.data ?? []) {
         if (validId(membership.userId ?? '')) {
           const userId = membership.userId!.toLowerCase();
           const resolvedJoinedAt =
-            membership.joinedAt &&
-            Number.isFinite(Date.parse(membership.joinedAt))
-              ? membership.joinedAt
-              : fallbackJoinedAt;
-          members.set(userId, {
+            resolveEffectiveJoinedAt(membership, fallbackJoinedAt) ??
+            fallbackJoinedAt;
+          membersMap.set(userId, {
             fullName:
               membership.user?.fullName?.trim() ||
               membership.user?.email?.trim() ||
@@ -432,58 +846,19 @@ export class WorkNotesAuthorizationService {
           });
         }
       }
-      totalPages = result.pagination?.totalPages ?? 1;
-      if (
-        !Number.isSafeInteger(totalPages) ||
-        totalPages < 1 ||
-        totalPages > 1000
-      ) {
-        throw this.membersUnavailable();
-      }
-      page += 1;
-    } while (page <= totalPages);
+    };
 
-    const leadersResponse = await this.request<{
-      data?: Array<{ userId?: string; status?: string }>;
-    }>(`/api/v1/iam/projects/${actor.projectId}/leaders`, headers);
-    if (!Array.isArray(leadersResponse?.data)) {
+    ingestPage(firstPage);
+    const totalPages = firstPage.pagination?.totalPages ?? 1;
+    if (
+      !Number.isSafeInteger(totalPages) ||
+      totalPages < 1 ||
+      totalPages > 1000
+    ) {
       throw this.membersUnavailable();
     }
-    const leaderIds = new Set(
-      leadersResponse.data
-        .filter(
-          (leader) => leader.status === undefined || leader.status === 'ACTIVE',
-        )
-        .map((leader) => leader.userId)
-        .filter((id): id is string => typeof id === 'string')
-        .map((id) => id.toLowerCase()),
-    );
 
-    return [...members.entries()]
-      .filter(([userId]) => !leaderIds.has(userId))
-      .map(([userId, membership]) => ({ userId, ...membership }));
-  }
-
-  async listActiveLeaders(
-    actor: WorkNotesActor,
-    headers: CaptureRequestHeaders,
-  ): Promise<Array<{ userId: string; fullName: string; joinedAt: string }>> {
-    if (!actor.canReview) {
-      throw new ForbiddenException({
-        code: 'PROJECT_REVIEW_PERMISSION_REQUIRED',
-        message: 'Project review permission is required.',
-      });
-    }
-
-    const fallbackJoinedAt =
-      actor.joinedAt && Number.isFinite(Date.parse(actor.joinedAt))
-        ? actor.joinedAt
-        : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
-    const members = new Map<string, { fullName: string; joinedAt: string }>();
-    let page = 1;
-    let totalPages = 1;
-    do {
+    for (let page = 2; page <= totalPages; page += 1) {
       const result = await this.request<MembershipResponse>(
         `/api/v1/iam/projects/${actor.projectId}/memberships?page=${page}&pageSize=100&status=ACTIVE`,
         headers,
@@ -491,58 +866,24 @@ export class WorkNotesAuthorizationService {
       if (!Array.isArray(result?.data)) {
         throw this.membersUnavailable();
       }
-      for (const membership of result.data) {
-        if (validId(membership.userId ?? '')) {
-          const userId = membership.userId!.toLowerCase();
-          const resolvedJoinedAt =
-            membership.joinedAt &&
-            Number.isFinite(Date.parse(membership.joinedAt))
-              ? membership.joinedAt
-              : fallbackJoinedAt;
-          members.set(userId, {
-            fullName:
-              membership.user?.fullName?.trim() ||
-              membership.user?.email?.trim() ||
-              userId,
-            joinedAt: resolvedJoinedAt,
-          });
-        }
-      }
-      totalPages = result.pagination?.totalPages ?? 1;
-      if (
-        !Number.isSafeInteger(totalPages) ||
-        totalPages < 1 ||
-        totalPages > 1000
-      ) {
-        throw this.membersUnavailable();
-      }
-      page += 1;
-    } while (page <= totalPages);
-
-    const leadersResponse = await this.request<{
-      data?: Array<{
-        userId?: string;
-        fullName?: string;
-        email?: string;
-        status?: string;
-      }>;
-    }>(`/api/v1/iam/projects/${actor.projectId}/leaders`, headers);
-    if (!Array.isArray(leadersResponse?.data)) {
-      throw this.membersUnavailable();
+      ingestPage(result);
     }
 
-    const activeLeaders: Array<{
+    const leaderIds = new Set<string>();
+    const leaders: Array<{
       userId: string;
       fullName: string;
       joinedAt: string;
     }> = [];
     for (const leader of leadersResponse.data) {
       if (leader.status !== undefined && leader.status !== 'ACTIVE') continue;
-      if (typeof leader.userId !== 'string' || !validId(leader.userId))
+      if (typeof leader.userId !== 'string' || !validId(leader.userId)) {
         continue;
+      }
       const userId = leader.userId.toLowerCase();
-      const memberEntry = members.get(userId);
-      activeLeaders.push({
+      leaderIds.add(userId);
+      const memberEntry = membersMap.get(userId);
+      leaders.push({
         userId,
         fullName:
           leader.fullName?.trim() ||
@@ -552,7 +893,28 @@ export class WorkNotesAuthorizationService {
         joinedAt: memberEntry?.joinedAt ?? fallbackJoinedAt,
       });
     }
-    return activeLeaders;
+
+    const members = [...membersMap.entries()]
+      .filter(([userId]) => !leaderIds.has(userId))
+      .map(([userId, membership]) => ({ userId, ...membership }));
+
+    return { members, leaders };
+  }
+
+  async listActiveMembers(
+    actor: WorkNotesActor,
+    headers: CaptureRequestHeaders,
+  ): Promise<Array<{ userId: string; fullName: string; joinedAt: string }>> {
+    const roster = await this.listActiveRoster(actor, headers);
+    return roster.members;
+  }
+
+  async listActiveLeaders(
+    actor: WorkNotesActor,
+    headers: CaptureRequestHeaders,
+  ): Promise<Array<{ userId: string; fullName: string; joinedAt: string }>> {
+    const roster = await this.listActiveRoster(actor, headers);
+    return roster.leaders;
   }
 
   private async resolveActiveMemberJoinedAt(
@@ -579,13 +941,11 @@ export class WorkNotesAuthorizationService {
           typeof membership.userId === 'string' &&
           membership.userId.toLowerCase() === normalizedUserId
         ) {
-          if (
-            !membership.joinedAt ||
-            !Number.isFinite(Date.parse(membership.joinedAt))
-          ) {
+          const effectiveJoinedAt = resolveEffectiveJoinedAt(membership);
+          if (!effectiveJoinedAt) {
             throw this.membersUnavailable();
           }
-          return membership.joinedAt;
+          return effectiveJoinedAt;
         }
       }
       totalPages = result.pagination?.totalPages ?? 1;
@@ -616,8 +976,10 @@ export class WorkNotesAuthorizationService {
     if (incoming.authorization)
       headers.set('authorization', incoming.authorization);
     if (incoming.cookie) headers.set('cookie', incoming.cookie);
-    if (incoming.organizationId)
+    if (incoming.organizationId) {
       headers.set('x-organization-id', incoming.organizationId);
+      headers.set(EXPECTED_ORGANIZATION_ID_HEADER, incoming.organizationId);
+    }
     if (incoming.requestId) headers.set('x-request-id', incoming.requestId);
 
     let response: Response;
@@ -626,6 +988,7 @@ export class WorkNotesAuthorizationService {
         method: 'GET',
         headers,
         cache: 'no-store',
+        redirect: 'error',
         signal: AbortSignal.timeout(
           this.config.get<number>('BACKEND_TIMEOUT_MS') ?? 10_000,
         ),

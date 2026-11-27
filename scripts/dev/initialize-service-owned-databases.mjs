@@ -70,9 +70,6 @@ const EXPECTED_SEED = Object.freeze({
         'organization.memberships.manage',
         'project.visibility.manage',
         'project.leader.manage',
-        'project.members.list',
-        'project.members.add',
-        'project.members.remove',
       ],
       isSystem: true,
     },
@@ -92,7 +89,7 @@ const EXPECTED_SEED = Object.freeze({
     {
       code: 'MEMBER',
       name: 'Member',
-      permissions: ['project.read', 'project.members.list'],
+      permissions: ['project.read'],
       isSystem: true,
     },
   ],

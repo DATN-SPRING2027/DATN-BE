@@ -1,5 +1,8 @@
+import { Logger } from '@nestjs/common';
 import { Types, type Connection } from 'mongoose';
 import {
+  WORKSPACE_COLLECTION_VALIDATORS,
+  WORKSPACE_INDEX_CATALOGUE,
   WORKSPACE_TASKS_COLLECTION,
   type WorkspaceTaskDocument,
 } from './task-workspace.types';
@@ -111,6 +114,7 @@ describe('TaskWorkspaceRepository', () => {
     expect(tasks.findOneAndUpdate).toHaveBeenCalledWith(
       {
         _id: new Types.ObjectId(taskId),
+        organizationId: new Types.ObjectId(organizationId),
         projectId: new Types.ObjectId(projectId),
         version: 1,
       },
@@ -257,6 +261,7 @@ describe('TaskWorkspaceRepository', () => {
     expect(tasks.findOneAndUpdate).toHaveBeenCalledWith(
       {
         _id: new Types.ObjectId(taskId),
+        organizationId: new Types.ObjectId(organizationId),
         projectId: new Types.ObjectId(projectId),
         status: 'TODO',
         version: 1,
@@ -264,5 +269,62 @@ describe('TaskWorkspaceRepository', () => {
       expect.objectContaining({ $unset: { subtaskCounts: '' } }),
       expect.objectContaining({ returnDocument: 'after', session }),
     );
+  });
+
+  it('boots cleanly with a warning when additive deadline_scan_active_status_due_cursor is not yet migrated, while still requiring core indexes', async () => {
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const collectionsList = Object.entries(WORKSPACE_COLLECTION_VALIDATORS).map(
+      ([name, validator]) => ({
+        name,
+        options: {
+          validator,
+          validationLevel: 'strict',
+          validationAction: 'error',
+        },
+      }),
+    );
+    const db = {
+      listCollections: jest.fn(() => ({
+        toArray: jest.fn().mockResolvedValue(collectionsList),
+      })),
+      collection: jest.fn((collName: string) => {
+        const specs = WORKSPACE_INDEX_CATALOGUE[collName] ?? [];
+        const existingIndexes = specs
+          .filter((spec) => !spec.optionalAdditive)
+          .map((spec) => ({
+            name: spec.name,
+            key: spec.key,
+            ...(spec.unique ? { unique: true } : {}),
+            ...(spec.expireAfterSeconds !== undefined
+              ? { expireAfterSeconds: spec.expireAfterSeconds }
+              : {}),
+            ...(spec.partialFilterExpression
+              ? { partialFilterExpression: spec.partialFilterExpression }
+              : {}),
+          }));
+        return {
+          collectionName: collName,
+          listIndexes: jest.fn(() => ({
+            toArray: jest
+              .fn()
+              .mockResolvedValue([
+                { name: '_id_', key: { _id: 1 } },
+                ...existingIndexes,
+              ]),
+          })),
+        };
+      }),
+    };
+    const repository = new TaskWorkspaceRepository({
+      useDb: jest.fn(() => ({ db })),
+    } as unknown as Connection);
+
+    await expect(repository.ensureIndexes()).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('deadline_scan_active_status_due_cursor'),
+    );
+    warnSpy.mockRestore();
   });
 });

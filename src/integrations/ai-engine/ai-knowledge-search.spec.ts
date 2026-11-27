@@ -4,6 +4,7 @@ import { AiChatService } from './ai-chat.service';
 import { HttpAiEngineClient } from './http-ai-engine.client';
 import type { AiEngineClient } from './ai-engine.port';
 import type { AuthenticationApplicationService } from '../../services/iam/application/authentication/authentication.application.service';
+import type { IamActorContextService } from '../../services/iam/application/projects/iam-actor-context.service';
 import type { ProjectService } from '../../services/iam/application/projects/project.service';
 
 describe('SAG Knowledge Search & Grounded Ask Bridge (Packet B)', () => {
@@ -140,6 +141,18 @@ describe('SAG Knowledge Search & Grounded Ask Bridge (Packet B)', () => {
         },
       });
 
+    const actorContext = {
+      resolveProjectActorContext: jest.fn().mockResolvedValue({
+        actor,
+        project,
+        isProjectMember: true,
+        isLeader: false,
+        isManager: false,
+        joinedAt: null,
+        canReview: false,
+      }),
+    } as unknown as IamActorContextService;
+
     const service = new AiChatService(
       {
         getCurrentIdentity: jest.fn().mockResolvedValue(actor),
@@ -151,6 +164,10 @@ describe('SAG Knowledge Search & Grounded Ask Bridge (Packet B)', () => {
         request: requestMock,
         requestStream: jest.fn(),
       } as AiEngineClient,
+      undefined,
+      undefined,
+      undefined,
+      actorContext,
     );
 
     const result = await service.searchKnowledge(
@@ -245,6 +262,18 @@ describe('SAG Knowledge Search & Grounded Ask Bridge (Packet B)', () => {
       }),
     });
 
+    const actorContext = {
+      resolveProjectActorContext: jest.fn().mockResolvedValue({
+        actor,
+        project,
+        isProjectMember: true,
+        isLeader: false,
+        isManager: false,
+        joinedAt: null,
+        canReview: false,
+      }),
+    } as unknown as IamActorContextService;
+
     const service = new AiChatService(
       {
         getCurrentIdentity: jest.fn().mockResolvedValue(actor),
@@ -256,6 +285,10 @@ describe('SAG Knowledge Search & Grounded Ask Bridge (Packet B)', () => {
         request: requestMock,
         requestStream: requestStreamMock,
       } as AiEngineClient,
+      undefined,
+      undefined,
+      undefined,
+      actorContext,
     );
 
     const answer = await service.askKnowledgeQuestion(

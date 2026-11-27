@@ -38,7 +38,6 @@ export function findProtectedRanges(
     /\[\[WN_SEC:[A-Z_]+:[a-f0-9]{10,16}\]\]/g,
     /(`+)[^\r\n]*?\1/g,
     /https?:\/\/[^\s<>"`]+/g,
-    /__WN_PROTECTED_[A-Za-z0-9_]+?__/g,
     // Technical literals are immutable even outside Markdown. Preserve exact
     // spelling/separators rather than letting the model localize them.
     /\b[A-Z][A-Z0-9]*-\d+\b/g,
@@ -65,7 +64,7 @@ export function findProtectedRanges(
 export function protectText(
   text: string,
   extra: readonly Readonly<{ start: number; end: number }>[] = [],
-): { text: string; fragments: Fragment[] } {
+): { text: string; fragments: Fragment[]; prefix: string } {
   const merged = findProtectedRanges(text, extra);
   let salt = 0;
   let prefix: string;
@@ -84,7 +83,7 @@ export function protectText(
     masked += text.slice(cursor, range.start) + marker;
     cursor = range.end;
   }
-  return { text: masked + text.slice(cursor), fragments };
+  return { text: masked + text.slice(cursor), fragments, prefix };
 }
 
 export function restoreText(

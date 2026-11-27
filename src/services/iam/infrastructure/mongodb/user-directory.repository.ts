@@ -471,6 +471,50 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     return this.find(organizationId, userId);
   }
 
+  /**
+   * SEC-AUTH-005: Prevent Organization ADMIN from mutating or suspending any
+   * user who holds an active Platform Operator authority assignment.
+   */
+  private async assertTargetNotPlatformOperator(
+    userObjectId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<void> {
+    const authorityModel = this.connection?.models[
+      modelName('platform_authority_assignments')
+    ] as Model<{ subjectUserId: Types.ObjectId; status: string }> | undefined;
+    if (authorityModel) {
+      const assignment = await authorityModel
+        .findOne({ subjectUserId: userObjectId, status: 'ACTIVE' }, { _id: 1 })
+        .session(session)
+        .lean()
+        .exec();
+      if (assignment) {
+        throw new ForbiddenException({
+          code: 'PLATFORM_OPERATOR_PROTECTED',
+          message:
+            'Platform operator accounts cannot be modified from organization scope.',
+        });
+      }
+      return;
+    }
+    const db = this.connection?.db;
+    if (db) {
+      const assignment = await db
+        .collection('platform_authority_assignments')
+        .findOne(
+          { subjectUserId: userObjectId, status: 'ACTIVE' },
+          { projection: { _id: 1 }, session },
+        );
+      if (assignment) {
+        throw new ForbiddenException({
+          code: 'PLATFORM_OPERATOR_PROTECTED',
+          message:
+            'Platform operator accounts cannot be modified from organization scope.',
+        });
+      }
+    }
+  }
+
   private async updateProfileAtomically(
     organizationId: string,
     userId: string,
@@ -483,6 +527,25 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
     const userObjectId = new Types.ObjectId(userId);
     try {
       await session.withTransaction(async () => {
+        await this.assertTargetNotPlatformOperator(userObjectId, session);
+        // SEC-AUTH-005: Block Org ADMIN from overwriting shared multi-org user profiles.
+        const organizations = await this.memberships()
+          .distinct('organizationId', {
+            userId: userObjectId,
+            status: 'ACTIVE',
+          })
+          .session(session)
+          .exec();
+        if (
+          organizations.length !== 1 ||
+          String(organizations[0]) !== organizationId
+        ) {
+          throw new ConflictException({
+            code: 'SHARED_ACCOUNT_PROFILE_CHANGE',
+            message:
+              'Profile of a shared multi-organization account cannot be changed here.',
+          });
+        }
         const existing = await this.users()
           .findById(userObjectId, { fullName: 1, avatarUrl: 1 })
           .session(session)
@@ -573,6 +636,8 @@ export class MongoUserDirectoryRepository implements UserDirectoryRepositoryPort
             message: 'Organization admin access required.',
           });
         }
+
+        await this.assertTargetNotPlatformOperator(userObjectId, session);
 
         const organizations = await this.memberships()
           .distinct('organizationId', {

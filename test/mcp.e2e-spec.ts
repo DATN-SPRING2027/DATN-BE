@@ -1,4 +1,8 @@
-import { INestApplication, RequestMethod } from '@nestjs/common';
+import {
+  INestApplication,
+  NotFoundException,
+  RequestMethod,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -15,6 +19,7 @@ import { AccessTokenService } from '../src/services/iam/application/authenticati
 import { AUTH_SECURITY_STORE } from '../src/services/iam/application/authentication/auth-security.store';
 import { AUTHENTICATION_REPOSITORY } from '../src/services/iam/application/authentication/authentication.repository';
 import { ORGANIZATION_CONTEXT_RESOLVER } from '../src/services/iam/application/authentication/organization-context.resolver';
+import { IamActorContextService } from '../src/services/iam/application/projects/iam-actor-context.service';
 import { PROJECT_ACCESS_REPOSITORY } from '../src/services/iam/application/projects/project-access.repository';
 import { PROJECT_REPOSITORY } from '../src/services/iam/application/projects/project.repository';
 import { McpApiKeysController } from '../src/services/iam/controllers/mcp-api-keys.controller';
@@ -212,6 +217,93 @@ describe('Continuum System-Wide MCP & API Key Lifecycle (E2E)', () => {
       })
       .overrideProvider(AI_ENGINE_CLIENT)
       .useValue(aiEngineMock)
+      .overrideProvider(IamActorContextService)
+      .useValue({
+        resolveProjectActorContext: jest.fn(
+          (input: {
+            actor?: {
+              id: string;
+              organizationId: string;
+              mcpGrant?: { allowedProjectIds: string[] | null };
+            };
+            projectId: string;
+          }) => {
+            const normalizedProjectId = input.projectId.toLowerCase();
+            const allowed = input.actor?.mcpGrant?.allowedProjectIds;
+            if (
+              Array.isArray(allowed) &&
+              !allowed.some((id) => id.toLowerCase() === normalizedProjectId)
+            ) {
+              return Promise.reject(
+                new NotFoundException({
+                  code: 'PROJECT_NOT_FOUND',
+                  message: 'Project not found.',
+                }),
+              );
+            }
+            if (
+              normalizedProjectId !== PROJECT_A &&
+              normalizedProjectId !== PROJECT_B
+            ) {
+              return Promise.reject(
+                new NotFoundException({
+                  code: 'PROJECT_NOT_FOUND',
+                  message: 'Project not found.',
+                }),
+              );
+            }
+            return Promise.resolve({
+              actor: input.actor,
+              project: {
+                id: normalizedProjectId,
+                organizationId: ORG_ID,
+                name:
+                  normalizedProjectId === PROJECT_A
+                    ? 'Project Alpha'
+                    : 'Project Beta',
+                code: normalizedProjectId === PROJECT_A ? 'ALPHA' : 'BETA',
+                status: 'ACTIVE' as const,
+                visibility: 'PRIVATE' as const,
+              },
+              isProjectMember: true,
+              isLeader: true,
+              isManager: true,
+              joinedAt: '2026-01-01T00:00:00.000Z',
+              canReview: true,
+            });
+          },
+        ),
+        listActiveMemberProjects: jest.fn(
+          (actor: { mcpGrant?: { allowedProjectIds: string[] | null } }) => {
+            const all = [
+              {
+                id: PROJECT_A,
+                organizationId: ORG_ID,
+                name: 'Project Alpha',
+                code: 'ALPHA',
+                status: 'ACTIVE' as const,
+                visibility: 'PRIVATE' as const,
+              },
+              {
+                id: PROJECT_B,
+                organizationId: ORG_ID,
+                name: 'Project Beta',
+                code: 'BETA',
+                status: 'ACTIVE' as const,
+                visibility: 'PRIVATE' as const,
+              },
+            ];
+            const allowed = actor.mcpGrant?.allowedProjectIds;
+            if (!Array.isArray(allowed)) {
+              return Promise.resolve(all);
+            }
+            const allowedSet = new Set(allowed.map((id) => id.toLowerCase()));
+            return Promise.resolve(
+              all.filter((project) => allowedSet.has(project.id.toLowerCase())),
+            );
+          },
+        ),
+      })
       .overrideProvider(NOTIFICATION_REALTIME_PUBLISHER)
       .useValue({
         publish: jest.fn().mockResolvedValue(undefined),

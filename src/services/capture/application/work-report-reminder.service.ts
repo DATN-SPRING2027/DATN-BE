@@ -38,6 +38,22 @@ export class WorkReportReminderService {
           organizationId: new Types.ObjectId(project.organizationId),
           projectId: new Types.ObjectId(project.projectId),
         };
+        const recipientEmailCache = new Map<string, string | null>();
+        const resolveRecipientEmail = async (
+          memberUserId: string,
+        ): Promise<string | null> => {
+          if (recipientEmailCache.has(memberUserId)) {
+            return recipientEmailCache.get(memberUserId) ?? null;
+          }
+          const resolved =
+            (await this.roster.activeReportRecipientEmail(
+              project.organizationId,
+              project.projectId,
+              memberUserId,
+            )) ?? null;
+          recipientEmailCache.set(memberUserId, resolved);
+          return resolved;
+        };
         const settings = await db.collection('work_report_settings').findOne(
           {
             ...filter,
@@ -96,9 +112,7 @@ export class WorkReportReminderService {
               );
               if (dueAt <= claimTime) continue;
               const eventKey = `work-report-reminder:${String(report._id)}:${dueAt.getTime()}`;
-              const email = await this.roster.activeReportRecipientEmail(
-                project.organizationId,
-                project.projectId,
+              const email = await resolveRecipientEmail(
                 String(report.memberUserId),
               );
               if (!email) continue;
@@ -127,6 +141,7 @@ export class WorkReportReminderService {
               const claim = await reports.updateOne(
                 {
                   _id: report._id,
+                  ...filter,
                   status: { $in: ['DRAFT', 'CHANGES_REQUESTED'] },
                   dueAt,
                   $and: [
@@ -163,7 +178,11 @@ export class WorkReportReminderService {
                 project.projectName,
               );
               await reports.updateOne(
-                { _id: report._id, reminderEmailLeaseToken: leaseToken },
+                {
+                  _id: report._id,
+                  ...filter,
+                  reminderEmailLeaseToken: leaseToken,
+                },
                 {
                   $set: {
                     reminderEmailDueAt: dueAt,

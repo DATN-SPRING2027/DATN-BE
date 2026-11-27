@@ -9,6 +9,7 @@ import { ChatHealthController } from './controllers/chat-health.controller';
 import { ChatRealtimeGateway } from './controllers/chat-realtime.gateway';
 import { ChatInfrastructureModule } from './infrastructure/chat.infrastructure.module';
 import { ChatIamClient } from './application/chat-iam.client';
+import { ChatHistoryCacheInvalidator } from './application/chat-history-cache';
 import { ChatRealtimeService } from './application/chat-realtime.service';
 import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
 import {
@@ -26,6 +27,7 @@ import { RedisService } from './infrastructure/redis/redis.service';
     ChatFeaturesService,
     ChatTrafficGuard,
     ChatIamClient,
+    ChatHistoryCacheInvalidator,
     ChatRealtimeService,
     ChatRealtimeGateway,
     NotificationCenterRepository,

@@ -1,12 +1,15 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   Param,
   Post,
   Query,
+  Req,
   Res,
+  UnauthorizedException,
   UnprocessableEntityException,
   UseGuards,
 } from '@nestjs/common';
@@ -16,7 +19,10 @@ import { HealthResponse } from '../../../health/health.response';
 import { PlatformIntegrationReadService } from '../application/platform-integration-read.service';
 import { PlatformIntegrationOperationsService } from '../application/platform-integration-operations.service';
 import { JiraApplicationService } from '../application/jira.service';
-import { PlatformServiceOperationsGuard } from './platform-service-operations.guard';
+import {
+  PlatformServiceOperationsGuard,
+  type PlatformOpsAuthenticatedRequest,
+} from './platform-service-operations.guard';
 import type {
   JiraConnectionStatus,
   PlatformIntegrationListInput,
@@ -24,12 +30,18 @@ import type {
 
 function parseIntegrationOperationContext(
   body: unknown,
+  verifiedActorUserId: string | undefined,
   allowedAdditionalKeys: readonly string[] = [],
 ): {
   actorUserId: string;
   idempotencyKey: string;
   correlationId?: string;
 } {
+  if (!verifiedActorUserId) {
+    throw new UnauthorizedException({
+      code: 'PLATFORM_SERVICE_AUTH_INVALID',
+    });
+  }
   if (typeof body !== 'object' || body === null || Array.isArray(body))
     throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
   const record = body as Record<string, unknown>;
@@ -43,14 +55,26 @@ function parseIntegrationOperationContext(
           ...allowedAdditionalKeys,
         ].includes(key),
     ) ||
-    typeof record.actorUserId !== 'string' ||
+    (record.actorUserId !== undefined &&
+      typeof record.actorUserId !== 'string') ||
     typeof record.idempotencyKey !== 'string' ||
     (record.correlationId !== undefined &&
       typeof record.correlationId !== 'string')
   )
     throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });
+
+  if (
+    typeof record.actorUserId === 'string' &&
+    record.actorUserId.trim().toLowerCase() !==
+      verifiedActorUserId.toLowerCase()
+  ) {
+    throw new ForbiddenException({
+      code: 'PLATFORM_SERVICE_ACTOR_MISMATCH',
+    });
+  }
+
   return {
-    actorUserId: record.actorUserId,
+    actorUserId: verifiedActorUserId.toLowerCase(),
     idempotencyKey: record.idempotencyKey,
     ...(typeof record.correlationId === 'string'
       ? { correlationId: record.correlationId }
@@ -98,12 +122,13 @@ export class JiraController {
   testPlatformIntegrationConnection(
     @Param('integrationId') integrationId: string,
     @Body() body: unknown,
+    @Req() request: PlatformOpsAuthenticatedRequest,
     @Res({ passthrough: true }) response: Response,
   ) {
     response.setHeader('Cache-Control', 'no-store');
     return this.platformIntegrationOperations.testConnection({
       integrationId,
-      ...parseIntegrationOperationContext(body),
+      ...parseIntegrationOperationContext(body, request.platformOpsActorUserId),
     });
   }
 
@@ -113,16 +138,22 @@ export class JiraController {
   reconnectPlatformIntegration(
     @Param('integrationId') integrationId: string,
     @Body() body: unknown,
+    @Req() request: PlatformOpsAuthenticatedRequest,
     @Res({ passthrough: true }) response: Response,
   ) {
     response.setHeader('Cache-Control', 'no-store');
-    const context = parseIntegrationOperationContext(body, [
-      'expectedUpdatedAt',
-    ]);
+    const context = parseIntegrationOperationContext(
+      body,
+      request.platformOpsActorUserId,
+      ['expectedUpdatedAt'],
+    );
     const record = body as Record<string, unknown>;
+    const expectedKeys =
+      2 +
+      (record.actorUserId === undefined ? 0 : 1) +
+      (record.correlationId === undefined ? 0 : 1);
     if (
-      Object.keys(record).length !==
-        3 + (record.correlationId === undefined ? 0 : 1) ||
+      Object.keys(record).length !== expectedKeys ||
       typeof record.expectedUpdatedAt !== 'string'
     )
       throw new UnprocessableEntityException({ code: 'VALIDATION_FAILED' });

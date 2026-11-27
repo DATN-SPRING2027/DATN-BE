@@ -33,6 +33,11 @@ spec:
             matchLabels:
               app.kubernetes.io/name: {{ include "continuum-ai.name" . }}
               app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: gateway
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "continuum-ai.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: worker
         - podSelector:
             matchLabels:
@@ -85,6 +90,12 @@ spec:
           port: 3007
         - protocol: TCP
           port: 3008
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
     - to:
         - namespaceSelector: {}
       ports:
@@ -92,6 +103,20 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # External HTTPS (R2/S3/Google OAuth/LLM APIs), SMTP (465/587), SAG API (8000), OTel OTLP (4317/4318)
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -123,6 +148,11 @@ spec:
               app.kubernetes.io/name: {{ include "continuum-ai.name" . }}
               app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: domain-service
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "continuum-ai.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: worker
       ports:
         - protocol: TCP
           port: {{ .Values.mongodb.port }}

@@ -47,4 +47,7 @@ export interface AuthorizationEvidenceProvider {
     userId: string,
     permission: PlatformPermission,
   ): Promise<PlatformPermissionEvidence | null>;
+  loadAllPlatformPermissions?(
+    userId: string,
+  ): Promise<PlatformPermissionEvidence | null>;
 }

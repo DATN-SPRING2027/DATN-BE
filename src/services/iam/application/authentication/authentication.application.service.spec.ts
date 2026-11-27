@@ -51,6 +51,7 @@ describe('AuthenticationApplicationService', () => {
   };
   let securityStore: {
     consumeRateLimit: jest.Mock;
+    isRateLimited: jest.Mock;
     clearRateLimit: jest.Mock;
     isTokenRevoked: jest.Mock;
     revokeToken: jest.Mock;
@@ -127,6 +128,7 @@ describe('AuthenticationApplicationService', () => {
     };
     securityStore = {
       consumeRateLimit: jest.fn().mockResolvedValue(true),
+      isRateLimited: jest.fn().mockResolvedValue(false),
       clearRateLimit: jest.fn().mockResolvedValue(undefined),
       isTokenRevoked: jest.fn().mockResolvedValue(false),
       revokeToken: jest.fn().mockResolvedValue(undefined),
@@ -465,13 +467,16 @@ describe('AuthenticationApplicationService', () => {
     expect(typeof signedClaims?.sid).toBe('string');
   });
 
-  it('does not issue a Platform session without a current approved assignment', async () => {
+  it('does not issue a Platform session without a current approved assignment and returns uniform 401 (no role oracle)', async () => {
     await expect(
       service.loginPlatform({
         email: account.email,
         password: 'correct-password',
       }),
-    ).rejects.toMatchObject({ status: 403 });
+    ).rejects.toMatchObject({
+      status: 401,
+      response: { code: 'AUTHENTICATION_FAILED' },
+    });
     expect(repository.createRefreshSession.mock.calls).toHaveLength(0);
     expect(accessTokens.signAccessToken.mock.calls).toHaveLength(0);
   });
@@ -787,7 +792,7 @@ describe('AuthenticationApplicationService', () => {
     );
   });
 
-  it('returns 429 for excess wrong guesses but permits the correct password', async () => {
+  it('enforces per-account lockout BEFORE password verification even for the correct password (SEC-AUTH-003)', async () => {
     credentials.verifyPassword.mockResolvedValueOnce({
       verified: false,
       needsRehash: false,
@@ -808,16 +813,22 @@ describe('AuthenticationApplicationService', () => {
       5,
       900,
     );
+
+    // Account is now locked out: even the correct password from another IP MUST be rejected with 429
+    // without touching MongoDB or running password verification.
+    securityStore.isRateLimited.mockResolvedValueOnce(true);
+    credentials.verifyPassword.mockClear();
+    repository.findAccountByEmail.mockClear();
     await expect(
       service.login({
         email: account.email,
         password: 'correct',
         sourceIp: '203.0.113.9',
       }),
-    ).resolves.toHaveProperty('accessToken');
-    expect(securityStore.clearRateLimit).toHaveBeenCalledWith(
-      expect.stringMatching(/^auth:login:account:[a-f0-9]{64}$/),
-    );
+    ).rejects.toMatchObject({ status: 429 });
+    expect(repository.findAccountByEmail.mock.calls).toHaveLength(0);
+    expect(credentials.verifyPassword.mock.calls).toHaveLength(0);
+    expect(securityStore.clearRateLimit.mock.calls).toHaveLength(0);
   });
 
   it('returns the verified identity with current organization roles at /me', async () => {
@@ -1103,7 +1114,6 @@ describe('AuthenticationApplicationService', () => {
     await expect(
       service.getCurrentPlatformSubject('Bearer any.valid-token', undefined),
     ).rejects.toBeInstanceOf(UnauthorizedException);
-    expect(repository.hasActiveRefreshSession.mock.calls).toHaveLength(0);
   });
 
   it('rejects a still-valid token after organization membership is suspended or removed', async () => {

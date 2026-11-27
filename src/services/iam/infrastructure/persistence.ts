@@ -96,7 +96,17 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
     },
     {
       name: 'projects',
-      indexes: [index({ organizationId: 1, code: 1 }, { unique: true })],
+      indexes: [
+        index({ organizationId: 1, code: 1 }, { unique: true }),
+        index(
+          { organizationId: 1, status: 1, updatedAt: -1 },
+          { name: 'projects_org_status_updated_desc' },
+        ),
+        index(
+          { organizationId: 1, status: 1, createdAt: -1, _id: -1 },
+          { name: 'projects_org_status_created_desc' },
+        ),
+      ],
     },
     {
       name: 'teams',
@@ -106,17 +116,33 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
     },
     {
       name: 'project_memberships',
-      indexes: [index({ projectId: 1, userId: 1 }, { unique: true })],
+      indexes: [
+        index({ projectId: 1, userId: 1 }, { unique: true }),
+        index(
+          { organizationId: 1, userId: 1, status: 1, projectId: 1 },
+          { name: 'project_memberships_org_user_status_project' },
+        ),
+      ],
     },
     {
       name: 'team_memberships',
-      indexes: [index({ teamId: 1, userId: 1 }, { unique: true })],
+      indexes: [
+        index({ teamId: 1, userId: 1 }, { unique: true }),
+        index(
+          { projectId: 1, userId: 1 },
+          { name: 'team_memberships_project_user' },
+        ),
+      ],
     },
     { name: 'roles', indexes: [index({ code: 1 }, { unique: true })] },
     {
       name: 'role_assignments',
       indexes: [
         index({ organizationId: 1, projectId: 1, userId: 1 }, { unique: true }),
+        index(
+          { userId: 1, projectId: 1, organizationId: 1 },
+          { name: 'role_assignments_user_project_org' },
+        ),
       ],
     },
     {
@@ -207,6 +233,10 @@ export const IAM_PERSISTENCE: ServicePersistenceDefinition = {
       indexes: [
         index({ tokenHash: 1 }, { unique: true }),
         index({ userId: 1, isRevoked: 1, expiresAt: 1 }),
+        index(
+          { userId: 1, sessionId: 1, isRevoked: 1, expiresAt: 1 },
+          { name: 'refresh_sessions_user_sid_active' },
+        ),
         index({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       ],
     },

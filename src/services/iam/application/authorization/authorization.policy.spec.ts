@@ -288,16 +288,29 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
     expect(policy.evaluateProjectAccess(facts)).toEqual({ allowed: true });
   });
 
-  it('allows only organization ADMIN (Manager) to delete a Project and denies TEAM_LEADER (Leader) and MEMBER', () => {
-    const adminFacts = projectAccessBase('project.delete');
-    adminFacts.projectMembership = null;
-    adminFacts.assignments = [
+  it('allows only organization ADMIN (Manager) with exact project.delete permission and denies fallback perms, TEAM_LEADER, and MEMBER', () => {
+    const adminWithDelete = projectAccessBase('project.delete');
+    adminWithDelete.projectMembership = null;
+    adminWithDelete.assignments = [
+      projectAssignment(null, 'ADMIN', 'ADMIN', ['project.delete']),
+    ];
+    expect(policy.evaluateProjectAccess(adminWithDelete)).toEqual({
+      allowed: true,
+    });
+
+    // SEC-AUTH-004: leader/visibility permissions must NOT satisfy project.delete
+    const adminFallback = projectAccessBase('project.delete');
+    adminFallback.projectMembership = null;
+    adminFallback.assignments = [
       projectAssignment(null, 'ADMIN', 'ADMIN', [
         'project.visibility.manage',
         'project.leader.manage',
       ]),
     ];
-    expect(policy.evaluateProjectAccess(adminFacts)).toEqual({ allowed: true });
+    expect(policy.evaluateProjectAccess(adminFallback)).toEqual({
+      allowed: false,
+      reason: 'NO_DOCUMENTED_PERMISSION',
+    });
 
     const leaderFacts = projectAccessBase('project.delete');
     leaderFacts.assignments = [
@@ -454,9 +467,8 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
 
   it.each([
     'project.visibility.manage',
-    'project.members.list',
-    'project.members.add',
-    'project.members.remove',
+    'project.leader.manage',
+    'project.delete',
   ] as const)(
     'allows %s for an organization ADMIN with the exact permission without requiring ProjectMembership',
     (permission) => {
@@ -466,6 +478,22 @@ describe('AuthorizationPolicy: Project Access V1 permissions', () => {
         projectAssignment(null, 'ADMIN', 'ADMIN', [permission]),
       ];
       expect(policy.evaluateProjectAccess(facts).allowed).toBe(true);
+    },
+  );
+
+  it.each([
+    'project.members.list',
+    'project.members.add',
+    'project.members.remove',
+  ] as const)(
+    'denies unconditional %s for a non-member organization ADMIN (SEC-AUTH-004)',
+    (permission) => {
+      const facts = projectAccessBase(permission);
+      facts.projectMembership = null;
+      facts.assignments = [
+        projectAssignment(null, 'ADMIN', 'ADMIN', [permission]),
+      ];
+      expect(policy.evaluateProjectAccess(facts).allowed).toBe(false);
     },
   );
 

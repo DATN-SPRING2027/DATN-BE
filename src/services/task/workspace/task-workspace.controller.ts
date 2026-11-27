@@ -10,12 +10,14 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { resolveExpectedOrganizationHeader } from '../../../common/http/organization-header';
 import {
   TaskWorkspaceService,
   type WorkspaceHttpResult,
 } from './task-workspace.service';
 
-@Controller(['tasks', 'internal/tasks'])
+// SEC-BE-008: Expose only 'tasks' (monolith mounts /api/v1/tasks; standalone service sets global prefix 'internal').
+@Controller('tasks')
 export class TaskWorkspaceController {
   constructor(private readonly service: TaskWorkspaceService) {}
 
@@ -52,7 +54,7 @@ export class TaskWorkspaceController {
     const result = await this.service.listProjectTasks({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       query,
     });
@@ -71,7 +73,7 @@ export class TaskWorkspaceController {
       cookieHeader: this.header(req, 'cookie'),
       csrfHeader: this.header(req, 'x-csrf-token'),
       idempotencyKeyHeader: this.header(req, 'idempotency-key'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       correlationId: this.header(req, 'x-request-id'),
       projectId,
       body,
@@ -89,7 +91,7 @@ export class TaskWorkspaceController {
     const result = await this.service.getProjectTask({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       taskId,
     });
@@ -109,7 +111,7 @@ export class TaskWorkspaceController {
       cookieHeader: this.header(req, 'cookie'),
       csrfHeader: this.header(req, 'x-csrf-token'),
       ifMatchHeader: this.header(req, 'if-match'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       correlationId: this.header(req, 'x-request-id'),
       projectId,
       taskId,
@@ -132,7 +134,7 @@ export class TaskWorkspaceController {
       csrfHeader: this.header(req, 'x-csrf-token'),
       ifMatchHeader: this.header(req, 'if-match'),
       idempotencyKeyHeader: this.header(req, 'idempotency-key'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       correlationId: this.header(req, 'x-request-id'),
       projectId,
       taskId,
@@ -152,7 +154,7 @@ export class TaskWorkspaceController {
     const result = await this.service.listTaskHistory({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       taskId,
       query,
@@ -171,7 +173,7 @@ export class TaskWorkspaceController {
     const result = await this.service.listTaskComments({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       taskId,
       query,
@@ -192,7 +194,7 @@ export class TaskWorkspaceController {
       cookieHeader: this.header(req, 'cookie'),
       csrfHeader: this.header(req, 'x-csrf-token'),
       idempotencyKeyHeader: this.header(req, 'idempotency-key'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       correlationId: this.header(req, 'x-request-id'),
       projectId,
       taskId,
@@ -212,7 +214,7 @@ export class TaskWorkspaceController {
     const result = await this.service.listTaskWorklogs({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       taskId,
       query,
@@ -233,7 +235,7 @@ export class TaskWorkspaceController {
       cookieHeader: this.header(req, 'cookie'),
       csrfHeader: this.header(req, 'x-csrf-token'),
       idempotencyKeyHeader: this.header(req, 'idempotency-key'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       correlationId: this.header(req, 'x-request-id'),
       projectId,
       taskId,
@@ -252,7 +254,7 @@ export class TaskWorkspaceController {
     const result = await this.service.listProjectSprints({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       query,
     });
@@ -271,7 +273,7 @@ export class TaskWorkspaceController {
       cookieHeader: this.header(req, 'cookie'),
       csrfHeader: this.header(req, 'x-csrf-token'),
       idempotencyKeyHeader: this.header(req, 'idempotency-key'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       body,
     });
@@ -291,7 +293,7 @@ export class TaskWorkspaceController {
       cookieHeader: this.header(req, 'cookie'),
       csrfHeader: this.header(req, 'x-csrf-token'),
       ifMatchHeader: this.header(req, 'if-match'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
       sprintId,
       body,
@@ -313,7 +315,7 @@ export class TaskWorkspaceController {
       csrfHeader: this.header(req, 'x-csrf-token'),
       ifMatchHeader: this.header(req, 'if-match'),
       idempotencyKeyHeader: this.header(req, 'idempotency-key'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       correlationId: this.header(req, 'x-request-id'),
       projectId,
       sprintId,
@@ -331,7 +333,7 @@ export class TaskWorkspaceController {
     const result = await this.service.getProjectTaskSummary({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
-      headerOrgId: this.header(req, 'x-organization-id'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       projectId,
     });
     return this.applyHeadersAndStatus(res, result);
@@ -346,6 +348,7 @@ export class TaskWorkspaceController {
     const result = await this.service.listOrganizationTasks({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       query,
     });
     return this.applyHeadersAndStatus(res, result);
@@ -360,6 +363,7 @@ export class TaskWorkspaceController {
     const result = await this.service.getOrganizationTaskSummary({
       authorizationHeader: this.header(req, 'authorization'),
       cookieHeader: this.header(req, 'cookie'),
+      headerOrgId: resolveExpectedOrganizationHeader(req.headers),
       query,
     });
     return this.applyHeadersAndStatus(res, result);

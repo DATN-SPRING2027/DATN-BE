@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { WorkReportReminderService } from './work-report-reminder.service';
 import {
   Injectable,
@@ -11,6 +12,10 @@ import {
   ProjectReportRosterService,
   type ReportingProjectMembers,
 } from '../../iam/application/projects/project-report-roster.service';
+import { RedisService } from '../infrastructure/redis/redis.service';
+
+const SWEEP_LOCK_KEY = 'capture:work-report-overdue-sweep';
+const SWEEP_LOCK_TTL_SECONDS = 55;
 
 @Injectable()
 export class WorkReportOverdueScheduler
@@ -24,6 +29,7 @@ export class WorkReportOverdueScheduler
     private readonly workNotes: WorkNotesService,
     private readonly roster: ProjectReportRosterService,
     @Optional() private readonly reminders?: WorkReportReminderService,
+    @Optional() private readonly redis?: RedisService,
   ) {}
 
   onModuleInit(): void {
@@ -42,7 +48,26 @@ export class WorkReportOverdueScheduler
   private async sweep(): Promise<void> {
     if (this.isSweeping) return;
     this.isSweeping = true;
+    const lockOwner = randomUUID();
+    let lockAcquired = false;
     try {
+      if (this.redis && typeof this.redis.acquireLock === 'function') {
+        try {
+          lockAcquired = await this.redis.acquireLock(
+            SWEEP_LOCK_KEY,
+            lockOwner,
+            SWEEP_LOCK_TTL_SECONDS,
+          );
+          if (!lockAcquired) {
+            return;
+          }
+        } catch (error) {
+          this.logger.warn(
+            `Unable to acquire distributed scheduler lock; skipping tick to prevent duplicate sweeps: ${error instanceof Error ? error.message : 'unknown error'}`,
+          );
+          return;
+        }
+      }
       const activeRosters: ReportingProjectMembers[] = [];
       let rosterAvailable = true;
       try {
@@ -80,6 +105,15 @@ export class WorkReportOverdueScheduler
         );
       }
     } finally {
+      if (
+        lockAcquired &&
+        this.redis &&
+        typeof this.redis.releaseLock === 'function'
+      ) {
+        await this.redis.releaseLock(SWEEP_LOCK_KEY, lockOwner).catch(() => {
+          // TTL expires automatically
+        });
+      }
       this.isSweeping = false;
     }
   }

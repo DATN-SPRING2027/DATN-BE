@@ -15,6 +15,7 @@ import { AUDIT_CONNECTION_NAME, AUDIT_DATABASE_NAME } from './database-names';
         uri: config.getOrThrow<string>('MONGODB_URI'),
         dbName: AUDIT_DATABASE_NAME,
         autoIndex: config.get<boolean>('MONGODB_AUTO_INDEX') ?? false,
+        maxPoolSize: config.get<number>('MONGODB_MAX_POOL_SIZE') ?? 15,
         serverSelectionTimeoutMS: 5000,
       }),
     }),

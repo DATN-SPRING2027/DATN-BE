@@ -512,6 +512,7 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
           { session },
         );
         message = forwarded as unknown as MessageDocument;
+        await this.createNotifications(actor, message, session);
       });
     } catch (error: unknown) {
       if (
@@ -544,7 +545,6 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
       await session.endSession();
     }
     if (!message) throw new Error('Forwarding did not produce a message');
-    await this.createNotifications(actor, message);
     return (await this.mapMessages(actor, [message]))[0];
   }
   async receipts(actor: ChatActor, conversationId: string, messageId: string) {
@@ -591,14 +591,18 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
   protected async createNotifications(
     actor: ChatActor,
     message: MessageDocument,
+    session?: ClientSession,
   ) {
     const members = await this.collection('chat_members')
-      .find({
-        ...this.scope(actor, String(message.conversationId)),
-        status: 'ACTIVE',
-        userId: { $ne: actor.id },
-        notificationMode: { $ne: 'NONE' },
-      })
+      .find(
+        {
+          ...this.scope(actor, String(message.conversationId)),
+          status: 'ACTIVE',
+          userId: { $ne: actor.id },
+          notificationMode: { $ne: 'NONE' },
+        },
+        session ? { session } : undefined,
+      )
       .toArray();
     const recipients = members.filter(
       (member) =>
@@ -626,6 +630,7 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
           upsert: true,
         },
       })),
+      session ? { session } : undefined,
     );
   }
   protected async readNotificationsThrough(
@@ -647,6 +652,7 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
     );
   }
   async notifications(actor: ChatActor, limit: number, before?: ChatCursor) {
+    const candidateWindow = Math.min((limit + 1) * 3, 300);
     const rows = await this.collection('chat_notifications')
       .aggregate([
         {
@@ -656,6 +662,8 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
             ...older(before),
           },
         },
+        { $sort: { createdAt: -1, _id: -1 } },
+        { $limit: candidateWindow },
         this.accessLookup(actor),
         { $match: { 'access.0': { $exists: true } } },
         {
@@ -675,7 +683,6 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
           },
         },
         { $match: { 'message.0': { $exists: true } } },
-        { $sort: { createdAt: -1, _id: -1 } },
         { $limit: limit + 1 },
       ])
       .toArray();

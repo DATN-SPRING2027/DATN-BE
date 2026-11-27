@@ -12,6 +12,7 @@ export interface CollectionIndex {
     sparse?: boolean;
     expireAfterSeconds?: number;
     name?: string;
+    partialFilterExpression?: Record<string, unknown>;
   };
 }
 

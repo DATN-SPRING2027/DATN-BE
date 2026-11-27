@@ -1,17 +1,24 @@
 import {
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   CHAT_REPOSITORY,
+  type ChatActor,
   type ChatCursor,
   type ChatRepository,
 } from './chat.repository';
 import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
+import { ChatHistoryCacheInvalidator } from './chat-history-cache';
 import { ChatRealtimeService } from './chat-realtime.service';
 import type { ChatSearchFilters } from './chat-features';
+import { RedisService } from '../infrastructure/redis/redis.service';
 
 const oid = /^[a-f\d]{24}$/i;
 const uuid =
@@ -79,11 +86,44 @@ const cursor = (value: ChatCursor | null) =>
 
 @Injectable()
 export class ChatFeaturesService {
+  private readonly redisPrefix: string;
+
   constructor(
     @Inject(CHAT_REPOSITORY) private readonly repository: ChatRepository,
     private readonly iam: ChatIamClient,
     private readonly realtime: ChatRealtimeService,
-  ) {}
+    @Optional()
+    private readonly historyCache?: ChatHistoryCacheInvalidator,
+    @Optional()
+    private readonly redis?: RedisService,
+    @Optional()
+    config?: ConfigService,
+  ) {
+    this.redisPrefix = `${config?.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
+  }
+
+  private async requireActionRateLimit(
+    actor: ChatActor,
+    action: string,
+    limit: number,
+  ): Promise<void> {
+    if (!this.redis) return;
+    const allowed = await this.redis.consumeRateLimit(
+      `${this.redisPrefix}:feature:${action}:${actor.organizationId}:${actor.id}`,
+      limit,
+      60,
+    );
+    if (!allowed) {
+      throw new HttpException(
+        {
+          code: 'CHAT_RATE_LIMITED',
+          message: 'Too many chat requests. Try again shortly.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
   async conversation(credentials: ChatCredentials, conversationId: string) {
     validId(conversationId);
     const result = await this.repository.getConversation(
@@ -299,12 +339,14 @@ export class ChatFeaturesService {
     const data = object(body, ['active']);
     if (typeof data.active !== 'boolean') return invalid();
     const actor = await this.iam.getActor(credentials);
+    await this.requireActionRateLimit(actor, 'pin', 60);
     await this.repository.pinMessage(
       actor,
       conversationId,
       messageId,
       data.active,
     );
+    await this.historyCache?.invalidate(actor.organizationId, conversationId);
     await this.realtime.publishConversationEvent(
       'conversation.updated',
       actor.organizationId,
@@ -335,6 +377,7 @@ export class ChatFeaturesService {
     validId(data.sourceConversationId);
     validId(data.messageId);
     const actor = await this.iam.getActor(credentials);
+    await this.requireActionRateLimit(actor, 'forward', 60);
     const result = await this.repository.forwardMessage(
       actor,
       conversationId,
@@ -342,6 +385,7 @@ export class ChatFeaturesService {
       data.messageId,
       data.clientMessageId,
     );
+    await this.historyCache?.invalidate(actor.organizationId, conversationId);
     await this.realtime.publishConversationEvent(
       'message.created',
       actor.organizationId,
@@ -389,16 +433,27 @@ export class ChatFeaturesService {
     validId(userId);
     const data = object(body, ['active']);
     if (typeof data.active !== 'boolean') return invalid();
-    const { actor, data: candidates } = await this.iam.getCandidates(
-      credentials,
-      [userId],
-    );
-    if (
-      !candidates.some((candidate) => candidate.id === userId) ||
-      actor.id === userId
-    )
+    const actor = await this.iam.getActor(credentials);
+    await this.requireActionRateLimit(actor, 'block', 30);
+    if (actor.id === userId) {
+      throw new NotFoundException('Contact is unavailable');
+    }
+    const { data: candidates } = await this.iam.getCandidates(credentials, [
+      userId,
+    ]);
+    if (!candidates.some((candidate) => candidate.id === userId))
       throw new NotFoundException('Contact is unavailable');
     await this.repository.setBlock(actor, userId, data.active);
+    if (
+      data.active &&
+      typeof this.realtime.evictBlockedPresence === 'function'
+    ) {
+      await this.realtime.evictBlockedPresence(
+        actor.organizationId,
+        actor.id,
+        userId,
+      );
+    }
     return { userId, active: data.active };
   }
   async report(credentials: ChatCredentials, body: unknown) {
@@ -415,6 +470,7 @@ export class ChatFeaturesService {
       return invalid();
     if (typeof data.messageId === 'string') validId(data.messageId);
     const actor = await this.iam.getActor(credentials);
+    await this.requireActionRateLimit(actor, 'report', 20);
     return {
       id: await this.repository.report(
         actor,

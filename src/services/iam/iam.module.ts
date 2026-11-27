@@ -121,6 +121,7 @@ import {
 import { TaskWorkspaceService } from '../task/workspace/task-workspace.service';
 import { HandoverTaskAssignmentService } from '../task/workspace/handover-task-assignment.service';
 import { HandoverIamScopeService } from './application/projects/handover-iam-scope.service';
+import { IamActorContextService } from './application/projects/iam-actor-context.service';
 import { NotificationCenterController } from '../notification/notification.controller';
 import { NotificationCenterRepository } from '../notification/infrastructure/mongodb/notification-center.repository';
 import {
@@ -355,6 +356,7 @@ import { MongoMcpApiKeyRepository } from './infrastructure/mongodb/mcp-api-key.r
     TaskWorkspaceService,
     HandoverTaskAssignmentService,
     HandoverIamScopeService,
+    IamActorContextService,
     NotificationCenterRepository,
     { provide: NOTIFICATION_REALTIME_PUBLISHER, useExisting: RedisService },
     NotificationRealtimeBus,
@@ -382,6 +384,7 @@ import { MongoMcpApiKeyRepository } from './infrastructure/mongodb/mcp-api-key.r
     TaskWorkspaceRepository,
     HandoverTaskAssignmentService,
     HandoverIamScopeService,
+    IamActorContextService,
     NotificationService,
     NotificationCenterRepository,
     NotificationRealtimeBus,
