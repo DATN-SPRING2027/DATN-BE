@@ -153,6 +153,9 @@ function isAllowedJsonRoute(
   if (method === 'POST' && pathname === UNIVERSE_KNOWLEDGE_RESOLVE_PATH) {
     return true;
   }
+  if (method === 'POST' && pathname === '/api/v1/search') {
+    return true;
+  }
   return false;
 }
 
@@ -248,6 +251,8 @@ export class HttpAiEngineClient implements AiEngineClient {
     const isHandoverAssist =
       request.method === 'POST' &&
       /^\/api\/v1\/projects\/[^/]+\/handover\/assist$/.test(routePathname);
+    const isSagSearch =
+      request.method === 'POST' && routePathname === '/api/v1/search';
     const isKnowledgeUniverse = routePathname.startsWith(
       '/api/v1/universe/knowledge/',
     );
@@ -256,7 +261,7 @@ export class HttpAiEngineClient implements AiEngineClient {
           backendTimeoutMs,
           this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60_000,
         )
-      : isHandoverAssist
+      : isHandoverAssist || isSagSearch
         ? Math.max(
             backendTimeoutMs,
             this.config.get<number>('SAG_LLM_TIMEOUT_MS') ?? 90_000,

@@ -511,6 +511,12 @@ export class AuthenticationController {
     @Res({ passthrough: true }) response: Response,
   ) {
     response.setHeader('Cache-Control', 'no-store');
+    if (
+      typeof authorization === 'string' &&
+      /^Bearer\s+ctm_mcp_/i.test(authorization.trim())
+    ) {
+      return this.service.getCurrentIdentity(authorization, undefined);
+    }
     return this.service.getCurrentSessionIdentity(authorization, cookie);
   }
 

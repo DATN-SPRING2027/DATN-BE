@@ -2,7 +2,7 @@ import 'dotenv/config';
 import './common/observability/register-otel';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
-import { configureApplication } from './bootstrap';
+import { configureApplication, resolveCorsAllowedOrigins } from './bootstrap';
 import { ConfigService } from '@nestjs/config';
 import { closeSharedHttpRedisConnections } from './common/redis/redis-connection';
 import { monolithIamServiceUrl } from './monolith-configuration';
@@ -31,7 +31,16 @@ async function bootstrap() {
   ) {
     throw new Error('GATEWAY_TRUSTED_PROXY_CIDRS is required in production');
   }
-  configureApplication(app, trustedProxyCidrs);
+  configureApplication(
+    app,
+    trustedProxyCidrs,
+    resolveCorsAllowedOrigins({
+      corsAllowedOrigins: config.get<string>('CORS_ALLOWED_ORIGINS'),
+      continuumWebBaseUrl: config.get<string>('CONTINUUM_WEB_BASE_URL'),
+      webAppUrl: config.get<string>('WEB_APP_URL'),
+      sagWebBaseUrl: config.get<string>('SAG_WEB_BASE_URL'),
+    }),
+  );
 
   const cleanup = () => {
     closeSharedHttpRedisConnections();

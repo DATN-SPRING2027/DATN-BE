@@ -11,6 +11,7 @@ import { JiraModule } from './services/jira/jira.module';
 import { LifecycleModule } from './services/lifecycle/lifecycle.module';
 import { NotificationModule } from './services/notification/notification.module';
 import { TaskWorkspaceModule } from './services/task/workspace/task-workspace.module';
+import { McpModule } from './mcp/mcp.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { TaskWorkspaceModule } from './services/task/workspace/task-workspace.mo
     NotificationModule,
     TaskWorkspaceModule,
     AiEngineModule,
+    McpModule,
   ],
 })
 export class AppModule {}

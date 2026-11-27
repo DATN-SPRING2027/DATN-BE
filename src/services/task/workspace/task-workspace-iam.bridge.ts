@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   NotFoundException,
   Optional,
@@ -96,7 +97,11 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
     if (
       (headerOrgId !== undefined && headerOrgId !== identity.organizationId) ||
       (queryOrgId !== undefined && queryOrgId !== identity.organizationId) ||
-      !OBJECT_ID_REGEX.test(projectId)
+      !OBJECT_ID_REGEX.test(projectId) ||
+      (Array.isArray(identity.mcpGrant?.allowedProjectIds) &&
+        !identity.mcpGrant.allowedProjectIds.some(
+          (id) => id.toLowerCase() === projectId.toLowerCase(),
+        ))
     ) {
       throw new NotFoundException({
         code: 'PROJECT_NOT_FOUND',
@@ -224,6 +229,14 @@ export class TaskWorkspaceIamBridge implements TaskWorkspaceIamBridgePort {
       throw new NotFoundException({
         code: 'TASK_NOT_FOUND',
         message: 'Resource not found.',
+      });
+    }
+
+    if (Array.isArray(identity.mcpGrant?.allowedProjectIds)) {
+      throw new ForbiddenException({
+        code: 'MCP_SCOPE_FORBIDDEN',
+        message:
+          'Organization-wide task endpoints cannot be accessed with a project-restricted MCP API key.',
       });
     }
 

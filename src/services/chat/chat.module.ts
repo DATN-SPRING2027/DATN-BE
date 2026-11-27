@@ -35,5 +35,6 @@ import { RedisService } from './infrastructure/redis/redis.service';
     NotificationRealtimeBus,
     NotificationService,
   ],
+  exports: [ChatApplicationService, ChatFeaturesService],
 })
 export class ChatModule {}

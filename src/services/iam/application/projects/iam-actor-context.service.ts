@@ -75,6 +75,18 @@ export class IamActorContextService {
     const orgIdStr = actor.organizationId.toLowerCase();
 
     if (
+      Array.isArray(actor.mcpGrant?.allowedProjectIds) &&
+      !actor.mcpGrant.allowedProjectIds.some(
+        (id) => id.toLowerCase() === normalizedProjectId,
+      )
+    ) {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
+
+    if (
       input.organizationHeader !== undefined &&
       input.organizationHeader.trim() !== '' &&
       input.organizationHeader.trim().toLowerCase() !== orgIdStr
@@ -85,7 +97,7 @@ export class IamActorContextService {
       });
     }
 
-    const memoKey = `${actor.id.toLowerCase()}:${orgIdStr}:${normalizedProjectId}:${input.requireActiveProject ? 'active' : 'any'}`;
+    const memoKey = `${actor.id.toLowerCase()}:${actor.mcpGrant?.keyId ?? 'session'}:${orgIdStr}:${normalizedProjectId}:${input.requireActiveProject ? 'active' : 'any'}`;
     return memoizeInRequest('iam:project-actor-context', memoKey, async () => {
       const db = this.db();
       const orgObjId = new Types.ObjectId(orgIdStr);
@@ -219,9 +231,20 @@ export class IamActorContextService {
       .limit(maxCount + 1)
       .toArray();
 
+    const allowedProjectIds = actor.mcpGrant?.allowedProjectIds;
+    const allowedSet = Array.isArray(allowedProjectIds)
+      ? new Set(allowedProjectIds.map((id) => id.toLowerCase()))
+      : null;
+    if (allowedSet && allowedSet.size === 0) {
+      return [];
+    }
+
     const projectObjIds = memberships
       .map((row) => row.projectId as unknown)
-      .filter((id): id is Types.ObjectId => id instanceof Types.ObjectId);
+      .filter((id): id is Types.ObjectId => id instanceof Types.ObjectId)
+      .filter(
+        (id) => !allowedSet || allowedSet.has(id.toHexString().toLowerCase()),
+      );
     if (projectObjIds.length === 0) {
       return [];
     }

@@ -3,6 +3,8 @@ import {
   Inject,
   Injectable,
   HttpException,
+  Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -46,6 +48,11 @@ import {
   PLATFORM_PERMISSIONS,
 } from '../authorization/authorization.policy';
 import type { PlatformPermission } from '../authorization/authorization.policy';
+import {
+  MCP_API_KEY_REPOSITORY,
+  type McpApiKeyRepositoryPort,
+} from '../mcp-api-keys/mcp-api-key.repository';
+import type { McpKeyScopeMode } from '../mcp-api-keys/mcp-api-key.types';
 
 export interface LoginInput {
   email: string;
@@ -61,12 +68,19 @@ export interface GoogleIdentityInput {
   name?: string;
 }
 
+export interface AuthenticatedMcpGrant {
+  keyId: string;
+  scope: McpKeyScopeMode;
+  allowedProjectIds: string[] | null;
+}
+
 export interface AuthenticatedIdentity {
   id: string;
   email: string;
   name: string;
   organizationId: string;
   roles: string[];
+  mcpGrant?: AuthenticatedMcpGrant;
 }
 
 export interface AuthenticatedAccountIdentity {
@@ -179,6 +193,8 @@ function extractRefreshTokens(cookieHeader: string | undefined): string[] {
 
 @Injectable()
 export class AuthenticationApplicationService {
+  private readonly logger = new Logger(AuthenticationApplicationService.name);
+
   constructor(
     @Inject(AUTHENTICATION_REPOSITORY)
     private readonly repository: AuthenticationRepositoryPort,
@@ -193,6 +209,9 @@ export class AuthenticationApplicationService {
     @Inject(AUTHORIZATION_EVIDENCE_PROVIDER)
     private readonly authorizationEvidence: AuthorizationEvidenceProvider,
     private readonly authorizationPolicy: AuthorizationPolicy,
+    @Optional()
+    @Inject(MCP_API_KEY_REPOSITORY)
+    private readonly mcpApiKeys?: McpApiKeyRepositoryPort,
   ) {}
 
   async login(input: LoginInput): Promise<LoginResult> {
@@ -812,12 +831,104 @@ export class AuthenticationApplicationService {
     authorization: string | undefined,
     cookieHeader: string | undefined,
   ): Promise<AuthenticatedIdentity> {
+    if (
+      typeof authorization === 'string' &&
+      /^Bearer\s+ctm_mcp_/i.test(authorization.trim())
+    ) {
+      return this.authenticateMcpApiKey(authorization);
+    }
     const identity = await this.getCurrentSessionIdentity(
       authorization,
       cookieHeader,
     );
     if (!('organizationId' in identity)) throw unauthorized();
     return identity;
+  }
+
+  private async authenticateMcpApiKey(
+    authorization: string,
+  ): Promise<AuthenticatedIdentity> {
+    const trimmedAuth = authorization.trim();
+    return memoizeInRequest('auth:mcp-key', trimmedAuth, async () => {
+      if (!this.mcpApiKeys) {
+        throw unauthorized();
+      }
+      const match = /^Bearer\s+(ctm_mcp_[A-Za-z0-9_-]{43})$/i.exec(trimmedAuth);
+      const rawKey = match?.[1];
+      if (!rawKey || !rawKey.startsWith('ctm_mcp_')) {
+        throw unauthorized();
+      }
+      const secretPart = rawKey.slice('ctm_mcp_'.length);
+      const decodedBytes = Buffer.from(secretPart, 'base64url');
+      if (
+        decodedBytes.length !== 32 ||
+        decodedBytes.toString('base64url') !== secretPart
+      ) {
+        throw unauthorized();
+      }
+
+      const keyHash = createHash('sha256').update(rawKey).digest('hex');
+      const record = await this.mcpApiKeys.findByKeyHash(keyHash);
+      if (!record || record.revokedAt !== null) {
+        throw unauthorized();
+      }
+      const now = new Date();
+      if (record.expiresAt && record.expiresAt.getTime() <= now.getTime()) {
+        throw unauthorized();
+      }
+
+      const [account, profile, activeMembershipIds] = await Promise.all([
+        this.repository.findAccountById(record.userId),
+        this.repository.findProfileById(record.userId),
+        this.repository.findActiveOrganizationMembershipIds(record.userId),
+      ]);
+
+      if (
+        !account ||
+        account.status !== 'ACTIVE' ||
+        !profile ||
+        profile.status !== 'ACTIVE'
+      ) {
+        throw unauthorized();
+      }
+      if (!activeMembershipIds.includes(record.organizationId)) {
+        throw unauthorized();
+      }
+
+      const organization = await this.organizationResolver.resolveForUser(
+        record.userId,
+        record.organizationId,
+      );
+      if (
+        organization.outcome !== 'RESOLVED' ||
+        organization.context.orgId !== record.organizationId
+      ) {
+        throw unauthorized();
+      }
+
+      await this.mcpApiKeys.touchLastUsedAt(record.id, now).catch((error) => {
+        this.logger.warn(
+          `Failed to touch lastUsedAt for MCP API key ${record.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+
+      return {
+        id: record.userId,
+        email: account.email,
+        name: profile.name,
+        organizationId: record.organizationId,
+        roles: organization.context.roles,
+        mcpGrant: {
+          keyId: record.id,
+          scope: record.scope,
+          allowedProjectIds: record.allowedProjectIds
+            ? [...record.allowedProjectIds]
+            : null,
+        },
+      };
+    });
   }
 
   /**

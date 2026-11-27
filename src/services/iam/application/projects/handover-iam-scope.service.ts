@@ -85,6 +85,18 @@ export class HandoverIamScopeService {
     const orgIdStr = input.actor.organizationId.toLowerCase();
 
     if (
+      Array.isArray(input.actor.mcpGrant?.allowedProjectIds) &&
+      !input.actor.mcpGrant.allowedProjectIds.some(
+        (id) => id.toLowerCase() === normalizedProjectId,
+      )
+    ) {
+      throw new NotFoundException({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Project not found.',
+      });
+    }
+
+    if (
       input.organizationHeader !== undefined &&
       input.organizationHeader.trim() !== '' &&
       input.organizationHeader.trim().toLowerCase() !== orgIdStr

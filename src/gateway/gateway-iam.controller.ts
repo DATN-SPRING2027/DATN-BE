@@ -967,6 +967,30 @@ export class GatewayIamController {
     return this.forward(request, response);
   }
 
+  @Get('iam/mcp-api-keys')
+  listMcpApiKeys(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Post('iam/mcp-api-keys')
+  createMcpApiKey(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
+  @Delete('iam/mcp-api-keys/:keyId')
+  revokeMcpApiKey(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.forward(request, response);
+  }
+
   private async forward(request: Request, response: Response): Promise<void> {
     const baseUrl = this.config.getOrThrow<string>('IAM_SERVICE_URL');
     const targetUrl = buildSafeInternalProxyUrl(request.originalUrl, baseUrl);

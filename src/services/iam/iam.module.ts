@@ -130,6 +130,10 @@ import {
 } from '../notification/notification-realtime.bus';
 import { NotificationService } from '../notification/notification.service';
 import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline-notification.scheduler';
+import { MCP_API_KEY_REPOSITORY } from './application/mcp-api-keys/mcp-api-key.repository';
+import { McpApiKeysService } from './application/mcp-api-keys/mcp-api-keys.service';
+import { McpApiKeysController } from './controllers/mcp-api-keys.controller';
+import { MongoMcpApiKeyRepository } from './infrastructure/mongodb/mcp-api-key.repository';
 
 // C-04 TQ-05/07/08 remain conditional. Keep Team runtime unwired until the
 // contract closes.
@@ -148,6 +152,7 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
     OrganizationMembershipCommandController,
     AccountInvitationController,
     ChatCandidateController,
+    McpApiKeysController,
     TaskWorkspaceController,
     NotificationCenterController,
   ],
@@ -357,6 +362,12 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
     NotificationRealtimeBus,
     NotificationService,
     TaskDeadlineNotificationScheduler,
+    MongoMcpApiKeyRepository,
+    {
+      provide: MCP_API_KEY_REPOSITORY,
+      useExisting: MongoMcpApiKeyRepository,
+    },
+    McpApiKeysService,
   ],
   exports: [
     AuthenticationApplicationService,
@@ -366,6 +377,9 @@ import { TaskDeadlineNotificationScheduler } from '../notification/task-deadline
     PlatformAuthorizationGuard,
     PLATFORM_ADMINISTRATION_REPOSITORY,
     ProjectService,
+    ProjectAccessService,
+    McpApiKeysService,
+    MCP_API_KEY_REPOSITORY,
     TaskWorkspaceService,
     TaskWorkspaceRepository,
     HandoverTaskAssignmentService,

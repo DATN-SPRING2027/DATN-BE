@@ -568,6 +568,47 @@ const iamSchemas: Record<string, Schema> = {
       strict: true,
     },
   ),
+  mcp_api_keys: new Schema(
+    {
+      organizationId: { type: Schema.Types.ObjectId, required: true },
+      userId: { type: Schema.Types.ObjectId, required: true },
+      name: { type: String, required: true, trim: true, maxlength: 80 },
+      keyHash: {
+        type: String,
+        required: true,
+        match: /^[a-f\d]{64}$/,
+      },
+      keyPrefix: {
+        type: String,
+        required: true,
+        maxlength: 24,
+      },
+      scope: {
+        type: String,
+        enum: ['READ_ONLY', 'READ_WRITE', 'FULL_OPERATIONS'],
+        required: true,
+      },
+      allowedProjectIds: {
+        type: Schema.Types.Mixed,
+        default: null,
+        validate: {
+          validator: (value: unknown) =>
+            value === null ||
+            (Array.isArray(value) &&
+              value.every(
+                (entry) =>
+                  typeof entry === 'string' && /^[a-f0-9]{24}$/i.test(entry),
+              )),
+          message:
+            'allowedProjectIds must be null or an array of 24-character hex project IDs.',
+        },
+      },
+      expiresAt: { type: Date, default: null },
+      revokedAt: { type: Date, default: null },
+      lastUsedAt: { type: Date, default: null },
+    },
+    { collection: 'mcp_api_keys', timestamps: true, strict: true },
+  ),
 };
 
 export function createCollectionSchema(
