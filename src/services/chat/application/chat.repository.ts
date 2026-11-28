@@ -287,4 +287,9 @@ export interface ChatRepository extends ChatFeatureRepository {
   isMember(actor: ChatActor, conversationId: string): Promise<boolean>;
   memberIds(actor: ChatActor, conversationId: string): Promise<string[]>;
   directContactIds(actor: ChatActor, targetIds: string[]): Promise<Set<string>>;
+  reconcileCachedMessages?(
+    actor: ChatActor,
+    conversationId: string | undefined,
+    messages: ChatMessage[],
+  ): Promise<ChatMessage[]>;
 }

@@ -415,9 +415,12 @@ export class ChatDmAssistantWorkerService
     const orgId = String(expired.organizationId);
     const convId = String(expired.conversationId);
     await this.historyCache.invalidate(orgId, convId);
-    const recipients = await this.getActiveMemberIds(
-      expired.organizationId,
-      expired.conversationId,
+    const recipients = await this.filterAuthorizedRecipients(
+      orgId,
+      await this.getActiveMemberIds(
+        expired.organizationId,
+        expired.conversationId,
+      ),
     );
     await this.emitAssistantStatus(
       orgId,
@@ -527,7 +530,7 @@ export class ChatDmAssistantWorkerService
           job.requesterUserId,
         );
       if (!orgMemberActive) {
-        const activeRecipients = (
+        const candidateRecipients = (
           await this.getActiveMemberIds(orgObjId, convObjId)
         ).filter((id) => id !== job.requesterUserId);
         return await this.finalizeCancelledJob(
@@ -535,7 +538,7 @@ export class ChatDmAssistantWorkerService
           workerLeaseId,
           'ACCESS_REVOKED',
           'Organization membership or account is no longer active.',
-          activeRecipients,
+          candidateRecipients,
         );
       }
 
@@ -555,11 +558,28 @@ export class ChatDmAssistantWorkerService
         );
       }
 
-      // Emit PROCESSING status to active DM members
+      // Filter every candidate recipient against IAM before emitting PROCESSING status
+      const authorizedProcessingRecipients =
+        await this.filterAuthorizedRecipients(
+          orgIdStr,
+          accessCheck.activeMemberIds,
+          { failOnError: true },
+        );
+      if (!authorizedProcessingRecipients.includes(job.requesterUserId)) {
+        return await this.finalizeCancelledJob(
+          job,
+          workerLeaseId,
+          'ACCESS_REVOKED',
+          'Organization membership or account is no longer active.',
+          authorizedProcessingRecipients,
+        );
+      }
+
+      // Emit PROCESSING status ONLY to IAM-authorized active DM members
       await this.emitAssistantStatus(
         orgIdStr,
         convIdStr,
-        accessCheck.activeMemberIds,
+        authorizedProcessingRecipients,
         job,
         'PROCESSING',
         null,
@@ -582,7 +602,7 @@ export class ChatDmAssistantWorkerService
           workerLeaseId,
           'TRIGGER_DELETED',
           'Trigger message was deleted before processing.',
-          accessCheck.activeMemberIds,
+          authorizedProcessingRecipients,
         );
       }
       const triggerVersion = triggerDoc.contentVersion ?? 0;
@@ -595,7 +615,7 @@ export class ChatDmAssistantWorkerService
           workerLeaseId,
           'SOURCE_CHANGED',
           'Trigger message was edited before processing.',
-          accessCheck.activeMemberIds,
+          authorizedProcessingRecipients,
         );
       }
 
@@ -732,37 +752,22 @@ export class ChatDmAssistantWorkerService
         };
 
     let outcome: TxOutcome | null = null;
+    let txAttempts = 0;
 
-    for (
-      let txAttempt = 1;
-      txAttempt <= MAX_COMMIT_TX_ATTEMPTS;
-      txAttempt += 1
-    ) {
-      // Pre-commit fail-closed IAM check outside continuum_chat transaction
-      const orgMemberActive =
-        await this.orgMembershipChecker.isActiveOrganizationMember(
-          orgIdStr,
-          job.requesterUserId,
-        );
-      if (!orgMemberActive) {
-        const activeRecipients = (
-          await this.getActiveMemberIds(orgObjId, convObjId)
-        ).filter((id) => id !== job.requesterUserId);
-        return await this.finalizeCancelledJob(
-          job,
-          workerLeaseId,
-          'ACCESS_REVOKED',
-          'Organization membership or account revoked before publish.',
-          activeRecipients,
-        );
-      }
-
+    while (txAttempts < MAX_COMMIT_TX_ATTEMPTS) {
       const session = await this.connection!.startSession();
       let revisionConflict = false;
+      let commitCapExceeded = false;
       try {
         await session.withTransaction(
           async () => {
             outcome = null;
+            revisionConflict = false;
+            if (txAttempts >= MAX_COMMIT_TX_ATTEMPTS) {
+              commitCapExceeded = true;
+              throw new CommitConflictExhaustedError();
+            }
+            txAttempts += 1;
 
             // 1. Verify lease ownership
             const liveJob = await this.jobsModel!.findOne({
@@ -778,34 +783,56 @@ export class ChatDmAssistantWorkerService
               return;
             }
 
-            // 2. Re-verify conversation ACTIVE/DIRECT, active requester membership, unblocked
+            // 2. Re-verify conversation ACTIVE/DIRECT, active requester membership, unblocked (sequential on session)
             const access = await this.verifyChatAccess(
               orgObjId,
               convObjId,
               job.requesterUserId,
               session,
             );
-            if (!access.allowed || !access.conversation) {
+
+            // 3. Per-attempt fail-closed IAM verification for requester AND every candidate recipient
+            const authorizedUserIds = await this.filterAuthorizedRecipients(
+              orgIdStr,
+              [job.requesterUserId, ...access.activeMemberIds],
+              { failOnError: true },
+            );
+            const authorizedSet = new Set(authorizedUserIds);
+            const requesterIamActive = authorizedSet.has(job.requesterUserId);
+            const authorizedRecipients = access.activeMemberIds.filter((id) =>
+              authorizedSet.has(id),
+            );
+            const authorizedMembers = access.activeMembers.filter((member) =>
+              authorizedSet.has(member.userId),
+            );
+
+            if (
+              !requesterIamActive ||
+              !access.allowed ||
+              !access.conversation
+            ) {
               const now = new Date();
               await this.markJobTerminalInTx(
                 job._id,
                 workerLeaseId,
                 'CANCELLED',
                 'ACCESS_REVOKED',
-                'Conversation access revoked or blocked before publish.',
+                !requesterIamActive
+                  ? 'Organization membership or account revoked before publish.'
+                  : 'Conversation access revoked or blocked before publish.',
                 now,
                 session,
               );
               outcome = {
                 kind: 'CANCELLED',
                 failureCode: 'ACCESS_REVOKED',
-                recipientIds: access.activeMemberIds,
+                recipientIds: authorizedRecipients,
                 updatedAt: now,
               };
               return;
             }
 
-            // 3. Re-verify trigger message (not deleted AND not edited)
+            // 4. Re-verify trigger message (not deleted AND not edited)
             const liveTrigger = await this.messagesModel!.findOne({
               _id: triggerObjId,
               organizationId: orgObjId,
@@ -829,7 +856,7 @@ export class ChatDmAssistantWorkerService
               outcome = {
                 kind: 'CANCELLED',
                 failureCode: 'TRIGGER_DELETED',
-                recipientIds: access.activeMemberIds,
+                recipientIds: authorizedRecipients,
                 updatedAt: now,
               };
               return;
@@ -856,13 +883,13 @@ export class ChatDmAssistantWorkerService
               outcome = {
                 kind: 'CANCELLED',
                 failureCode: 'SOURCE_CHANGED',
-                recipientIds: access.activeMemberIds,
+                recipientIds: authorizedRecipients,
                 updatedAt: now,
               };
               return;
             }
 
-            // 4. Re-verify ALL sentMessages snapshots (not deleted AND not edited)
+            // 5. Re-verify ALL sentMessages snapshots (not deleted AND not edited)
             if (retrievalResult.messages.length > 0) {
               const sentIds = retrievalResult.messages.map((m) => m.messageId);
               const liveSources = await this.messagesModel!.find(
@@ -906,14 +933,14 @@ export class ChatDmAssistantWorkerService
                 outcome = {
                   kind: 'CANCELLED',
                   failureCode: 'SOURCE_CHANGED',
-                  recipientIds: access.activeMemberIds,
+                  recipientIds: authorizedRecipients,
                   updatedAt: now,
                 };
                 return;
               }
             }
 
-            // 5a. Revision Fence on chat_conversations (write lock eliminates snapshot write-skew)
+            // 5a. Revision Fence on chat_conversations (write lock eliminates snapshot write-skew against edits/deletes/blocks)
             const aiCreatedAt = new Date();
             const revisionFilter =
               currentObservedRevision === 0
@@ -1029,7 +1056,7 @@ export class ChatDmAssistantWorkerService
               insertedFresh = true;
             }
 
-            // 5b. Separate monotonic lastMessage* update
+            // 5b. Separate monotonic lastMessage* update using exact (createdAt, _id) tie-breaker
             const aiMsgCreatedAt = aiMessageDoc.createdAt ?? aiCreatedAt;
             const lastMessagePreview =
               `${CONTINUUM_AI_DISPLAY_NAME}: ${aiMessageDoc.content}`.slice(
@@ -1042,7 +1069,14 @@ export class ChatDmAssistantWorkerService
                 organizationId: orgObjId,
                 $or: [
                   { lastMessageAt: null },
-                  { lastMessageAt: { $lte: aiMsgCreatedAt } },
+                  { lastMessageAt: { $lt: aiMsgCreatedAt } },
+                  {
+                    lastMessageAt: aiMsgCreatedAt,
+                    $or: [
+                      { lastMessageId: null },
+                      { lastMessageId: { $lt: aiMessageDoc._id } },
+                    ],
+                  },
                 ],
               },
               {
@@ -1057,7 +1091,7 @@ export class ChatDmAssistantWorkerService
               { session },
             ).exec();
 
-            // 7. Mark job COMPLETED / INSUFFICIENT_EVIDENCE + create notifications
+            // 7. Mark job COMPLETED / INSUFFICIENT_EVIDENCE + create notifications ONLY for IAM-authorized members
             const completedAt = new Date();
             const totalLatencyMs = Math.max(
               0,
@@ -1108,7 +1142,7 @@ export class ChatDmAssistantWorkerService
                 orgObjId,
                 convObjId,
                 aiMessageDoc,
-                access.activeMembers,
+                authorizedMembers,
                 session,
               );
             }
@@ -1117,7 +1151,7 @@ export class ChatDmAssistantWorkerService
               kind: 'PUBLISHED',
               status: aiStatus,
               aiMessageDoc,
-              recipientIds: access.activeMemberIds,
+              recipientIds: authorizedRecipients,
               updatedAt: completedAt,
             };
           },
@@ -1125,7 +1159,16 @@ export class ChatDmAssistantWorkerService
         );
         break;
       } catch (error) {
+        if (
+          commitCapExceeded ||
+          error instanceof CommitConflictExhaustedError
+        ) {
+          throw new CommitConflictExhaustedError();
+        }
         if (revisionConflict || isMongoWriteConflict(error)) {
+          if (txAttempts >= MAX_COMMIT_TX_ATTEMPTS) {
+            throw new CommitConflictExhaustedError();
+          }
           const refreshed = await this.conversationsModel!.findOne({
             _id: convObjId,
             organizationId: orgObjId,
@@ -1134,9 +1177,6 @@ export class ChatDmAssistantWorkerService
             .lean()
             .exec();
           currentObservedRevision = refreshed?.contextRevision ?? 0;
-          if (txAttempt === MAX_COMMIT_TX_ATTEMPTS) {
-            throw new CommitConflictExhaustedError();
-          }
           continue;
         }
         if (isDuplicateKeyError(error)) {
@@ -1262,9 +1302,9 @@ export class ChatDmAssistantWorkerService
     const orgIdStr = String(job.organizationId);
     const convIdStr = String(job.conversationId);
     await this.historyCache.invalidate(orgIdStr, convIdStr);
-    const recipients = await this.getActiveMemberIds(
-      job.organizationId,
-      job.conversationId,
+    const recipients = await this.filterAuthorizedRecipients(
+      orgIdStr,
+      await this.getActiveMemberIds(job.organizationId, job.conversationId),
     );
     await this.emitAssistantStatus(
       orgIdStr,
@@ -1391,9 +1431,9 @@ export class ChatDmAssistantWorkerService
     const orgIdStr = String(job.organizationId);
     const convIdStr = String(job.conversationId);
     await this.historyCache.invalidate(orgIdStr, convIdStr);
-    const recipients = await this.getActiveMemberIds(
-      job.organizationId,
-      job.conversationId,
+    const recipients = await this.filterAuthorizedRecipients(
+      orgIdStr,
+      await this.getActiveMemberIds(job.organizationId, job.conversationId),
     );
     await this.emitAssistantStatus(
       orgIdStr,
@@ -1447,9 +1487,13 @@ export class ChatDmAssistantWorkerService
     const orgIdStr = String(job.organizationId);
     const convIdStr = String(job.conversationId);
     await this.historyCache.invalidate(orgIdStr, convIdStr);
-    const recipients =
+    const candidateRecipients =
       knownRecipients ??
       (await this.getActiveMemberIds(job.organizationId, job.conversationId));
+    const recipients = await this.filterAuthorizedRecipients(
+      orgIdStr,
+      candidateRecipients,
+    );
     await this.emitAssistantStatus(
       orgIdStr,
       convIdStr,
@@ -1511,15 +1555,21 @@ export class ChatDmAssistantWorkerService
       status: 'ACTIVE',
       type: 'DIRECT',
     });
+    const conversation = await (
+      session ? convQuery.session(session) : convQuery
+    )
+      .lean()
+      .exec();
     const membersQuery = this.membersModel!.find({
       organizationId: orgObjId,
       conversationId: convObjId,
       status: 'ACTIVE',
     });
-    const [conversation, activeMembers] = await Promise.all([
-      (session ? convQuery.session(session) : convQuery).lean().exec(),
-      (session ? membersQuery.session(session) : membersQuery).lean().exec(),
-    ]);
+    const activeMembers = await (
+      session ? membersQuery.session(session) : membersQuery
+    )
+      .lean()
+      .exec();
     const activeMemberIds = activeMembers.map((m) => m.userId);
     if (!conversation) {
       return {
@@ -1552,6 +1602,39 @@ export class ChatDmAssistantWorkerService
       }
     }
     return { allowed: true, conversation, activeMembers, activeMemberIds };
+  }
+
+  private async filterAuthorizedRecipients(
+    organizationId: string,
+    candidateUserIds: readonly string[],
+    options: { failOnError?: boolean } = {},
+  ): Promise<string[]> {
+    const uniqueIds = [...new Set(candidateUserIds)].filter(
+      (id) => typeof id === 'string' && id.length > 0,
+    );
+    const authorized: string[] = [];
+    for (const userId of uniqueIds) {
+      try {
+        const active =
+          await this.orgMembershipChecker.isActiveOrganizationMember(
+            organizationId,
+            userId,
+          );
+        if (active) {
+          authorized.push(userId);
+        }
+      } catch (error) {
+        if (options.failOnError) {
+          throw error;
+        }
+        this.logger.warn(
+          `Fail-closed IAM recipient check failed for user ${userId} in org ${organizationId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return authorized;
   }
 
   private async getActiveMemberIds(

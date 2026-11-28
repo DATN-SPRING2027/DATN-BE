@@ -42,6 +42,16 @@ const preferences = (row: Record<string, unknown>): ChatPreferences => ({
       : 'ALL',
 });
 
+const isTransactionsNotSupportedError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { code?: unknown; message?: unknown };
+  if (err.code === 20) return true;
+  const message = typeof err.message === 'string' ? err.message : '';
+  return /Transaction numbers are only allowed on a replica set|transactions are not supported/i.test(
+    message,
+  );
+};
+
 export abstract class MongoChatFeatures implements ChatFeatureRepository {
   constructor(private readonly featureConnection: Connection) {}
   protected abstract requireMember(
@@ -755,18 +765,108 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
       throw new NotFoundException('Notification not found');
   }
   async setBlock(actor: ChatActor, userId: string, active: boolean) {
+    const organizationId = id(actor.organizationId);
     const filter = {
-      organizationId: id(actor.organizationId),
+      organizationId,
       userId: actor.id,
       targetId: userId,
     };
-    if (active)
-      await this.collection('chat_blocks').updateOne(
-        filter,
-        { $setOnInsert: { createdAt: new Date() } },
-        { upsert: true },
+    const [firstUser, secondUser] = [actor.id, userId].sort();
+    const canonicalDirectKey = `${actor.organizationId}:${firstUser}:${secondUser}`;
+    const directKeys = [
+      ...new Set([canonicalDirectKey, canonicalDirectKey.toLowerCase()]),
+    ];
+
+    const applyBlock = async (session?: ClientSession) => {
+      if (active) {
+        await this.collection('chat_blocks').updateOne(
+          filter,
+          { $setOnInsert: { createdAt: new Date() } },
+          session ? { upsert: true, session } : { upsert: true },
+        );
+      } else {
+        await this.collection('chat_blocks').deleteOne(
+          filter,
+          session ? { session } : undefined,
+        );
+      }
+
+      // Bump contextRevision on every DIRECT conversation between the two users in this org
+      // so concurrent assistant publish transactions conflict at Step 5a instead of write-skewing.
+      const membersCollection = this.collection('chat_members');
+      let sharedConvIds: Types.ObjectId[] = [];
+      if (typeof membersCollection.find === 'function') {
+        const actorMemberRows = await membersCollection
+          .find(
+            { organizationId, userId: actor.id },
+            session
+              ? { projection: { conversationId: 1, _id: 0 }, session }
+              : { projection: { conversationId: 1, _id: 0 } },
+          )
+          .toArray();
+        const actorConvIds = actorMemberRows
+          .map((row) => row.conversationId as Types.ObjectId | undefined)
+          .filter((convId): convId is Types.ObjectId => convId != null);
+        if (actorConvIds.length > 0) {
+          const peerMemberRows = await membersCollection
+            .find(
+              {
+                organizationId,
+                conversationId: { $in: actorConvIds },
+                userId,
+              },
+              session
+                ? { projection: { conversationId: 1, _id: 0 }, session }
+                : { projection: { conversationId: 1, _id: 0 } },
+            )
+            .toArray();
+          sharedConvIds = peerMemberRows
+            .map((row) => row.conversationId as Types.ObjectId | undefined)
+            .filter((convId): convId is Types.ObjectId => convId != null);
+        }
+      }
+
+      const conversationMatch: Record<string, unknown> = {
+        organizationId,
+        type: 'DIRECT',
+        ...(sharedConvIds.length > 0
+          ? {
+              $or: [
+                { directKey: { $in: directKeys } },
+                { _id: { $in: sharedConvIds } },
+              ],
+            }
+          : { directKey: { $in: directKeys } }),
+      };
+
+      await this.collection('chat_conversations').updateMany(
+        conversationMatch,
+        { $inc: { contextRevision: 1 } },
+        session ? { session } : undefined,
       );
-    else await this.collection('chat_blocks').deleteOne(filter);
+    };
+
+    if (typeof this.featureConnection.startSession === 'function') {
+      const session = await this.featureConnection.startSession();
+      try {
+        await session.withTransaction(
+          async () => {
+            await applyBlock(session);
+          },
+          { writeConcern: { w: 'majority', wtimeoutMS: 5_000 } },
+        );
+      } catch (error) {
+        if (isTransactionsNotSupportedError(error)) {
+          await applyBlock();
+        } else {
+          throw error;
+        }
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await applyBlock();
+    }
   }
   async report(
     actor: ChatActor,

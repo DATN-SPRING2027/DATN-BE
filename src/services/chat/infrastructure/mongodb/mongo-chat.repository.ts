@@ -22,6 +22,7 @@ import {
 } from './mongodb.schemas';
 import {
   computeSourceAggregateState,
+  pageNeedsAssistantReEnrichment,
   type AssistantStatusEvent,
   type ChatAssistantFailureCode,
   type ChatAssistantJobState,
@@ -2282,6 +2283,207 @@ export class MongoChatRepository
       }
     }
     return contacts;
+  }
+
+  async reconcileCachedMessages(
+    actor: ChatActor,
+    conversationId: string | undefined,
+    messages: ChatMessage[],
+  ): Promise<ChatMessage[]> {
+    if (!pageNeedsAssistantReEnrichment(messages)) {
+      return messages;
+    }
+
+    const organizationId = new Types.ObjectId(actor.organizationId);
+    const conversationObjectId =
+      conversationId && Types.ObjectId.isValid(conversationId)
+        ? new Types.ObjectId(conversationId)
+        : undefined;
+    const scopeFilter = {
+      organizationId,
+      ...(conversationObjectId ? { conversationId: conversationObjectId } : {}),
+    };
+
+    const assistantIds = [
+      ...new Set(
+        messages.flatMap((msg) =>
+          (msg.authorType === 'ASSISTANT' ||
+            msg.senderId === CONTINUUM_AI_SENDER_ID) &&
+          Array.isArray(msg.sourceReferences) &&
+          msg.sourceReferences.length > 0 &&
+          Types.ObjectId.isValid(msg.id)
+            ? [msg.id]
+            : [],
+        ),
+      ),
+    ].map((msgId) => new Types.ObjectId(msgId));
+
+    const activeTriggerIds = [
+      ...new Set(
+        messages.flatMap((msg) =>
+          (msg.assistantState?.status === 'PENDING' ||
+            msg.assistantState?.status === 'PROCESSING') &&
+          Types.ObjectId.isValid(msg.id)
+            ? [msg.id]
+            : [],
+        ),
+      ),
+    ].map((msgId) => new Types.ObjectId(msgId));
+
+    const [storedAssistants, liveTriggers, liveJobs] = await Promise.all([
+      assistantIds.length > 0
+        ? this.messages
+            .find({
+              ...scopeFilter,
+              _id: { $in: assistantIds },
+            })
+            .select({ _id: 1, conversationId: 1, sourceReferences: 1 })
+            .lean()
+            .exec()
+        : Promise.resolve<
+            Pick<
+              MessageDocument,
+              '_id' | 'conversationId' | 'sourceReferences'
+            >[]
+          >([]),
+      activeTriggerIds.length > 0
+        ? this.messages
+            .find({
+              ...scopeFilter,
+              _id: { $in: activeTriggerIds },
+            })
+            .select({ _id: 1, deletedAt: 1 })
+            .lean()
+            .exec()
+        : Promise.resolve<Pick<MessageDocument, '_id' | 'deletedAt'>[]>([]),
+      activeTriggerIds.length > 0
+        ? this.assistantJobs
+            .find({
+              ...scopeFilter,
+              triggerMessageId: { $in: activeTriggerIds },
+            })
+            .lean()
+            .exec()
+        : Promise.resolve<AssistantJobDocument[]>([]),
+    ]);
+
+    const storedAssistantById = new Map(
+      storedAssistants.map((doc) => [String(doc._id), doc]),
+    );
+    const liveTriggerById = new Map(
+      liveTriggers.map((doc) => [String(doc._id), doc]),
+    );
+    const liveJobByTriggerId = new Map(
+      liveJobs.map((job) => [String(job.triggerMessageId), job]),
+    );
+
+    const sourceIds = [
+      ...new Set(
+        storedAssistants.flatMap((doc) =>
+          Array.isArray(doc.sourceReferences)
+            ? doc.sourceReferences.map((ref) => String(ref.messageId))
+            : [],
+        ),
+      ),
+    ]
+      .filter((srcId) => Types.ObjectId.isValid(srcId))
+      .map((srcId) => new Types.ObjectId(srcId));
+
+    const liveSources =
+      sourceIds.length > 0
+        ? await this.messages
+            .find({
+              ...scopeFilter,
+              _id: { $in: sourceIds },
+            })
+            .select({
+              _id: 1,
+              conversationId: 1,
+              deletedAt: 1,
+              editedAt: 1,
+              contentVersion: 1,
+            })
+            .lean()
+            .exec()
+        : [];
+
+    const liveSourcesByConversation = new Map<
+      string,
+      Map<string, LiveSourceProjection>
+    >();
+    for (const source of liveSources) {
+      const convKey = String(source.conversationId);
+      let convMap = liveSourcesByConversation.get(convKey);
+      if (!convMap) {
+        convMap = new Map<string, LiveSourceProjection>();
+        liveSourcesByConversation.set(convKey, convMap);
+      }
+      convMap.set(String(source._id), source);
+    }
+
+    return messages.map((msg) => {
+      const isAssistantWithRefs =
+        (msg.authorType === 'ASSISTANT' ||
+          msg.senderId === CONTINUUM_AI_SENDER_ID) &&
+        Array.isArray(msg.sourceReferences) &&
+        msg.sourceReferences.length > 0;
+
+      if (isAssistantWithRefs) {
+        const stored = storedAssistantById.get(msg.id);
+        const freshRefs: ChatAssistantSourceReference[] = stored
+          ? enrichSourceReferences(
+              stored.sourceReferences ?? [],
+              liveSourcesByConversation.get(String(stored.conversationId)) ??
+                new Map<string, LiveSourceProjection>(),
+            )
+          : msg.sourceReferences!.map((ref) => ({
+              ...ref,
+              status: 'DELETED' as const,
+              quoteSnippet: '',
+            }));
+        const sourceState = computeSourceAggregateState(freshRefs);
+        return {
+          ...msg,
+          sourceReferences: freshRefs,
+          assistantMeta: msg.assistantMeta
+            ? {
+                ...msg.assistantMeta,
+                sourceState,
+              }
+            : {
+                handle: CONTINUUM_AI_HANDLE,
+                queryMode: 'KEYWORD',
+                partialCoverage: false,
+                coverageNote: null,
+                sourceState,
+              },
+        };
+      }
+
+      if (
+        msg.assistantState?.status === 'PENDING' ||
+        msg.assistantState?.status === 'PROCESSING'
+      ) {
+        const liveTrigger = liveTriggerById.get(msg.id);
+        if (!liveTrigger || liveTrigger.deletedAt != null) {
+          return {
+            ...msg,
+            content: liveTrigger?.deletedAt ? '' : msg.content,
+            deletedAt: liveTrigger?.deletedAt
+              ? liveTrigger.deletedAt.toISOString()
+              : msg.deletedAt,
+            assistantState: null,
+          };
+        }
+        const liveJob = liveJobByTriggerId.get(msg.id);
+        return {
+          ...msg,
+          assistantState: liveJob ? toAssistantJobState(liveJob) : null,
+        };
+      }
+
+      return msg;
+    });
   }
 
   private async upsertMember(

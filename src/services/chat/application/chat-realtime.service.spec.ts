@@ -504,4 +504,85 @@ describe('ChatRealtimeService & ChatRealtimeGateway', () => {
       jest.useRealTimers();
     }
   });
+
+  it('delivers assistant/conversation events strictly to non-expired, deduplicated authorized recipients only (P1-1)', async () => {
+    const subscribers = new Map<string, (value: string) => void>();
+    const redis = {
+      subscribe: (channel: string, handler: (value: string) => void) => {
+        subscribers.set(channel, handler);
+        return Promise.resolve(() => undefined);
+      },
+      publish: (channel: string, value: string) => {
+        subscribers.get(channel)?.(value);
+        return Promise.resolve();
+      },
+      touchPresenceSession: jest.fn().mockResolvedValue(false),
+      removePresenceSession: jest.fn().mockResolvedValue(false),
+    } as unknown as RedisService;
+    const realtime = new ChatRealtimeService(
+      redis,
+      {} as ChatIamClient,
+      {
+        get: (key: string) => (key === 'INFRA_ENABLED' ? 'true' : 'test'),
+      } as unknown as ConfigService,
+    );
+    await realtime.onModuleInit();
+
+    const orgId = '507f1f77bcf86cd799439011';
+    const userA = createMockSocket();
+    const userBRevoked = createMockSocket();
+    const userCExpired = createMockSocket();
+
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await realtime.register(
+        userA.socket,
+        makeActor('user-a', orgId),
+        {},
+        'tok-a',
+        1_060_000,
+      );
+      await realtime.register(
+        userBRevoked.socket,
+        makeActor('user-b', orgId),
+        {},
+        'tok-b',
+        1_060_000,
+      );
+      await realtime.register(
+        userCExpired.socket,
+        makeActor('user-c', orgId),
+        {},
+        'tok-c',
+        1_005_000,
+      );
+
+      // Advance time past userCExpired's expiresAt without running heartbeat yet
+      nowSpy.mockReturnValue(1_010_000);
+
+      // Publish assistant message ONLY to caller-verified [user-a, user-a (duplicate), user-c (expired)]
+      // user-b is excluded by caller IAM check; user-c is expired on its socket!
+      await realtime.publishConversationEvent(
+        'message.created',
+        orgId,
+        'dm-1',
+        ['user-a', 'user-a', 'user-c'],
+        { id: 'ai-msg-1', authorType: 'ASSISTANT' },
+      );
+
+      expect(userA.send).toHaveBeenCalledTimes(1);
+      expect(userA.send).toHaveBeenCalledWith(
+        JSON.stringify({
+          event: 'message.created',
+          data: { id: 'ai-msg-1', authorType: 'ASSISTANT' },
+        }),
+      );
+      expect(userBRevoked.send).not.toHaveBeenCalled();
+      expect(userCExpired.send).not.toHaveBeenCalled();
+      expect(userCExpired.close).toHaveBeenCalledWith(1008, 'Session expired');
+    } finally {
+      nowSpy.mockRestore();
+      realtime.onModuleDestroy();
+    }
+  });
 });

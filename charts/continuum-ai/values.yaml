@@ -19,6 +19,10 @@ cors:
 
 sag:
   serviceUrl: "http://sag-api:8000"
+  # Set apiBaseUrl together with existingSecretName containing bffServiceTokenKey to enable SAG BFF calls.
+  apiBaseUrl: ""
+  existingSecretName: ""
+  bffServiceTokenKey: "sag-bff-service-token"
 
 metrics:
   authSecretKey: metrics-auth-token
@@ -56,6 +60,11 @@ ingress:
 chat:
   # Origins are checked on the direct WebSocket endpoint; set the actual FE origins at install time.
   allowedOrigins: "https://api.continuum.local,http://localhost:3000"
+  # 1-1 Direct Chat @continuumAI grounded assistant (disabled by default).
+  dmAssistant:
+    enabled: false
+    workerEnabled: false
+    sagTimeoutMs: 45000
   # Documents use Cloudflare R2; image objects use AWS S3.
   r2:
     endpoint: ""

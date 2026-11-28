@@ -2,24 +2,20 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { AI_ENGINE_CLIENT } from '../../../integrations/ai-engine/ai-engine.port';
-import { HttpAiEngineClient } from '../../../integrations/ai-engine/http-ai-engine.client';
-import { ChatModule } from '../chat.module';
 import { ChatApplicationService } from './chat.service';
 import { ChatFeaturesService } from './chat-features.service';
 import {
-  CHAT_ORG_MEMBERSHIP_CHECKER,
   CONTINUUM_AI_HANDLE,
   extractAssistantQuery,
 } from './chat-dm-assistant.types';
-import { Types, type Model } from 'mongoose';
+import { Types, type Connection, type Model } from 'mongoose';
+import type { AiEngineClient } from '../../../integrations/ai-engine/ai-engine.port';
 import {
   DmAssistantRetrievalService,
   parseAssistantQuery,
 } from './chat-dm-assistant-retrieval.service';
 import type { MessageDocument } from '../infrastructure/mongodb/mongo-chat.repository';
 import { ChatDmAssistantWorkerService } from './chat-dm-assistant.worker';
-import { MongoChatOrgMembershipChecker } from '../infrastructure/mongodb/mongo-chat-org-membership.checker';
 import type { ChatActor, ChatRepository } from './chat.repository';
 import type { ChatIamClient } from './chat-iam.client';
 import type { ChatRealtimeService } from './chat-realtime.service';
@@ -57,12 +53,16 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
     } as unknown as ConfigService;
 
     const sendMessage = jest.fn();
+    const listMessages = jest.fn();
+    const reconcileCachedMessages = jest.fn();
     const listConversations = jest.fn();
     const getConversation = jest.fn();
     const saveDraft = jest.fn();
     const getDraft = jest.fn();
     const repository = {
       sendMessage,
+      listMessages,
+      reconcileCachedMessages,
       listConversations,
       getConversation,
       saveDraft,
@@ -125,7 +125,10 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       chatService,
       featuresService,
       repository,
+      redis,
       sendMessage,
+      listMessages,
+      reconcileCachedMessages,
       listConversations,
       getConversation,
       saveDraft,
@@ -465,33 +468,78 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
   it('wires ChatModule standalone DI with HttpAiEngineClient and MongoChatOrgMembershipChecker without importing AiEngineModule or IamModule', async () => {
     const previousInfra = process.env.INFRA_ENABLED;
     process.env.INFRA_ENABLED = 'false';
+    let moduleRef:
+      | Awaited<
+          ReturnType<ReturnType<typeof Test.createTestingModule>['compile']>
+        >
+      | undefined;
     try {
-      const moduleRef = await Test.createTestingModule({
-        imports: [ChatModule],
+      let isolated!: {
+        ChatModule: new () => unknown;
+        AI_ENGINE_CLIENT: symbol;
+        HttpAiEngineClient: new (...args: unknown[]) => unknown;
+        CHAT_ORG_MEMBERSHIP_CHECKER: symbol;
+        MongoChatOrgMembershipChecker: new (...args: unknown[]) => {
+          isActiveOrganizationMember: (
+            organizationId: string,
+            userId: string,
+          ) => Promise<boolean>;
+        };
+        ChatDmAssistantWorkerService: new (...args: unknown[]) => unknown;
+      };
+      jest.isolateModules(() => {
+        const chatMod =
+          jest.requireActual<typeof import('../chat.module')>('../chat.module');
+        const portMod = jest.requireActual<
+          typeof import('../../../integrations/ai-engine/ai-engine.port')
+        >('../../../integrations/ai-engine/ai-engine.port');
+        const httpMod = jest.requireActual<
+          typeof import('../../../integrations/ai-engine/http-ai-engine.client')
+        >('../../../integrations/ai-engine/http-ai-engine.client');
+        const typesMod = jest.requireActual<
+          typeof import('./chat-dm-assistant.types')
+        >('./chat-dm-assistant.types');
+        const checkerMod = jest.requireActual<
+          typeof import('../infrastructure/mongodb/mongo-chat-org-membership.checker')
+        >('../infrastructure/mongodb/mongo-chat-org-membership.checker');
+        const workerMod = jest.requireActual<
+          typeof import('./chat-dm-assistant.worker')
+        >('./chat-dm-assistant.worker');
+        isolated = {
+          ChatModule: chatMod.ChatModule,
+          AI_ENGINE_CLIENT: portMod.AI_ENGINE_CLIENT,
+          HttpAiEngineClient: httpMod.HttpAiEngineClient,
+          CHAT_ORG_MEMBERSHIP_CHECKER: typesMod.CHAT_ORG_MEMBERSHIP_CHECKER,
+          MongoChatOrgMembershipChecker:
+            checkerMod.MongoChatOrgMembershipChecker,
+          ChatDmAssistantWorkerService: workerMod.ChatDmAssistantWorkerService,
+        };
+      });
+      moduleRef = await Test.createTestingModule({
+        imports: [isolated.ChatModule],
       }).compile();
 
-      const aiClient = moduleRef.get<unknown>(AI_ENGINE_CLIENT);
-      const orgChecker = moduleRef.get<unknown>(CHAT_ORG_MEMBERSHIP_CHECKER);
-      const worker = moduleRef.get<ChatDmAssistantWorkerService>(
-        ChatDmAssistantWorkerService,
+      const aiClient = moduleRef.get<unknown>(isolated.AI_ENGINE_CLIENT);
+      const orgChecker = moduleRef.get<
+        InstanceType<typeof isolated.MongoChatOrgMembershipChecker>
+      >(isolated.CHAT_ORG_MEMBERSHIP_CHECKER);
+      const worker = moduleRef.get<unknown>(
+        isolated.ChatDmAssistantWorkerService,
       );
 
-      expect(aiClient).toBeInstanceOf(HttpAiEngineClient);
-      expect(orgChecker).toBeInstanceOf(MongoChatOrgMembershipChecker);
-      expect(worker).toBeInstanceOf(ChatDmAssistantWorkerService);
+      expect(aiClient).toBeInstanceOf(isolated.HttpAiEngineClient);
+      expect(orgChecker).toBeInstanceOf(isolated.MongoChatOrgMembershipChecker);
+      expect(worker).toBeInstanceOf(isolated.ChatDmAssistantWorkerService);
 
       // Fail-closed when connection is absent (never returns true without verifying IAM)
       await expect(
-        (
-          orgChecker as MongoChatOrgMembershipChecker
-        ).isActiveOrganizationMember(
+        orgChecker.isActiveOrganizationMember(
           '507f1f77bcf86cd799439001',
           '507f1f77bcf86cd799439011',
         ),
       ).rejects.toThrow(/unavailable/i);
-
-      await moduleRef.close();
     } finally {
+      await moduleRef?.close();
       if (previousInfra === undefined) delete process.env.INFRA_ENABLED;
       else process.env.INFRA_ENABLED = previousInfra;
     }
@@ -662,5 +710,698 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
     expect(String(foldedRecovered.messages[0].messageId)).toBe(
       String(freshMsgId),
     );
+  });
+
+  it('re-enriches stale Redis cached assistant DTOs and active assistantState in ChatApplicationService.listMessages while keeping human-only hits zero-overhead (P2-1)', async () => {
+    const { chatService, redis, listMessages, reconcileCachedMessages } =
+      makeServices();
+
+    // 1. Human-only cached page -> served directly with 0 MongoDB calls
+    const humanCached = {
+      data: [
+        {
+          id: '507f1f77bcf86cd799439031',
+          conversationId: convDirectId,
+          senderId: actorA.id,
+          senderName: actorA.name,
+          senderAvatarUrl: null,
+          content: 'Hello world',
+          createdAt: '2026-11-28T08:00:00.000Z',
+          editedAt: null,
+          deletedAt: null,
+          reactions: [],
+          replyToMessageId: null,
+          replyTo: null,
+          attachments: [],
+          authorType: 'USER',
+        },
+      ],
+      nextCursor: null,
+    };
+    redis.get.mockResolvedValueOnce(JSON.stringify(humanCached));
+    const humanRes = await chatService.listMessages({}, convDirectId, {});
+    expect(humanRes).toEqual(humanCached);
+    expect(reconcileCachedMessages).not.toHaveBeenCalled();
+    expect(listMessages).not.toHaveBeenCalled();
+
+    // 2. Stale cached page containing ASSISTANT message (cached ACTIVE + non-empty quoteSnippet)
+    //    when MongoDB source was already EDITED/DELETED and Redis invalidation failed/lagged
+    const staleAssistantCached = {
+      data: [
+        {
+          id: '507f1f77bcf86cd799439040',
+          conversationId: convDirectId,
+          senderId: actorA.id,
+          senderName: actorA.name,
+          senderAvatarUrl: null,
+          content: '@continuumAI PAY-123?',
+          createdAt: '2026-11-28T08:50:00.000Z',
+          editedAt: null,
+          deletedAt: null,
+          reactions: [],
+          replyToMessageId: null,
+          replyTo: null,
+          attachments: [],
+          authorType: 'USER',
+          assistantState: {
+            jobId: '507f1f77bcf86cd799439077',
+            status: 'PENDING',
+            failureCode: null,
+            responseMessageId: null,
+            updatedAt: '2026-11-28T08:50:00.000Z',
+          },
+        },
+        {
+          id: '507f1f77bcf86cd799439041',
+          conversationId: convDirectId,
+          senderId: 'assistant:continuum_ai',
+          senderName: 'Continuum AI',
+          senderAvatarUrl: null,
+          content: 'PAY-123 summary [M1][M2].',
+          createdAt: '2026-11-28T08:51:00.000Z',
+          editedAt: null,
+          deletedAt: null,
+          reactions: [],
+          replyToMessageId: '507f1f77bcf86cd799439040',
+          replyTo: null,
+          attachments: [],
+          authorType: 'ASSISTANT',
+          assistantStatus: 'COMPLETED',
+          assistantMeta: {
+            handle: CONTINUUM_AI_HANDLE,
+            queryMode: 'KEYWORD',
+            partialCoverage: false,
+            coverageNote: null,
+            sourceState: 'FRESH',
+          },
+          sourceReferences: [
+            {
+              refId: 'M1',
+              messageId: '507f1f77bcf86cd799439051',
+              senderName: actorA.name,
+              createdAt: '2026-11-28T08:10:00.000Z',
+              quoteSnippet: 'Edited quote text',
+              status: 'ACTIVE',
+            },
+            {
+              refId: 'M2',
+              messageId: '507f1f77bcf86cd799439052',
+              senderName: 'Trần Bình',
+              createdAt: '2026-11-28T08:12:00.000Z',
+              quoteSnippet: 'Deleted secret snippet',
+              status: 'ACTIVE',
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    };
+
+    redis.get.mockResolvedValueOnce(JSON.stringify(staleAssistantCached));
+    reconcileCachedMessages.mockResolvedValueOnce([
+      {
+        ...staleAssistantCached.data[0],
+        assistantState: {
+          ...staleAssistantCached.data[0].assistantState,
+          status: 'COMPLETED',
+          responseMessageId: '507f1f77bcf86cd799439041',
+        },
+      },
+      {
+        ...staleAssistantCached.data[1],
+        assistantMeta: {
+          ...staleAssistantCached.data[1].assistantMeta,
+          sourceState: 'HAS_EDITED_AND_DELETED',
+        },
+        sourceReferences: [
+          {
+            ...staleAssistantCached.data[1].sourceReferences![0],
+            status: 'EDITED',
+          },
+          {
+            ...staleAssistantCached.data[1].sourceReferences![1],
+            status: 'DELETED',
+            quoteSnippet: '',
+          },
+        ],
+      },
+    ]);
+
+    const freshRes = await chatService.listMessages({}, convDirectId, {});
+    expect(reconcileCachedMessages).toHaveBeenCalledTimes(1);
+    expect(reconcileCachedMessages).toHaveBeenCalledWith(
+      actorA,
+      convDirectId,
+      staleAssistantCached.data,
+    );
+    expect(listMessages).not.toHaveBeenCalled();
+    expect(freshRes.data[0].assistantState?.status).toBe('COMPLETED');
+    expect(freshRes.data[1].assistantMeta?.sourceState).toBe(
+      'HAS_EDITED_AND_DELETED',
+    );
+    expect(freshRes.data[1].sourceReferences?.[0].status).toBe('EDITED');
+    expect(freshRes.data[1].sourceReferences?.[1].status).toBe('DELETED');
+    expect(freshRes.data[1].sourceReferences?.[1].quoteSnippet).toBe('');
+  });
+
+  it('preserves the requested time window during HYBRID neighbor expansion so out-of-window neighbors are never pulled in (P2-2)', async () => {
+    const orgId = new Types.ObjectId(actorA.organizationId);
+    const convId = new Types.ObjectId(convDirectId);
+    const triggerId = new Types.ObjectId('507f1f77bcf86cd799439099');
+    // Ref now: 2026-11-28T09:00:00Z -> Yesterday in Asia/Ho_Chi_Minh: 2026-11-26T17:00:00Z .. 2026-11-27T16:59:59.999Z
+    const seedDoc: MessageDocument = {
+      _id: new Types.ObjectId('507f1f77bcf86cd799439061'),
+      organizationId: orgId,
+      conversationId: convId,
+      senderId: actorA.id,
+      senderName: actorA.name,
+      senderAvatarUrl: null,
+      clientMessageId: 'seed-1',
+      content: 'Hôm qua chốt PAY-123 làm phần thanh toán.',
+      createdAt: new Date('2026-11-26T17:05:00.000Z'),
+      editedAt: null,
+      deletedAt: null,
+      contentVersion: 0,
+    };
+
+    const neighborFilters: Record<string, unknown>[] = [];
+    const makeCursor = (rows: unknown[]) => ({
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(rows),
+    });
+
+    const mockModel = {
+      aggregate: jest.fn(() => ({
+        exec: jest.fn().mockResolvedValue([seedDoc]),
+      })),
+      find: jest.fn((filter: Record<string, unknown>) => {
+        if ('$or' in filter) {
+          neighborFilters.push(filter);
+        }
+        return makeCursor([]);
+      }),
+    } as unknown as Model<MessageDocument>;
+
+    const retrievalService = new DmAssistantRetrievalService();
+    const result = await retrievalService.retrieveContext(
+      {
+        organizationId: orgId,
+        conversationId: convId,
+        triggerMessageId: triggerId,
+        triggerCreatedAt: new Date('2026-11-28T09:00:00.000Z'),
+        question: 'Hôm qua PAY-123 chốt gì?',
+        timezone: 'Asia/Ho_Chi_Minh',
+        maxMessages: 80,
+        maxChars: 24_000,
+      },
+      mockModel,
+    );
+
+    expect(result.queryMode).toBe('HYBRID');
+    expect(neighborFilters).toHaveLength(2);
+    for (const filter of neighborFilters) {
+      expect(filter.createdAt).toEqual({
+        $gte: new Date('2026-11-26T17:00:00.000Z'),
+        $lte: new Date('2026-11-27T16:59:59.999Z'),
+      });
+    }
+  });
+
+  it('executes zero concurrent MongoDB ClientSession ops, enforces strict 3-attempt commit cap across inner withTransaction retries, re-runs IAM per attempt, and uses compound (createdAt, _id) tie-breaker (P2-3, P2-4)', async () => {
+    const orgObjId = new Types.ObjectId(actorA.organizationId);
+    const convObjId = new Types.ObjectId(convDirectId);
+    const triggerObjId = new Types.ObjectId('507f1f77bcf86cd799439081');
+    const jobObjId = new Types.ObjectId('507f1f77bcf86cd799439082');
+    const srcObjId = new Types.ObjectId('507f1f77bcf86cd799439083');
+    const aiMsgObjId = new Types.ObjectId('507f1f77bcf86cd799439084');
+    const now = new Date('2026-11-28T09:00:00.000Z');
+
+    const jobDoc = {
+      _id: jobObjId,
+      organizationId: orgObjId,
+      conversationId: convObjId,
+      triggerMessageId: triggerObjId,
+      requesterUserId: actorA.id,
+      requesterDisplayName: actorA.name,
+      handle: CONTINUUM_AI_HANDLE,
+      query: 'PAY-123?',
+      timezone: 'Asia/Ho_Chi_Minh',
+      status: 'PROCESSING' as const,
+      failureCode: null,
+      attempts: 1,
+      maxAttempts: 3,
+      nextAttemptAt: now,
+      lockedBy: 'worker-unit',
+      lockedUntil: new Date(now.getTime() + 60_000),
+      responseMessageId: null,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const triggerDoc = {
+      _id: triggerObjId,
+      organizationId: orgObjId,
+      conversationId: convObjId,
+      senderId: actorA.id,
+      senderName: actorA.name,
+      content: '@continuumAI PAY-123?',
+      createdAt: now,
+      editedAt: null,
+      deletedAt: null,
+      contentVersion: 0,
+    };
+
+    function buildWorkerHarness(options: {
+      innerRetryCount: number;
+      revokeUserOnCommitAttempt?: { attempt: number; userId: string };
+    }) {
+      let inFlightSessionOps = 0;
+      let maxConcurrentSessionOps = 0;
+      let commitCallbackBodyRuns = 0;
+      let commitAttemptIndex = 0;
+      const lastMessageFilters: Record<string, unknown>[] = [];
+      const createdNotifications: unknown[] = [];
+
+      const trackSessionOp = async <T>(
+        hasSession: boolean,
+        fn: () => Promise<T>,
+      ): Promise<T> => {
+        if (!hasSession) return fn();
+        inFlightSessionOps += 1;
+        maxConcurrentSessionOps = Math.max(
+          maxConcurrentSessionOps,
+          inFlightSessionOps,
+        );
+        try {
+          // Yield a microtask so any concurrent Promise.all sharing the same session is caught immediately
+          await Promise.resolve();
+          return await fn();
+        } finally {
+          inFlightSessionOps -= 1;
+        }
+      };
+
+      const makeChain = (
+        resolveFn: (hasSession: boolean) => Promise<unknown>,
+      ) => {
+        let hasSession = false;
+        const chain = {
+          session(s: unknown) {
+            if (s) hasSession = true;
+            return chain;
+          },
+          select() {
+            return chain;
+          },
+          lean() {
+            return chain;
+          },
+          exec() {
+            return trackSessionOp(hasSession, () => resolveFn(hasSession));
+          },
+        };
+        return chain;
+      };
+
+      const models: Record<string, unknown> = {
+        continuum_chat_chat_assistant_jobs: {
+          findOneAndUpdate: jest.fn((filter: Record<string, unknown>) => {
+            if (filter.status === 'PROCESSING') {
+              return makeChain(() => Promise.resolve(null));
+            }
+            return makeChain(() => Promise.resolve(jobDoc));
+          }),
+          findOne: jest.fn(() => makeChain(() => Promise.resolve(jobDoc))),
+          updateOne: jest.fn(
+            (_f: unknown, _u: unknown, opts?: { session?: unknown }) => ({
+              exec: () =>
+                trackSessionOp(Boolean(opts?.session), () =>
+                  Promise.resolve({ matchedCount: 1, modifiedCount: 1 }),
+                ),
+            }),
+          ),
+        },
+        continuum_chat_chat_conversation_messages: {
+          findOne: jest.fn((filter: Record<string, unknown>) =>
+            makeChain(() => {
+              if (filter.authorType === 'ASSISTANT') {
+                return Promise.resolve(null);
+              }
+              return Promise.resolve(triggerDoc);
+            }),
+          ),
+          find: jest.fn(() =>
+            makeChain(() =>
+              Promise.resolve([
+                {
+                  _id: srcObjId,
+                  deletedAt: null,
+                  editedAt: null,
+                  contentVersion: 0,
+                },
+              ]),
+            ),
+          ),
+          create: jest.fn(
+            (docs: Record<string, unknown>[], opts?: { session?: unknown }) =>
+              trackSessionOp(Boolean(opts?.session), () =>
+                Promise.resolve([
+                  {
+                    toObject: () => ({
+                      ...docs[0],
+                      _id: aiMsgObjId,
+                      createdAt: now,
+                    }),
+                  },
+                ]),
+              ),
+          ),
+        },
+        continuum_chat_chat_conversations: {
+          findOne: jest.fn(() =>
+            makeChain(() =>
+              Promise.resolve({
+                _id: convObjId,
+                organizationId: orgObjId,
+                type: 'DIRECT',
+                status: 'ACTIVE',
+                contextRevision: 0,
+              }),
+            ),
+          ),
+          updateOne: jest.fn(
+            (
+              filter: Record<string, unknown>,
+              update: Record<string, unknown>,
+              opts?: { session?: unknown },
+            ) => ({
+              exec: () =>
+                trackSessionOp(Boolean(opts?.session), () => {
+                  if (
+                    update &&
+                    typeof update === 'object' &&
+                    '$set' in update &&
+                    (update.$set as Record<string, unknown>).lastMessageId
+                  ) {
+                    lastMessageFilters.push(filter);
+                  }
+                  return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+                }),
+            }),
+          ),
+        },
+        continuum_chat_chat_members: {
+          find: jest.fn(() =>
+            makeChain(() =>
+              Promise.resolve([
+                {
+                  _id: new Types.ObjectId(),
+                  organizationId: orgObjId,
+                  conversationId: convObjId,
+                  userId: actorA.id,
+                  status: 'ACTIVE',
+                  notificationMode: 'ALL',
+                },
+                {
+                  _id: new Types.ObjectId(),
+                  organizationId: orgObjId,
+                  conversationId: convObjId,
+                  userId: actorBId,
+                  status: 'ACTIVE',
+                  notificationMode: 'ALL',
+                },
+              ]),
+            ),
+          ),
+        },
+      };
+
+      const sessionObj = {
+        withTransaction: jest.fn(async (cb: () => Promise<void>) => {
+          let remainingTransientFailures = options.innerRetryCount;
+          while (true) {
+            await cb();
+            commitCallbackBodyRuns += 1;
+            if (remainingTransientFailures > 0) {
+              remainingTransientFailures -= 1;
+              continue;
+            }
+            return;
+          }
+        }),
+        endSession: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const connection = {
+        model: (name: string) => models[name],
+        startSession: jest.fn().mockResolvedValue(sessionObj),
+        db: {
+          collection: (name: string) => {
+            if (name === 'chat_blocks') {
+              return {
+                findOne: jest.fn((_f: unknown, opts?: { session?: unknown }) =>
+                  trackSessionOp(Boolean(opts?.session), () =>
+                    Promise.resolve(null),
+                  ),
+                ),
+              };
+            }
+            if (name === 'chat_notifications') {
+              return {
+                bulkWrite: jest.fn(
+                  (ops: unknown[], opts?: { session?: unknown }) =>
+                    trackSessionOp(Boolean(opts?.session), () => {
+                      createdNotifications.push(...ops);
+                      return Promise.resolve({ ok: 1 });
+                    }),
+                ),
+              };
+            }
+            return {};
+          },
+        },
+      } as unknown as Connection;
+
+      const iamCheckCalls: string[] = [];
+      let inCommitPhase = false;
+      const orgChecker = {
+        isActiveOrganizationMember: jest.fn(
+          (_orgId: string, userId: string) => {
+            iamCheckCalls.push(userId);
+            if (inCommitPhase && userId === actorA.id) {
+              commitAttemptIndex += 1;
+            }
+            if (
+              options.revokeUserOnCommitAttempt &&
+              commitAttemptIndex >= options.revokeUserOnCommitAttempt.attempt &&
+              userId === options.revokeUserOnCommitAttempt.userId
+            ) {
+              return Promise.resolve(false);
+            }
+            return Promise.resolve(true);
+          },
+        ),
+      };
+
+      const retrievalStub = {
+        retrieveContext: jest.fn().mockResolvedValue({
+          queryMode: 'KEYWORD',
+          retrievalPath: 'FOLDED_SCAN',
+          candidateCount: 1,
+          partialCoverage: false,
+          coverageHint: null,
+          messages: [
+            {
+              refId: 'M1',
+              messageId: srcObjId,
+              senderName: actorA.name,
+              createdAt: now,
+              sourceVersion: 0,
+              sourceEditedAtMs: null,
+              quoteSnippet: 'PAY-123 done',
+              textForSag: 'PAY-123 done',
+            },
+          ],
+        }),
+      } as unknown as DmAssistantRetrievalService;
+
+      const aiEngine = {
+        request: jest.fn(() => {
+          inCommitPhase = true;
+          return Promise.resolve({
+            status: 200,
+            body: {
+              status: 'ANSWERED',
+              answerText: 'PAY-123 done [M1].',
+              citedRefIds: ['M1'],
+              coverageNote: null,
+              model: 'test-model',
+              usage: {
+                inputTokens: 10,
+                cachedTokens: 0,
+                outputTokens: 5,
+                totalTokens: 15,
+                calls: 1,
+              },
+            },
+          });
+        }),
+        requestStream: jest.fn(),
+      } as unknown as AiEngineClient;
+
+      const historyCache = {
+        invalidate: jest.fn().mockResolvedValue(undefined),
+        getVersion: jest.fn().mockResolvedValue('0'),
+      } as unknown as ChatHistoryCacheInvalidator;
+
+      const publishConversationEvent = jest.fn().mockResolvedValue(undefined);
+      const realtime = {
+        publishConversationEvent,
+      } as unknown as ChatRealtimeService;
+
+      const config = {
+        get: jest.fn(() => undefined),
+      } as unknown as ConfigService;
+
+      const worker = new ChatDmAssistantWorkerService(
+        config,
+        retrievalStub,
+        aiEngine,
+        orgChecker,
+        historyCache,
+        realtime,
+        connection,
+      );
+      worker.setRetryDelayOverrideMs(0);
+
+      return {
+        worker,
+        getMaxConcurrentSessionOps: () => maxConcurrentSessionOps,
+        getCommitCallbackBodyRuns: () => commitCallbackBodyRuns,
+        getCommitAttemptIndex: () => commitAttemptIndex,
+        iamCheckCalls,
+        lastMessageFilters,
+        createdNotifications,
+        publishConversationEvent,
+      };
+    }
+
+    // (a) Happy path: 0 concurrent session ops + compound (createdAt, _id) tie-breaker filter
+    const happy = buildWorkerHarness({ innerRetryCount: 0 });
+    const happyRes = await happy.worker.processJobById(
+      jobObjId.toHexString(),
+      'worker-unit',
+    );
+    expect(happyRes.outcome).toBe('COMPLETED');
+    expect(happy.getMaxConcurrentSessionOps()).toBe(1);
+    expect(happy.lastMessageFilters).toHaveLength(1);
+    expect(happy.lastMessageFilters[0]).toEqual({
+      _id: convObjId,
+      organizationId: orgObjId,
+      $or: [
+        { lastMessageAt: null },
+        { lastMessageAt: { $lt: now } },
+        {
+          lastMessageAt: now,
+          $or: [
+            { lastMessageId: null },
+            { lastMessageId: { $lt: aiMsgObjId } },
+          ],
+        },
+      ],
+    });
+
+    // (b) Inner withTransaction retries count strictly toward MAX_COMMIT_TX_ATTEMPTS = 3 and re-run IAM on every attempt
+    const exhausted = buildWorkerHarness({ innerRetryCount: 5 });
+    const exhaustedRes = await exhausted.worker.processJobById(
+      jobObjId.toHexString(),
+      'worker-unit',
+    );
+    expect(exhaustedRes).toMatchObject({
+      outcome: 'RETRY_SCHEDULED',
+      failureCode: 'SERVICE_UNAVAILABLE',
+    });
+    expect(exhausted.getMaxConcurrentSessionOps()).toBe(1);
+    expect(exhausted.getCommitCallbackBodyRuns()).toBe(3);
+    expect(exhausted.getCommitAttemptIndex()).toBe(3);
+
+    // (c) IAM revocation between inner driver retry 1 and retry 2 excludes revoked peer B from notifications & WS!
+    const revokedOnRetry = buildWorkerHarness({
+      innerRetryCount: 1,
+      revokeUserOnCommitAttempt: { attempt: 2, userId: actorBId },
+    });
+    const revokedRes = await revokedOnRetry.worker.processJobById(
+      jobObjId.toHexString(),
+      'worker-unit',
+    );
+    expect(revokedRes.outcome).toBe('COMPLETED');
+    expect(revokedOnRetry.getCommitAttemptIndex()).toBe(2);
+    const createdEventCalls = (
+      revokedOnRetry.publishConversationEvent.mock.calls as [
+        string,
+        string,
+        string,
+        string[],
+        unknown,
+      ][]
+    ).filter((call) => call[0] === 'message.created');
+    expect(createdEventCalls).toHaveLength(1);
+    expect(createdEventCalls[0][3]).toEqual([actorA.id]);
+    expect(createdEventCalls[0][3]).not.toContain(actorBId);
+  });
+
+  it('wires standalone chat-service DM assistant env vars cleanly in both Docker Compose and Helm chart without hardcoded secrets (Deploy Parity)', () => {
+    const composePath = join(
+      __dirname,
+      '../../../../docker-compose.microservices.yml',
+    );
+    const helmTemplatePath = join(
+      __dirname,
+      '../../../../charts/continuum-ai/templates/domain-services.yaml',
+    );
+    const helmValuesPath = join(
+      __dirname,
+      '../../../../charts/continuum-ai/values.yaml',
+    );
+
+    const compose = readFileSync(composePath, 'utf8');
+    const chatComposeSection = compose.slice(
+      compose.indexOf('  chat:'),
+      compose.indexOf('  handover:'),
+    );
+    for (const envVar of [
+      'SAG_API_BASE_URL: ${SAG_API_BASE_URL:-}',
+      'SAG_BFF_SERVICE_TOKEN: ${SAG_BFF_SERVICE_TOKEN:-}',
+      'CHAT_DM_ASSISTANT_ENABLED: ${CHAT_DM_ASSISTANT_ENABLED:-false}',
+      'CHAT_DM_ASSISTANT_WORKER_ENABLED: ${CHAT_DM_ASSISTANT_WORKER_ENABLED:-false}',
+      'CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: ${CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS:-45000}',
+    ]) {
+      expect(chatComposeSection).toContain(envVar);
+    }
+
+    const helmTemplate = readFileSync(helmTemplatePath, 'utf8');
+    const chatHelmSection = helmTemplate.slice(
+      helmTemplate.indexOf('{{- if eq $name "chat" }}'),
+      helmTemplate.indexOf('{{- if eq $name "iam" }}'),
+    );
+    for (const envName of [
+      'name: SAG_API_BASE_URL',
+      'name: SAG_BFF_SERVICE_TOKEN',
+      'name: CHAT_DM_ASSISTANT_ENABLED',
+      'name: CHAT_DM_ASSISTANT_WORKER_ENABLED',
+      'name: CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS',
+    ]) {
+      expect(chatHelmSection).toContain(envName);
+    }
+    expect(chatHelmSection).toContain('secretKeyRef:');
+
+    const helmValues = readFileSync(helmValuesPath, 'utf8');
+    expect(helmValues).toContain('dmAssistant:');
+    expect(helmValues).toContain('enabled: false');
+    expect(helmValues).toContain('workerEnabled: false');
+    expect(helmValues).toContain('sagTimeoutMs: 45000');
   });
 });

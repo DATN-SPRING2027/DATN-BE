@@ -966,25 +966,70 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     )
       return;
     if (event.event === 'typing') {
+      const allowedRecipients = new Set(
+        event.recipientIds.filter(
+          (recipientId): recipientId is string =>
+            typeof recipientId === 'string' && recipientId.length > 0,
+        ),
+      );
       for (const socket of this.conversationSockets.get(event.conversationId) ??
         []) {
         const session = this.sessions.get(socket);
         if (
-          session?.actor.organizationId === event.organizationId &&
-          event.recipientIds.includes(session.actor.id)
+          session &&
+          allowedRecipients.has(session.actor.id) &&
+          this.canDeliverToSocket(
+            socket,
+            event.organizationId,
+            session.actor.id,
+          )
         ) {
           this.send(socket, event.event, event.data);
         }
       }
       return;
     }
-    for (const recipientId of event.recipientIds) {
-      for (const socket of this.userSockets.get(
-        this.userKey(event.organizationId, recipientId),
-      ) ?? []) {
-        this.send(socket, event.event, event.data);
+    for (const recipientId of new Set(event.recipientIds)) {
+      if (typeof recipientId !== 'string' || recipientId.length === 0) continue;
+      for (const socket of [
+        ...(this.userSockets.get(
+          this.userKey(event.organizationId, recipientId),
+        ) ?? []),
+      ]) {
+        if (
+          this.canDeliverToSocket(socket, event.organizationId, recipientId)
+        ) {
+          this.send(socket, event.event, event.data);
+        }
       }
     }
+  }
+
+  private canDeliverToSocket(
+    socket: WebSocket,
+    organizationId: string,
+    recipientId: string,
+  ): boolean {
+    const session = this.sessions.get(socket);
+    if (
+      !session ||
+      session.actor.organizationId !== organizationId ||
+      session.actor.id !== recipientId
+    ) {
+      return false;
+    }
+    if (Date.now() >= session.expiresAt) {
+      socket.close(1008, 'Session expired');
+      void this.unregister(socket);
+      return false;
+    }
+    const validation = this.sessionValidations.get(session.tokenHash);
+    if (validation && !validation.pending && !validation.valid) {
+      socket.close(1008, 'Session expired');
+      void this.unregister(socket);
+      return false;
+    }
+    return true;
   }
 
   private deliverNotificationEvent(event: NotificationSocketEvent): void {
@@ -1002,8 +1047,12 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
         this.userKey(event.organizationId, recipientId),
       );
       if (!sockets) continue;
-      for (const socket of sockets) {
-        this.send(socket, event.event, event.data);
+      for (const socket of [...sockets]) {
+        if (
+          this.canDeliverToSocket(socket, event.organizationId, recipientId)
+        ) {
+          this.send(socket, event.event, event.data);
+        }
       }
     }
   }

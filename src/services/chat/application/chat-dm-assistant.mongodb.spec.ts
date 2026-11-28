@@ -1749,4 +1749,648 @@ describe('Chat DM @continuumAI — Real MongoMemoryReplSet E2E Integration (ACL,
     };
     expect(sampleCheck.senderId).toBe(CONTINUUM_AI_SENDER_ID);
   });
+
+  it('excludes IAM-revoked peer B from message.created, assistant.status, and chat_notifications while still ACTIVE in chat_members (P1-1)', async () => {
+    // 1. Revoke User B's organization_memberships status while still ACTIVE in chat_members
+    const peerRevokedMembership = makeActor('Peer Membership Revoked', org1Id);
+    await seedIamActiveUser(org1Id, peerRevokedMembership.id);
+    const dmId1 = await createFreshDirectDm(userA, peerRevokedMembership);
+    await nativeRepo.sendMessage(
+      userA,
+      dmId1,
+      randomUUID(),
+      'PAY-901 chốt lúc 14:00.',
+    );
+    const trigger1 = await nativeRepo.sendMessage(
+      userA,
+      dmId1,
+      randomUUID(),
+      '@continuumAI PAY-901 khi nào?',
+      [],
+      undefined,
+      [],
+      {
+        handle: CONTINUUM_AI_HANDLE,
+        query: 'PAY-901 khi nào?',
+        timezone: 'Asia/Ho_Chi_Minh',
+      },
+    );
+
+    const iamDb = connection.useDb(SERVICE_DATABASES.iam, {
+      useCache: true,
+    }).db!;
+    await iamDb.collection('organization_memberships').updateOne(
+      {
+        organizationId: new Types.ObjectId(org1Id),
+        userId: new Types.ObjectId(peerRevokedMembership.id),
+      },
+      { $set: { status: 'REMOVED' } },
+    );
+
+    const w1 = createWorker(() =>
+      Promise.resolve({
+        status: 200,
+        body: {
+          status: 'ANSWERED',
+          answerText: 'PAY-901 chốt lúc 14:00 [M1].',
+          citedRefIds: ['M1'],
+          coverageNote: null,
+          model: 'test-model',
+          usage: {
+            inputTokens: 50,
+            cachedTokens: 0,
+            outputTokens: 15,
+            totalTokens: 65,
+            calls: 1,
+          },
+        },
+      }),
+    );
+
+    const res1 = await w1.worker.processJobById(
+      trigger1.message.assistantState!.jobId,
+    );
+    expect(res1.outcome).toBe('COMPLETED');
+    expect(res1.responseMessageId).toBeTruthy();
+
+    // Every single realtime event (PROCESSING, message.created, COMPLETED) MUST exclude peerRevokedMembership!
+    const allCalls1 = w1.publishConversationEvent.mock.calls as [
+      string,
+      string,
+      string,
+      string[],
+      unknown,
+    ][];
+    expect(allCalls1.length).toBeGreaterThanOrEqual(3);
+    for (const call of allCalls1) {
+      expect(call[3]).toEqual([userA.id]);
+      expect(call[3]).not.toContain(peerRevokedMembership.id);
+    }
+
+    // chat_notifications MUST exist ONLY for userA, ZERO for peerRevokedMembership!
+    const notifRows1 = await connection
+      .db!.collection('chat_notifications')
+      .find({
+        organizationId: new Types.ObjectId(org1Id),
+        conversationId: new Types.ObjectId(dmId1),
+        messageId: new Types.ObjectId(res1.responseMessageId!),
+      })
+      .toArray();
+    expect(notifRows1.map((r) => String(r.userId))).toEqual([userA.id]);
+
+    // 2. Revoke Peer's users.status = 'SUSPENDED' mid-flight (after PROCESSING, before commit)
+    const peerSuspendedUser = makeActor('Peer Account Suspended', org1Id);
+    await seedIamActiveUser(org1Id, peerSuspendedUser.id);
+    const dmId2 = await createFreshDirectDm(userA, peerSuspendedUser);
+    await nativeRepo.sendMessage(
+      userA,
+      dmId2,
+      randomUUID(),
+      'PAY-902 chốt lúc 16:00.',
+    );
+    const trigger2 = await nativeRepo.sendMessage(
+      userA,
+      dmId2,
+      randomUUID(),
+      '@continuumAI PAY-902 khi nào?',
+      [],
+      undefined,
+      [],
+      {
+        handle: CONTINUUM_AI_HANDLE,
+        query: 'PAY-902 khi nào?',
+        timezone: 'Asia/Ho_Chi_Minh',
+      },
+    );
+
+    const w2 = createWorker(async () => {
+      await iamDb
+        .collection('users')
+        .updateOne(
+          { _id: new Types.ObjectId(peerSuspendedUser.id) },
+          { $set: { status: 'SUSPENDED' } },
+        );
+      return {
+        status: 200,
+        body: {
+          status: 'ANSWERED',
+          answerText: 'PAY-902 chốt lúc 16:00 [M1].',
+          citedRefIds: ['M1'],
+          coverageNote: null,
+          model: 'test-model',
+          usage: {
+            inputTokens: 50,
+            cachedTokens: 0,
+            outputTokens: 15,
+            totalTokens: 65,
+            calls: 1,
+          },
+        },
+      };
+    });
+
+    const res2 = await w2.worker.processJobById(
+      trigger2.message.assistantState!.jobId,
+    );
+    expect(res2.outcome).toBe('COMPLETED');
+    const postSagCalls2 = (
+      w2.publishConversationEvent.mock.calls as [
+        string,
+        string,
+        string,
+        string[],
+        { status?: string },
+      ][]
+    ).filter(
+      (call) =>
+        call[0] === 'message.created' ||
+        (call[0] === 'assistant.status' && call[4]?.status === 'COMPLETED'),
+    );
+    expect(postSagCalls2).toHaveLength(2);
+    for (const call of postSagCalls2) {
+      expect(call[3]).toEqual([userA.id]);
+      expect(call[3]).not.toContain(peerSuspendedUser.id);
+    }
+    const notifRows2 = await connection
+      .db!.collection('chat_notifications')
+      .find({
+        organizationId: new Types.ObjectId(org1Id),
+        conversationId: new Types.ObjectId(dmId2),
+        messageId: new Types.ObjectId(res2.responseMessageId!),
+      })
+      .toArray();
+    expect(notifRows2.map((r) => String(r.userId))).toEqual([userA.id]);
+  });
+
+  it('bumps contextRevision on block/unblock and aborts concurrent mid-flight AI publish as CANCELLED/ACCESS_REVOKED (P1-2)', async () => {
+    const dmId = await createFreshDirectDm();
+    const roomId = await nativeRepo.createRoom(
+      userA,
+      'Unrelated Room',
+      [toCandidate(userB)],
+      randomUUID(),
+    );
+
+    const getRev = async (convId: string) => {
+      const doc = await connection
+        .db!.collection('chat_conversations')
+        .findOne({ _id: new Types.ObjectId(convId) });
+      return Number(doc?.contextRevision ?? 0);
+    };
+
+    const dmRev0 = await getRev(dmId);
+    const roomRev0 = await getRev(roomId);
+
+    // Block bumps DIRECT conversation contextRevision by +1, leaves ROOM untouched
+    await nativeRepo.setBlock(userB, userA.id, true);
+    expect(await getRev(dmId)).toBe(dmRev0 + 1);
+    expect(await getRev(roomId)).toBe(roomRev0);
+
+    // Unblock also bumps DIRECT conversation contextRevision by +1
+    await nativeRepo.setBlock(userB, userA.id, false);
+    expect(await getRev(dmId)).toBe(dmRev0 + 2);
+    expect(await getRev(roomId)).toBe(roomRev0);
+
+    // Concurrent block mid-flight during SAG call -> CANCELLED / ACCESS_REVOKED, 0 AI replies, 0 notifications
+    await nativeRepo.sendMessage(
+      userA,
+      dmId,
+      randomUUID(),
+      'PAY-910 chốt ngày mai.',
+    );
+    const trigger = await nativeRepo.sendMessage(
+      userA,
+      dmId,
+      randomUUID(),
+      '@continuumAI PAY-910 chốt khi nào?',
+      [],
+      undefined,
+      [],
+      {
+        handle: CONTINUUM_AI_HANDLE,
+        query: 'PAY-910 chốt khi nào?',
+        timezone: 'Asia/Ho_Chi_Minh',
+      },
+    );
+
+    const revBeforeRace = await getRev(dmId);
+    const { worker } = createWorker(async () => {
+      await nativeRepo.setBlock(userB, userA.id, true);
+      return {
+        status: 200,
+        body: {
+          status: 'ANSWERED',
+          answerText: 'Should never publish [M1].',
+          citedRefIds: ['M1'],
+          coverageNote: null,
+          model: 'test-model',
+          usage: {
+            inputTokens: 20,
+            cachedTokens: 0,
+            outputTokens: 10,
+            totalTokens: 30,
+            calls: 1,
+          },
+        },
+      };
+    });
+
+    try {
+      const res = await worker.processJobById(
+        trigger.message.assistantState!.jobId,
+      );
+      expect(res).toMatchObject({
+        outcome: 'CANCELLED',
+        failureCode: 'ACCESS_REVOKED',
+        responseMessageId: null,
+      });
+      expect(await getRev(dmId)).toBe(revBeforeRace + 1);
+      expect(
+        await connection
+          .db!.collection('chat_conversation_messages')
+          .countDocuments({
+            conversationId: new Types.ObjectId(dmId),
+            authorType: 'ASSISTANT',
+          }),
+      ).toBe(0);
+    } finally {
+      await nativeRepo.setBlock(userB, userA.id, false);
+    }
+  });
+
+  it('re-enriches stale cached assistant sourceReferences & strips deleted quoteSnippet even when Redis invalidation fails (P2-1)', async () => {
+    const dmId = await createFreshDirectDm();
+    const { redis } = createInMemoryRedis();
+    const cachedRepo = cachedChatRepository(nativeRepo, redis, 'test-dm-p21');
+
+    const srcEdit = await nativeRepo.sendMessage(
+      userA,
+      dmId,
+      randomUUID(),
+      'PAY-920 ngân sách ban đầu 10 triệu.',
+    );
+    const srcDelete = await nativeRepo.sendMessage(
+      userB,
+      dmId,
+      randomUUID(),
+      'PAY-920 bí mật cần xóa sau này.',
+    );
+    const trigger = await nativeRepo.sendMessage(
+      userA,
+      dmId,
+      randomUUID(),
+      '@continuumAI PAY-920 ngân sách bao nhiêu?',
+      [],
+      undefined,
+      [],
+      {
+        handle: CONTINUUM_AI_HANDLE,
+        query: 'PAY-920 ngân sách bao nhiêu?',
+        timezone: 'Asia/Ho_Chi_Minh',
+      },
+    );
+
+    const { worker } = createWorker(() =>
+      Promise.resolve({
+        status: 200,
+        body: {
+          status: 'ANSWERED',
+          answerText: 'PAY-920 ngân sách 10 triệu [M1][M2].',
+          citedRefIds: ['M1', 'M2'],
+          coverageNote: null,
+          model: 'test-model',
+          usage: {
+            inputTokens: 40,
+            cachedTokens: 0,
+            outputTokens: 12,
+            totalTokens: 52,
+            calls: 1,
+          },
+        },
+      }),
+    );
+    const published = await worker.processJobById(
+      trigger.message.assistantState!.jobId,
+    );
+    expect(published.outcome).toBe('COMPLETED');
+    const aiMsgId = published.responseMessageId!;
+
+    // Prime Redis cache with ACTIVE sourceReferences & non-empty quoteSnippets
+    const primedList = await cachedRepo.listMessages(userA, dmId, 20);
+    const primedAround = await cachedRepo.messagesAround(
+      userA,
+      dmId,
+      aiMsgId,
+      20,
+    );
+    expect(
+      primedList.data
+        .find((m) => m.id === aiMsgId)
+        ?.sourceReferences?.map((r) => r.status),
+    ).toEqual(['ACTIVE', 'ACTIVE']);
+    expect(
+      primedAround.data.find((m) => m.id === aiMsgId)?.sourceReferences?.[1]
+        .quoteSnippet,
+    ).toContain('PAY-920');
+
+    // Mutate sources directly in MongoDB WITHOUT bumping Redis (simulating race window or Redis invalidation outage!)
+    await nativeRepo.editMessage(
+      userA,
+      dmId,
+      srcEdit.message.id,
+      'PAY-920 ngân sách cập nhật 20 triệu.',
+    );
+    await nativeRepo.deleteMessage(userB, dmId, srcDelete.message.id);
+
+    // Stale Redis cache hits MUST immediately return authoritative EDITED/DELETED + blank quoteSnippet!
+    const staleListHit = await cachedRepo.listMessages(userA, dmId, 20);
+    const aiFromList = staleListHit.data.find((m) => m.id === aiMsgId)!;
+    expect(aiFromList.sourceReferences?.[0].status).toBe('EDITED');
+    expect(aiFromList.sourceReferences?.[1].status).toBe('DELETED');
+    expect(aiFromList.sourceReferences?.[1].quoteSnippet).toBe('');
+    expect(aiFromList.assistantMeta?.sourceState).toBe(
+      'HAS_EDITED_AND_DELETED',
+    );
+
+    const staleAroundHit = await cachedRepo.messagesAround(
+      userA,
+      dmId,
+      aiMsgId,
+      20,
+    );
+    const aiFromAround = staleAroundHit.data.find((m) => m.id === aiMsgId)!;
+    expect(aiFromAround.sourceReferences?.[0].status).toBe('EDITED');
+    expect(aiFromAround.sourceReferences?.[1].status).toBe('DELETED');
+    expect(aiFromAround.sourceReferences?.[1].quoteSnippet).toBe('');
+    expect(aiFromAround.assistantMeta?.sourceState).toBe(
+      'HAS_EDITED_AND_DELETED',
+    );
+  });
+
+  it('keeps HYBRID neighbor expansion strictly inside the requested date window in MongoDB (P2-2)', async () => {
+    const dmId = await createFreshDirectDm();
+    const messagesColl = connection.db!.collection(
+      'chat_conversation_messages',
+    );
+
+    // Anchor: 2026-11-28T09:00:00Z -> Yesterday in Asia/Ho_Chi_Minh: 2026-11-26T17:00:00Z .. 2026-11-27T16:59:59.999Z
+    const beforeWindowId = new Types.ObjectId();
+    const inWindowSeedId = new Types.ObjectId();
+    const inWindowNeighborId = new Types.ObjectId();
+    const afterWindowId = new Types.ObjectId();
+
+    const makeMsg = (
+      _id: Types.ObjectId,
+      sender: ChatActor,
+      content: string,
+      createdAt: Date,
+    ) => ({
+      _id,
+      organizationId: new Types.ObjectId(org1Id),
+      conversationId: new Types.ObjectId(dmId),
+      senderId: sender.id,
+      senderName: sender.name,
+      senderAvatarUrl: null,
+      clientMessageId: randomUUID(),
+      content,
+      mentionUserIds: [],
+      links: [],
+      isPinned: false,
+      editedAt: null,
+      deletedAt: null,
+      reactions: [],
+      replyToMessageId: null,
+      attachments: [],
+      contentVersion: 0,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    await messagesColl.insertMany([
+      makeMsg(
+        beforeWindowId,
+        userA,
+        'OUT-OF-WINDOW-BEFORE: Tin cũ từ 2 ngày trước.',
+        new Date('2026-11-26T16:59:00.000Z'),
+      ),
+      makeMsg(
+        inWindowSeedId,
+        userA,
+        'Hôm qua chốt PAY-930 triển khai webhook mới.',
+        new Date('2026-11-26T17:05:00.000Z'),
+      ),
+      makeMsg(
+        inWindowNeighborId,
+        userB,
+        'OK xác nhận triển khai lúc 10h sáng.',
+        new Date('2026-11-27T16:55:00.000Z'),
+      ),
+      makeMsg(
+        afterWindowId,
+        userB,
+        'OUT-OF-WINDOW-AFTER: Tin mới của hôm nay.',
+        new Date('2026-11-27T17:01:00.000Z'),
+      ),
+    ]);
+
+    const res = await retrieval.retrieveContext({
+      organizationId: new Types.ObjectId(org1Id),
+      conversationId: new Types.ObjectId(dmId),
+      triggerMessageId: new Types.ObjectId(),
+      triggerCreatedAt: new Date('2026-11-28T09:00:00.000Z'),
+      question: 'Hôm qua PAY-930 chốt gì?',
+      timezone: 'Asia/Ho_Chi_Minh',
+      maxMessages: 80,
+      maxChars: 24_000,
+    });
+
+    expect(res.queryMode).toBe('HYBRID');
+    const returnedIds = res.messages.map((m) => String(m.messageId));
+    expect(returnedIds).toContain(String(inWindowSeedId));
+    expect(returnedIds).toContain(String(inWindowNeighborId));
+    expect(returnedIds).not.toContain(String(beforeWindowId));
+    expect(returnedIds).not.toContain(String(afterWindowId));
+  });
+
+  it('enforces compound (createdAt, _id) tie-breaker on monotonic lastMessage* update in MongoDB (P2-4)', async () => {
+    const sharedTimestamp = new Date('2026-11-28T08:00:00.000Z');
+    const smallerId = new Types.ObjectId('670000000000000000000001');
+    const middleId = new Types.ObjectId('670000000000000000000005');
+    const largerId = new Types.ObjectId('670000000000000000000009');
+
+    // Case 1: AI message has EQUAL createdAt and SMALLER _id than existing lastMessageId -> MUST NOT overwrite preview!
+    {
+      const dmId = await createFreshDirectDm();
+      await nativeRepo.sendMessage(userA, dmId, randomUUID(), 'PAY-940 test.');
+      const trigger = await nativeRepo.sendMessage(
+        userA,
+        dmId,
+        randomUUID(),
+        '@continuumAI PAY-940?',
+        [],
+        undefined,
+        [],
+        {
+          handle: CONTINUUM_AI_HANDLE,
+          query: 'PAY-940?',
+          timezone: 'Asia/Ho_Chi_Minh',
+        },
+      );
+
+      // Seed existing assistant message doc with smallerId + sharedTimestamp (exercising exact Step 5b filter)
+      await connection.db!.collection('chat_conversation_messages').insertOne({
+        _id: smallerId,
+        organizationId: new Types.ObjectId(org1Id),
+        conversationId: new Types.ObjectId(dmId),
+        senderId: CONTINUUM_AI_SENDER_ID,
+        senderName: CONTINUUM_AI_DISPLAY_NAME,
+        senderAvatarUrl: null,
+        clientMessageId: `assistant:${trigger.message.id}`,
+        content: 'Older-ID AI reply should NOT overwrite newer-ID preview',
+        mentionUserIds: [],
+        links: [],
+        isPinned: false,
+        editedAt: null,
+        deletedAt: null,
+        reactions: [],
+        replyToMessageId: new Types.ObjectId(trigger.message.id),
+        attachments: [],
+        contentVersion: 0,
+        authorType: 'ASSISTANT',
+        triggerMessageId: new Types.ObjectId(trigger.message.id),
+        assistantStatus: 'COMPLETED',
+        assistantFailureCode: null,
+        sourceReferences: [],
+        createdAt: sharedTimestamp,
+        updatedAt: sharedTimestamp,
+      });
+
+      await connection.db!.collection('chat_conversations').updateOne(
+        { _id: new Types.ObjectId(dmId) },
+        {
+          $set: {
+            lastMessageId: middleId,
+            lastMessageAt: sharedTimestamp,
+            lastMessagePreview: 'Newer same-ms human message',
+            lastMessageSenderId: userB.id,
+          },
+        },
+      );
+
+      const { worker } = createWorker(() =>
+        Promise.resolve({
+          status: 200,
+          body: {
+            status: 'ANSWERED',
+            answerText: 'PAY-940 [M1].',
+            citedRefIds: ['M1'],
+            coverageNote: null,
+            model: 'm',
+            usage: {
+              inputTokens: 10,
+              cachedTokens: 0,
+              outputTokens: 5,
+              totalTokens: 15,
+              calls: 1,
+            },
+          },
+        }),
+      );
+      await worker.processJobById(trigger.message.assistantState!.jobId);
+
+      const convAfter = await connection
+        .db!.collection('chat_conversations')
+        .findOne({ _id: new Types.ObjectId(dmId) });
+      expect(String(convAfter?.lastMessageId)).toBe(String(middleId));
+      expect(convAfter?.lastMessagePreview).toBe('Newer same-ms human message');
+    }
+
+    // Case 2: AI message has EQUAL createdAt and LARGER _id than existing lastMessageId -> MUST update preview!
+    {
+      const dmId = await createFreshDirectDm();
+      await nativeRepo.sendMessage(userA, dmId, randomUUID(), 'PAY-941 test.');
+      const trigger = await nativeRepo.sendMessage(
+        userA,
+        dmId,
+        randomUUID(),
+        '@continuumAI PAY-941?',
+        [],
+        undefined,
+        [],
+        {
+          handle: CONTINUUM_AI_HANDLE,
+          query: 'PAY-941?',
+          timezone: 'Asia/Ho_Chi_Minh',
+        },
+      );
+
+      await connection.db!.collection('chat_conversation_messages').insertOne({
+        _id: largerId,
+        organizationId: new Types.ObjectId(org1Id),
+        conversationId: new Types.ObjectId(dmId),
+        senderId: CONTINUUM_AI_SENDER_ID,
+        senderName: CONTINUUM_AI_DISPLAY_NAME,
+        senderAvatarUrl: null,
+        clientMessageId: `assistant:${trigger.message.id}`,
+        content: 'Newer-ID AI reply MUST update same-ms preview',
+        mentionUserIds: [],
+        links: [],
+        isPinned: false,
+        editedAt: null,
+        deletedAt: null,
+        reactions: [],
+        replyToMessageId: new Types.ObjectId(trigger.message.id),
+        attachments: [],
+        contentVersion: 0,
+        authorType: 'ASSISTANT',
+        triggerMessageId: new Types.ObjectId(trigger.message.id),
+        assistantStatus: 'COMPLETED',
+        assistantFailureCode: null,
+        sourceReferences: [],
+        createdAt: sharedTimestamp,
+        updatedAt: sharedTimestamp,
+      });
+
+      await connection.db!.collection('chat_conversations').updateOne(
+        { _id: new Types.ObjectId(dmId) },
+        {
+          $set: {
+            lastMessageId: middleId,
+            lastMessageAt: sharedTimestamp,
+            lastMessagePreview: 'Older same-ms human message',
+            lastMessageSenderId: userB.id,
+          },
+        },
+      );
+
+      const { worker } = createWorker(() =>
+        Promise.resolve({
+          status: 200,
+          body: {
+            status: 'ANSWERED',
+            answerText: 'PAY-941 [M1].',
+            citedRefIds: ['M1'],
+            coverageNote: null,
+            model: 'm',
+            usage: {
+              inputTokens: 10,
+              cachedTokens: 0,
+              outputTokens: 5,
+              totalTokens: 15,
+              calls: 1,
+            },
+          },
+        }),
+      );
+      await worker.processJobById(trigger.message.assistantState!.jobId);
+
+      const convAfter = await connection
+        .db!.collection('chat_conversations')
+        .findOne({ _id: new Types.ObjectId(dmId) });
+      expect(String(convAfter?.lastMessageId)).toBe(String(largerId));
+      expect(convAfter?.lastMessagePreview).toContain(
+        'Newer-ID AI reply MUST update same-ms preview',
+      );
+    }
+  });
 });

@@ -317,3 +317,148 @@ it('honors mention-only preferences and deduplicates notifications by message an
   expect(JSON.stringify(writes)).toContain('messageId');
   expect(JSON.stringify(writes)).toContain('upsert');
 });
+
+it('bumps contextRevision on DIRECT conversations atomically inside a transaction on block and unblock, with standalone fallback', async () => {
+  const targetUserId = '507f1f77bcf86cd799439099';
+  const dmConvId = new Types.ObjectId('507f1f77bcf86cd799439055');
+  const ops: {
+    collection: string;
+    op: string;
+    hasSession: boolean;
+    filter?: unknown;
+    update?: unknown;
+  }[] = [];
+  const session = {
+    withTransaction: jest.fn((action: () => Promise<void>) => action()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+
+  let memberFindCall = 0;
+  const makeConnection = (mode: 'tx' | 'standalone-error' | 'no-session') =>
+    ({
+      ...(mode === 'no-session'
+        ? {}
+        : {
+            startSession: () =>
+              Promise.resolve(
+                mode === 'tx'
+                  ? session
+                  : {
+                      withTransaction: () =>
+                        Promise.reject(
+                          Object.assign(
+                            new Error(
+                              'Transaction numbers are only allowed on a replica set member or mongos',
+                            ),
+                            { code: 20 },
+                          ),
+                        ),
+                      endSession: jest.fn().mockResolvedValue(undefined),
+                    },
+              ),
+          }),
+      db: {
+        collection: (name: string) => {
+          if (name === 'chat_blocks') {
+            return {
+              updateOne: (
+                filter: unknown,
+                update: unknown,
+                options?: { session?: unknown },
+              ) => {
+                ops.push({
+                  collection: name,
+                  op: 'updateOne',
+                  hasSession: Boolean(options?.session),
+                  filter,
+                  update,
+                });
+                return Promise.resolve({ upsertedCount: 1 });
+              },
+              deleteOne: (filter: unknown, options?: { session?: unknown }) => {
+                ops.push({
+                  collection: name,
+                  op: 'deleteOne',
+                  hasSession: Boolean(options?.session),
+                  filter,
+                });
+                return Promise.resolve({ deletedCount: 1 });
+              },
+            };
+          }
+          if (name === 'chat_members') {
+            return {
+              find: (_filter: unknown, options?: { session?: unknown }) => ({
+                toArray: () => {
+                  memberFindCall += 1;
+                  ops.push({
+                    collection: name,
+                    op: `find#${memberFindCall}`,
+                    hasSession: Boolean(options?.session),
+                  });
+                  return Promise.resolve([{ conversationId: dmConvId }]);
+                },
+              }),
+            };
+          }
+          if (name === 'chat_conversations') {
+            return {
+              updateMany: (
+                filter: unknown,
+                update: unknown,
+                options?: { session?: unknown },
+              ) => {
+                ops.push({
+                  collection: name,
+                  op: 'updateMany',
+                  hasSession: Boolean(options?.session),
+                  filter,
+                  update,
+                });
+                return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
+              },
+            };
+          }
+          return {};
+        },
+      },
+    }) as unknown as Connection;
+
+  // 1. Transactional block + unblock
+  const txRepo = new Repository(makeConnection('tx'));
+  await txRepo.setBlock(actor, targetUserId, true);
+  await txRepo.setBlock(actor, targetUserId, false);
+
+  expect(session.withTransaction).toHaveBeenCalledTimes(2);
+  const convUpdates = ops.filter((o) => o.collection === 'chat_conversations');
+  expect(convUpdates).toHaveLength(2);
+  for (const upd of convUpdates) {
+    expect(upd.hasSession).toBe(true);
+    expect(upd.update).toEqual({ $inc: { contextRevision: 1 } });
+    expect(upd.filter).toMatchObject({
+      organizationId: new Types.ObjectId(actor.organizationId),
+      type: 'DIRECT',
+    });
+  }
+
+  // 2. Standalone MongoDB code-20 fallback still writes block & bumps contextRevision cleanly
+  ops.length = 0;
+  const fallbackRepo = new Repository(makeConnection('standalone-error'));
+  await fallbackRepo.setBlock(actor, targetUserId, true);
+  expect(
+    ops.some(
+      (o) =>
+        o.collection === 'chat_blocks' &&
+        o.op === 'updateOne' &&
+        o.hasSession === false,
+    ),
+  ).toBe(true);
+  expect(
+    ops.some(
+      (o) =>
+        o.collection === 'chat_conversations' &&
+        o.op === 'updateMany' &&
+        o.hasSession === false,
+    ),
+  ).toBe(true);
+});

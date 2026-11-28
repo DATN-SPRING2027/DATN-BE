@@ -776,7 +776,7 @@ export class DmAssistantRetrievalService {
       if (hits.length > 0) {
         const expanded = await this.expandNeighbors(
           model,
-          baseFilter,
+          scopedFilter,
           hits.slice(0, MAX_NEIGHBOR_SEEDS),
         );
         const byId = new Map<string, MessageDocument>();
@@ -1015,7 +1015,7 @@ export class DmAssistantRetrievalService {
 
   private async expandNeighbors(
     model: Model<MessageDocument>,
-    baseFilter: Record<string, unknown>,
+    scopedFilter: Record<string, unknown>,
     seeds: readonly MessageDocument[],
   ): Promise<MessageDocument[]> {
     const neighborBatches = await Promise.all(
@@ -1023,7 +1023,7 @@ export class DmAssistantRetrievalService {
         const [before, after] = await Promise.all([
           model
             .find({
-              ...baseFilter,
+              ...scopedFilter,
               $or: [
                 { createdAt: { $lt: seed.createdAt } },
                 { createdAt: seed.createdAt, _id: { $lt: seed._id } },
@@ -1035,7 +1035,7 @@ export class DmAssistantRetrievalService {
             .exec(),
           model
             .find({
-              ...baseFilter,
+              ...scopedFilter,
               $or: [
                 { createdAt: { $gt: seed.createdAt } },
                 { createdAt: seed.createdAt, _id: { $gt: seed._id } },

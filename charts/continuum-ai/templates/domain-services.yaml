@@ -57,6 +57,22 @@ spec:
               value: http://{{ include "continuum-ai.fullname" $ }}-iam:3001
             - name: CHAT_ALLOWED_ORIGINS
               value: {{ $.Values.chat.allowedOrigins | quote }}
+            - name: SAG_API_BASE_URL
+              value: {{ default "" $.Values.sag.apiBaseUrl | quote }}
+            {{- if $.Values.sag.existingSecretName }}
+            - name: SAG_BFF_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.sag.existingSecretName }}
+                  key: {{ default "sag-bff-service-token" $.Values.sag.bffServiceTokenKey }}
+                  optional: true
+            {{- end }}
+            - name: CHAT_DM_ASSISTANT_ENABLED
+              value: {{ dig "dmAssistant" "enabled" false $.Values.chat | quote }}
+            - name: CHAT_DM_ASSISTANT_WORKER_ENABLED
+              value: {{ dig "dmAssistant" "workerEnabled" false $.Values.chat | quote }}
+            - name: CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS
+              value: {{ dig "dmAssistant" "sagTimeoutMs" 45000 $.Values.chat | quote }}
             - name: R2_ENDPOINT
               value: {{ $.Values.chat.r2.endpoint | quote }}
             - name: R2_BUCKET

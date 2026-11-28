@@ -26,6 +26,7 @@ import {
   type ChatActor,
   type ChatAssistantMentionNormalized,
   type ChatCursor,
+  type ChatMessage,
   type ChatRepository,
 } from './chat.repository';
 import {
@@ -34,6 +35,7 @@ import {
   extractAssistantQuery,
   isDmAssistantAvailable,
   isValidIanaTimezone,
+  pageNeedsAssistantReEnrichment,
   readBoundedInt,
 } from './chat-dm-assistant.types';
 import { ChatRealtimeService } from './chat-realtime.service';
@@ -654,15 +656,36 @@ export class ChatApplicationService {
     const cacheKey = this.redisKey(
       `history-inline-replies-v1:${actor.organizationId}:${conversationId}:${actor.id}:${version}:${limit}:${encodeCursor(cursor) ?? 'latest'}`,
     );
+    let cachedResult:
+      | {
+          data: ChatMessage[];
+          nextCursor: string | null;
+        }
+      | undefined;
     try {
       const cached = await this.redis.get(cacheKey);
-      if (cached)
-        return JSON.parse(cached) as {
-          data: unknown[];
+      if (cached) {
+        cachedResult = JSON.parse(cached) as {
+          data: ChatMessage[];
           nextCursor: string | null;
         };
+      }
     } catch {
       // A cache miss or Redis outage falls through to Mongo.
+    }
+    if (cachedResult) {
+      if (!pageNeedsAssistantReEnrichment(cachedResult.data)) {
+        return cachedResult;
+      }
+      if (typeof this.repository.reconcileCachedMessages === 'function') {
+        cachedResult.data = await this.repository.reconcileCachedMessages(
+          actor,
+          conversationId,
+          cachedResult.data,
+        );
+        return cachedResult;
+      }
+      // Fall through to authoritative MongoDB load when repository lacks re-enrichment.
     }
     const page = await this.repository.listMessages(
       actor,

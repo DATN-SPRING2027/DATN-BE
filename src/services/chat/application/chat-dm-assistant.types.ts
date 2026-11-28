@@ -216,3 +216,33 @@ export function computeSourceAggregateState(
   if (hasEdited) return 'HAS_EDITED';
   return 'FRESH';
 }
+
+export interface AssistantCacheCheckMessage {
+  authorType?: string;
+  senderId?: string;
+  sourceReferences?: readonly unknown[];
+  assistantState?: { status?: string } | null;
+}
+
+export function messageNeedsAssistantReEnrichment(
+  message: AssistantCacheCheckMessage | null | undefined,
+): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const isAssistantWithRefs =
+    (message.authorType === 'ASSISTANT' ||
+      message.senderId === CONTINUUM_AI_SENDER_ID) &&
+    Array.isArray(message.sourceReferences) &&
+    message.sourceReferences.length > 0;
+  if (isAssistantWithRefs) return true;
+
+  const stateStatus = message.assistantState?.status;
+  return stateStatus === 'PENDING' || stateStatus === 'PROCESSING';
+}
+
+export function pageNeedsAssistantReEnrichment(
+  messages: readonly AssistantCacheCheckMessage[] | undefined,
+): boolean {
+  return (
+    Array.isArray(messages) && messages.some(messageNeedsAssistantReEnrichment)
+  );
+}

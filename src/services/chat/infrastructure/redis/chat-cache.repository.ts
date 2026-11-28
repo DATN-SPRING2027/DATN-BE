@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { pageNeedsAssistantReEnrichment } from '../../application/chat-dm-assistant.types';
 import type {
   ChatActor,
+  ChatMessage,
   ChatRepository,
 } from '../../application/chat.repository';
 import { RedisService } from './redis.service';
@@ -28,6 +30,13 @@ const historyReads = new Set([
   'searchMessages',
   'messagesAround',
   'library',
+]);
+const messagePageReads = new Set([
+  'listMessages',
+  'searchMessages',
+  'messagesAround',
+  'library',
+  'searchAcross',
 ]);
 const historyWrites = new Set([
   'sendMessage',
@@ -137,6 +146,26 @@ export function cachedChatRepository(
                 // Regenerate pagination from live membership instead of returning an incomplete page.
                 if (permitted.some((value) => !value))
                   return original.apply(target, args) as unknown;
+              }
+              if (
+                messagePageReads.has(String(key)) &&
+                Array.isArray(result.data)
+              ) {
+                const cachedMessages = result.data as ChatMessage[];
+                if (pageNeedsAssistantReEnrichment(cachedMessages)) {
+                  if (typeof target.reconcileCachedMessages === 'function') {
+                    const convId = unscopedReads.has(String(key))
+                      ? undefined
+                      : String(args[1]);
+                    result.data = await target.reconcileCachedMessages(
+                      actor,
+                      convId,
+                      cachedMessages,
+                    );
+                  } else {
+                    return original.apply(target, args) as unknown;
+                  }
+                }
               }
               return result;
             }
