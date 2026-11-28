@@ -81,6 +81,48 @@ export const CHAT_PERSISTENCE: ServicePersistenceDefinition = {
             partialFilterExpression: { 'attachments.kind': { $exists: true } },
           },
         ),
+        index(
+          { conversationId: 1, triggerMessageId: 1 },
+          {
+            name: 'chat_messages_assistant_trigger_unique',
+            unique: true,
+            partialFilterExpression: {
+              authorType: 'ASSISTANT',
+              triggerMessageId: { $type: 'objectId' },
+            },
+          },
+        ),
+        index(
+          { conversationId: 1, 'sourceReferences.messageId': 1 },
+          {
+            name: 'chat_messages_assistant_source_refs_idx',
+            partialFilterExpression: { authorType: 'ASSISTANT' },
+          },
+        ),
+      ],
+    },
+    {
+      name: 'chat_assistant_jobs',
+      indexes: [
+        index(
+          { triggerMessageId: 1 },
+          {
+            name: 'chat_assistant_jobs_trigger_unique',
+            unique: true,
+          },
+        ),
+        index(
+          { status: 1, nextAttemptAt: 1, lockedUntil: 1, createdAt: 1, _id: 1 },
+          { name: 'chat_assistant_jobs_claim_idx' },
+        ),
+        index(
+          { organizationId: 1, conversationId: 1, triggerMessageId: 1 },
+          { name: 'chat_assistant_jobs_conv_trigger_idx' },
+        ),
+        index(
+          { organizationId: 1, conversationId: 1, status: 1, createdAt: -1 },
+          { name: 'chat_assistant_jobs_conv_status_created_idx' },
+        ),
       ],
     },
     {
