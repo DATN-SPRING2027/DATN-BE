@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   BadRequestException,
   ConflictException,
   NotFoundException,
@@ -24,9 +25,22 @@ import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import {
   CHAT_REPOSITORY,
   type ChatActor,
+  type ChatAssistantMentionNormalized,
   type ChatCursor,
+  type ChatMessage,
   type ChatRepository,
 } from './chat.repository';
+import {
+  CHAT_ORG_MEMBERSHIP_CHECKER,
+  CONTINUUM_AI_HANDLE,
+  DEFAULT_DM_ASSISTANT_TIMEZONE,
+  extractAssistantQuery,
+  isDmAssistantAvailable,
+  isValidIanaTimezone,
+  pageNeedsAssistantReEnrichment,
+  readBoundedInt,
+  type ChatOrgMembershipChecker,
+} from './chat-dm-assistant.types';
 import { ChatRealtimeService } from './chat-realtime.service';
 import { R2Storage } from '../infrastructure/storage/r2.storage';
 import { S3Storage } from '../infrastructure/storage/s3.storage';
@@ -154,7 +168,9 @@ function encodeCursor(cursor: ChatCursor | null | undefined): string | null {
 
 @Injectable()
 export class ChatApplicationService {
+  private readonly logger = new Logger(ChatApplicationService.name);
   private readonly redisPrefix: string;
+  private readonly config: ConfigService;
 
   constructor(
     @Inject(CHAT_REPOSITORY) private readonly repository: ChatRepository,
@@ -168,7 +184,11 @@ export class ChatApplicationService {
     private readonly notificationService?: NotificationService,
     @Optional()
     private readonly historyCache?: ChatHistoryCacheInvalidator,
+    @Optional()
+    @Inject(CHAT_ORG_MEMBERSHIP_CHECKER)
+    private readonly orgMembershipChecker?: ChatOrgMembershipChecker,
   ) {
+    this.config = config;
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
   }
 
@@ -307,8 +327,13 @@ export class ChatApplicationService {
       actor.organizationId,
       directPeerIds,
     );
+    const dmAssistantEnabled = isDmAssistantAvailable(this.config);
     const data = page.data.map((conversation) => ({
       ...conversation,
+      capabilities: {
+        dmAssistantEnabled:
+          dmAssistantEnabled && conversation.type === 'DIRECT',
+      },
       members: conversation.members.map((member) => ({
         ...member,
         ...(conversation.type === 'DIRECT' && member.userId !== actor.id
@@ -318,7 +343,11 @@ export class ChatApplicationService {
           : {}),
       })),
     }));
-    return { data, nextCursor: encodeCursor(page.nextCursor) };
+    return {
+      data,
+      nextCursor: encodeCursor(page.nextCursor),
+      capabilities: { dmAssistantEnabled },
+    };
   }
 
   async createDirect(credentials: ChatCredentials, body: unknown) {
@@ -634,15 +663,72 @@ export class ChatApplicationService {
     const cacheKey = this.redisKey(
       `history-inline-replies-v1:${actor.organizationId}:${conversationId}:${actor.id}:${version}:${limit}:${encodeCursor(cursor) ?? 'latest'}`,
     );
+    const canCheckContextRevision =
+      typeof this.repository.getConversationContextRevisions === 'function';
+    let cachedResult:
+      | {
+          data: ChatMessage[];
+          nextCursor: string | null;
+          contextRevision?: number;
+        }
+      | undefined;
     try {
       const cached = await this.redis.get(cacheKey);
-      if (cached)
-        return JSON.parse(cached) as {
-          data: unknown[];
-          nextCursor: string | null;
-        };
+      if (cached) {
+        const parsed = JSON.parse(cached) as unknown;
+        if (
+          isRecord(parsed) &&
+          parsed.__v === 2 &&
+          typeof parsed.contextRevision === 'number' &&
+          Array.isArray(parsed.data)
+        ) {
+          cachedResult = {
+            data: parsed.data as ChatMessage[],
+            nextCursor:
+              typeof parsed.nextCursor === 'string' ? parsed.nextCursor : null,
+            contextRevision: parsed.contextRevision,
+          };
+        } else if (isRecord(parsed) && Array.isArray(parsed.data)) {
+          cachedResult = {
+            data: parsed.data as ChatMessage[],
+            nextCursor:
+              typeof parsed.nextCursor === 'string' ? parsed.nextCursor : null,
+          };
+        }
+      }
     } catch {
       // A cache miss or Redis outage falls through to Mongo.
+    }
+    let preFetchContextRevision: number | undefined;
+    if (canCheckContextRevision) {
+      const liveRevisions = await this.repository
+        .getConversationContextRevisions!(actor, [conversationId]);
+      preFetchContextRevision = liveRevisions.get(conversationId);
+    }
+    if (cachedResult) {
+      const revisionValid =
+        !canCheckContextRevision ||
+        (cachedResult.contextRevision !== undefined &&
+          preFetchContextRevision !== undefined &&
+          cachedResult.contextRevision === preFetchContextRevision);
+      if (revisionValid) {
+        if (!pageNeedsAssistantReEnrichment(cachedResult.data)) {
+          return {
+            data: cachedResult.data,
+            nextCursor: cachedResult.nextCursor,
+          };
+        }
+        if (typeof this.repository.reconcileCachedMessages === 'function') {
+          const reconciled = await this.repository.reconcileCachedMessages(
+            actor,
+            conversationId,
+            cachedResult.data,
+          );
+          return { data: reconciled, nextCursor: cachedResult.nextCursor };
+        }
+        // Fall through to authoritative MongoDB load when repository lacks re-enrichment.
+      }
+      // Stale contextRevision: bypass cached entry and fetch authoritative MongoDB page.
     }
     const page = await this.repository.listMessages(
       actor,
@@ -655,11 +741,23 @@ export class ChatApplicationService {
       nextCursor: encodeCursor(page.nextCursor),
     };
     try {
-      await this.redis.set(
-        cacheKey,
-        JSON.stringify(result),
-        historyCacheSeconds,
-      );
+      const payloadToStore = canCheckContextRevision
+        ? preFetchContextRevision !== undefined
+          ? {
+              __v: 2 as const,
+              contextRevision: preFetchContextRevision,
+              data: result.data,
+              nextCursor: result.nextCursor,
+            }
+          : undefined
+        : result;
+      if (payloadToStore) {
+        await this.redis.set(
+          cacheKey,
+          JSON.stringify(payloadToStore),
+          historyCacheSeconds,
+        );
+      }
     } catch {
       // Cache writes never make a persisted message history unavailable.
     }
@@ -1098,6 +1196,7 @@ export class ChatApplicationService {
         'attachments',
         'replyToMessageId',
         'mentionUserIds',
+        'assistantMention',
       ]) ||
       typeof body.clientMessageId !== 'string' ||
       !uuidV4.test(body.clientMessageId) ||
@@ -1117,7 +1216,90 @@ export class ChatApplicationService {
         (!Array.isArray(body.attachments) || body.attachments.length === 0))
     )
       return invalid('Message is invalid.');
+    let rawAssistantMention:
+      | {
+          handle: typeof CONTINUUM_AI_HANDLE;
+          query?: string;
+          timezone?: string;
+        }
+      | undefined;
+    if (body.assistantMention !== undefined) {
+      if (
+        !isRecord(body.assistantMention) ||
+        !exactKeys(body.assistantMention, ['handle', 'query', 'timezone']) ||
+        body.assistantMention.handle !== CONTINUUM_AI_HANDLE ||
+        (body.assistantMention.query !== undefined &&
+          typeof body.assistantMention.query !== 'string') ||
+        (body.assistantMention.timezone !== undefined &&
+          (typeof body.assistantMention.timezone !== 'string' ||
+            !isValidIanaTimezone(body.assistantMention.timezone)))
+      ) {
+        return invalid('Assistant mention is invalid.');
+      }
+      rawAssistantMention = {
+        handle: CONTINUUM_AI_HANDLE,
+        ...(body.assistantMention.query !== undefined
+          ? { query: body.assistantMention.query }
+          : {}),
+        ...(body.assistantMention.timezone !== undefined
+          ? { timezone: body.assistantMention.timezone.trim() }
+          : {}),
+      };
+    }
     const actor = await this.iam.getActor(credentials);
+    let normalizedAssistantMention: ChatAssistantMentionNormalized | undefined;
+    if (rawAssistantMention) {
+      if (!isDmAssistantAvailable(this.config)) {
+        throw new ServiceUnavailableException({
+          code: 'CHAT_AI_NOT_ENABLED',
+          message: 'Continuum AI assistant is not enabled.',
+        });
+      }
+      const extractedQuery = extractAssistantQuery(
+        body.content,
+        rawAssistantMention.query,
+      );
+      if (extractedQuery.length < 1 || extractedQuery.length > 2000) {
+        throw new UnprocessableEntityException({
+          code: 'CHAT_ASSISTANT_QUERY_INVALID',
+          message:
+            'Assistant question must contain between 1 and 2000 characters.',
+        });
+      }
+      const assistantRateLimit = readBoundedInt(
+        this.config.get<unknown>('CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE'),
+        15,
+        1,
+        120,
+      );
+      if (
+        !(await this.redis.consumeRateLimit(
+          this.redisKey(`dm-assistant:${actor.organizationId}:${actor.id}`),
+          assistantRateLimit,
+          60,
+        ))
+      ) {
+        throw new HttpException(
+          {
+            code: 'CHAT_ASSISTANT_RATE_LIMITED',
+            message:
+              'Too many @continuumAI requests. Please try again shortly.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      normalizedAssistantMention = {
+        handle: CONTINUUM_AI_HANDLE,
+        query: extractedQuery,
+        timezone: rawAssistantMention.timezone ?? DEFAULT_DM_ASSISTANT_TIMEZONE,
+        maxAttempts: readBoundedInt(
+          this.config.get<unknown>('CHAT_DM_ASSISTANT_MAX_RETRIES'),
+          3,
+          1,
+          5,
+        ),
+      };
+    }
     if (
       !(await this.redis.consumeRateLimit(
         this.redisKey(`send:${actor.organizationId}:${actor.id}`),
@@ -1138,31 +1320,61 @@ export class ChatApplicationService {
       conversationId,
       body.mentionUserIds,
     );
-    const result = await this.repository.sendMessage(
-      actor,
-      conversationId,
-      body.clientMessageId,
-      body.content.trim(),
-      (body.attachments as string[] | undefined) ?? [],
-      body.replyToMessageId,
-      mentionUserIds,
-    );
+    const result = normalizedAssistantMention
+      ? await this.repository.sendMessage(
+          actor,
+          conversationId,
+          body.clientMessageId,
+          body.content.trim(),
+          (body.attachments as string[] | undefined) ?? [],
+          body.replyToMessageId,
+          mentionUserIds,
+          normalizedAssistantMention,
+        )
+      : await this.repository.sendMessage(
+          actor,
+          conversationId,
+          body.clientMessageId,
+          body.content.trim(),
+          (body.attachments as string[] | undefined) ?? [],
+          body.replyToMessageId,
+          mentionUserIds,
+        );
     await this.bumpHistoryVersion(actor, conversationId);
-    await this.realtime.publishConversationEvent(
-      'message.created',
+    const authorizedRecipients = await this.filterAuthorizedRecipients(
       actor.organizationId,
-      conversationId,
       result.recipientIds,
-      result.message,
     );
+    const authorizedSet = new Set(authorizedRecipients);
+    if (authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'message.created',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result.message,
+      );
+    }
+    if (result.assistantStatusEvent && authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'assistant.status',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result.assistantStatusEvent,
+      );
+    }
+    const authorizedMentions = this.orgMembershipChecker
+      ? mentionUserIds.filter((id) => authorizedSet.has(id))
+      : mentionUserIds;
     if (
-      mentionUserIds &&
-      mentionUserIds.length > 0 &&
+      authorizedMentions &&
+      authorizedMentions.length > 0 &&
       this.notificationService
     ) {
       await this.notificationService.notifyChatMention({
         actorId: actor.id,
-        mentionedUserIds: mentionUserIds,
+        mentionedUserIds: authorizedMentions,
         organizationId: actor.organizationId,
         conversationId,
         messageId: result.message.id,
@@ -1202,18 +1414,28 @@ export class ChatApplicationService {
       mentionUserIds,
     );
     await this.bumpHistoryVersion(actor, conversationId);
-    await this.realtime.publishConversationEvent(
-      'message.updated',
+    const authorizedRecipients = await this.filterAuthorizedRecipients(
       actor.organizationId,
-      conversationId,
       result.recipientIds,
-      result.message,
     );
+    const authorizedSet = new Set(authorizedRecipients);
+    if (authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'message.updated',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result.message,
+      );
+    }
     const newlyMentioned = result.newlyMentionedUserIds ?? mentionUserIds;
-    if (newlyMentioned.length > 0 && this.notificationService) {
+    const authorizedNewlyMentioned = this.orgMembershipChecker
+      ? newlyMentioned.filter((id) => authorizedSet.has(id))
+      : newlyMentioned;
+    if (authorizedNewlyMentioned.length > 0 && this.notificationService) {
       await this.notificationService.notifyChatMention({
         actorId: actor.id,
-        mentionedUserIds: newlyMentioned,
+        mentionedUserIds: authorizedNewlyMentioned,
         organizationId: actor.organizationId,
         conversationId,
         messageId: result.message.id,
@@ -1237,13 +1459,19 @@ export class ChatApplicationService {
       messageId,
     );
     await this.bumpHistoryVersion(actor, conversationId);
-    await this.realtime.publishConversationEvent(
-      'message.deleted',
+    const authorizedRecipients = await this.filterAuthorizedRecipients(
       actor.organizationId,
-      conversationId,
       result.recipientIds,
-      result.message,
     );
+    if (authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'message.deleted',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result.message,
+      );
+    }
     return result.message;
   }
 
@@ -1270,13 +1498,19 @@ export class ChatApplicationService {
       active,
     );
     await this.bumpHistoryVersion(actor, conversationId);
-    await this.realtime.publishConversationEvent(
-      'message.updated',
+    const authorizedRecipients = await this.filterAuthorizedRecipients(
       actor.organizationId,
-      conversationId,
       result.recipientIds,
-      result.message,
     );
+    if (authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'message.updated',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result.message,
+      );
+    }
     return result.message;
   }
 
@@ -1538,6 +1772,52 @@ export class ChatApplicationService {
     return value;
   }
 
+  private async filterAuthorizedRecipients(
+    organizationId: string,
+    candidateUserIds: readonly string[],
+  ): Promise<string[]> {
+    const uniqueIds = [...new Set(candidateUserIds)].filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    );
+    if (!this.orgMembershipChecker || uniqueIds.length === 0) {
+      return uniqueIds;
+    }
+    const authorized: string[] = [];
+    const revoked: string[] = [];
+    for (const userId of uniqueIds) {
+      try {
+        const active =
+          await this.orgMembershipChecker.isActiveOrganizationMember(
+            organizationId,
+            userId,
+          );
+        if (active) {
+          authorized.push(userId);
+        } else {
+          revoked.push(userId);
+        }
+      } catch (error) {
+        // Fail-closed: never fan out realtime events or notifications to unverified IAM recipients.
+        this.logger.warn(
+          `Fail-closed IAM recipient check failed for user ${userId} in org ${organizationId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    if (
+      revoked.length > 0 &&
+      typeof this.realtime.revokeSessions === 'function'
+    ) {
+      for (const userId of revoked) {
+        await this.realtime
+          .revokeSessions({ organizationId, userId })
+          .catch(() => undefined);
+      }
+    }
+    return authorized;
+  }
+
   private redisKey(key: string): string {
     return `${this.redisPrefix}:${key}`;
   }
@@ -1548,12 +1828,18 @@ export class ChatApplicationService {
       return;
     }
     try {
-      await this.redis.increment(
-        this.redisKey(
-          `history-version:${actor.organizationId}:${conversationId}`,
+      await Promise.all([
+        this.redis.increment(
+          this.redisKey(
+            `history-version:${actor.organizationId}:${conversationId}`,
+          ),
+          24 * 60 * 60,
         ),
-        24 * 60 * 60,
-      );
+        this.redis.increment(
+          this.redisKey(`cache-generation:${actor.organizationId}`),
+          24 * 60 * 60,
+        ),
+      ]);
     } catch {
       // Cached pages expire quickly; persistent writes must not depend on Redis.
     }

@@ -504,4 +504,207 @@ describe('ChatRealtimeService & ChatRealtimeGateway', () => {
       jest.useRealTimers();
     }
   });
+
+  it('delivers assistant/conversation events strictly to non-expired, deduplicated authorized recipients only (P1-1)', async () => {
+    const subscribers = new Map<string, (value: string) => void>();
+    const redis = {
+      subscribe: (channel: string, handler: (value: string) => void) => {
+        subscribers.set(channel, handler);
+        return Promise.resolve(() => undefined);
+      },
+      publish: (channel: string, value: string) => {
+        subscribers.get(channel)?.(value);
+        return Promise.resolve();
+      },
+      touchPresenceSession: jest.fn().mockResolvedValue(false),
+      removePresenceSession: jest.fn().mockResolvedValue(false),
+    } as unknown as RedisService;
+    const realtime = new ChatRealtimeService(
+      redis,
+      {} as ChatIamClient,
+      {
+        get: (key: string) => (key === 'INFRA_ENABLED' ? 'true' : 'test'),
+      } as unknown as ConfigService,
+    );
+    await realtime.onModuleInit();
+
+    const orgId = '507f1f77bcf86cd799439011';
+    const userA = createMockSocket();
+    const userBRevoked = createMockSocket();
+    const userCExpired = createMockSocket();
+
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await realtime.register(
+        userA.socket,
+        makeActor('user-a', orgId),
+        {},
+        'tok-a',
+        1_060_000,
+      );
+      await realtime.register(
+        userBRevoked.socket,
+        makeActor('user-b', orgId),
+        {},
+        'tok-b',
+        1_060_000,
+      );
+      await realtime.register(
+        userCExpired.socket,
+        makeActor('user-c', orgId),
+        {},
+        'tok-c',
+        1_005_000,
+      );
+
+      // Advance time past userCExpired's expiresAt without running heartbeat yet
+      nowSpy.mockReturnValue(1_010_000);
+
+      // Publish assistant message ONLY to caller-verified [user-a, user-a (duplicate), user-c (expired)]
+      // user-b is excluded by caller IAM check; user-c is expired on its socket!
+      await realtime.publishConversationEvent(
+        'message.created',
+        orgId,
+        'dm-1',
+        ['user-a', 'user-a', 'user-c'],
+        { id: 'ai-msg-1', authorType: 'ASSISTANT' },
+      );
+
+      expect(userA.send).toHaveBeenCalledTimes(1);
+      expect(userA.send).toHaveBeenCalledWith(
+        JSON.stringify({
+          event: 'message.created',
+          data: { id: 'ai-msg-1', authorType: 'ASSISTANT' },
+        }),
+      );
+      expect(userBRevoked.send).not.toHaveBeenCalled();
+      expect(userCExpired.send).not.toHaveBeenCalled();
+      expect(userCExpired.close).toHaveBeenCalledWith(1008, 'Session expired');
+    } finally {
+      nowSpy.mockRestore();
+      realtime.onModuleDestroy();
+    }
+  });
+
+  it('filters recipients through CHAT_ORG_MEMBERSHIP_CHECKER on publish & cross-pod delivery, fails closed, and revokes open sockets of IAM-revoked peers (R2-P1)', async () => {
+    const subscribers = new Map<string, (value: string) => void>();
+    const redis = {
+      subscribe: (channel: string, handler: (value: string) => void) => {
+        subscribers.set(channel, handler);
+        return Promise.resolve(() => undefined);
+      },
+      publish: (channel: string, value: string) => {
+        subscribers.get(channel)?.(value);
+        return Promise.resolve();
+      },
+      touchPresenceSession: jest.fn().mockResolvedValue(false),
+      removePresenceSession: jest.fn().mockResolvedValue(false),
+    } as unknown as RedisService;
+
+    const orgId = '507f1f77bcf86cd799439011';
+    const activeStatus = new Map<string, boolean | 'THROW'>([
+      ['user-a', true],
+      ['user-b', false],
+      ['user-c', 'THROW'],
+    ]);
+    const orgMembershipChecker = {
+      isActiveOrganizationMember: jest.fn((_org: string, userId: string) => {
+        const state = activeStatus.get(userId);
+        if (state === 'THROW') {
+          return Promise.reject(new Error('IAM_DB_UNAVAILABLE'));
+        }
+        return Promise.resolve(state === true);
+      }),
+    };
+
+    const realtime = new ChatRealtimeService(
+      redis,
+      {} as ChatIamClient,
+      {
+        get: (key: string) => (key === 'INFRA_ENABLED' ? 'true' : 'test'),
+      } as unknown as ConfigService,
+      undefined,
+      orgMembershipChecker,
+    );
+    await realtime.onModuleInit();
+
+    const userA = createMockSocket();
+    const userB = createMockSocket();
+    const userC = createMockSocket();
+    await realtime.register(
+      userA.socket,
+      makeActor('user-a', orgId),
+      {},
+      'tok-a',
+      Date.now() + 60_000,
+    );
+    await realtime.register(
+      userB.socket,
+      makeActor('user-b', orgId),
+      {},
+      'tok-b',
+      Date.now() + 60_000,
+    );
+    await realtime.register(
+      userC.socket,
+      makeActor('user-c', orgId),
+      {},
+      'tok-c',
+      Date.now() + 60_000,
+    );
+
+    await realtime.publishConversationEvent(
+      'message.created',
+      orgId,
+      'dm-1',
+      ['user-a', 'user-b', 'user-c'],
+      { id: 'msg-1', content: '@continuumAI secret' },
+    );
+    await realtime.publishConversationEvent(
+      'assistant.status',
+      orgId,
+      'dm-1',
+      ['user-a', 'user-b', 'user-c'],
+      { status: 'PENDING', jobId: 'job-1' },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(userA.send).toHaveBeenCalledTimes(2);
+    expect(userB.send).not.toHaveBeenCalled();
+    expect(userB.close).toHaveBeenCalledWith(1008, 'Session revoked');
+    expect(userC.send).not.toHaveBeenCalled();
+    // Transient IAM check error fails closed without falsely closing socket as revoked
+    expect(userC.close).not.toHaveBeenCalled();
+
+    // Cross-pod notification arriving via Redis pub/sub also enforces live IAM check & revokes newly revoked user
+    const userD = createMockSocket();
+    activeStatus.set('user-d', false);
+    await realtime.register(
+      userD.socket,
+      makeActor('user-d', orgId),
+      {},
+      'tok-d',
+      Date.now() + 60_000,
+    );
+    userA.send.mockClear();
+    await redis.publish(
+      'test:notification.realtime.v1',
+      JSON.stringify({
+        version: 1,
+        payload: {
+          event: 'notification.created',
+          organizationId: orgId,
+          recipientIds: ['user-a', 'user-d'],
+          data: { id: 'notif-1' },
+        },
+        traceContext: {},
+      }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(userA.send).toHaveBeenCalledTimes(1);
+    expect(userD.send).not.toHaveBeenCalled();
+    expect(userD.close).toHaveBeenCalledWith(1008, 'Session revoked');
+    realtime.onModuleDestroy();
+  });
 });

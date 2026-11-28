@@ -18,6 +18,11 @@ import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import { ChatHistoryCacheInvalidator } from './chat-history-cache';
 import { ChatRealtimeService } from './chat-realtime.service';
 import type { ChatSearchFilters } from './chat-features';
+import {
+  CHAT_ORG_MEMBERSHIP_CHECKER,
+  isDmAssistantAvailable,
+  type ChatOrgMembershipChecker,
+} from './chat-dm-assistant.types';
 import { RedisService } from '../infrastructure/redis/redis.service';
 
 const oid = /^[a-f\d]{24}$/i;
@@ -87,6 +92,7 @@ const cursor = (value: ChatCursor | null) =>
 @Injectable()
 export class ChatFeaturesService {
   private readonly redisPrefix: string;
+  private readonly config?: ConfigService;
 
   constructor(
     @Inject(CHAT_REPOSITORY) private readonly repository: ChatRepository,
@@ -98,7 +104,11 @@ export class ChatFeaturesService {
     private readonly redis?: RedisService,
     @Optional()
     config?: ConfigService,
+    @Optional()
+    @Inject(CHAT_ORG_MEMBERSHIP_CHECKER)
+    private readonly orgMembershipChecker?: ChatOrgMembershipChecker,
   ) {
+    this.config = config;
     this.redisPrefix = `${config?.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
   }
 
@@ -131,7 +141,13 @@ export class ChatFeaturesService {
       conversationId,
     );
     if (!result) throw new NotFoundException('Conversation not found');
-    return result;
+    return {
+      ...result,
+      capabilities: {
+        dmAssistantEnabled:
+          isDmAssistantAvailable(this.config) && result.type === 'DIRECT',
+      },
+    };
   }
   async preferences(
     credentials: ChatCredentials,
@@ -180,8 +196,17 @@ export class ChatFeaturesService {
     const actor = await this.iam.getActor(credentials);
     if (body === undefined)
       return this.repository.getDraft(actor, conversationId);
-    const data = object(body, ['content', 'mentionUserIds']);
+    const data = object(body, [
+      'content',
+      'mentionUserIds',
+      'assistantMention',
+    ]);
     if (typeof data.content !== 'string' || data.content.length > 8000)
+      return invalid();
+    if (
+      data.assistantMention !== undefined &&
+      typeof data.assistantMention !== 'boolean'
+    )
       return invalid();
     const mentions: unknown = data.mentionUserIds ?? [];
     if (
@@ -205,6 +230,7 @@ export class ChatFeaturesService {
       conversationId,
       data.content,
       mentions,
+      data.assistantMention === true,
     );
   }
   async ownership(
@@ -386,14 +412,52 @@ export class ChatFeaturesService {
       data.clientMessageId,
     );
     await this.historyCache?.invalidate(actor.organizationId, conversationId);
-    await this.realtime.publishConversationEvent(
-      'message.created',
-      actor.organizationId,
+    const candidateRecipients = await this.repository.memberIds(
+      actor,
       conversationId,
-      await this.repository.memberIds(actor, conversationId),
-      result,
     );
+    const authorizedRecipients = await this.filterAuthorizedRecipients(
+      actor.organizationId,
+      candidateRecipients,
+    );
+    if (authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'message.created',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result,
+      );
+    }
     return result;
+  }
+
+  private async filterAuthorizedRecipients(
+    organizationId: string,
+    candidateUserIds: readonly string[],
+  ): Promise<string[]> {
+    const uniqueIds = [...new Set(candidateUserIds)].filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    );
+    if (!this.orgMembershipChecker || uniqueIds.length === 0) {
+      return uniqueIds;
+    }
+    const authorized: string[] = [];
+    for (const userId of uniqueIds) {
+      try {
+        const active =
+          await this.orgMembershipChecker.isActiveOrganizationMember(
+            organizationId,
+            userId,
+          );
+        if (active) {
+          authorized.push(userId);
+        }
+      } catch {
+        // Fail-closed: never emit forwarded message to unverified IAM recipients.
+      }
+    }
+    return authorized;
   }
   async receipts(
     credentials: ChatCredentials,

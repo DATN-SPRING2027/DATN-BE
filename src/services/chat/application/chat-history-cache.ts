@@ -19,6 +19,10 @@ export class ChatHistoryCacheInvalidator {
     return `${this.redisPrefix}:history-version:${organizationId}:${conversationId}`;
   }
 
+  cacheGenerationKey(organizationId: string): string {
+    return `${this.redisPrefix}:cache-generation:${organizationId}`;
+  }
+
   async getVersion(
     organizationId: string,
     conversationId: string,
@@ -39,10 +43,16 @@ export class ChatHistoryCacheInvalidator {
     conversationId: string,
   ): Promise<void> {
     try {
-      await this.redis.increment(
-        this.historyVersionKey(organizationId, conversationId),
-        HISTORY_VERSION_TTL_SECONDS,
-      );
+      await Promise.all([
+        this.redis.increment(
+          this.historyVersionKey(organizationId, conversationId),
+          HISTORY_VERSION_TTL_SECONDS,
+        ),
+        this.redis.increment(
+          this.cacheGenerationKey(organizationId),
+          HISTORY_VERSION_TTL_SECONDS,
+        ),
+      ]);
     } catch {
       // Cached pages expire quickly; persistent writes must not fail on Redis errors.
     }

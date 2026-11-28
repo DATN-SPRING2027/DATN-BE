@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Continuum Chat API",
-    "version": "1.1.0",
-    "description": "User-confirmed v1 contract for human one-to-one and room chat. The public HTTP paths are served by the Gateway; the standalone Chat service uses its /internal prefix. All operations derive the actor and organization from an IAM-validated session."
+    "version": "1.2.0",
+    "description": "User-confirmed v1.2 contract for human one-to-one and room chat plus grounded @continuumAI 1-1 DM assistant. The public HTTP paths are served by the Gateway; the standalone Chat service uses its /internal prefix. All operations derive the actor and organization from an IAM-validated session."
   },
   "x-design-status": "Implemented for the requested Chat v1 scope; this records the user-authorized implementation contract and does not claim separate external review approvals.",
   "security": [
@@ -458,14 +458,65 @@
           "404": {
             "$ref": "#/components/responses/ConversationUnavailable"
           },
+          "409": {
+            "description": "Direct chat blocked (CHAT_DIRECT_UNAVAILABLE), attachment not ready, or clientMessageId conflict including assistantMention mismatch (CHAT_IDEMPOTENCY_CONFLICT).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
-            "$ref": "#/components/responses/ValidationError"
+            "description": "Validation failed (CHAT_VALIDATION_FAILED), @continuumAI called in ROOM (CHAT_ASSISTANT_DIRECT_ONLY), or invalid assistant question (CHAT_ASSISTANT_QUERY_INVALID).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "429": {
-            "$ref": "#/components/responses/RateLimited"
+            "description": "Message rate limit exceeded (CHAT_RATE_LIMITED) or @continuumAI 15/min user rate limit exceeded (CHAT_ASSISTANT_RATE_LIMITED).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "503": {
-            "$ref": "#/components/responses/DependencyUnavailable"
+            "description": "Continuum AI assistant is disabled or SAG is unconfigured (CHAT_AI_NOT_ENABLED).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       }
@@ -761,6 +812,21 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "description": "Assistant messages are immutable (CHAT_ASSISTANT_MESSAGE_IMMUTABLE).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "$ref": "#/components/responses/ConversationUnavailable"
           },
@@ -780,6 +846,21 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Assistant messages are immutable (CHAT_ASSISTANT_MESSAGE_IMMUTABLE).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "404": {
             "$ref": "#/components/responses/ConversationUnavailable"
@@ -1463,6 +1544,10 @@
                     },
                     "uniqueItems": true,
                     "maxItems": 50
+                  },
+                  "assistantMention": {
+                    "type": "boolean",
+                    "default": false
                   }
                 },
                 "required": [
@@ -2183,7 +2268,12 @@
             }
           },
           "422": {
-            "description": "Validation failed",
+            "description": "Validation failed or attempting to forward an assistant message (CHAT_ASSISTANT_FORWARD_FORBIDDEN).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -3289,6 +3379,9 @@
           },
           "markedUnread": {
             "type": "boolean"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/ChatConversationCapabilities"
           }
         }
       },
@@ -3305,6 +3398,9 @@
                 "items": {
                   "$ref": "#/components/schemas/Conversation"
                 }
+              },
+              "capabilities": {
+                "$ref": "#/components/schemas/ChatConversationCapabilities"
               }
             }
           }
@@ -3419,6 +3515,67 @@
               "senderName": {
                 "type": "string"
               }
+            }
+          },
+          "authorType": {
+            "type": "string",
+            "enum": [
+              "USER",
+              "ASSISTANT"
+            ]
+          },
+          "assistantState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatAssistantJobState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "triggerMessageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "assistantStatus": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatAssistantPostedStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assistantFailureCode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatAssistantFailureCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assistantMeta": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatAssistantMeta"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sourceReferences": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/ChatAssistantSourceReference"
             }
           }
         }
@@ -3590,6 +3747,9 @@
             },
             "maxItems": 50,
             "uniqueItems": true
+          },
+          "assistantMention": {
+            "$ref": "#/components/schemas/ChatAssistantMentionRequest"
           }
         },
         "oneOf": [
@@ -3840,6 +4000,11 @@
             },
             "uniqueItems": true,
             "maxItems": 50
+          },
+          "assistantMention": {
+            "type": "boolean",
+            "default": false,
+            "description": "Optional persisted toggle indicating the draft mentions @continuumAI."
           }
         },
         "required": [
@@ -3966,6 +4131,264 @@
         "required": [
           "data"
         ]
+      },
+      "ChatConversationCapabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dmAssistantEnabled"
+        ],
+        "properties": {
+          "dmAssistantEnabled": {
+            "type": "boolean",
+            "description": "True when @continuumAI is enabled and configured (and for item-level capabilities, the conversation type is DIRECT)."
+          }
+        }
+      },
+      "ChatAssistantMentionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "handle"
+        ],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "enum": [
+              "continuumAI"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Optional normalized question; when omitted, extracted from message content after removing @continuumAI."
+          },
+          "timezone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "default": "Asia/Ho_Chi_Minh",
+            "description": "Valid IANA timezone used to resolve relative time expressions."
+          }
+        }
+      },
+      "ChatAssistantStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "PROCESSING",
+          "COMPLETED",
+          "INSUFFICIENT_EVIDENCE",
+          "CANCELLED",
+          "FAILED"
+        ]
+      },
+      "ChatAssistantPostedStatus": {
+        "type": "string",
+        "enum": [
+          "COMPLETED",
+          "INSUFFICIENT_EVIDENCE"
+        ]
+      },
+      "ChatAssistantFailureCode": {
+        "type": "string",
+        "enum": [
+          "SOURCE_CHANGED",
+          "TRIGGER_DELETED",
+          "ACCESS_REVOKED",
+          "SERVICE_UNAVAILABLE",
+          "TIMEOUT",
+          "INVALID_MODEL_OUTPUT"
+        ]
+      },
+      "ChatAssistantSourceStatus": {
+        "type": "string",
+        "enum": [
+          "ACTIVE",
+          "EDITED",
+          "DELETED"
+        ]
+      },
+      "ChatAssistantSourceAggregateState": {
+        "type": "string",
+        "enum": [
+          "FRESH",
+          "HAS_EDITED",
+          "HAS_DELETED",
+          "HAS_EDITED_AND_DELETED"
+        ]
+      },
+      "ChatAssistantSourceReference": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refId",
+          "messageId",
+          "senderName",
+          "createdAt",
+          "quoteSnippet",
+          "status"
+        ],
+        "properties": {
+          "refId": {
+            "type": "string",
+            "pattern": "^M[1-9][0-9]{0,2}$"
+          },
+          "messageId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "senderName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "quoteSnippet": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Always empty string when status is DELETED."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChatAssistantSourceStatus"
+          }
+        }
+      },
+      "ChatAssistantMeta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "handle",
+          "queryMode",
+          "partialCoverage",
+          "coverageNote",
+          "sourceState"
+        ],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "enum": [
+              "continuumAI"
+            ]
+          },
+          "queryMode": {
+            "type": "string",
+            "enum": [
+              "TIME_WINDOW",
+              "KEYWORD",
+              "HYBRID"
+            ]
+          },
+          "partialCoverage": {
+            "type": "boolean"
+          },
+          "coverageNote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "sourceState": {
+            "$ref": "#/components/schemas/ChatAssistantSourceAggregateState"
+          }
+        }
+      },
+      "ChatAssistantJobState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "jobId",
+          "status",
+          "failureCode",
+          "responseMessageId",
+          "updatedAt"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChatAssistantStatus"
+          },
+          "failureCode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatAssistantFailureCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "responseMessageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AssistantStatusEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conversationId",
+          "triggerMessageId",
+          "jobId",
+          "status",
+          "failureCode",
+          "responseMessageId",
+          "updatedAt"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "triggerMessageId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "jobId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChatAssistantStatus"
+          },
+          "failureCode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatAssistantFailureCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "responseMessageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-fA-F0-9]{24}$"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       }
     }
   }

@@ -2,6 +2,7 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type {
   ChatConversationPage,
   ChatDeliveryState,
+  ChatMessage,
   ChatMessagePage,
   ChatMessageWrite,
   ChatReadState,
@@ -164,6 +165,14 @@ export class UnavailableChatRepository implements ChatRepository {
   }
 
   directContactIds(): Promise<Set<string>> {
+    return this.unavailable();
+  }
+
+  reconcileCachedMessages(): Promise<ChatMessage[]> {
+    return this.unavailable();
+  }
+
+  getConversationContextRevisions(): Promise<Map<string, number>> {
     return this.unavailable();
   }
 }

@@ -1,5 +1,28 @@
 export const CHAT_REPOSITORY = Symbol('CHAT_REPOSITORY');
 import type { ChatFeatureRepository } from './chat-features';
+import type {
+  AssistantStatusEvent,
+  ChatAssistantFailureCode,
+  ChatAssistantJobState,
+  ChatAssistantMentionNormalized,
+  ChatAssistantMeta,
+  ChatAssistantPostedStatus,
+  ChatAssistantSourceReference,
+  ChatConversationCapabilities,
+  ChatMessageAuthorType,
+} from './chat-dm-assistant.types';
+
+export type {
+  AssistantStatusEvent,
+  ChatAssistantFailureCode,
+  ChatAssistantJobState,
+  ChatAssistantMentionNormalized,
+  ChatAssistantMeta,
+  ChatAssistantPostedStatus,
+  ChatAssistantSourceReference,
+  ChatConversationCapabilities,
+  ChatMessageAuthorType,
+};
 
 export interface ChatActor {
   id: string;
@@ -61,6 +84,13 @@ export interface ChatMessage {
   mentionUserIds?: string[];
   isPinned?: boolean;
   forwardedFrom?: { senderName: string } | null;
+  authorType?: ChatMessageAuthorType;
+  assistantState?: ChatAssistantJobState | null;
+  triggerMessageId?: string | null;
+  assistantStatus?: ChatAssistantPostedStatus | null;
+  assistantFailureCode?: ChatAssistantFailureCode | null;
+  assistantMeta?: ChatAssistantMeta | null;
+  sourceReferences?: readonly ChatAssistantSourceReference[];
 }
 
 export interface ChatReplyPreview {
@@ -104,12 +134,14 @@ export interface ChatConversation {
   isArchived?: boolean;
   notificationMode?: 'ALL' | 'MENTIONS' | 'NONE';
   markedUnread?: boolean;
+  capabilities?: ChatConversationCapabilities;
 }
 
 export interface ChatConversationPage {
   data: ChatConversation[];
   hasMore: boolean;
   nextCursor: ChatCursor | null;
+  capabilities?: ChatConversationCapabilities;
 }
 
 export interface ChatMessagePage {
@@ -122,6 +154,7 @@ export interface ChatMessageWrite {
   message: ChatMessage;
   recipientIds: string[];
   newlyMentionedUserIds?: string[];
+  assistantStatusEvent?: AssistantStatusEvent;
 }
 
 export interface ChatReadState {
@@ -225,6 +258,7 @@ export interface ChatRepository extends ChatFeatureRepository {
     attachments?: string[],
     replyToMessageId?: string,
     mentionUserIds?: string[],
+    assistantMention?: ChatAssistantMentionNormalized,
   ): Promise<ChatMessageWrite>;
   editMessage(
     actor: ChatActor,
@@ -253,4 +287,13 @@ export interface ChatRepository extends ChatFeatureRepository {
   isMember(actor: ChatActor, conversationId: string): Promise<boolean>;
   memberIds(actor: ChatActor, conversationId: string): Promise<string[]>;
   directContactIds(actor: ChatActor, targetIds: string[]): Promise<Set<string>>;
+  reconcileCachedMessages?(
+    actor: ChatActor,
+    conversationId: string | undefined,
+    messages: ChatMessage[],
+  ): Promise<ChatMessage[]>;
+  getConversationContextRevisions?(
+    actor: ChatActor,
+    conversationIds: readonly string[],
+  ): Promise<Map<string, number>>;
 }

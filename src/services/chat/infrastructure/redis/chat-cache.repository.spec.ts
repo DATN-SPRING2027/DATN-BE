@@ -86,3 +86,325 @@ it('degrades softly to MongoDB when Redis get/set/increment fail (SEC-BE-012)', 
   expect(pref).toEqual({ isPinned: true });
   expect(setPreferences).toHaveBeenCalledTimes(1);
 });
+
+it('re-enriches cached assistant sourceReferences and active assistantState from MongoDB on cache hit while keeping human-only pages zero-overhead (P2-1)', async () => {
+  const storage = new Map<string, string>();
+  const redis = {
+    get: jest.fn((key: string) => Promise.resolve(storage.get(key) ?? null)),
+    set: jest.fn((key: string, value: string) => {
+      storage.set(key, value);
+      return Promise.resolve();
+    }),
+    increment: jest.fn().mockRejectedValue(new Error('REDIS_BUMP_FAILED')),
+  } as unknown as RedisService;
+
+  const isMember = jest.fn().mockResolvedValue(true);
+  const humanPage = {
+    data: [
+      {
+        id: '507f1f77bcf86cd799439011',
+        conversationId: 'conv-1',
+        senderId: 'a',
+        senderName: 'A',
+        senderAvatarUrl: null,
+        content: 'Normal human message',
+        createdAt: '2026-11-28T09:00:00.000Z',
+        editedAt: null,
+        deletedAt: null,
+        reactions: [],
+        replyToMessageId: null,
+        replyTo: null,
+        attachments: [],
+        authorType: 'USER',
+      },
+    ],
+    hasMore: false,
+    nextCursor: null,
+  };
+  const staleAssistantPage = {
+    data: [
+      {
+        id: '507f1f77bcf86cd799439012',
+        conversationId: 'conv-2',
+        senderId: 'assistant:continuum_ai',
+        senderName: 'Continuum AI',
+        senderAvatarUrl: null,
+        content: 'Summary [M1][M2].',
+        createdAt: '2026-11-28T09:01:00.000Z',
+        editedAt: null,
+        deletedAt: null,
+        reactions: [],
+        replyToMessageId: null,
+        replyTo: null,
+        attachments: [],
+        authorType: 'ASSISTANT',
+        assistantStatus: 'COMPLETED',
+        assistantMeta: {
+          handle: 'continuumAI',
+          queryMode: 'KEYWORD',
+          partialCoverage: false,
+          coverageNote: null,
+          sourceState: 'FRESH',
+        },
+        sourceReferences: [
+          {
+            refId: 'M1',
+            messageId: '507f1f77bcf86cd799439021',
+            senderName: 'A',
+            createdAt: '2026-11-28T08:00:00.000Z',
+            quoteSnippet: 'Original edited quote',
+            status: 'ACTIVE',
+          },
+          {
+            refId: 'M2',
+            messageId: '507f1f77bcf86cd799439022',
+            senderName: 'B',
+            createdAt: '2026-11-28T08:05:00.000Z',
+            quoteSnippet: 'Deleted secret quote',
+            status: 'ACTIVE',
+          },
+        ],
+      },
+    ],
+    hasMore: false,
+    nextCursor: null,
+  };
+
+  const listMessages = jest.fn((_actor: ChatActor, convId: string) =>
+    Promise.resolve(convId === 'conv-1' ? humanPage : staleAssistantPage),
+  );
+  const messagesAround = jest.fn().mockResolvedValue(staleAssistantPage);
+  const reconcileCachedMessages = jest.fn(
+    (
+      _actor: ChatActor,
+      _convId: string | undefined,
+      msgs: Record<string, unknown>[],
+    ) =>
+      Promise.resolve(
+        msgs.map((m) => ({
+          ...m,
+          assistantMeta: {
+            ...(m.assistantMeta as Record<string, unknown>),
+            sourceState: 'HAS_EDITED_AND_DELETED',
+          },
+          sourceReferences: [
+            {
+              ...(m.sourceReferences as Record<string, unknown>[])[0],
+              status: 'EDITED',
+            },
+            {
+              ...(m.sourceReferences as Record<string, unknown>[])[1],
+              status: 'DELETED',
+              quoteSnippet: '',
+            },
+          ],
+        })),
+      ),
+  );
+
+  const repository = {
+    isMember,
+    listMessages,
+    messagesAround,
+    reconcileCachedMessages,
+  } as unknown as ChatRepository;
+  const cached = cachedChatRepository(repository, redis, 'test');
+
+  // 1. Human-only cached page: cache hit has ZERO reconcileCachedMessages overhead!
+  await cached.listMessages(actor, 'conv-1', 20);
+  await cached.listMessages(actor, 'conv-1', 20);
+  expect(listMessages).toHaveBeenCalledTimes(1);
+  expect(reconcileCachedMessages).not.toHaveBeenCalled();
+
+  // 2. Assistant cached page (both listMessages & messagesAround): cache hit ALWAYS reconciles!
+  await cached.listMessages(actor, 'conv-2', 20);
+  const hitList = await cached.listMessages(actor, 'conv-2', 20);
+  expect(listMessages).toHaveBeenCalledTimes(2);
+  expect(reconcileCachedMessages).toHaveBeenCalledTimes(1);
+  expect(hitList.data[0].assistantMeta?.sourceState).toBe(
+    'HAS_EDITED_AND_DELETED',
+  );
+  expect(hitList.data[0].sourceReferences?.[0].status).toBe('EDITED');
+  expect(hitList.data[0].sourceReferences?.[1].status).toBe('DELETED');
+  expect(hitList.data[0].sourceReferences?.[1].quoteSnippet).toBe('');
+
+  await cached.messagesAround(actor, 'conv-2', '507f1f77bcf86cd799439012', 20);
+  const hitAround = await cached.messagesAround(
+    actor,
+    'conv-2',
+    '507f1f77bcf86cd799439012',
+    20,
+  );
+  expect(messagesAround).toHaveBeenCalledTimes(1);
+  expect(reconcileCachedMessages).toHaveBeenCalledTimes(2);
+  expect(hitAround.data[0].sourceReferences?.[1].status).toBe('DELETED');
+  expect(hitAround.data[0].sourceReferences?.[1].quoteSnippet).toBe('');
+});
+
+it('bypasses stale cached messagesAround & listMessages human entries when contextRevision bumps in MongoDB while Redis invalidation fails (R2-P2)', async () => {
+  const storage = new Map<string, string>();
+  const redis = {
+    get: jest.fn((key: string) => Promise.resolve(storage.get(key) ?? null)),
+    set: jest.fn((key: string, value: string) => {
+      storage.set(key, value);
+      return Promise.resolve();
+    }),
+    increment: jest
+      .fn()
+      .mockRejectedValue(new Error('REDIS_INVALIDATION_DOWN')),
+  } as unknown as RedisService;
+
+  const convId = '507f1f77bcf86cd799439021';
+  const targetMsgId = '507f1f77bcf86cd799439031';
+  let currentRevision = 0;
+  let currentContent = 'Original secret human text';
+  let currentEditedAt: string | null = null;
+  let currentDeletedAt: string | null = null;
+
+  const makeHumanPage = () => ({
+    data: [
+      {
+        id: targetMsgId,
+        conversationId: convId,
+        senderId: actor.id,
+        senderName: actor.name,
+        senderAvatarUrl: null,
+        content: currentContent,
+        createdAt: '2026-11-28T09:00:00.000Z',
+        editedAt: currentEditedAt,
+        deletedAt: currentDeletedAt,
+        reactions: [],
+        replyToMessageId: null,
+        replyTo: null,
+        attachments: [],
+        authorType: 'USER' as const,
+      },
+    ],
+    hasMore: false,
+    nextCursor: null,
+  });
+
+  const isMember = jest.fn().mockResolvedValue(true);
+  const listMessages = jest.fn(() => Promise.resolve(makeHumanPage()));
+  const messagesAround = jest.fn(() => Promise.resolve(makeHumanPage()));
+  const getConversationContextRevisions = jest.fn(
+    (_actor: ChatActor, ids: readonly string[]) =>
+      Promise.resolve(new Map(ids.map((id) => [id, currentRevision]))),
+  );
+
+  const repository = {
+    isMember,
+    listMessages,
+    messagesAround,
+    getConversationContextRevisions,
+  } as unknown as ChatRepository;
+  const cached = cachedChatRepository(repository, redis, 'test-rev');
+
+  // 1. Prime cache at contextRevision = 0 and verify cache hits when revision matches
+  const list1 = await cached.listMessages(actor, convId, 20);
+  const list2 = await cached.listMessages(actor, convId, 20);
+  expect(list1.data[0].content).toBe('Original secret human text');
+  expect(list2.data[0].content).toBe('Original secret human text');
+  expect(listMessages).toHaveBeenCalledTimes(1);
+
+  const around1 = await cached.messagesAround(actor, convId, targetMsgId, 20);
+  const around2 = await cached.messagesAround(actor, convId, targetMsgId, 20);
+  expect(around1.data[0].content).toBe('Original secret human text');
+  expect(around2.data[0].content).toBe('Original secret human text');
+  expect(messagesAround).toHaveBeenCalledTimes(1);
+
+  // 2. Edit human message in MongoDB (bumping contextRevision -> 1) WITHOUT Redis invalidation!
+  currentRevision = 1;
+  currentContent = 'Updated edited human text';
+  currentEditedAt = '2026-11-28T09:05:00.000Z';
+
+  const aroundAfterEdit = await cached.messagesAround(
+    actor,
+    convId,
+    targetMsgId,
+    20,
+  );
+  const listAfterEdit = await cached.listMessages(actor, convId, 20);
+  expect(aroundAfterEdit.data[0].content).toBe('Updated edited human text');
+  expect(aroundAfterEdit.data[0].editedAt).toBe('2026-11-28T09:05:00.000Z');
+  expect(listAfterEdit.data[0].content).toBe('Updated edited human text');
+  expect(messagesAround).toHaveBeenCalledTimes(2);
+  expect(listMessages).toHaveBeenCalledTimes(2);
+
+  // Subsequent reads at contextRevision = 1 reuse the re-populated cache entry
+  await cached.messagesAround(actor, convId, targetMsgId, 20);
+  await cached.listMessages(actor, convId, 20);
+  expect(messagesAround).toHaveBeenCalledTimes(2);
+  expect(listMessages).toHaveBeenCalledTimes(2);
+
+  // 3. Delete human message in MongoDB (bumping contextRevision -> 2) WITHOUT Redis invalidation!
+  currentRevision = 2;
+  currentContent = '';
+  currentDeletedAt = '2026-11-28T09:10:00.000Z';
+
+  const aroundAfterDelete = await cached.messagesAround(
+    actor,
+    convId,
+    targetMsgId,
+    20,
+  );
+  const listAfterDelete = await cached.listMessages(actor, convId, 20);
+  expect(aroundAfterDelete.data[0].content).toBe('');
+  expect(aroundAfterDelete.data[0].deletedAt).toBe('2026-11-28T09:10:00.000Z');
+  expect(listAfterDelete.data[0].content).toBe('');
+  expect(listAfterDelete.data[0].deletedAt).toBe('2026-11-28T09:10:00.000Z');
+  expect(messagesAround).toHaveBeenCalledTimes(3);
+  expect(listMessages).toHaveBeenCalledTimes(3);
+});
+
+it('bypasses stale searchAcross cache when any conversation in the cached page bumps contextRevision (R2-P2)', async () => {
+  const storage = new Map<string, string>();
+  const redis = {
+    get: jest.fn((key: string) => Promise.resolve(storage.get(key) ?? null)),
+    set: jest.fn((key: string, value: string) => {
+      storage.set(key, value);
+      return Promise.resolve();
+    }),
+    increment: jest.fn().mockRejectedValue(new Error('REDIS_DOWN')),
+  } as unknown as RedisService;
+
+  const conv1 = '507f1f77bcf86cd799439021';
+  const conv2 = '507f1f77bcf86cd799439022';
+  const revisions: Record<string, number> = { [conv1]: 1, [conv2]: 3 };
+  let conv2Deleted = false;
+
+  const searchAcross = jest.fn(() =>
+    Promise.resolve({
+      data: conv2Deleted
+        ? [{ id: 'm1', conversationId: conv1, content: 'keep me' }]
+        : [
+            { id: 'm1', conversationId: conv1, content: 'keep me' },
+            { id: 'm2', conversationId: conv2, content: 'secret to delete' },
+          ],
+      hasMore: false,
+      nextCursor: null,
+    }),
+  );
+  const getConversationContextRevisions = jest.fn(
+    (_actor: ChatActor, ids: readonly string[]) =>
+      Promise.resolve(new Map(ids.map((id) => [id, revisions[id] ?? 0]))),
+  );
+  const repository = {
+    isMember: jest.fn().mockResolvedValue(true),
+    searchAcross,
+    getConversationContextRevisions,
+  } as unknown as ChatRepository;
+
+  const cached = cachedChatRepository(repository, redis, 'test-search');
+  const first = await cached.searchAcross(actor, { q: 'secret' }, 20);
+  expect(first.data).toHaveLength(2);
+  expect(searchAcross).toHaveBeenCalledTimes(1);
+
+  // Delete message in conv2 bumping conv2 contextRevision -> 4 while Redis invalidation fails
+  revisions[conv2] = 4;
+  conv2Deleted = true;
+
+  const second = await cached.searchAcross(actor, { q: 'secret' }, 20);
+  expect(searchAcross).toHaveBeenCalledTimes(2);
+  expect(second.data.map((m) => m.id)).toEqual(['m1']);
+});

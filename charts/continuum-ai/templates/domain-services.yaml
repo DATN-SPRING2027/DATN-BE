@@ -57,6 +57,29 @@ spec:
               value: http://{{ include "continuum-ai.fullname" $ }}-iam:3001
             - name: CHAT_ALLOWED_ORIGINS
               value: {{ $.Values.chat.allowedOrigins | quote }}
+            - name: SAG_API_BASE_URL
+              value: {{ default "" $.Values.sag.apiBaseUrl | quote }}
+            {{- if $.Values.sag.existingSecretName }}
+            - name: SAG_BFF_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.sag.existingSecretName }}
+                  key: {{ default "sag-bff-service-token" $.Values.sag.bffServiceTokenKey }}
+                  optional: true
+            {{- end }}
+            {{- $dmAssistant := default (dict) $.Values.chat.dmAssistant }}
+            {{- $dmAssistantEnabled := default false $dmAssistant.enabled }}
+            {{- /* Inherit dmAssistant.enabled in single-process deployments when workerEnabled is null/omitted; preserve explicit false for split-pod HTTP/WS deployments. */ -}}
+            {{- $dmAssistantWorkerEnabled := $dmAssistantEnabled }}
+            {{- if and (hasKey $dmAssistant "workerEnabled") (not (kindIs "invalid" $dmAssistant.workerEnabled)) }}
+            {{- $dmAssistantWorkerEnabled = $dmAssistant.workerEnabled }}
+            {{- end }}
+            - name: CHAT_DM_ASSISTANT_ENABLED
+              value: {{ $dmAssistantEnabled | quote }}
+            - name: CHAT_DM_ASSISTANT_WORKER_ENABLED
+              value: {{ $dmAssistantWorkerEnabled | quote }}
+            - name: CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS
+              value: {{ default 45000 $dmAssistant.sagTimeoutMs | quote }}
             - name: R2_ENDPOINT
               value: {{ $.Values.chat.r2.endpoint | quote }}
             - name: R2_BUCKET
