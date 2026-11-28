@@ -68,6 +68,7 @@ const candidate = (person) => ({
 const passed = [];
 let fixtureOwned = false;
 const collectionNames = [
+  'chat_assistant_jobs',
   'chat_notifications',
   'chat_reports',
   'chat_blocks',
@@ -300,6 +301,171 @@ try {
   assert.equal(found, true);
   passed.push(
     'live MongoDB Search folding, sender/conversation filters and active membership filtering',
+  );
+
+  // DM @continuumAI repository integration checks (draft flag, DIRECT-only, atomic job outbox, immutability, forward guard, live source status & cache invalidation)
+  await repository.saveDraft(a, target, '@continuumAI Hôm qua chốt gì?', [], true);
+  const assistantDraft = await repository.getDraft(a, target);
+  assert.equal(assistantDraft.assistantMention, true);
+  await repository.saveDraft(a, target, '', [], false);
+  assert.equal((await repository.getDraft(a, target)).assistantMention, false);
+
+  await assert.rejects(
+    repository.sendMessage(a, room, randomUUID(), '@continuumAI test room', [], undefined, [], {
+      handle: 'continuumAI',
+      query: 'test room',
+      timezone: 'Asia/Ho_Chi_Minh',
+    }),
+    (error) =>
+      error.getStatus() === 422 &&
+      error.getResponse?.()?.code === 'CHAT_ASSISTANT_DIRECT_ONLY',
+  );
+
+  const sourceMsg = await repository.sendMessage(
+    a,
+    target,
+    randomUUID(),
+    'Chốt deadline PAY-123 sang thứ Sáu 29/11.',
+  );
+  const triggerClientId = randomUUID();
+  const triggerSent = await repository.sendMessage(
+    a,
+    target,
+    triggerClientId,
+    '@continuumAI Deadline PAY-123 là khi nào?',
+    [],
+    undefined,
+    [],
+    {
+      handle: 'continuumAI',
+      query: 'Deadline PAY-123 là khi nào?',
+      timezone: 'Asia/Ho_Chi_Minh',
+    },
+  );
+  assert.equal(triggerSent.message.assistantState?.status, 'PENDING');
+  assert.equal(triggerSent.assistantStatusEvent?.status, 'PENDING');
+
+  // Idempotent replay with same clientMessageId + same assistantMention -> 0 duplicate jobs
+  const replay = await repository.sendMessage(
+    a,
+    target,
+    triggerClientId,
+    '@continuumAI Deadline PAY-123 là khi nào?',
+    [],
+    undefined,
+    [],
+    {
+      handle: 'continuumAI',
+      query: 'Deadline PAY-123 là khi nào?',
+      timezone: 'Asia/Ho_Chi_Minh',
+    },
+  );
+  assert.equal(replay.message.id, triggerSent.message.id);
+  assert.equal(replay.assistantStatusEvent, undefined);
+  assert.equal(
+    await connection.db
+      .collection('chat_assistant_jobs')
+      .countDocuments({ organizationId, triggerMessageId: new mongoose.Types.ObjectId(triggerSent.message.id) }),
+    1,
+  );
+
+  // Replay conflict when omitting assistantMention
+  await assert.rejects(
+    repository.sendMessage(
+      a,
+      target,
+      triggerClientId,
+      '@continuumAI Deadline PAY-123 là khi nào?',
+    ),
+    (error) => error.getStatus() === 409,
+  );
+
+  // Insert an assistant reply referencing sourceMsg and verify immutability, forward block, and live EDITED/DELETED enrichment across Redis cache
+  const aiMessageId = new mongoose.Types.ObjectId();
+  await connection.db.collection('chat_conversation_messages').insertOne({
+    _id: aiMessageId,
+    organizationId,
+    conversationId: new mongoose.Types.ObjectId(target),
+    senderId: 'assistant:continuum_ai',
+    senderName: 'Continuum AI',
+    senderAvatarUrl: null,
+    clientMessageId: `assistant:${triggerSent.message.id}`,
+    content: 'Deadline PAY-123 là thứ Sáu 29/11 [M1].',
+    mentionUserIds: [],
+    links: [],
+    isPinned: false,
+    editedAt: null,
+    deletedAt: null,
+    reactions: [],
+    replyToMessageId: new mongoose.Types.ObjectId(triggerSent.message.id),
+    attachments: [],
+    contentVersion: 0,
+    authorType: 'ASSISTANT',
+    triggerMessageId: new mongoose.Types.ObjectId(triggerSent.message.id),
+    assistantStatus: 'COMPLETED',
+    assistantFailureCode: null,
+    assistantMeta: {
+      handle: 'continuumAI',
+      queryMode: 'KEYWORD',
+      partialCoverage: false,
+      coverageNote: null,
+      model: 'fixture-model',
+      promptTokens: 100,
+      completionTokens: 20,
+    },
+    sourceReferences: [
+      {
+        refId: 'M1',
+        messageId: new mongoose.Types.ObjectId(sourceMsg.message.id),
+        senderName: a.name,
+        createdAt: new Date(sourceMsg.message.createdAt),
+        sourceEditedAt: null,
+        sourceVersion: 0,
+        quoteSnippet: 'Chốt deadline PAY-123 sang thứ Sáu 29/11.',
+      },
+    ],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  await assert.rejects(
+    repository.editMessage(a, target, String(aiMessageId), 'tamper'),
+    (error) =>
+      error.getStatus() === 403 &&
+      error.getResponse?.()?.code === 'CHAT_ASSISTANT_MESSAGE_IMMUTABLE',
+  );
+  await assert.rejects(
+    repository.deleteMessage(a, target, String(aiMessageId)),
+    (error) =>
+      error.getStatus() === 403 &&
+      error.getResponse?.()?.code === 'CHAT_ASSISTANT_MESSAGE_IMMUTABLE',
+  );
+  await assert.rejects(
+    repository.forwardMessage(a, room, target, String(aiMessageId), randomUUID()),
+    (error) =>
+      error.getStatus() === 422 &&
+      error.getResponse?.()?.code === 'CHAT_ASSISTANT_FORWARD_FORBIDDEN',
+  );
+
+  // Prime Redis cache with ACTIVE, then edit & delete sourceMsg and confirm immediate live status update
+  const activePage = await repository.listMessages(b, target, 20);
+  const activeAi = activePage.data.find((m) => m.id === String(aiMessageId));
+  assert.equal(activeAi?.sourceReferences?.[0]?.status, 'ACTIVE');
+  assert.equal(activeAi?.assistantMeta?.sourceState, 'FRESH');
+
+  await repository.editMessage(a, target, sourceMsg.message.id, 'Đính chính PAY-123 sang 30/11.');
+  const editedPage = await repository.listMessages(b, target, 20);
+  const editedAi = editedPage.data.find((m) => m.id === String(aiMessageId));
+  assert.equal(editedAi?.sourceReferences?.[0]?.status, 'EDITED');
+  assert.equal(editedAi?.assistantMeta?.sourceState, 'HAS_EDITED');
+
+  await repository.deleteMessage(a, target, sourceMsg.message.id);
+  const deletedPage = await repository.listMessages(b, target, 20);
+  const deletedAi = deletedPage.data.find((m) => m.id === String(aiMessageId));
+  assert.equal(deletedAi?.sourceReferences?.[0]?.status, 'DELETED');
+  assert.equal(deletedAi?.sourceReferences?.[0]?.quoteSnippet, '');
+  assert.equal(deletedAi?.assistantMeta?.sourceState, 'HAS_DELETED');
+  passed.push(
+    'DM @continuumAI draft flag, DIRECT-only guard, atomic job outbox, replay idempotency, AI immutability/forward block, and live EDITED/DELETED source enrichment through Redis cache',
   );
   console.log(
     JSON.stringify(

@@ -62,6 +62,7 @@ const UNIVERSE_KNOWLEDGE_CLUSTER_PATH = '/api/v1/universe/knowledge/cluster';
 const UNIVERSE_KNOWLEDGE_UNIT_PATTERN =
   /^\/api\/v1\/universe\/knowledge\/units\/[A-Za-z0-9_.:%-]{1,128}$/;
 const UNIVERSE_KNOWLEDGE_RESOLVE_PATH = '/api/v1/universe/knowledge/resolve';
+const DM_ASSISTANT_ANSWER_PATH = '/api/v1/internal/dm-assistant/answer';
 
 function isAnswerActionClientValidatedRoute(pathname: string): boolean {
   return (
@@ -156,6 +157,9 @@ function isAllowedJsonRoute(
   if (method === 'POST' && pathname === '/api/v1/search') {
     return true;
   }
+  if (method === 'POST' && pathname === DM_ASSISTANT_ANSWER_PATH) {
+    return true;
+  }
   return false;
 }
 
@@ -167,6 +171,7 @@ function requiresBffServiceToken(
     pathname === '/api/v1/auth/continuum-login' ||
     pathname.startsWith('/api/v1/projects/') ||
     pathname === PLATFORM_AI_FEEDBACK_PATH ||
+    (method === 'POST' && pathname === DM_ASSISTANT_ANSWER_PATH) ||
     ((method === 'PUT' || method === 'DELETE') &&
       AGENT_MESSAGE_FEEDBACK_PATTERN.test(pathname)) ||
     (method === 'POST' &&
@@ -256,22 +261,33 @@ export class HttpAiEngineClient implements AiEngineClient {
     const isKnowledgeUniverse = routePathname.startsWith(
       '/api/v1/universe/knowledge/',
     );
-    const requestTimeoutMs = isMindMapGenerate
-      ? Math.max(
-          backendTimeoutMs,
-          this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60_000,
-        )
-      : isHandoverAssist || isSagSearch
+    const isDmAssistantAnswer =
+      request.method === 'POST' && routePathname === DM_ASSISTANT_ANSWER_PATH;
+    const configuredDmTimeout = Number(
+      this.config.get<number | string>('CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS'),
+    );
+    const dmAssistantTimeoutMs =
+      Number.isFinite(configuredDmTimeout) && configuredDmTimeout >= 5_000
+        ? Math.min(90_000, Math.floor(configuredDmTimeout))
+        : 45_000;
+    const requestTimeoutMs = isDmAssistantAnswer
+      ? Math.max(backendTimeoutMs, dmAssistantTimeoutMs)
+      : isMindMapGenerate
         ? Math.max(
             backendTimeoutMs,
-            this.config.get<number>('SAG_LLM_TIMEOUT_MS') ?? 90_000,
+            this.config.get<number>('SAG_CHAT_STREAM_TIMEOUT_MS') ?? 60_000,
           )
-        : isKnowledgeUniverse
+        : isHandoverAssist || isSagSearch
           ? Math.max(
               backendTimeoutMs,
-              this.config.get<number>('SAG_UNIVERSE_TIMEOUT_MS') ?? 60_000,
+              this.config.get<number>('SAG_LLM_TIMEOUT_MS') ?? 90_000,
             )
-          : backendTimeoutMs;
+          : isKnowledgeUniverse
+            ? Math.max(
+                backendTimeoutMs,
+                this.config.get<number>('SAG_UNIVERSE_TIMEOUT_MS') ?? 60_000,
+              )
+            : backendTimeoutMs;
 
     let response: Response;
     try {
@@ -449,7 +465,11 @@ export class HttpAiEngineClient implements AiEngineClient {
         message: 'AI Engine rejected the upstream request.',
       });
     }
-    if (status === 503 && PROJECT_MIND_MAP_PATTERN.test(routePathname)) {
+    if (
+      status === 503 &&
+      (PROJECT_MIND_MAP_PATTERN.test(routePathname) ||
+        routePathname === DM_ASSISTANT_ANSWER_PATH)
+    ) {
       throw new ServiceUnavailableException({
         code: 'AI_ENGINE_UNAVAILABLE',
         message: 'AI Engine is temporarily unavailable.',

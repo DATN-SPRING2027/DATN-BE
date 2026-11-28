@@ -1,8 +1,13 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import type { Connection, ClientSession } from 'mongoose';
 import { Types } from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { textSearchStage } from '../../../../common/search/indexed-search';
+import { CONTINUUM_AI_SENDER_ID } from './mongodb.schemas';
 import type {
   ChatActor,
   ChatCursor,
@@ -99,6 +104,7 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
             (entry): entry is string => typeof entry === 'string',
           )
         : [],
+      assistantMention: row.draftAssistantMention === true,
       updatedAt:
         row.draftUpdatedAt instanceof Date
           ? row.draftUpdatedAt.toISOString()
@@ -110,9 +116,11 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
     conversationId: string,
     content: string,
     mentionUserIds: string[] = [],
+    assistantMention = false,
   ) {
     await this.member(actor, conversationId);
     const updatedAt = new Date();
+    const normalizedAssistantMention = Boolean(assistantMention);
     await this.collection('chat_members').updateOne(
       {
         ...this.scope(actor, conversationId),
@@ -123,11 +131,17 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
         $set: {
           draft: content,
           draftMentionUserIds: mentionUserIds,
+          draftAssistantMention: normalizedAssistantMention,
           draftUpdatedAt: updatedAt,
         },
       },
     );
-    return { content, mentionUserIds, updatedAt: updatedAt.toISOString() };
+    return {
+      content,
+      mentionUserIds,
+      assistantMention: normalizedAssistantMention,
+      updatedAt: updatedAt.toISOString(),
+    };
   }
   async transferOwnership(
     actor: ChatActor,
@@ -368,7 +382,12 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
     actor: ChatActor,
     conversationId: string,
     session?: ClientSession,
-  ) {
+  ): Promise<{
+    _id: Types.ObjectId;
+    type: 'DIRECT' | 'ROOM';
+    status: 'ACTIVE' | 'ARCHIVED';
+    contextRevision?: number;
+  }> {
     const scope = this.scope(actor, conversationId);
     const conversation = await this.collection('chat_conversations').findOne(
       {
@@ -379,7 +398,13 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
       { session },
     );
     if (!conversation) throw new NotFoundException('Conversation not found');
-    if (conversation.type !== 'DIRECT') return;
+    const typedConversation = conversation as unknown as {
+      _id: Types.ObjectId;
+      type: 'DIRECT' | 'ROOM';
+      status: 'ACTIVE' | 'ARCHIVED';
+      contextRevision?: number;
+    };
+    if (typedConversation.type !== 'DIRECT') return typedConversation;
     const peers = await this.collection('chat_members')
       .find(
         { ...scope, userId: { $ne: actor.id }, status: 'ACTIVE' },
@@ -402,6 +427,7 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
         code: 'CHAT_DIRECT_UNAVAILABLE',
         message: 'Direct messaging is unavailable for this contact.',
       });
+    return typedConversation;
   }
   async forwardMessage(
     actor: ChatActor,
@@ -462,6 +488,15 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
           { session },
         );
         if (!source) throw new NotFoundException('Message not found');
+        if (
+          source.authorType === 'ASSISTANT' ||
+          source.senderId === CONTINUUM_AI_SENDER_ID
+        ) {
+          throw new UnprocessableEntityException({
+            code: 'CHAT_ASSISTANT_FORWARD_FORBIDDEN',
+            message: 'Assistant messages cannot be forwarded.',
+          });
+        }
         // The target receives its own attachment IDs and permission scope, never a source download URL.
         const forwarded = {
           _id: new Types.ObjectId(),
@@ -471,6 +506,7 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
           senderAvatarUrl: actor.avatarUrl,
           clientMessageId,
           content: String(source.content),
+          contentVersion: 0,
           createdAt: new Date(),
           editedAt: null,
           deletedAt: null,

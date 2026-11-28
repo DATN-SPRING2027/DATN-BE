@@ -44,6 +44,7 @@ export interface ChatFeatureRepository {
   ): Promise<{
     content: string;
     mentionUserIds: string[];
+    assistantMention: boolean;
     updatedAt: string | null;
   }>;
   saveDraft(
@@ -51,9 +52,11 @@ export interface ChatFeatureRepository {
     conversationId: string,
     content: string,
     mentionUserIds?: string[],
+    assistantMention?: boolean,
   ): Promise<{
     content: string;
     mentionUserIds: string[];
+    assistantMention: boolean;
     updatedAt: string | null;
   }>;
   transferOwnership(

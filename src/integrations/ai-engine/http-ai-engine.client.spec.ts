@@ -550,4 +550,141 @@ describe('HttpAiEngineClient', () => {
       }),
     ).rejects.toBeInstanceOf(BadGatewayException);
   });
+
+  it('allowlists POST /api/v1/internal/dm-assistant/answer with 45s timeout (504 on timeout), BFF service token, and 503 preservation', async () => {
+    const client = makeClient();
+    const timeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        status: 'ANSWERED',
+        answerText: 'Hôm qua chốt PAY-123 [M1].',
+        citedRefIds: ['M1'],
+        coverageNote: null,
+        model: 'gpt-4o-mini',
+        usage: {
+          inputTokens: 100,
+          cachedTokens: 0,
+          outputTokens: 20,
+          totalTokens: 120,
+          calls: 1,
+        },
+      }),
+    );
+
+    const res = await client.request({
+      path: '/api/v1/internal/dm-assistant/answer',
+      method: 'POST',
+      headers: {
+        'X-Continuum-Organization-Id': '507f1f77bcf86cd799439001',
+        'X-Continuum-User-Id': '507f1f77bcf86cd799439002',
+        'X-Continuum-Conversation-Id': '507f1f77bcf86cd799439003',
+        'X-Request-Id': 'req-dm-1',
+        'X-SAG-BFF-Service-Token': 'forged-client-token',
+      },
+      body: {
+        question: 'Hôm qua chốt gì?',
+        timezone: 'Asia/Ho_Chi_Minh',
+        referenceNowIso: '2026-11-28T09:00:00.000Z',
+        queryMode: 'TIME_WINDOW',
+        partialCoverage: false,
+        coverageHint: null,
+        messages: [],
+      },
+    });
+    expect(res.status).toBe(200);
+    // Default DM assistant SAG timeout is 45_000ms (never falls back to 5_000ms BACKEND_TIMEOUT_MS)
+    expect(timeoutSpy).toHaveBeenCalledWith(45000);
+
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get('X-SAG-BFF-Service-Token')).toBe('s'.repeat(40));
+    expect(headers.get('X-Continuum-Organization-Id')).toBe(
+      '507f1f77bcf86cd799439001',
+    );
+    expect(headers.get('X-Continuum-User-Id')).toBe('507f1f77bcf86cd799439002');
+    expect(headers.get('X-Continuum-Conversation-Id')).toBe(
+      '507f1f77bcf86cd799439003',
+    );
+    expect(headers.get('X-Request-Id')).toBe('req-dm-1');
+
+    // Custom CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS is honored
+    timeoutSpy.mockClear();
+    const customClient = makeClient({
+      CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: 62000,
+    });
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ status: 'INSUFFICIENT_EVIDENCE' }),
+    );
+    await customClient.request({
+      path: '/api/v1/internal/dm-assistant/answer',
+      method: 'POST',
+      headers: {},
+      body: {},
+    });
+    expect(timeoutSpy).toHaveBeenCalledWith(62000);
+    timeoutSpy.mockRestore();
+
+    // Upstream 503 MUST be preserved as ServiceUnavailableException (AI_ENGINE_UNAVAILABLE), NOT collapsed to 502
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: 'llm_unavailable' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(
+      client.request({
+        path: '/api/v1/internal/dm-assistant/answer',
+        method: 'POST',
+        headers: {},
+        body: {},
+      }),
+    ).rejects.toMatchObject({
+      status: 503,
+      response: { code: 'AI_ENGINE_UNAVAILABLE' },
+    });
+
+    // Upstream 502 stays BadGatewayException (AI_ENGINE_UPSTREAM_ERROR)
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: 'schema_validation_error' }), {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(
+      client.request({
+        path: '/api/v1/internal/dm-assistant/answer',
+        method: 'POST',
+        headers: {},
+        body: {},
+      }),
+    ).rejects.toMatchObject({
+      status: 502,
+      response: { code: 'AI_ENGINE_UPSTREAM_ERROR' },
+    });
+
+    // AbortSignal.timeout TimeoutError maps to 504 GatewayTimeoutException (AI_ENGINE_TIMEOUT)
+    const timeoutErr = new Error('The operation was aborted due to timeout');
+    timeoutErr.name = 'TimeoutError';
+    fetchMock.mockRejectedValueOnce(timeoutErr);
+    await expect(
+      client.request({
+        path: '/api/v1/internal/dm-assistant/answer',
+        method: 'POST',
+        headers: {},
+        body: {},
+      }),
+    ).rejects.toMatchObject({
+      status: 504,
+      response: { code: 'AI_ENGINE_TIMEOUT' },
+    });
+
+    // Non-POST methods must fail closed
+    await expect(
+      client.request({
+        path: '/api/v1/internal/dm-assistant/answer',
+        method: 'GET',
+        headers: {},
+      }),
+    ).rejects.toBeInstanceOf(BadGatewayException);
+  });
 });

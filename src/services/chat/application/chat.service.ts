@@ -24,9 +24,18 @@ import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import {
   CHAT_REPOSITORY,
   type ChatActor,
+  type ChatAssistantMentionNormalized,
   type ChatCursor,
   type ChatRepository,
 } from './chat.repository';
+import {
+  CONTINUUM_AI_HANDLE,
+  DEFAULT_DM_ASSISTANT_TIMEZONE,
+  extractAssistantQuery,
+  isDmAssistantAvailable,
+  isValidIanaTimezone,
+  readBoundedInt,
+} from './chat-dm-assistant.types';
 import { ChatRealtimeService } from './chat-realtime.service';
 import { R2Storage } from '../infrastructure/storage/r2.storage';
 import { S3Storage } from '../infrastructure/storage/s3.storage';
@@ -155,6 +164,7 @@ function encodeCursor(cursor: ChatCursor | null | undefined): string | null {
 @Injectable()
 export class ChatApplicationService {
   private readonly redisPrefix: string;
+  private readonly config: ConfigService;
 
   constructor(
     @Inject(CHAT_REPOSITORY) private readonly repository: ChatRepository,
@@ -169,6 +179,7 @@ export class ChatApplicationService {
     @Optional()
     private readonly historyCache?: ChatHistoryCacheInvalidator,
   ) {
+    this.config = config;
     this.redisPrefix = `${config.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
   }
 
@@ -307,8 +318,13 @@ export class ChatApplicationService {
       actor.organizationId,
       directPeerIds,
     );
+    const dmAssistantEnabled = isDmAssistantAvailable(this.config);
     const data = page.data.map((conversation) => ({
       ...conversation,
+      capabilities: {
+        dmAssistantEnabled:
+          dmAssistantEnabled && conversation.type === 'DIRECT',
+      },
       members: conversation.members.map((member) => ({
         ...member,
         ...(conversation.type === 'DIRECT' && member.userId !== actor.id
@@ -318,7 +334,11 @@ export class ChatApplicationService {
           : {}),
       })),
     }));
-    return { data, nextCursor: encodeCursor(page.nextCursor) };
+    return {
+      data,
+      nextCursor: encodeCursor(page.nextCursor),
+      capabilities: { dmAssistantEnabled },
+    };
   }
 
   async createDirect(credentials: ChatCredentials, body: unknown) {
@@ -1098,6 +1118,7 @@ export class ChatApplicationService {
         'attachments',
         'replyToMessageId',
         'mentionUserIds',
+        'assistantMention',
       ]) ||
       typeof body.clientMessageId !== 'string' ||
       !uuidV4.test(body.clientMessageId) ||
@@ -1117,7 +1138,90 @@ export class ChatApplicationService {
         (!Array.isArray(body.attachments) || body.attachments.length === 0))
     )
       return invalid('Message is invalid.');
+    let rawAssistantMention:
+      | {
+          handle: typeof CONTINUUM_AI_HANDLE;
+          query?: string;
+          timezone?: string;
+        }
+      | undefined;
+    if (body.assistantMention !== undefined) {
+      if (
+        !isRecord(body.assistantMention) ||
+        !exactKeys(body.assistantMention, ['handle', 'query', 'timezone']) ||
+        body.assistantMention.handle !== CONTINUUM_AI_HANDLE ||
+        (body.assistantMention.query !== undefined &&
+          typeof body.assistantMention.query !== 'string') ||
+        (body.assistantMention.timezone !== undefined &&
+          (typeof body.assistantMention.timezone !== 'string' ||
+            !isValidIanaTimezone(body.assistantMention.timezone)))
+      ) {
+        return invalid('Assistant mention is invalid.');
+      }
+      rawAssistantMention = {
+        handle: CONTINUUM_AI_HANDLE,
+        ...(body.assistantMention.query !== undefined
+          ? { query: body.assistantMention.query }
+          : {}),
+        ...(body.assistantMention.timezone !== undefined
+          ? { timezone: body.assistantMention.timezone.trim() }
+          : {}),
+      };
+    }
     const actor = await this.iam.getActor(credentials);
+    let normalizedAssistantMention: ChatAssistantMentionNormalized | undefined;
+    if (rawAssistantMention) {
+      if (!isDmAssistantAvailable(this.config)) {
+        throw new ServiceUnavailableException({
+          code: 'CHAT_AI_NOT_ENABLED',
+          message: 'Continuum AI assistant is not enabled.',
+        });
+      }
+      const extractedQuery = extractAssistantQuery(
+        body.content,
+        rawAssistantMention.query,
+      );
+      if (extractedQuery.length < 1 || extractedQuery.length > 2000) {
+        throw new UnprocessableEntityException({
+          code: 'CHAT_ASSISTANT_QUERY_INVALID',
+          message:
+            'Assistant question must contain between 1 and 2000 characters.',
+        });
+      }
+      const assistantRateLimit = readBoundedInt(
+        this.config.get<unknown>('CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE'),
+        15,
+        1,
+        120,
+      );
+      if (
+        !(await this.redis.consumeRateLimit(
+          this.redisKey(`dm-assistant:${actor.organizationId}:${actor.id}`),
+          assistantRateLimit,
+          60,
+        ))
+      ) {
+        throw new HttpException(
+          {
+            code: 'CHAT_ASSISTANT_RATE_LIMITED',
+            message:
+              'Too many @continuumAI requests. Please try again shortly.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      normalizedAssistantMention = {
+        handle: CONTINUUM_AI_HANDLE,
+        query: extractedQuery,
+        timezone: rawAssistantMention.timezone ?? DEFAULT_DM_ASSISTANT_TIMEZONE,
+        maxAttempts: readBoundedInt(
+          this.config.get<unknown>('CHAT_DM_ASSISTANT_MAX_RETRIES'),
+          3,
+          1,
+          5,
+        ),
+      };
+    }
     if (
       !(await this.redis.consumeRateLimit(
         this.redisKey(`send:${actor.organizationId}:${actor.id}`),
@@ -1138,15 +1242,26 @@ export class ChatApplicationService {
       conversationId,
       body.mentionUserIds,
     );
-    const result = await this.repository.sendMessage(
-      actor,
-      conversationId,
-      body.clientMessageId,
-      body.content.trim(),
-      (body.attachments as string[] | undefined) ?? [],
-      body.replyToMessageId,
-      mentionUserIds,
-    );
+    const result = normalizedAssistantMention
+      ? await this.repository.sendMessage(
+          actor,
+          conversationId,
+          body.clientMessageId,
+          body.content.trim(),
+          (body.attachments as string[] | undefined) ?? [],
+          body.replyToMessageId,
+          mentionUserIds,
+          normalizedAssistantMention,
+        )
+      : await this.repository.sendMessage(
+          actor,
+          conversationId,
+          body.clientMessageId,
+          body.content.trim(),
+          (body.attachments as string[] | undefined) ?? [],
+          body.replyToMessageId,
+          mentionUserIds,
+        );
     await this.bumpHistoryVersion(actor, conversationId);
     await this.realtime.publishConversationEvent(
       'message.created',
@@ -1155,6 +1270,15 @@ export class ChatApplicationService {
       result.recipientIds,
       result.message,
     );
+    if (result.assistantStatusEvent) {
+      await this.realtime.publishConversationEvent(
+        'assistant.status',
+        actor.organizationId,
+        conversationId,
+        result.recipientIds,
+        result.assistantStatusEvent,
+      );
+    }
     if (
       mentionUserIds &&
       mentionUserIds.length > 0 &&
@@ -1548,12 +1672,18 @@ export class ChatApplicationService {
       return;
     }
     try {
-      await this.redis.increment(
-        this.redisKey(
-          `history-version:${actor.organizationId}:${conversationId}`,
+      await Promise.all([
+        this.redis.increment(
+          this.redisKey(
+            `history-version:${actor.organizationId}:${conversationId}`,
+          ),
+          24 * 60 * 60,
         ),
-        24 * 60 * 60,
-      );
+        this.redis.increment(
+          this.redisKey(`cache-generation:${actor.organizationId}`),
+          24 * 60 * 60,
+        ),
+      ]);
     } catch {
       // Cached pages expire quickly; persistent writes must not depend on Redis.
     }

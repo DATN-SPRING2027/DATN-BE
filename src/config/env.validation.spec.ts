@@ -176,4 +176,71 @@ describe('validateEnvironment', () => {
       }),
     ).toThrow('WORKNOTE_SECURITY_PLACEHOLDER_KEY');
   });
+
+  it('validates CHAT_DM_ASSISTANT_* defaults, split-pod worker flag inheritance, and bounds', () => {
+    const defaults = validateEnvironment({ NODE_ENV: 'development' });
+    expect(defaults).toMatchObject({
+      CHAT_DM_ASSISTANT_ENABLED: false,
+      CHAT_DM_ASSISTANT_WORKER_ENABLED: false,
+      CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: 45000,
+      CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE: 15,
+      CHAT_DM_ASSISTANT_MAX_RETRIES: 3,
+      CHAT_DM_ASSISTANT_LEASE_MS: 60000,
+      CHAT_DM_ASSISTANT_POLL_INTERVAL_MS: 1000,
+      CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES: 80,
+      CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS: 24000,
+    });
+
+    // Single-process inheritance when worker flag is omitted or blank
+    expect(
+      validateEnvironment({
+        CHAT_DM_ASSISTANT_ENABLED: 'true',
+        CHAT_DM_ASSISTANT_WORKER_ENABLED: '',
+      }),
+    ).toMatchObject({
+      CHAT_DM_ASSISTANT_ENABLED: true,
+      CHAT_DM_ASSISTANT_WORKER_ENABLED: true,
+    });
+
+    // Split API pod: feature enabled on HTTP API while worker disabled on API pod
+    expect(
+      validateEnvironment({
+        CHAT_DM_ASSISTANT_ENABLED: 'true',
+        CHAT_DM_ASSISTANT_WORKER_ENABLED: 'false',
+        CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: '60000',
+        CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE: '20',
+        CHAT_DM_ASSISTANT_MAX_RETRIES: '4',
+        CHAT_DM_ASSISTANT_LEASE_MS: '90000',
+        CHAT_DM_ASSISTANT_POLL_INTERVAL_MS: '500',
+        CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES: '60',
+        CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS: '20000',
+      }),
+    ).toMatchObject({
+      CHAT_DM_ASSISTANT_ENABLED: true,
+      CHAT_DM_ASSISTANT_WORKER_ENABLED: false,
+      CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: 60000,
+      CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE: 20,
+      CHAT_DM_ASSISTANT_MAX_RETRIES: 4,
+      CHAT_DM_ASSISTANT_LEASE_MS: 90000,
+      CHAT_DM_ASSISTANT_POLL_INTERVAL_MS: 500,
+      CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES: 60,
+      CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS: 20000,
+    });
+
+    expect(() =>
+      validateEnvironment({ CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: '4999' }),
+    ).toThrow('CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS');
+    expect(() =>
+      validateEnvironment({ CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: '90001' }),
+    ).toThrow('CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS');
+    expect(() =>
+      validateEnvironment({ CHAT_DM_ASSISTANT_MAX_RETRIES: '6' }),
+    ).toThrow('CHAT_DM_ASSISTANT_MAX_RETRIES');
+    expect(() =>
+      validateEnvironment({ CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES: '81' }),
+    ).toThrow('CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES');
+    expect(() =>
+      validateEnvironment({ CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS: '24001' }),
+    ).toThrow('CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS');
+  });
 });

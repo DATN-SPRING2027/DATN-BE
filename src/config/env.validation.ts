@@ -93,6 +93,15 @@ export interface EnvironmentVariables {
   WORKNOTE_HISTORY_MAX_RELATED_NOTES?: number;
   IAM_DEV_SYNTHETIC_INVITATION_READINESS?: boolean;
   CHAT_STORAGE_CLOUD_FALLBACK_ENABLED?: boolean;
+  CHAT_DM_ASSISTANT_ENABLED: boolean;
+  CHAT_DM_ASSISTANT_WORKER_ENABLED?: boolean;
+  CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: number;
+  CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE: number;
+  CHAT_DM_ASSISTANT_MAX_RETRIES: number;
+  CHAT_DM_ASSISTANT_LEASE_MS: number;
+  CHAT_DM_ASSISTANT_POLL_INTERVAL_MS: number;
+  CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES: number;
+  CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS: number;
   [key: string]: unknown;
 }
 
@@ -119,6 +128,50 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     otherwise: Joi.boolean().optional(),
   }),
   CHAT_STORAGE_CLOUD_FALLBACK_ENABLED: Joi.boolean().default(false),
+  CHAT_DM_ASSISTANT_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  CHAT_DM_ASSISTANT_WORKER_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .empty('')
+    .optional(),
+  CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(90000)
+    .default(45000),
+  CHAT_DM_ASSISTANT_RATE_LIMIT_PER_MINUTE: Joi.number()
+    .integer()
+    .min(1)
+    .max(120)
+    .default(15),
+  CHAT_DM_ASSISTANT_MAX_RETRIES: Joi.number()
+    .integer()
+    .min(1)
+    .max(5)
+    .default(3),
+  CHAT_DM_ASSISTANT_LEASE_MS: Joi.number()
+    .integer()
+    .min(10000)
+    .max(300000)
+    .default(60000),
+  CHAT_DM_ASSISTANT_POLL_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(200)
+    .max(60000)
+    .default(1000),
+  CHAT_DM_ASSISTANT_MAX_CONTEXT_MESSAGES: Joi.number()
+    .integer()
+    .min(1)
+    .max(80)
+    .default(80),
+  CHAT_DM_ASSISTANT_MAX_CONTEXT_CHARS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(24000)
+    .default(24000),
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
   GOOGLE_CALLBACK_URL: Joi.string()
@@ -511,6 +564,11 @@ export function validateEnvironment(
     throw new Error(
       'Environment validation failed: WORKNOTE_SECURITY_GATEWAY_MODE cannot be "off" in production.',
     );
+  }
+
+  if (result.value.CHAT_DM_ASSISTANT_WORKER_ENABLED === undefined) {
+    result.value.CHAT_DM_ASSISTANT_WORKER_ENABLED =
+      result.value.CHAT_DM_ASSISTANT_ENABLED;
   }
 
   return result.value;

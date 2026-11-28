@@ -2,8 +2,10 @@ import { MongoChatFeatures } from './mongo-chat-features';
 import { chatLinks } from '../../../../common/search/chat-links';
 import {
   ConflictException,
+  ForbiddenException,
   NotFoundException,
   Injectable,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import type { ClientSession, Connection, Model, PipelineStage } from 'mongoose';
 import { Types } from 'mongoose';
@@ -13,6 +15,25 @@ import {
   textSearchStage,
 } from '../../../../common/search/indexed-search';
 import { normalizeSearchText } from '../../../../common/search/literal-search';
+import {
+  CHAT_ASSISTANT_JOBS_COLLECTION,
+  CONTINUUM_AI_HANDLE,
+  CONTINUUM_AI_SENDER_ID,
+} from './mongodb.schemas';
+import {
+  computeSourceAggregateState,
+  type AssistantStatusEvent,
+  type ChatAssistantFailureCode,
+  type ChatAssistantJobState,
+  type ChatAssistantMentionNormalized,
+  type ChatAssistantMeta,
+  type ChatAssistantPostedStatus,
+  type ChatAssistantQueryMode,
+  type ChatAssistantSourceReference,
+  type ChatAssistantSourceStatus,
+  type ChatAssistantStatus,
+  type ChatMessageAuthorType,
+} from '../../application/chat-dm-assistant.types';
 import type {
   ChatActor,
   ChatCandidate,
@@ -72,6 +93,26 @@ interface StoredAttachmentDocument extends ChatAttachment {
   objectKey: string;
 }
 
+export interface StoredAssistantSourceReferenceDocument {
+  refId: string;
+  messageId: Types.ObjectId;
+  senderName: string;
+  createdAt: Date;
+  sourceEditedAt?: Date | null;
+  sourceVersion: number;
+  quoteSnippet: string;
+}
+
+export interface StoredAssistantMetaDocument {
+  handle: typeof CONTINUUM_AI_HANDLE;
+  queryMode: ChatAssistantQueryMode;
+  partialCoverage: boolean;
+  coverageNote?: string | null;
+  model?: string | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+}
+
 export interface MessageDocument {
   _id: Types.ObjectId;
   organizationId: Types.ObjectId;
@@ -90,6 +131,49 @@ export interface MessageDocument {
   reactions?: { emoji: string; userIds: string[] }[];
   replyToMessageId?: Types.ObjectId | null;
   attachments?: StoredAttachmentDocument[];
+  contentVersion?: number;
+  authorType?: ChatMessageAuthorType;
+  assistantMention?: {
+    handle: typeof CONTINUUM_AI_HANDLE;
+    query: string;
+    timezone: string;
+  } | null;
+  triggerMessageId?: Types.ObjectId | null;
+  assistantStatus?: ChatAssistantStatus;
+  assistantFailureCode?: ChatAssistantFailureCode | null;
+  assistantMeta?: StoredAssistantMetaDocument | null;
+  sourceReferences?: StoredAssistantSourceReferenceDocument[];
+}
+
+export interface AssistantJobDocument {
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  conversationId: Types.ObjectId;
+  triggerMessageId: Types.ObjectId;
+  requesterUserId: string;
+  requesterDisplayName: string;
+  handle: typeof CONTINUUM_AI_HANDLE;
+  query: string;
+  timezone: string;
+  status: ChatAssistantStatus;
+  failureCode: ChatAssistantFailureCode | null;
+  failureReason?: string | null;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt: Date;
+  lockedBy: string | null;
+  lockedUntil: Date | null;
+  responseMessageId: Types.ObjectId | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface LiveSourceProjection {
+  _id: Types.ObjectId;
+  deletedAt?: Date | null;
+  editedAt?: Date | null;
+  contentVersion?: number;
 }
 
 interface UploadDocument extends Omit<ChatUpload, 'id'> {
@@ -135,13 +219,76 @@ function toReplyPreview(message: MessageDocument): ChatReplyPreview {
   };
 }
 
+function assistantMentionsEqual(
+  stored: MessageDocument['assistantMention'],
+  incoming: ChatAssistantMentionNormalized | undefined,
+): boolean {
+  if (!stored && !incoming) return true;
+  if (!stored || !incoming) return false;
+  return (
+    stored.handle === incoming.handle &&
+    stored.query === incoming.query &&
+    stored.timezone === incoming.timezone
+  );
+}
+
+function toAssistantJobState(job: AssistantJobDocument): ChatAssistantJobState {
+  return {
+    jobId: String(job._id),
+    status: job.status,
+    failureCode: job.failureCode ?? null,
+    responseMessageId: job.responseMessageId
+      ? String(job.responseMessageId)
+      : null,
+    updatedAt: (job.updatedAt ?? job.createdAt).toISOString(),
+  };
+}
+
+export function enrichSourceReferences(
+  storedRefs: readonly StoredAssistantSourceReferenceDocument[],
+  liveSourceById: ReadonlyMap<string, LiveSourceProjection>,
+): ChatAssistantSourceReference[] {
+  return storedRefs.map((ref) => {
+    const live = liveSourceById.get(String(ref.messageId));
+    let status: ChatAssistantSourceStatus;
+    let quoteSnippet: string;
+    if (!live || live.deletedAt != null) {
+      status = 'DELETED';
+      quoteSnippet = '';
+    } else if (
+      (live.contentVersion ?? 0) !== ref.sourceVersion ||
+      (live.editedAt ? live.editedAt.getTime() : null) !==
+        (ref.sourceEditedAt ? ref.sourceEditedAt.getTime() : null)
+    ) {
+      status = 'EDITED';
+      quoteSnippet = ref.quoteSnippet ?? '';
+    } else {
+      status = 'ACTIVE';
+      quoteSnippet = ref.quoteSnippet ?? '';
+    }
+    return {
+      refId: ref.refId,
+      messageId: String(ref.messageId),
+      senderName: ref.senderName,
+      createdAt: ref.createdAt.toISOString(),
+      quoteSnippet,
+      status,
+    };
+  });
+}
+
 function toMessage(
   message: MessageDocument,
   actorId: string,
   replyTarget?: MessageDocument,
+  liveSourceById?: ReadonlyMap<string, LiveSourceProjection>,
+  jobByTriggerId?: ReadonlyMap<string, AssistantJobDocument>,
 ): ChatMessage {
   const isDeleted = Boolean(message.deletedAt);
-  return {
+  const isAssistant =
+    message.authorType === 'ASSISTANT' ||
+    message.senderId === CONTINUUM_AI_SENDER_ID;
+  const base: ChatMessage = {
     id: String(message._id),
     conversationId: String(message.conversationId),
     senderId: message.senderId,
@@ -176,7 +323,50 @@ function toMessage(
             kind,
           }),
         ),
+    authorType: isAssistant ? 'ASSISTANT' : 'USER',
   };
+
+  if (isAssistant) {
+    const sourceReferences = enrichSourceReferences(
+      message.sourceReferences ?? [],
+      liveSourceById ?? new Map<string, LiveSourceProjection>(),
+    );
+    const postedStatus: ChatAssistantPostedStatus | null =
+      message.assistantStatus === 'COMPLETED' ||
+      message.assistantStatus === 'INSUFFICIENT_EVIDENCE'
+        ? message.assistantStatus
+        : null;
+    const assistantMeta: ChatAssistantMeta = {
+      handle: message.assistantMeta?.handle ?? CONTINUUM_AI_HANDLE,
+      queryMode: message.assistantMeta?.queryMode ?? 'KEYWORD',
+      partialCoverage: Boolean(message.assistantMeta?.partialCoverage),
+      coverageNote: message.assistantMeta?.coverageNote ?? null,
+      sourceState: computeSourceAggregateState(sourceReferences),
+    };
+    return {
+      ...base,
+      triggerMessageId: message.triggerMessageId
+        ? String(message.triggerMessageId)
+        : null,
+      assistantStatus: postedStatus,
+      assistantFailureCode: message.assistantFailureCode ?? null,
+      assistantMeta,
+      sourceReferences,
+    };
+  }
+
+  if (message.assistantMention != null) {
+    if (isDeleted) {
+      return { ...base, assistantState: null };
+    }
+    const job = jobByTriggerId?.get(String(message._id));
+    return {
+      ...base,
+      assistantState: job ? toAssistantJobState(job) : null,
+    };
+  }
+
+  return base;
 }
 
 function toParticipant(member: MemberDocument): ChatParticipant {
@@ -221,6 +411,7 @@ export class MongoChatRepository
   private readonly members: Model<MemberDocument>;
   private readonly messages: Model<MessageDocument>;
   private readonly uploads: Model<UploadDocument>;
+  private readonly assistantJobs: Model<AssistantJobDocument>;
 
   constructor(private readonly connection: Connection) {
     super(connection);
@@ -235,6 +426,9 @@ export class MongoChatRepository
     );
     this.uploads = connection.model<UploadDocument>(
       `${modelPrefix}chat_uploads`,
+    );
+    this.assistantJobs = connection.model<AssistantJobDocument>(
+      `${modelPrefix}${CHAT_ASSISTANT_JOBS_COLLECTION}`,
     );
   }
 
@@ -1231,14 +1425,23 @@ export class MongoChatRepository
     attachmentIds: string[] = [],
     replyToMessageId?: string,
     mentionUserIds: string[] = [],
+    assistantMention?: ChatAssistantMentionNormalized,
   ): Promise<ChatMessageWrite> {
     const conversationObjectId = new Types.ObjectId(conversationId);
     const organizationObjectId = new Types.ObjectId(actor.organizationId);
     await this.requireMember(actor, conversationObjectId);
-    await this.assertCanSend(actor, conversationId);
+    const conversation = await this.assertCanSend(actor, conversationId);
+    if (assistantMention && conversation.type !== 'DIRECT') {
+      throw new UnprocessableEntityException({
+        code: 'CHAT_ASSISTANT_DIRECT_ONLY',
+        message:
+          'Continuum AI assistant is only available in 1-on-1 direct conversations.',
+      });
+    }
     let message: MessageDocument | null = null;
+    let assistantStatusEvent: AssistantStatusEvent | undefined;
 
-    if (attachmentIds.length > 0 || replyToMessageId) {
+    if (attachmentIds.length > 0 || replyToMessageId || assistantMention) {
       const existing = await this.messages
         .findOne({
           organizationId: organizationObjectId,
@@ -1254,7 +1457,8 @@ export class MongoChatRepository
           String(existing.replyToMessageId ?? '') ===
             (replyToMessageId ?? '') &&
           (existing.attachments ?? []).map(({ id }) => id).join(',') ===
-            attachmentIds.join(',');
+            attachmentIds.join(',') &&
+          assistantMentionsEqual(existing.assistantMention, assistantMention);
         if (!matches) {
           throw new ConflictException({
             code: 'CHAT_IDEMPOTENCY_CONFLICT',
@@ -1267,6 +1471,20 @@ export class MongoChatRepository
         try {
           await session.withTransaction(
             async () => {
+              if (assistantMention) {
+                const txConversation = await this.assertCanSend(
+                  actor,
+                  conversationId,
+                  session,
+                );
+                if (txConversation.type !== 'DIRECT') {
+                  throw new UnprocessableEntityException({
+                    code: 'CHAT_ASSISTANT_DIRECT_ONLY',
+                    message:
+                      'Continuum AI assistant is only available in 1-on-1 direct conversations.',
+                  });
+                }
+              }
               const uploads = attachmentIds.length
                 ? await this.uploads
                     .find({
@@ -1330,11 +1548,71 @@ export class MongoChatRepository
                       ? new Types.ObjectId(replyToMessageId)
                       : null,
                     attachments,
+                    contentVersion: 0,
+                    ...(assistantMention
+                      ? {
+                          authorType: 'USER' as const,
+                          assistantMention: {
+                            handle: assistantMention.handle,
+                            query: assistantMention.query,
+                            timezone: assistantMention.timezone,
+                          },
+                        }
+                      : {}),
                   },
                 ],
                 { session },
               );
               message = created.toObject();
+              if (assistantMention) {
+                const now = created.createdAt ?? new Date();
+                const requesterDisplayName =
+                  actor.name.trim().slice(0, 120) || 'Member';
+                const maxAttempts = Math.min(
+                  5,
+                  Math.max(1, Math.round(assistantMention.maxAttempts ?? 3)),
+                );
+                const [createdJob] = await this.assistantJobs.create(
+                  [
+                    {
+                      organizationId: organizationObjectId,
+                      conversationId: conversationObjectId,
+                      triggerMessageId: created._id,
+                      requesterUserId: actor.id,
+                      requesterDisplayName,
+                      handle: assistantMention.handle,
+                      query: assistantMention.query,
+                      timezone: assistantMention.timezone,
+                      status: 'PENDING',
+                      failureCode: null,
+                      failureReason: null,
+                      attempts: 0,
+                      maxAttempts,
+                      nextAttemptAt: now,
+                      lockedBy: null,
+                      lockedUntil: null,
+                      responseMessageId: null,
+                      metrics: null,
+                      completedAt: null,
+                    },
+                  ],
+                  { session },
+                );
+                const jobObj = createdJob.toObject();
+                assistantStatusEvent = {
+                  conversationId,
+                  triggerMessageId: String(created._id),
+                  jobId: String(jobObj._id),
+                  status: 'PENDING',
+                  failureCode: null,
+                  responseMessageId: null,
+                  updatedAt: (
+                    jobObj.updatedAt ??
+                    jobObj.createdAt ??
+                    now
+                  ).toISOString(),
+                };
+              }
               if (attachmentIds.length) {
                 const updated = await this.uploads.updateMany(
                   {
@@ -1388,6 +1666,7 @@ export class MongoChatRepository
           );
         } catch (error) {
           if (!duplicateKey(error)) throw error;
+          assistantStatusEvent = undefined;
           message = await this.messages
             .findOne({
               organizationId: organizationObjectId,
@@ -1403,7 +1682,8 @@ export class MongoChatRepository
             String(message.replyToMessageId ?? '') !==
               (replyToMessageId ?? '') ||
             (message.attachments ?? []).map(({ id }) => id).join(',') !==
-              attachmentIds.join(',')
+              attachmentIds.join(',') ||
+            !assistantMentionsEqual(message.assistantMention, assistantMention)
           ) {
             throw new ConflictException({
               code: 'CHAT_IDEMPOTENCY_CONFLICT',
@@ -1431,6 +1711,7 @@ export class MongoChatRepository
               content,
               mentionUserIds,
               links: chatLinks(content),
+              contentVersion: 0,
             },
           ],
           { w: 'majority', wtimeout: 5_000 },
@@ -1453,7 +1734,8 @@ export class MongoChatRepository
             Boolean(message.replyToMessageId) ||
             (message.attachments ?? []).length > 0 ||
             attachmentIds.length > 0 ||
-            replyToMessageId)
+            replyToMessageId ||
+            !assistantMentionsEqual(message.assistantMention, assistantMention))
         ) {
           throw new ConflictException({
             code: 'CHAT_IDEMPOTENCY_CONFLICT',
@@ -1465,13 +1747,14 @@ export class MongoChatRepository
     if (!message) throw new Error('Message could not be stored');
     if (
       JSON.stringify([...(message.mentionUserIds ?? [])].sort()) !==
-      JSON.stringify([...mentionUserIds].sort())
+        JSON.stringify([...mentionUserIds].sort()) ||
+      !assistantMentionsEqual(message.assistantMention, assistantMention)
     )
       throw new ConflictException({
         code: 'CHAT_IDEMPOTENCY_CONFLICT',
         message: 'clientMessageId was already used for different mentions.',
       });
-    if (attachmentIds.length === 0 && !replyToMessageId) {
+    if (attachmentIds.length === 0 && !replyToMessageId && !assistantMention) {
       await this.conversations
         .updateOne(
           {
@@ -1512,6 +1795,7 @@ export class MongoChatRepository
     return {
       message: await this.mapMessage(actor, message),
       recipientIds: recipientRows.map((member) => member.userId),
+      ...(assistantStatusEvent ? { assistantStatusEvent } : {}),
     };
   }
 
@@ -1527,48 +1811,106 @@ export class MongoChatRepository
     const organizationId = new Types.ObjectId(actor.organizationId);
     await this.requireMember(actor, conversationObjectId);
     const editedAt = new Date();
-    const previous = await this.messages
-      .findOneAndUpdate(
-        {
-          _id: messageObjectId,
-          organizationId,
-          conversationId: conversationObjectId,
-          senderId: actor.id,
-          deletedAt: null,
-        },
-        {
-          $set: {
-            content,
-            mentionUserIds,
-            links: chatLinks(content),
-            editedAt,
+    let previous: MessageDocument | null = null;
+
+    const performEdit = async (session?: ClientSession) => {
+      const updateOptions = session
+        ? { new: false, runValidators: true, session }
+        : { new: false, runValidators: true };
+      previous = await this.messages
+        .findOneAndUpdate(
+          {
+            _id: messageObjectId,
+            organizationId,
+            conversationId: conversationObjectId,
+            senderId: actor.id,
+            deletedAt: null,
+            authorType: { $ne: 'ASSISTANT' },
           },
-        },
-        { new: false, runValidators: true },
-      )
-      .lean()
-      .exec();
+          {
+            $set: {
+              content,
+              mentionUserIds,
+              links: chatLinks(content),
+              editedAt,
+            },
+            $inc: { contentVersion: 1 },
+          },
+          updateOptions,
+        )
+        .lean()
+        .exec();
+      if (!previous) {
+        if (typeof this.messages.findOne === 'function') {
+          const existingQuery = this.messages.findOne({
+            _id: messageObjectId,
+            organizationId,
+            conversationId: conversationObjectId,
+          });
+          const existing = await (
+            session ? existingQuery.session(session) : existingQuery
+          )
+            .lean()
+            .exec();
+          if (
+            existing &&
+            (existing.authorType === 'ASSISTANT' ||
+              existing.senderId === CONTINUUM_AI_SENDER_ID)
+          ) {
+            throw this.assistantMessageImmutable();
+          }
+        }
+        throw this.conversationNotFound();
+      }
+      await this.conversations
+        .updateOne(
+          {
+            _id: conversationObjectId,
+            organizationId,
+          },
+          { $inc: { contextRevision: 1 } },
+          session ? { session } : undefined,
+        )
+        .exec();
+      await this.conversations
+        .updateOne(
+          {
+            _id: conversationObjectId,
+            organizationId,
+            lastMessageId: messageObjectId,
+          },
+          { $set: { lastMessagePreview: content.slice(0, 180) } },
+          session ? { session } : undefined,
+        )
+        .exec();
+    };
+
+    if (typeof this.connection.startSession === 'function') {
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(() => performEdit(session), {
+          writeConcern: { w: 'majority', wtimeoutMS: 5_000 },
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await performEdit();
+    }
+
     if (!previous) throw this.conversationNotFound();
-    const previousMentions = new Set(previous.mentionUserIds ?? []);
+    const prevDoc = previous as MessageDocument;
+    const previousMentions = new Set(prevDoc.mentionUserIds ?? []);
     const newlyMentionedUserIds = mentionUserIds.filter(
       (id) => !previousMentions.has(id),
     );
     const message: MessageDocument = {
-      ...previous,
+      ...prevDoc,
       content,
       mentionUserIds,
       editedAt,
+      contentVersion: (prevDoc.contentVersion ?? 0) + 1,
     };
-    await this.conversations
-      .updateOne(
-        {
-          _id: conversationObjectId,
-          organizationId,
-          lastMessageId: messageObjectId,
-        },
-        { $set: { lastMessagePreview: content.slice(0, 180) } },
-      )
-      .exec();
     return {
       message: await this.mapMessage(actor, message),
       recipientIds: await this.memberIds(actor, conversationId),
@@ -1590,53 +1932,111 @@ export class MongoChatRepository
         _id: messageObjectId,
         organizationId,
         conversationId: conversationObjectId,
-        senderId: actor.id,
       })
       .lean()
       .exec();
     if (!current) throw this.conversationNotFound();
-    const message = current.deletedAt
-      ? current
-      : await this.messages
-          .findOneAndUpdate(
-            {
-              _id: messageObjectId,
-              organizationId,
-              conversationId: conversationObjectId,
-              senderId: actor.id,
-              deletedAt: null,
+    if (
+      current.authorType === 'ASSISTANT' ||
+      current.senderId === CONTINUUM_AI_SENDER_ID
+    ) {
+      throw this.assistantMessageImmutable();
+    }
+    if (current.senderId !== actor.id) throw this.conversationNotFound();
+
+    // Idempotent repeat delete MUST NOT bump contentVersion or contextRevision.
+    if (current.deletedAt) {
+      return {
+        message: await this.mapMessage(actor, current),
+        recipientIds: await this.memberIds(actor, conversationId),
+      };
+    }
+
+    let message: MessageDocument | null = null;
+    const performDelete = async (session?: ClientSession) => {
+      const deleted = await this.messages
+        .findOneAndUpdate(
+          {
+            _id: messageObjectId,
+            organizationId,
+            conversationId: conversationObjectId,
+            senderId: actor.id,
+            deletedAt: null,
+          },
+          {
+            $set: {
+              content: '',
+              deletedAt: new Date(),
+              reactions: [],
+              attachments: [],
+              mentionUserIds: [],
+              links: [],
+              isPinned: false,
             },
-            {
-              $set: {
-                content: '',
-                deletedAt: new Date(),
-                reactions: [],
-                attachments: [],
-                mentionUserIds: [],
-                links: [],
-                isPinned: false,
-              },
-            },
-            { new: true },
-          )
+            $inc: { contentVersion: 1 },
+          },
+          session ? { new: true, session } : { new: true },
+        )
+        .lean()
+        .exec();
+
+      if (!deleted) {
+        // Concurrent delete won the race; treat as idempotent NOOP without bumping contextRevision.
+        const latestQuery = this.messages.findOne({
+          _id: messageObjectId,
+          organizationId,
+          conversationId: conversationObjectId,
+          senderId: actor.id,
+        });
+        message = await (session ? latestQuery.session(session) : latestQuery)
           .lean()
           .exec();
-    if (!message) throw this.conversationNotFound();
-    await this.conversations
-      .updateOne(
-        {
-          _id: conversationObjectId,
-          organizationId,
-          lastMessageId: messageObjectId,
-        },
-        {
-          $set: {
-            lastMessagePreview: 'Message deleted',
-            lastMessageSenderId: actor.id,
+        return;
+      }
+
+      message = deleted;
+      await this.conversations
+        .updateOne(
+          {
+            _id: conversationObjectId,
+            organizationId,
           },
-        },
-      )
-      .exec();
+          { $inc: { contextRevision: 1 } },
+          session ? { session } : undefined,
+        )
+        .exec();
+      await this.conversations
+        .updateOne(
+          {
+            _id: conversationObjectId,
+            organizationId,
+            lastMessageId: messageObjectId,
+          },
+          {
+            $set: {
+              lastMessagePreview: 'Message deleted',
+              lastMessageSenderId: actor.id,
+            },
+          },
+          session ? { session } : undefined,
+        )
+        .exec();
+    };
+
+    if (typeof this.connection.startSession === 'function') {
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(() => performDelete(session), {
+          writeConcern: { w: 'majority', wtimeoutMS: 5_000 },
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await performDelete();
+    }
+
+    if (!message) throw this.conversationNotFound();
     return {
       message: await this.mapMessage(actor, message),
       recipientIds: await this.memberIds(actor, conversationId),
@@ -1918,6 +2318,8 @@ export class MongoChatRepository
   ): Promise<ChatMessage[]> {
     const [first] = messages;
     if (!first) return [];
+    const organizationId = new Types.ObjectId(actor.organizationId);
+    const conversationId = first.conversationId;
     const replyIds = [
       ...new Set(
         messages.flatMap((message) =>
@@ -1925,19 +2327,76 @@ export class MongoChatRepository
         ),
       ),
     ];
-    const targets = replyIds.length
-      ? await this.messages
-          .find({
-            _id: { $in: replyIds.map((id) => new Types.ObjectId(id)) },
-            organizationId: new Types.ObjectId(actor.organizationId),
-            conversationId: first.conversationId,
-          })
-          .lean()
-          .exec()
-      : [];
+    const sourceRefIds = [
+      ...new Set(
+        messages.flatMap((message) =>
+          (message.authorType === 'ASSISTANT' ||
+            message.senderId === CONTINUUM_AI_SENDER_ID) &&
+          Array.isArray(message.sourceReferences)
+            ? message.sourceReferences.map((ref) => String(ref.messageId))
+            : [],
+        ),
+      ),
+    ];
+    const triggerIds = [
+      ...new Set(
+        messages.flatMap((message) =>
+          message.authorType !== 'ASSISTANT' &&
+          message.senderId !== CONTINUUM_AI_SENDER_ID &&
+          !message.deletedAt &&
+          message.assistantMention != null
+            ? [String(message._id)]
+            : [],
+        ),
+      ),
+    ];
+
+    const [targets, liveSources, jobs] = await Promise.all([
+      replyIds.length
+        ? this.messages
+            .find({
+              _id: { $in: replyIds.map((id) => new Types.ObjectId(id)) },
+              organizationId,
+              conversationId,
+            })
+            .lean()
+            .exec()
+        : Promise.resolve<MessageDocument[]>([]),
+      sourceRefIds.length
+        ? this.messages
+            .find({
+              _id: { $in: sourceRefIds.map((id) => new Types.ObjectId(id)) },
+              organizationId,
+              conversationId,
+            })
+            .select({ _id: 1, deletedAt: 1, editedAt: 1, contentVersion: 1 })
+            .lean()
+            .exec()
+        : Promise.resolve<LiveSourceProjection[]>([]),
+      triggerIds.length
+        ? this.assistantJobs
+            .find({
+              organizationId,
+              conversationId,
+              triggerMessageId: {
+                $in: triggerIds.map((id) => new Types.ObjectId(id)),
+              },
+            })
+            .lean()
+            .exec()
+        : Promise.resolve<AssistantJobDocument[]>([]),
+    ]);
+
     const targetById = new Map(
       targets.map((target) => [String(target._id), target]),
     );
+    const liveSourceById = new Map<string, LiveSourceProjection>(
+      liveSources.map((source) => [String(source._id), source]),
+    );
+    const jobByTriggerId = new Map<string, AssistantJobDocument>(
+      jobs.map((job) => [String(job.triggerMessageId), job]),
+    );
+
     return messages.map((message) =>
       toMessage(
         message,
@@ -1945,6 +2404,8 @@ export class MongoChatRepository
         message.replyToMessageId
           ? targetById.get(String(message.replyToMessageId))
           : undefined,
+        liveSourceById,
+        jobByTriggerId,
       ),
     );
   }
@@ -2025,6 +2486,13 @@ export class MongoChatRepository
     return new NotFoundException({
       code: 'CHAT_CONVERSATION_NOT_FOUND',
       message: 'Conversation not found.',
+    });
+  }
+
+  private assistantMessageImmutable(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'CHAT_ASSISTANT_MESSAGE_IMMUTABLE',
+      message: 'Assistant messages cannot be edited or deleted.',
     });
   }
 }
