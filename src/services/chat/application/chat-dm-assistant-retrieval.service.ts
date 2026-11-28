@@ -845,6 +845,7 @@ export class DmAssistantRetrievalService {
     partialCoverage: boolean;
   }> {
     // 1. Primary path: MongoDB Atlas Search ($search on chat_search_v1)
+    let atlasSearchRan = false;
     try {
       const filterClauses: Record<string, unknown>[] = [
         { equals: { path: 'organizationId', value: input.organizationId } },
@@ -878,33 +879,38 @@ export class DmAssistantRetrievalService {
           },
         });
       }
-      const pipeline: PipelineStage[] = [
-        {
-          $search: {
-            index: CHAT_SEARCH_INDEX,
-            compound: {
-              filter: filterClauses,
-              should: shouldClauses,
-              minimumShouldMatch: 1,
+      if (shouldClauses.length > 0) {
+        const pipeline: PipelineStage[] = [
+          {
+            $search: {
+              index: CHAT_SEARCH_INDEX,
+              compound: {
+                filter: filterClauses,
+                should: shouldClauses,
+                minimumShouldMatch: 1,
+              },
             },
           },
-        },
-        { $match: scopedFilter },
-        { $addFields: { _searchScore: { $meta: 'searchScore' } } },
-        { $sort: { _searchScore: -1, createdAt: -1, _id: -1 } },
-        { $limit: MAX_KEYWORD_CANDIDATES },
-      ];
-      const rows = await model.aggregate<MessageDocument>(pipeline).exec();
-      const filteredRows =
-        parsed.codes.length > 0
-          ? rows.filter((row) => scoreFoldedMessage(row.content, parsed) > 0)
-          : rows;
-      return {
-        hits: filteredRows,
-        retrievalPath: 'ATLAS_SEARCH',
-        candidateCount: filteredRows.length,
-        partialCoverage: false,
-      };
+          { $match: scopedFilter },
+          { $addFields: { _searchScore: { $meta: 'searchScore' } } },
+          { $sort: { _searchScore: -1, createdAt: -1, _id: -1 } },
+          { $limit: MAX_KEYWORD_CANDIDATES },
+        ];
+        const rows = await model.aggregate<MessageDocument>(pipeline).exec();
+        atlasSearchRan = true;
+        const filteredRows =
+          parsed.codes.length > 0
+            ? rows.filter((row) => scoreFoldedMessage(row.content, parsed) > 0)
+            : rows;
+        if (filteredRows.length > 0) {
+          return {
+            hits: filteredRows,
+            retrievalPath: 'ATLAS_SEARCH',
+            candidateCount: filteredRows.length,
+            partialCoverage: false,
+          };
+        }
+      }
     } catch (error) {
       if (!isAtlasSearchUnavailableError(error)) {
         throw error;
@@ -940,7 +946,9 @@ export class DmAssistantRetrievalService {
     if (textHits.length > 0) {
       return {
         hits: textHits,
-        retrievalPath: 'MONGO_TEXT',
+        retrievalPath: atlasSearchRan
+          ? 'ATLAS_SEARCH_THEN_MONGO_TEXT'
+          : 'MONGO_TEXT',
         candidateCount: textHits.length,
         partialCoverage: false,
       };
@@ -970,12 +978,16 @@ export class DmAssistantRetrievalService {
       })
       .slice(0, MAX_KEYWORD_CANDIDATES);
 
+    const foldedRetrievalPath = atlasSearchRan
+      ? 'ATLAS_SEARCH_THEN_FOLDED_SCAN'
+      : textSucceeded
+        ? 'MONGO_TEXT_THEN_FOLDED_SCAN'
+        : 'FOLDED_SCAN';
+
     if (scored.length === 0) {
       return {
         hits: [],
-        retrievalPath: textSucceeded
-          ? 'MONGO_TEXT_THEN_FOLDED_SCAN'
-          : 'FOLDED_SCAN',
+        retrievalPath: foldedRetrievalPath,
         candidateCount: 0,
         partialCoverage,
       };
@@ -995,9 +1007,7 @@ export class DmAssistantRetrievalService {
 
     return {
       hits: orderedHits,
-      retrievalPath: textSucceeded
-        ? 'MONGO_TEXT_THEN_FOLDED_SCAN'
-        : 'FOLDED_SCAN',
+      retrievalPath: foldedRetrievalPath,
       candidateCount: orderedHits.length,
       partialCoverage,
     };

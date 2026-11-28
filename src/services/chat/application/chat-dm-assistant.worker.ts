@@ -527,11 +527,15 @@ export class ChatDmAssistantWorkerService
           job.requesterUserId,
         );
       if (!orgMemberActive) {
+        const activeRecipients = (
+          await this.getActiveMemberIds(orgObjId, convObjId)
+        ).filter((id) => id !== job.requesterUserId);
         return await this.finalizeCancelledJob(
           job,
           workerLeaseId,
           'ACCESS_REVOKED',
           'Organization membership or account is no longer active.',
+          activeRecipients,
         );
       }
 
@@ -741,11 +745,15 @@ export class ChatDmAssistantWorkerService
           job.requesterUserId,
         );
       if (!orgMemberActive) {
+        const activeRecipients = (
+          await this.getActiveMemberIds(orgObjId, convObjId)
+        ).filter((id) => id !== job.requesterUserId);
         return await this.finalizeCancelledJob(
           job,
           workerLeaseId,
           'ACCESS_REVOKED',
           'Organization membership or account revoked before publish.',
+          activeRecipients,
         );
       }
 

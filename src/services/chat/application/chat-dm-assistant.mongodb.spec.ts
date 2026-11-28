@@ -1343,7 +1343,7 @@ describe('Chat DM @continuumAI — Real MongoMemoryReplSet E2E Integration (ACL,
           timezone: 'Asia/Ho_Chi_Minh',
         },
       );
-      const { worker } = createWorker(async () => {
+      const { worker, publishConversationEvent } = createWorker(async () => {
         // Revoke org membership in continuum_iam mid-flight!
         const iamDb = connection.useDb(SERVICE_DATABASES.iam, {
           useCache: true,
@@ -1381,6 +1381,24 @@ describe('Chat DM @continuumAI — Real MongoMemoryReplSet E2E Integration (ACL,
         failureCode: 'ACCESS_REVOKED',
         responseMessageId: null,
       });
+      const revokedStatusCalls = (
+        publishConversationEvent.mock.calls as [
+          string,
+          string,
+          string,
+          string[],
+          { status?: string; failureCode?: string },
+        ][]
+      ).filter(
+        (call) =>
+          call[0] === 'assistant.status' &&
+          call[4]?.status === 'CANCELLED' &&
+          call[4]?.failureCode === 'ACCESS_REVOKED',
+      );
+      expect(revokedStatusCalls).toHaveLength(1);
+      // Revoked org member MUST NOT receive assistant.status frames!
+      expect(revokedStatusCalls[0][3]).toEqual([userB.id]);
+      expect(revokedStatusCalls[0][3]).not.toContain(tempUser.id);
       const jobDoc = (await connection
         .db!.collection(CHAT_ASSISTANT_JOBS_COLLECTION)
         .findOne({

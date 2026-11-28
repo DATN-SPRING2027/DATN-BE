@@ -12,7 +12,12 @@ import {
   CONTINUUM_AI_HANDLE,
   extractAssistantQuery,
 } from './chat-dm-assistant.types';
-import { parseAssistantQuery } from './chat-dm-assistant-retrieval.service';
+import { Types, type Model } from 'mongoose';
+import {
+  DmAssistantRetrievalService,
+  parseAssistantQuery,
+} from './chat-dm-assistant-retrieval.service';
+import type { MessageDocument } from '../infrastructure/mongodb/mongo-chat.repository';
 import { ChatDmAssistantWorkerService } from './chat-dm-assistant.worker';
 import { MongoChatOrgMembershipChecker } from '../infrastructure/mongodb/mongo-chat-org-membership.checker';
 import type { ChatActor, ChatRepository } from './chat.repository';
@@ -542,5 +547,120 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       spec.paths['/api/v1/chat/conversations/{conversationId}/forward'].post
         .responses;
     expect(forwardResponses['422']).toBeDefined();
+  });
+
+  it('falls through to strongly-consistent MongoDB primary ($text and FOLDED_SCAN) when Atlas $search returns 0 hits due to oplog lag', async () => {
+    const orgId = new Types.ObjectId('507f1f77bcf86cd799439001');
+    const convId = new Types.ObjectId('507f1f77bcf86cd799439021');
+    const freshMsgId = new Types.ObjectId('507f1f77bcf86cd799439055');
+    const triggerId = new Types.ObjectId('507f1f77bcf86cd799439056');
+    const freshDoc: MessageDocument = {
+      _id: freshMsgId,
+      organizationId: orgId,
+      conversationId: convId,
+      senderId: actorA.id,
+      senderName: actorA.name,
+      senderAvatarUrl: null,
+      clientMessageId: 'fresh-1',
+      content: 'Cập nhật E2E-EDIT-401 chốt lúc 17:00 thứ Sáu.',
+      createdAt: new Date('2026-11-28T08:59:00.000Z'),
+      editedAt: null,
+      deletedAt: null,
+      contentVersion: 0,
+    };
+
+    const makeCursor = (rows: unknown[]) => ({
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(rows),
+    });
+
+    const retrievalService = new DmAssistantRetrievalService();
+
+    // Case 1: Atlas $search succeeds with [] (mongot lag) -> $text recovers freshDoc
+    const modelTextRecovery = {
+      aggregate: jest.fn(() => ({
+        exec: jest.fn().mockResolvedValue([]),
+      })),
+      find: jest.fn((filter: Record<string, unknown>) => {
+        if ('$text' in filter) {
+          return makeCursor([freshDoc]);
+        }
+        // Neighbor expansion queries
+        return makeCursor([]);
+      }),
+    } as unknown as Model<MessageDocument>;
+
+    const textRecovered = await retrievalService.retrieveContext(
+      {
+        organizationId: orgId,
+        conversationId: convId,
+        triggerMessageId: triggerId,
+        triggerCreatedAt: new Date('2026-11-28T09:00:00.000Z'),
+        question: 'E2E-EDIT-401 chốt lúc mấy giờ?',
+        timezone: 'Asia/Ho_Chi_Minh',
+        maxMessages: 80,
+        maxChars: 24_000,
+      },
+      modelTextRecovery,
+    );
+    expect(textRecovered.retrievalPath).toBe('ATLAS_SEARCH_THEN_MONGO_TEXT');
+    expect(textRecovered.messages).toHaveLength(1);
+    expect(String(textRecovered.messages[0].messageId)).toBe(
+      String(freshMsgId),
+    );
+
+    // Case 2: Atlas $search returns [] AND $text returns [] -> FOLDED_SCAN recovers freshDoc from primary
+    const modelFoldedRecovery = {
+      aggregate: jest.fn(() => ({
+        exec: jest.fn().mockResolvedValue([]),
+      })),
+      find: jest.fn(
+        (
+          filter: Record<string, unknown>,
+          projection?: Record<string, unknown>,
+        ) => {
+          if ('$text' in filter) return makeCursor([]);
+          if (projection && '_id' in projection) {
+            return makeCursor([
+              {
+                _id: freshDoc._id,
+                content: freshDoc.content,
+                createdAt: freshDoc.createdAt,
+              },
+            ]);
+          }
+          if (
+            '_id' in filter &&
+            typeof filter._id === 'object' &&
+            filter._id !== null &&
+            '$in' in filter._id
+          ) {
+            return makeCursor([freshDoc]);
+          }
+          return makeCursor([]);
+        },
+      ),
+    } as unknown as Model<MessageDocument>;
+
+    const foldedRecovered = await retrievalService.retrieveContext(
+      {
+        organizationId: orgId,
+        conversationId: convId,
+        triggerMessageId: triggerId,
+        triggerCreatedAt: new Date('2026-11-28T09:00:00.000Z'),
+        question: 'Cap nhat E2E-EDIT-401 chot luc may gio?',
+        timezone: 'Asia/Ho_Chi_Minh',
+        maxMessages: 80,
+        maxChars: 24_000,
+      },
+      modelFoldedRecovery,
+    );
+    expect(foldedRecovered.retrievalPath).toBe('ATLAS_SEARCH_THEN_FOLDED_SCAN');
+    expect(foldedRecovered.messages).toHaveLength(1);
+    expect(String(foldedRecovered.messages[0].messageId)).toBe(
+      String(freshMsgId),
+    );
   });
 });
