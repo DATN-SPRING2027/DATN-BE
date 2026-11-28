@@ -52,6 +52,7 @@ import { ProjectAccessService } from './application/projects/project-access.serv
 import { PROJECT_ACCESS_REPOSITORY } from './application/projects/project-access.repository';
 import { MongoProjectAccessRepository } from './infrastructure/mongodb/project-access.repository';
 import { PlatformController } from './controllers/platform.controller';
+import { SagOperatorController } from './controllers/sag-operator.controller';
 import { AccountOrganizationController } from './controllers/account-organization.controller';
 import { OrganizationProvisioningService } from './application/organizations/organization-provisioning.service';
 import { ORGANIZATION_PROVISIONING_REPOSITORY } from './application/organizations/organization-provisioning.repository';
@@ -148,6 +149,7 @@ import { MongoMcpApiKeyRepository } from './infrastructure/mongodb/mcp-api-key.r
     ProjectController,
     ProjectAccessController,
     PlatformController,
+    SagOperatorController,
     AccountOrganizationController,
     OrganizationMembershipCommandController,
     AccountInvitationController,
