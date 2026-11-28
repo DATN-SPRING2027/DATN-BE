@@ -7,8 +7,10 @@ import { CHAT_PERSISTENCE } from '../infrastructure/persistence';
 import { CONTINUUM_AI_SENDER_ID } from '../infrastructure/mongodb/mongodb.schemas';
 import type { MessageDocument } from '../infrastructure/mongodb/mongo-chat.repository';
 import {
+  buildSagDmAssistantPayload,
   DEFAULT_DM_ASSISTANT_TIMEZONE,
   isValidIanaTimezone,
+  MAX_SAG_REQUEST_JSON_BYTES,
   type ChatAssistantQueryMode,
 } from './chat-dm-assistant.types';
 
@@ -230,6 +232,7 @@ export interface RetrieveDmContextInput {
   timezone: string;
   maxMessages: number;
   maxChars: number;
+  maxJsonBytes?: number;
 }
 
 interface LocalDateParts {
@@ -669,6 +672,36 @@ function compareChronological(a: MessageDocument, b: MessageDocument): number {
   return String(a._id).localeCompare(String(b._id));
 }
 
+function comparePriorityDesc(
+  a: MessageDocument,
+  b: MessageDocument,
+  hitRankById: ReadonlyMap<string, number>,
+): number {
+  const aRank = hitRankById.get(String(a._id));
+  const bRank = hitRankById.get(String(b._id));
+  const aIsHit = aRank !== undefined;
+  const bIsHit = bRank !== undefined;
+  if (aIsHit !== bIsHit) return aIsHit ? -1 : 1;
+  if (aIsHit && bIsHit && aRank !== bRank) return aRank - bRank;
+  const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+  if (timeDiff !== 0) return timeDiff;
+  return String(b._id).localeCompare(String(a._id));
+}
+
+function truncateTextSafely(text: string, maxCodeUnits: number): string {
+  if (maxCodeUnits <= 0) return '';
+  if (text.length <= maxCodeUnits) return text;
+  let cut = Math.max(1, maxCodeUnits - 1);
+  // Never slice between a UTF-16 high/low surrogate pair.
+  if (cut > 0) {
+    const lastCode = text.charCodeAt(cut - 1);
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+      cut = Math.max(0, cut - 1);
+    }
+  }
+  return `${text.slice(0, cut)}…`;
+}
+
 @Injectable()
 export class DmAssistantRetrievalService {
   private readonly messagesModel?: Model<MessageDocument>;
@@ -705,6 +738,13 @@ export class DmAssistantRetrievalService {
     );
     const maxMessages = Math.min(80, Math.max(1, input.maxMessages));
     const maxChars = Math.min(24_000, Math.max(1000, input.maxChars));
+    const maxJsonBytes = Math.min(
+      MAX_SAG_REQUEST_JSON_BYTES,
+      Math.max(
+        1024,
+        Math.floor(input.maxJsonBytes ?? MAX_SAG_REQUEST_JSON_BYTES),
+      ),
+    );
 
     // Mandatory pre-retrieval eligibility filter: strictly scoped to this DM & human non-deleted text messages.
     const baseFilter: Record<string, unknown> = {
@@ -736,7 +776,7 @@ export class DmAssistantRetrievalService {
     let retrievalPath = 'TIME_WINDOW';
     let candidateCount = 0;
     let selectedDocs: MessageDocument[] = [];
-    const hitPriorityIds = new Set<string>();
+    const hitRankById = new Map<string, number>();
 
     if (parsed.queryMode === 'TIME_WINDOW' && effectiveTimeFilter) {
       const rows = await model
@@ -769,9 +809,12 @@ export class DmAssistantRetrievalService {
       }
 
       const hits = keywordResult.hits;
-      for (const hit of hits) {
-        hitPriorityIds.add(String(hit._id));
-      }
+      hits.forEach((hit, rankIndex) => {
+        const idStr = String(hit._id);
+        if (!hitRankById.has(idStr)) {
+          hitRankById.set(idStr, rankIndex);
+        }
+      });
 
       if (hits.length > 0) {
         const expanded = await this.expandNeighbors(
@@ -793,7 +836,7 @@ export class DmAssistantRetrievalService {
     // Enforce count & character budgets
     const budgeted = this.applyContextBudget(
       selectedDocs,
-      hitPriorityIds,
+      hitRankById,
       maxMessages,
       maxChars,
     );
@@ -801,34 +844,31 @@ export class DmAssistantRetrievalService {
       partialCoverage = true;
     }
 
-    const snapshots: RetrievedMessageSnapshot[] = budgeted.items.map(
-      (item, index) => ({
-        refId: `M${index + 1}`,
-        messageId: item.doc._id,
-        senderName: item.doc.senderName.trim().slice(0, 120) || 'Member',
-        createdAt: item.doc.createdAt,
-        sourceVersion: Math.max(0, Math.round(item.doc.contentVersion ?? 0)),
-        sourceEditedAtMs: item.doc.editedAt
-          ? item.doc.editedAt.getTime()
-          : null,
-        quoteSnippet: buildQuoteSnippet(item.doc.content),
-        textForSag: item.textForSag,
-      }),
-    );
-
-    const coverageHint = partialCoverage
-      ? parsed.queryMode === 'TIME_WINDOW'
+    const partialCoverageHint =
+      parsed.queryMode === 'TIME_WINDOW'
         ? 'Khoảng thời gian có nhiều tin nhắn vượt giới hạn ngữ cảnh; kết quả chỉ bao quát phần tin nhắn gần nhất trong giới hạn xử lý.'
-        : 'Ngữ cảnh truy xuất chỉ bao quát một phần lịch sử hoặc một số tin nhắn dài đã được rút gọn trong giới hạn xử lý.'
-      : null;
+        : 'Ngữ cảnh truy xuất chỉ bao quát một phần lịch sử hoặc một số tin nhắn dài đã được rút gọn trong giới hạn xử lý.';
+
+    // Enforce exact serialized UTF-8 JSON byte budget strictly below SAG's 128 KiB cap.
+    const byteBudgeted = this.applySagJsonByteBudget({
+      items: budgeted.items,
+      hitRankById,
+      question: input.question,
+      timezone: input.timezone,
+      referenceNowIso: input.triggerCreatedAt.toISOString(),
+      queryMode: parsed.queryMode,
+      initialPartialCoverage: partialCoverage,
+      partialCoverageHint,
+      maxJsonBytes,
+    });
 
     return {
       queryMode: parsed.queryMode,
       retrievalPath,
       candidateCount,
-      partialCoverage,
-      coverageHint,
-      messages: snapshots,
+      partialCoverage: byteBudgeted.partialCoverage,
+      coverageHint: byteBudgeted.coverageHint,
+      messages: byteBudgeted.snapshots,
     };
   }
 
@@ -1054,7 +1094,7 @@ export class DmAssistantRetrievalService {
 
   private applyContextBudget(
     docs: readonly MessageDocument[],
-    hitPriorityIds: ReadonlySet<string>,
+    hitRankById: ReadonlyMap<string, number>,
     maxMessages: number,
     maxChars: number,
   ): {
@@ -1066,18 +1106,11 @@ export class DmAssistantRetrievalService {
 
     if (working.length > maxMessages) {
       truncated = true;
-      if (hitPriorityIds.size > 0) {
-        const prioritized = working.filter((d) =>
-          hitPriorityIds.has(String(d._id)),
+      if (hitRankById.size > 0) {
+        const prioritized = [...working].sort((a, b) =>
+          comparePriorityDesc(a, b, hitRankById),
         );
-        const others = working.filter(
-          (d) => !hitPriorityIds.has(String(d._id)),
-        );
-        const keep = [
-          ...prioritized.slice(-maxMessages),
-          ...others.slice(-Math.max(0, maxMessages - prioritized.length)),
-        ];
-        working = keep.slice(-maxMessages).sort(compareChronological);
+        working = prioritized.slice(0, maxMessages).sort(compareChronological);
       } else {
         working = working.slice(-maxMessages);
       }
@@ -1089,7 +1122,7 @@ export class DmAssistantRetrievalService {
         truncated = true;
         return {
           doc,
-          textForSag: `${trimmed.slice(0, MAX_SINGLE_MESSAGE_CHARS - 1)}…`,
+          textForSag: truncateTextSafely(trimmed, MAX_SINGLE_MESSAGE_CHARS),
         };
       }
       return { doc, textForSag: trimmed };
@@ -1104,13 +1137,10 @@ export class DmAssistantRetrievalService {
     }
 
     truncated = true;
-    // Keep highest-priority (hits first, then most recent) within maxChars, then re-sort chronologically.
-    const orderedForSelection = [...prepared].sort((a, b) => {
-      const aHit = hitPriorityIds.has(String(a.doc._id)) ? 1 : 0;
-      const bHit = hitPriorityIds.has(String(b.doc._id)) ? 1 : 0;
-      if (aHit !== bHit) return bHit - aHit;
-      return b.doc.createdAt.getTime() - a.doc.createdAt.getTime();
-    });
+    // Keep highest-priority (highest-ranked hits first, then most recent) within maxChars, then re-sort chronologically.
+    const orderedForSelection = [...prepared].sort((a, b) =>
+      comparePriorityDesc(a.doc, b.doc, hitRankById),
+    );
 
     const kept: { doc: MessageDocument; textForSag: string }[] = [];
     let used = 0;
@@ -1121,7 +1151,7 @@ export class DmAssistantRetrievalService {
       } else if (kept.length === 0 && maxChars >= 10) {
         kept.push({
           doc: item.doc,
-          textForSag: `${item.textForSag.slice(0, maxChars - 1)}…`,
+          textForSag: truncateTextSafely(item.textForSag, maxChars),
         });
         break;
       }
@@ -1129,5 +1159,175 @@ export class DmAssistantRetrievalService {
 
     kept.sort((a, b) => compareChronological(a.doc, b.doc));
     return { items: kept, truncated };
+  }
+
+  private toSnapshots(
+    items: readonly { doc: MessageDocument; textForSag: string }[],
+  ): RetrievedMessageSnapshot[] {
+    return items.map((item, index) => ({
+      refId: `M${index + 1}`,
+      messageId: item.doc._id,
+      senderName: item.doc.senderName.trim().slice(0, 120) || 'Member',
+      createdAt: item.doc.createdAt,
+      sourceVersion: Math.max(0, Math.round(item.doc.contentVersion ?? 0)),
+      sourceEditedAtMs: item.doc.editedAt ? item.doc.editedAt.getTime() : null,
+      quoteSnippet: buildQuoteSnippet(item.doc.content),
+      textForSag: item.textForSag,
+    }));
+  }
+
+  private applySagJsonByteBudget(params: {
+    items: readonly { doc: MessageDocument; textForSag: string }[];
+    hitRankById: ReadonlyMap<string, number>;
+    question: string;
+    timezone: string;
+    referenceNowIso: string;
+    queryMode: ChatAssistantQueryMode;
+    initialPartialCoverage: boolean;
+    partialCoverageHint: string;
+    maxJsonBytes: number;
+  }): {
+    snapshots: RetrievedMessageSnapshot[];
+    partialCoverage: boolean;
+    coverageHint: string | null;
+  } {
+    const {
+      items,
+      hitRankById,
+      question,
+      timezone,
+      referenceNowIso,
+      queryMode,
+      initialPartialCoverage,
+      partialCoverageHint,
+      maxJsonBytes,
+    } = params;
+
+    const measurePayloadBytes = (
+      snapshots: readonly RetrievedMessageSnapshot[],
+      isPartial: boolean,
+    ): number =>
+      Buffer.byteLength(
+        JSON.stringify(
+          buildSagDmAssistantPayload({
+            question,
+            timezone,
+            referenceNowIso,
+            queryMode,
+            partialCoverage: isPartial,
+            coverageHint: isPartial ? partialCoverageHint : null,
+            messages: snapshots,
+          }),
+        ),
+        'utf8',
+      );
+
+    const initialSnapshots = this.toSnapshots(items);
+    if (
+      measurePayloadBytes(initialSnapshots, initialPartialCoverage) <=
+      maxJsonBytes
+    ) {
+      return {
+        snapshots: initialSnapshots,
+        partialCoverage: initialPartialCoverage,
+        coverageHint: initialPartialCoverage ? partialCoverageHint : null,
+      };
+    }
+
+    const fitSingleItemByTextBinarySearch = (item: {
+      doc: MessageDocument;
+      textForSag: string;
+    }): { doc: MessageDocument; textForSag: string } | null => {
+      let low = 1;
+      let high = item.textForSag.length;
+      let bestText: string | null = null;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const candidateText = truncateTextSafely(item.textForSag, mid);
+        const candidateSnapshots = this.toSnapshots([
+          { doc: item.doc, textForSag: candidateText },
+        ]);
+        if (measurePayloadBytes(candidateSnapshots, true) <= maxJsonBytes) {
+          bestText = candidateText;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      return bestText !== null ? { doc: item.doc, textForSag: bestText } : null;
+    };
+
+    // Order highest-priority (highest-ranked hit first, then newest) -> lowest-priority/oldest.
+    const prioritized = [...items].sort((a, b) =>
+      comparePriorityDesc(a.doc, b.doc, hitRankById),
+    );
+
+    const baseEnvelopeBytes = measurePayloadBytes([], true);
+    const kept: { doc: MessageDocument; textForSag: string }[] = [];
+    let estimatedBytes = baseEnvelopeBytes;
+
+    for (const item of prioritized) {
+      const senderLabel = item.doc.senderName.trim().slice(0, 120) || 'Member';
+      const itemJsonBytes =
+        Buffer.byteLength(
+          JSON.stringify({
+            refId: 'M80',
+            senderLabel,
+            sentAtIso: item.doc.createdAt.toISOString(),
+            text: item.textForSag,
+          }),
+          'utf8',
+        ) + 1; // comma separator
+      if (estimatedBytes + itemJsonBytes <= maxJsonBytes) {
+        kept.push(item);
+        estimatedBytes += itemJsonBytes;
+      }
+    }
+
+    // Never drop the highest-ranked hit unless even a truncated version alone exceeds maxJsonBytes.
+    if (kept.length === 0 && prioritized.length > 0) {
+      const fittedTop = fitSingleItemByTextBinarySearch(prioritized[0]);
+      if (fittedTop) {
+        kept.push(fittedTop);
+      }
+    }
+
+    // Final exact verification against the actual serialized UTF-8 JSON payload.
+    kept.sort((a, b) => compareChronological(a.doc, b.doc));
+    let finalSnapshots = this.toSnapshots(kept);
+    while (
+      kept.length > 0 &&
+      measurePayloadBytes(finalSnapshots, true) > maxJsonBytes
+    ) {
+      if (kept.length === 1) {
+        const fitted = fitSingleItemByTextBinarySearch(kept[0]);
+        if (fitted) {
+          kept[0] = fitted;
+          finalSnapshots = this.toSnapshots(kept);
+          if (measurePayloadBytes(finalSnapshots, true) <= maxJsonBytes) {
+            break;
+          }
+        }
+        kept.length = 0;
+        finalSnapshots = [];
+        break;
+      }
+      let dropIdx = 0;
+      for (let i = 1; i < kept.length; i += 1) {
+        if (
+          comparePriorityDesc(kept[i].doc, kept[dropIdx].doc, hitRankById) > 0
+        ) {
+          dropIdx = i;
+        }
+      }
+      kept.splice(dropIdx, 1);
+      finalSnapshots = this.toSnapshots(kept);
+    }
+
+    return {
+      snapshots: finalSnapshots,
+      partialCoverage: true,
+      coverageHint: partialCoverageHint,
+    };
   }
 }

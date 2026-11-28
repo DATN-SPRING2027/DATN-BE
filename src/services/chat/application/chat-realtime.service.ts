@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -16,6 +17,10 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
+import {
+  CHAT_ORG_MEMBERSHIP_CHECKER,
+  type ChatOrgMembershipChecker,
+} from './chat-dm-assistant.types';
 import { RedisService } from '../infrastructure/redis/redis.service';
 import type { ChatActor } from './chat.repository';
 import {
@@ -160,6 +165,9 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
     @Optional()
     private readonly notificationBus?: NotificationRealtimeBus,
+    @Optional()
+    @Inject(CHAT_ORG_MEMBERSHIP_CHECKER)
+    private readonly orgMembershipChecker?: ChatOrgMembershipChecker,
   ) {
     const bullmqPrefix = config.get<string>('BULLMQ_PREFIX') ?? 'continuum';
     this.redisPrefix = `${bullmqPrefix}:chat`;
@@ -193,13 +201,13 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
           recipientIds: [...payload.recipientIds],
           data: payload.data,
         };
-        if (!this.stopSubscriber) this.deliverNotificationEvent(event);
+        if (!this.stopSubscriber) void this.deliverNotificationEvent(event);
         void this.publish(event);
       });
     } else {
       await Promise.all([
         this.subscribeWithRetry('event', this.eventChannel, (value) => {
-          this.receive(value);
+          void this.receive(value);
         }),
         this.subscribeWithRetry(
           'notification',
@@ -527,12 +535,17 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     recipientIds: string[],
     data: unknown,
   ): Promise<void> {
+    const authorizedRecipients = await this.filterActiveRecipients(
+      organizationId,
+      recipientIds,
+    );
+    if (authorizedRecipients.length === 0) return;
     await this.publish({
       type: 'conversation',
       event,
       organizationId,
       conversationId,
-      recipientIds,
+      recipientIds: authorizedRecipients,
       data,
     });
   }
@@ -920,7 +933,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private receive(value: string): void {
+  private async receive(value: string): Promise<void> {
     let event: ChatRealtimeEvent;
     try {
       event = JSON.parse(value) as ChatRealtimeEvent;
@@ -928,7 +941,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     if (event.type === 'notification') {
-      this.deliverNotificationEvent(event);
+      await this.deliverNotificationEvent(event);
       return;
     }
     if (event.type === 'presence.evict') {
@@ -972,8 +985,10 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
             typeof recipientId === 'string' && recipientId.length > 0,
         ),
       );
-      for (const socket of this.conversationSockets.get(event.conversationId) ??
-        []) {
+      const candidates: { socket: WebSocket; userId: string }[] = [];
+      for (const socket of [
+        ...(this.conversationSockets.get(event.conversationId) ?? []),
+      ]) {
         const session = this.sessions.get(socket);
         if (
           session &&
@@ -984,22 +999,135 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
             session.actor.id,
           )
         ) {
-          this.send(socket, event.event, event.data);
+          candidates.push({ socket, userId: session.actor.id });
+        }
+      }
+      if (candidates.length === 0) return;
+      if (!this.orgMembershipChecker) {
+        for (const candidate of candidates) {
+          this.send(candidate.socket, event.event, event.data);
+        }
+        return;
+      }
+      const authorizedSet = new Set(
+        await this.filterActiveRecipients(
+          event.organizationId,
+          candidates.map((candidate) => candidate.userId),
+        ),
+      );
+      for (const candidate of candidates) {
+        if (
+          authorizedSet.has(candidate.userId) &&
+          this.canDeliverToSocket(
+            candidate.socket,
+            event.organizationId,
+            candidate.userId,
+          )
+        ) {
+          this.send(candidate.socket, event.event, event.data);
         }
       }
       return;
     }
-    for (const recipientId of new Set(event.recipientIds)) {
-      if (typeof recipientId !== 'string' || recipientId.length === 0) continue;
+    await this.deliverToUserSockets(
+      event.organizationId,
+      event.recipientIds,
+      event.event,
+      event.data,
+    );
+  }
+
+  private async filterActiveRecipients(
+    organizationId: string,
+    recipientIds: readonly string[],
+  ): Promise<string[]> {
+    const uniqueIds = [...new Set(recipientIds)].filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    );
+    if (!this.orgMembershipChecker || uniqueIds.length === 0) {
+      return uniqueIds;
+    }
+    const authorized: string[] = [];
+    for (const userId of uniqueIds) {
+      try {
+        const active =
+          await this.orgMembershipChecker.isActiveOrganizationMember(
+            organizationId,
+            userId,
+          );
+        if (active) {
+          authorized.push(userId);
+        } else {
+          this.applySessionRevocation({
+            type: 'session.revoke',
+            organizationId,
+            userId,
+          });
+        }
+      } catch (error) {
+        // Fail-closed: never deliver realtime frames when IAM verification fails.
+        this.logger.warn(
+          `Fail-closed Chat WS IAM check failed for user ${userId} in org ${organizationId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return authorized;
+  }
+
+  private async deliverToUserSockets(
+    organizationId: string,
+    recipientIds: readonly string[],
+    eventName: string,
+    data: unknown,
+  ): Promise<void> {
+    const uniqueIds = [...new Set(recipientIds)].filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    );
+    if (uniqueIds.length === 0) return;
+
+    if (!this.orgMembershipChecker) {
+      for (const recipientId of uniqueIds) {
+        for (const socket of [
+          ...(this.userSockets.get(this.userKey(organizationId, recipientId)) ??
+            []),
+        ]) {
+          if (this.canDeliverToSocket(socket, organizationId, recipientId)) {
+            this.send(socket, eventName, data);
+          }
+        }
+      }
+      return;
+    }
+
+    const candidatesWithOpenSockets: string[] = [];
+    for (const recipientId of uniqueIds) {
+      const sockets = [
+        ...(this.userSockets.get(this.userKey(organizationId, recipientId)) ??
+          []),
+      ];
+      if (
+        sockets.some((socket) =>
+          this.canDeliverToSocket(socket, organizationId, recipientId),
+        )
+      ) {
+        candidatesWithOpenSockets.push(recipientId);
+      }
+    }
+    if (candidatesWithOpenSockets.length === 0) return;
+
+    const authorizedRecipients = await this.filterActiveRecipients(
+      organizationId,
+      candidatesWithOpenSockets,
+    );
+    for (const recipientId of authorizedRecipients) {
       for (const socket of [
-        ...(this.userSockets.get(
-          this.userKey(event.organizationId, recipientId),
-        ) ?? []),
+        ...(this.userSockets.get(this.userKey(organizationId, recipientId)) ??
+          []),
       ]) {
-        if (
-          this.canDeliverToSocket(socket, event.organizationId, recipientId)
-        ) {
-          this.send(socket, event.event, event.data);
+        if (this.canDeliverToSocket(socket, organizationId, recipientId)) {
+          this.send(socket, eventName, data);
         }
       }
     }
@@ -1032,7 +1160,9 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private deliverNotificationEvent(event: NotificationSocketEvent): void {
+  private async deliverNotificationEvent(
+    event: NotificationSocketEvent,
+  ): Promise<void> {
     // Strictly require matching non-null organizationId (never broadcast null-org across orgs)
     // and use the O(1) userSockets index instead of scanning all connected sockets.
     if (
@@ -1042,19 +1172,12 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     ) {
       return;
     }
-    for (const recipientId of new Set(event.recipientIds)) {
-      const sockets = this.userSockets.get(
-        this.userKey(event.organizationId, recipientId),
-      );
-      if (!sockets) continue;
-      for (const socket of [...sockets]) {
-        if (
-          this.canDeliverToSocket(socket, event.organizationId, recipientId)
-        ) {
-          this.send(socket, event.event, event.data);
-        }
-      }
-    }
+    await this.deliverToUserSockets(
+      event.organizationId,
+      event.recipientIds,
+      event.event,
+      event.data,
+    );
   }
 
   private receiveNotification(value: string): void {
@@ -1127,7 +1250,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
             parentContext,
             (span) => {
               try {
-                this.deliverNotificationEvent(event);
+                void this.deliverNotificationEvent(event);
                 span.setAttribute(
                   'app.notification.recipient_count',
                   event.recipientIds.length,
@@ -1156,7 +1279,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     if (!this.stopSubscriber) {
       // Deliver locally while Redis subscriber is offline/reconnecting.
       if (event.type !== 'notification') {
-        this.receive(serialized);
+        await this.receive(serialized);
       }
       try {
         await this.redis.publish(this.eventChannel, serialized);
@@ -1168,7 +1291,7 @@ export class ChatRealtimeService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.redis.publish(this.eventChannel, serialized);
     } catch {
-      this.receive(serialized);
+      await this.receive(serialized);
     }
   }
 

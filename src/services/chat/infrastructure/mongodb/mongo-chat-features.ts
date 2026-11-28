@@ -20,6 +20,7 @@ import type {
   ChatPreferences,
   ChatSearchFilters,
 } from '../../application/chat-features';
+import type { ChatOrgMembershipChecker } from '../../application/chat-dm-assistant.types';
 import type { MessageDocument } from './mongo-chat.repository';
 
 const id = (value: string) => new Types.ObjectId(value);
@@ -53,7 +54,10 @@ const isTransactionsNotSupportedError = (error: unknown): boolean => {
 };
 
 export abstract class MongoChatFeatures implements ChatFeatureRepository {
-  constructor(private readonly featureConnection: Connection) {}
+  constructor(
+    private readonly featureConnection: Connection,
+    private readonly orgMembershipChecker?: ChatOrgMembershipChecker,
+  ) {}
   protected abstract requireMember(
     actor: ChatActor,
     conversationId: Types.ObjectId,
@@ -650,11 +654,29 @@ export abstract class MongoChatFeatures implements ChatFeatureRepository {
         session ? { session } : undefined,
       )
       .toArray();
-    const recipients = members.filter(
+    let recipients = members.filter(
       (member) =>
         member.notificationMode !== 'MENTIONS' ||
         message.mentionUserIds?.includes(String(member.userId)),
     );
+    if (recipients.length > 0 && this.orgMembershipChecker) {
+      const authorized: typeof recipients = [];
+      for (const member of recipients) {
+        try {
+          const active =
+            await this.orgMembershipChecker.isActiveOrganizationMember(
+              actor.organizationId,
+              String(member.userId),
+            );
+          if (active) {
+            authorized.push(member);
+          }
+        } catch {
+          // Fail-closed: never persist chat_notifications for unverified/revoked IAM members.
+        }
+      }
+      recipients = authorized;
+    }
     if (!recipients.length) return;
     await this.collection('chat_notifications').bulkWrite(
       recipients.map((member) => ({

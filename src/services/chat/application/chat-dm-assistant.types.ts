@@ -18,6 +18,12 @@ export const CHAT_ORG_MEMBERSHIP_CHECKER = Symbol(
 export const DEFAULT_DM_ASSISTANT_TIMEZONE = 'Asia/Ho_Chi_Minh';
 export const DM_ASSISTANT_SAG_ANSWER_PATH =
   '/api/v1/internal/dm-assistant/answer';
+/**
+ * Explicit serialized UTF-8 JSON byte cap for BE -> SAG DM assistant requests.
+ * Leaves a 16 KiB safety margin below SAG's 128 KiB (131,072-byte) body limit
+ * so heavy 3-byte Vietnamese UTF-8 and JSON escaping can never trigger 413.
+ */
+export const MAX_SAG_REQUEST_JSON_BYTES = 114_688;
 
 export type ChatMessageAuthorType = 'USER' | 'ASSISTANT';
 
@@ -114,6 +120,38 @@ export interface SagDmAssistantAnswerRequest {
   partialCoverage: boolean;
   coverageHint: string | null;
   messages: SagDmAssistantMessageInput[];
+}
+
+export interface SagDmAssistantMessageSource {
+  refId: string;
+  senderName: string;
+  createdAt: Date;
+  textForSag: string;
+}
+
+export function buildSagDmAssistantPayload(params: {
+  question: string;
+  timezone: string;
+  referenceNowIso: string;
+  queryMode: ChatAssistantQueryMode;
+  partialCoverage: boolean;
+  coverageHint: string | null;
+  messages: readonly SagDmAssistantMessageSource[];
+}): SagDmAssistantAnswerRequest {
+  return {
+    question: params.question,
+    timezone: params.timezone,
+    referenceNowIso: params.referenceNowIso,
+    queryMode: params.queryMode,
+    partialCoverage: params.partialCoverage,
+    coverageHint: params.coverageHint,
+    messages: params.messages.map((snap) => ({
+      refId: snap.refId,
+      senderLabel: snap.senderName,
+      sentAtIso: snap.createdAt.toISOString(),
+      text: snap.textForSag,
+    })),
+  };
 }
 
 export interface SagDmAssistantUsage {

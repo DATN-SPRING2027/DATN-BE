@@ -292,4 +292,8 @@ export interface ChatRepository extends ChatFeatureRepository {
     conversationId: string | undefined,
     messages: ChatMessage[],
   ): Promise<ChatMessage[]>;
+  getConversationContextRevisions?(
+    actor: ChatActor,
+    conversationIds: readonly string[],
+  ): Promise<Map<string, number>>;
 }

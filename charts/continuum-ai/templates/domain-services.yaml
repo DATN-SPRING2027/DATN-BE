@@ -67,12 +67,19 @@ spec:
                   key: {{ default "sag-bff-service-token" $.Values.sag.bffServiceTokenKey }}
                   optional: true
             {{- end }}
+            {{- $dmAssistant := default (dict) $.Values.chat.dmAssistant }}
+            {{- $dmAssistantEnabled := default false $dmAssistant.enabled }}
+            {{- /* Inherit dmAssistant.enabled in single-process deployments when workerEnabled is null/omitted; preserve explicit false for split-pod HTTP/WS deployments. */ -}}
+            {{- $dmAssistantWorkerEnabled := $dmAssistantEnabled }}
+            {{- if and (hasKey $dmAssistant "workerEnabled") (not (kindIs "invalid" $dmAssistant.workerEnabled)) }}
+            {{- $dmAssistantWorkerEnabled = $dmAssistant.workerEnabled }}
+            {{- end }}
             - name: CHAT_DM_ASSISTANT_ENABLED
-              value: {{ dig "dmAssistant" "enabled" false $.Values.chat | quote }}
+              value: {{ $dmAssistantEnabled | quote }}
             - name: CHAT_DM_ASSISTANT_WORKER_ENABLED
-              value: {{ dig "dmAssistant" "workerEnabled" false $.Values.chat | quote }}
+              value: {{ $dmAssistantWorkerEnabled | quote }}
             - name: CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS
-              value: {{ dig "dmAssistant" "sagTimeoutMs" 45000 $.Values.chat | quote }}
+              value: {{ default 45000 $dmAssistant.sagTimeoutMs | quote }}
             - name: R2_ENDPOINT
               value: {{ $.Values.chat.r2.endpoint | quote }}
             - name: R2_BUCKET

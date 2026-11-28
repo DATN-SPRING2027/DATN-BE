@@ -18,7 +18,11 @@ import { ChatIamClient, type ChatCredentials } from './chat-iam.client';
 import { ChatHistoryCacheInvalidator } from './chat-history-cache';
 import { ChatRealtimeService } from './chat-realtime.service';
 import type { ChatSearchFilters } from './chat-features';
-import { isDmAssistantAvailable } from './chat-dm-assistant.types';
+import {
+  CHAT_ORG_MEMBERSHIP_CHECKER,
+  isDmAssistantAvailable,
+  type ChatOrgMembershipChecker,
+} from './chat-dm-assistant.types';
 import { RedisService } from '../infrastructure/redis/redis.service';
 
 const oid = /^[a-f\d]{24}$/i;
@@ -100,6 +104,9 @@ export class ChatFeaturesService {
     private readonly redis?: RedisService,
     @Optional()
     config?: ConfigService,
+    @Optional()
+    @Inject(CHAT_ORG_MEMBERSHIP_CHECKER)
+    private readonly orgMembershipChecker?: ChatOrgMembershipChecker,
   ) {
     this.config = config;
     this.redisPrefix = `${config?.get<string>('BULLMQ_PREFIX') ?? 'continuum'}:chat`;
@@ -405,14 +412,52 @@ export class ChatFeaturesService {
       data.clientMessageId,
     );
     await this.historyCache?.invalidate(actor.organizationId, conversationId);
-    await this.realtime.publishConversationEvent(
-      'message.created',
-      actor.organizationId,
+    const candidateRecipients = await this.repository.memberIds(
+      actor,
       conversationId,
-      await this.repository.memberIds(actor, conversationId),
-      result,
     );
+    const authorizedRecipients = await this.filterAuthorizedRecipients(
+      actor.organizationId,
+      candidateRecipients,
+    );
+    if (authorizedRecipients.length > 0) {
+      await this.realtime.publishConversationEvent(
+        'message.created',
+        actor.organizationId,
+        conversationId,
+        authorizedRecipients,
+        result,
+      );
+    }
     return result;
+  }
+
+  private async filterAuthorizedRecipients(
+    organizationId: string,
+    candidateUserIds: readonly string[],
+  ): Promise<string[]> {
+    const uniqueIds = [...new Set(candidateUserIds)].filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    );
+    if (!this.orgMembershipChecker || uniqueIds.length === 0) {
+      return uniqueIds;
+    }
+    const authorized: string[] = [];
+    for (const userId of uniqueIds) {
+      try {
+        const active =
+          await this.orgMembershipChecker.isActiveOrganizationMember(
+            organizationId,
+            userId,
+          );
+        if (active) {
+          authorized.push(userId);
+        }
+      } catch {
+        // Fail-closed: never emit forwarded message to unverified IAM recipients.
+      }
+    }
+    return authorized;
   }
   async receipts(
     credentials: ChatCredentials,

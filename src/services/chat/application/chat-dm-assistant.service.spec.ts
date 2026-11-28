@@ -5,8 +5,11 @@ import { ConfigService } from '@nestjs/config';
 import { ChatApplicationService } from './chat.service';
 import { ChatFeaturesService } from './chat-features.service';
 import {
+  buildSagDmAssistantPayload,
   CONTINUUM_AI_HANDLE,
   extractAssistantQuery,
+  MAX_SAG_REQUEST_JSON_BYTES,
+  type ChatOrgMembershipChecker,
 } from './chat-dm-assistant.types';
 import { Types, type Connection, type Model } from 'mongoose';
 import type { AiEngineClient } from '../../../integrations/ai-engine/ai-engine.port';
@@ -37,7 +40,10 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
   const convRoomId = '507f1f77bcf86cd799439022';
   const validUuid = 'bb077bf1-0897-499d-9b82-d57510ff3b5d';
 
-  function makeServices(configValues: Record<string, unknown> = {}) {
+  function makeServices(
+    configValues: Record<string, unknown> = {},
+    orgMembershipChecker?: ChatOrgMembershipChecker,
+  ) {
     const cfgMap: Record<string, unknown> = {
       BULLMQ_PREFIX: 'continuum',
       CHAT_DM_ASSISTANT_ENABLED: true,
@@ -84,8 +90,10 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
     } as unknown as jest.Mocked<RedisService>;
 
     const publishConversationEvent = jest.fn().mockResolvedValue(undefined);
+    const revokeSessions = jest.fn().mockResolvedValue(undefined);
     const realtime = {
       publishConversationEvent,
+      revokeSessions,
       areOnlineBatch: jest.fn().mockResolvedValue(new Map()),
       isOnline: jest.fn().mockResolvedValue(false),
     } as unknown as ChatRealtimeService;
@@ -111,6 +119,7 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       config,
       notificationService,
       historyCache,
+      orgMembershipChecker,
     );
     const featuresService = new ChatFeaturesService(
       repository,
@@ -119,6 +128,7 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       historyCache,
       redis,
       config,
+      orgMembershipChecker,
     );
 
     return {
@@ -135,6 +145,7 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       getDraft,
       consumeRateLimit,
       publishConversationEvent,
+      revokeSessions,
       notifyChatMention,
       invalidate,
     };
@@ -1376,7 +1387,7 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       'SAG_API_BASE_URL: ${SAG_API_BASE_URL:-}',
       'SAG_BFF_SERVICE_TOKEN: ${SAG_BFF_SERVICE_TOKEN:-}',
       'CHAT_DM_ASSISTANT_ENABLED: ${CHAT_DM_ASSISTANT_ENABLED:-false}',
-      'CHAT_DM_ASSISTANT_WORKER_ENABLED: ${CHAT_DM_ASSISTANT_WORKER_ENABLED:-false}',
+      'CHAT_DM_ASSISTANT_WORKER_ENABLED: ${CHAT_DM_ASSISTANT_WORKER_ENABLED:-${CHAT_DM_ASSISTANT_ENABLED:-false}}',
       'CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS: ${CHAT_DM_ASSISTANT_SAG_TIMEOUT_MS:-45000}',
     ]) {
       expect(chatComposeSection).toContain(envVar);
@@ -1397,11 +1408,391 @@ describe('Chat DM @continuumAI — Service Guards, Capabilities, Query Parser, S
       expect(chatHelmSection).toContain(envName);
     }
     expect(chatHelmSection).toContain('secretKeyRef:');
+    expect(chatHelmSection).toContain(
+      'kindIs "invalid" $dmAssistant.workerEnabled',
+    );
 
     const helmValues = readFileSync(helmValuesPath, 'utf8');
     expect(helmValues).toContain('dmAssistant:');
     expect(helmValues).toContain('enabled: false');
-    expect(helmValues).toContain('workerEnabled: false');
+    expect(helmValues).toContain('workerEnabled: null');
     expect(helmValues).toContain('sagTimeoutMs: 45000');
+  });
+
+  it('filters initial sendMessage, editMessage, and deleteMessage fan-out & notifications through CHAT_ORG_MEMBERSHIP_CHECKER fail-closed (R2-P1)', async () => {
+    const actorCId = '507f1f77bcf86cd799439013';
+    const checker: ChatOrgMembershipChecker = {
+      isActiveOrganizationMember: jest.fn((_orgId: string, uid: string) => {
+        if (uid === actorBId) return Promise.resolve(false);
+        if (uid === actorCId)
+          return Promise.reject(new Error('IAM_LOOKUP_FAILED'));
+        return Promise.resolve(true);
+      }),
+    };
+    const services = makeServices({}, checker);
+    services.repository.memberIds = jest
+      .fn()
+      .mockResolvedValue([actorA.id, actorBId, actorCId]);
+    services.repository.editMessage = jest.fn();
+    services.repository.deleteMessage = jest.fn();
+
+    const statusEvent = {
+      conversationId: convDirectId,
+      triggerMessageId: '507f1f77bcf86cd799439099',
+      jobId: '507f1f77bcf86cd799439088',
+      status: 'PENDING' as const,
+      failureCode: null,
+      responseMessageId: null,
+      updatedAt: '2026-11-28T09:00:00.000Z',
+    };
+    services.sendMessage.mockResolvedValueOnce({
+      message: {
+        id: statusEvent.triggerMessageId,
+        conversationId: convDirectId,
+        senderId: actorA.id,
+        senderName: actorA.name,
+        senderAvatarUrl: null,
+        content: '@continuumAI Hôm qua chốt gì?',
+        createdAt: '2026-11-28T09:00:00.000Z',
+        editedAt: null,
+        deletedAt: null,
+        reactions: [],
+        replyToMessageId: null,
+        replyTo: null,
+        attachments: [],
+        authorType: 'USER',
+        assistantState: {
+          jobId: statusEvent.jobId,
+          status: 'PENDING',
+          failureCode: null,
+          responseMessageId: null,
+          updatedAt: statusEvent.updatedAt,
+        },
+      },
+      recipientIds: [actorA.id, actorBId, actorCId],
+      assistantStatusEvent: statusEvent,
+    });
+
+    await services.chatService.sendMessage({}, convDirectId, {
+      clientMessageId: validUuid,
+      content: '@continuumAI Hôm qua chốt gì?',
+      mentionUserIds: [actorBId, actorCId],
+      assistantMention: { handle: CONTINUUM_AI_HANDLE },
+    });
+
+    // ZERO message.created, ZERO assistant.status: PENDING, ZERO mention notifications for revoked B or errored C!
+    expect(services.publishConversationEvent).toHaveBeenCalledTimes(2);
+    expect(services.publishConversationEvent).toHaveBeenNthCalledWith(
+      1,
+      'message.created',
+      actorA.organizationId,
+      convDirectId,
+      [actorA.id],
+      expect.objectContaining({ id: statusEvent.triggerMessageId }),
+    );
+    expect(services.publishConversationEvent).toHaveBeenNthCalledWith(
+      2,
+      'assistant.status',
+      actorA.organizationId,
+      convDirectId,
+      [actorA.id],
+      statusEvent,
+    );
+    expect(services.notifyChatMention).not.toHaveBeenCalled();
+    // Definitively revoked B gets proactive WS session revocation; transient error C does not
+    expect(services.revokeSessions).toHaveBeenCalledTimes(1);
+    expect(services.revokeSessions).toHaveBeenCalledWith({
+      organizationId: actorA.organizationId,
+      userId: actorBId,
+    });
+
+    // editMessage & deleteMessage also exclude revoked peer B
+    services.publishConversationEvent.mockClear();
+    (services.repository.editMessage as jest.Mock).mockResolvedValueOnce({
+      message: { id: '507f1f77bcf86cd799439099', content: 'edited' },
+      recipientIds: [actorA.id, actorBId],
+      newlyMentionedUserIds: [actorBId],
+    });
+    await services.chatService.editMessage(
+      {},
+      convDirectId,
+      '507f1f77bcf86cd799439099',
+      { content: 'edited', mentionUserIds: [actorBId] },
+    );
+    expect(services.publishConversationEvent).toHaveBeenCalledWith(
+      'message.updated',
+      actorA.organizationId,
+      convDirectId,
+      [actorA.id],
+      expect.objectContaining({ content: 'edited' }),
+    );
+    expect(services.notifyChatMention).not.toHaveBeenCalled();
+
+    services.publishConversationEvent.mockClear();
+    (services.repository.deleteMessage as jest.Mock).mockResolvedValueOnce({
+      message: {
+        id: '507f1f77bcf86cd799439099',
+        content: '',
+        deletedAt: '2026-11-28T09:10:00.000Z',
+      },
+      recipientIds: [actorA.id, actorBId],
+    });
+    await services.chatService.deleteMessage(
+      {},
+      convDirectId,
+      '507f1f77bcf86cd799439099',
+    );
+    expect(services.publishConversationEvent).toHaveBeenCalledWith(
+      'message.deleted',
+      actorA.organizationId,
+      convDirectId,
+      [actorA.id],
+      expect.objectContaining({ content: '' }),
+    );
+  });
+
+  it('bypasses stale ChatApplicationService.listMessages Redis cache when conversation contextRevision changes in MongoDB (R2-P2)', async () => {
+    const services = makeServices();
+    let liveRevision = 0;
+    services.repository.getConversationContextRevisions = jest.fn(
+      (_actor: ChatActor, ids: readonly string[]) =>
+        Promise.resolve(new Map(ids.map((id) => [id, liveRevision]))),
+    );
+    const cacheStore = new Map<string, string>();
+    services.redis.get.mockImplementation((key: string) =>
+      Promise.resolve(cacheStore.get(key) ?? null),
+    );
+    services.redis.set.mockImplementation((key: string, value: string) => {
+      cacheStore.set(key, value);
+      return Promise.resolve();
+    });
+
+    services.listMessages.mockResolvedValueOnce({
+      data: [
+        {
+          id: '507f1f77bcf86cd799439031',
+          conversationId: convDirectId,
+          senderId: actorA.id,
+          senderName: actorA.name,
+          senderAvatarUrl: null,
+          content: 'Secret human text before deletion',
+          createdAt: '2026-11-28T08:00:00.000Z',
+          editedAt: null,
+          deletedAt: null,
+          reactions: [],
+          replyToMessageId: null,
+          replyTo: null,
+          attachments: [],
+          authorType: 'USER',
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    // Prime cache at contextRevision = 0
+    const first = await services.chatService.listMessages({}, convDirectId, {});
+    expect(first.data[0].content).toBe('Secret human text before deletion');
+    expect(first).not.toHaveProperty('contextRevision');
+    expect(first).not.toHaveProperty('__v');
+
+    // Hit at same contextRevision = 0 -> served from Redis with 0 additional DB queries
+    const hit = await services.chatService.listMessages({}, convDirectId, {});
+    expect(hit.data[0].content).toBe('Secret human text before deletion');
+    expect(services.listMessages).toHaveBeenCalledTimes(1);
+
+    // Human message deleted in MongoDB (bumping contextRevision -> 1) WITHOUT bumping Redis history-version!
+    liveRevision = 1;
+    services.listMessages.mockResolvedValueOnce({
+      data: [
+        {
+          id: '507f1f77bcf86cd799439031',
+          conversationId: convDirectId,
+          senderId: actorA.id,
+          senderName: actorA.name,
+          senderAvatarUrl: null,
+          content: '',
+          createdAt: '2026-11-28T08:00:00.000Z',
+          editedAt: null,
+          deletedAt: '2026-11-28T08:05:00.000Z',
+          reactions: [],
+          replyToMessageId: null,
+          replyTo: null,
+          attachments: [],
+          authorType: 'USER',
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    const afterDelete = await services.chatService.listMessages(
+      {},
+      convDirectId,
+      {},
+    );
+    expect(services.listMessages).toHaveBeenCalledTimes(2);
+    expect(afterDelete.data[0].content).toBe('');
+    expect(afterDelete.data[0].deletedAt).toBe('2026-11-28T08:05:00.000Z');
+  });
+
+  it('enforces explicit serialized UTF-8 JSON byte budget (<= 114,688 bytes < SAG 128 KiB cap) on worst-case 3-byte Vietnamese UTF-8 + escaped quotes/newlines while keeping top-ranked hit (R2-P2)', async () => {
+    const orgId = new Types.ObjectId(actorA.organizationId);
+    const convId = new Types.ObjectId(convDirectId);
+    const triggerId = new Types.ObjectId('507f1f77bcf86cd799439099');
+    const triggerNow = new Date('2026-11-28T09:00:00.000Z');
+
+    // Construct 80 worst-case 3-byte Vietnamese UTF-8 messages with JSON-escaped quotes/newlines/control chars + 120-char 3-byte Vietnamese sender names!
+    // 80 * 300 chars = 24,000 chars (passes <= 80 msgs, <= 1,200 chars/msg, <= 24,000 chars),
+    // yet raw serialized UTF-8 JSON exceeds SAG's 128 KiB (131,072-byte) cap without byte-budget trimming!
+    const heavyUnit = 'ệ\u000b\u000c\u001c\u001d\u001e\u001f"\n';
+    const heavySender = 'ệớửữự"'.repeat(20).slice(0, 120);
+    const heavyContent = (label: string) =>
+      `${label} ${heavyUnit.repeat(40)}`.slice(0, 300);
+
+    const docs: MessageDocument[] = Array.from({ length: 80 }, (_, i) => ({
+      _id: new Types.ObjectId((0x1000 + i).toString(16).padStart(24, '0')),
+      organizationId: orgId,
+      conversationId: convId,
+      senderId: i % 2 === 0 ? actorA.id : actorBId,
+      senderName: heavySender,
+      senderAvatarUrl: null,
+      clientMessageId: `heavy-${i}`,
+      content:
+        i === 0
+          ? heavyContent('TOP-RANKED-HIT PAY-999 chốt lúc 17:00')
+          : heavyContent(`LOWER-PRIORITY-${i} PAY-999 thảo luận`),
+      createdAt: new Date(triggerNow.getTime() - (80 - i) * 60_000),
+      editedAt: null,
+      deletedAt: null,
+      contentVersion: 0,
+    }));
+
+    const question =
+      'Quyết định PAY-999 về tiến độ triển khai dự án của hai người là gì? '
+        .repeat(29)
+        .trim()
+        .slice(0, 1990);
+
+    // Verify our fixture truly exceeds BOTH MAX_SAG_REQUEST_JSON_BYTES (112 KiB) AND SAG's 128 KiB cap before trimming!
+    const untrimmedBytes = Buffer.byteLength(
+      JSON.stringify(
+        buildSagDmAssistantPayload({
+          question,
+          timezone: 'Asia/Ho_Chi_Minh',
+          referenceNowIso: triggerNow.toISOString(),
+          queryMode: 'KEYWORD',
+          partialCoverage: false,
+          coverageHint: null,
+          messages: docs.map((d, idx) => ({
+            refId: `M${idx + 1}`,
+            senderName: d.senderName.trim().slice(0, 120),
+            createdAt: d.createdAt,
+            textForSag: d.content,
+          })),
+        }),
+      ),
+      'utf8',
+    );
+    expect(untrimmedBytes).toBeGreaterThan(131_072);
+
+    // Note: top-ranked hit is docs[0] (oldest timestamp, rank 0) to prove rank beats recency!
+    const makeCursor = (rows: unknown[]) => ({
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(rows),
+    });
+    const mockModel = {
+      aggregate: jest.fn(() => ({
+        exec: jest.fn().mockResolvedValue(docs),
+      })),
+      find: jest.fn(() => makeCursor([])),
+    } as unknown as Model<MessageDocument>;
+
+    const retrievalService = new DmAssistantRetrievalService();
+    const result = await retrievalService.retrieveContext(
+      {
+        organizationId: orgId,
+        conversationId: convId,
+        triggerMessageId: triggerId,
+        triggerCreatedAt: triggerNow,
+        question,
+        timezone: 'Asia/Ho_Chi_Minh',
+        maxMessages: 80,
+        maxChars: 24_000,
+      },
+      mockModel,
+    );
+
+    const payload = buildSagDmAssistantPayload({
+      question,
+      timezone: 'Asia/Ho_Chi_Minh',
+      referenceNowIso: triggerNow.toISOString(),
+      queryMode: result.queryMode,
+      partialCoverage: result.partialCoverage,
+      coverageHint: result.coverageHint,
+      messages: result.messages,
+    });
+    const serializedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_SAG_REQUEST_JSON_BYTES);
+    expect(serializedBytes).toBeLessThan(131_072);
+    expect(result.partialCoverage).toBe(true);
+    expect(result.coverageHint).toBeTruthy();
+    expect(result.messages.length).toBeGreaterThan(0);
+    expect(result.messages.length).toBeLessThan(docs.length);
+    // Highest-ranked hit (docs[0], rank 0) MUST be preserved even though it has the oldest timestamp!
+    expect(result.messages.map((m) => String(m.messageId))).toContain(
+      String(docs[0]._id),
+    );
+    // Ref IDs must be strictly contiguous M1..Mk
+    expect(result.messages.map((m) => m.refId)).toEqual(
+      result.messages.map((_, idx) => `M${idx + 1}`),
+    );
+
+    // Single oversized top-hit message under tight byte cap is truncated safely without lone UTF-16 surrogates
+    const tightResult = await retrievalService.retrieveContext(
+      {
+        organizationId: orgId,
+        conversationId: convId,
+        triggerMessageId: triggerId,
+        triggerCreatedAt: triggerNow,
+        question: 'PAY-999?',
+        timezone: 'Asia/Ho_Chi_Minh',
+        maxMessages: 80,
+        maxChars: 24_000,
+        maxJsonBytes: 1024,
+      },
+      {
+        aggregate: jest.fn(() => ({
+          exec: jest.fn().mockResolvedValue([
+            {
+              ...docs[0],
+              senderName: 'An',
+              content: `PAY-999 ${'🚀ệ'.repeat(400)}`,
+            },
+          ]),
+        })),
+        find: jest.fn(() => makeCursor([])),
+      } as unknown as Model<MessageDocument>,
+    );
+    const tightPayload = buildSagDmAssistantPayload({
+      question: 'PAY-999?',
+      timezone: 'Asia/Ho_Chi_Minh',
+      referenceNowIso: triggerNow.toISOString(),
+      queryMode: tightResult.queryMode,
+      partialCoverage: tightResult.partialCoverage,
+      coverageHint: tightResult.coverageHint,
+      messages: tightResult.messages,
+    });
+    expect(
+      Buffer.byteLength(JSON.stringify(tightPayload), 'utf8'),
+    ).toBeLessThanOrEqual(1024);
+    expect(tightResult.partialCoverage).toBe(true);
+    expect(tightResult.messages).toHaveLength(1);
+    expect(tightResult.messages[0].textForSag).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+    );
   });
 });

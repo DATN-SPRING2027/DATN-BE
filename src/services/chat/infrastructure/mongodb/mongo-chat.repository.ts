@@ -22,7 +22,6 @@ import {
 } from './mongodb.schemas';
 import {
   computeSourceAggregateState,
-  pageNeedsAssistantReEnrichment,
   type AssistantStatusEvent,
   type ChatAssistantFailureCode,
   type ChatAssistantJobState,
@@ -34,6 +33,7 @@ import {
   type ChatAssistantSourceStatus,
   type ChatAssistantStatus,
   type ChatMessageAuthorType,
+  type ChatOrgMembershipChecker,
 } from '../../application/chat-dm-assistant.types';
 import type {
   ChatActor,
@@ -65,6 +65,7 @@ interface ConversationDocument {
   lastMessageId: Types.ObjectId | null;
   lastMessagePreview: string;
   lastMessageSenderId: string | null;
+  contextRevision?: number;
   status: 'ACTIVE' | 'ARCHIVED';
   createdAt: Date;
 }
@@ -414,8 +415,11 @@ export class MongoChatRepository
   private readonly uploads: Model<UploadDocument>;
   private readonly assistantJobs: Model<AssistantJobDocument>;
 
-  constructor(private readonly connection: Connection) {
-    super(connection);
+  constructor(
+    private readonly connection: Connection,
+    orgMembershipChecker?: ChatOrgMembershipChecker,
+  ) {
+    super(connection, orgMembershipChecker);
     this.conversations = connection.model<ConversationDocument>(
       `${modelPrefix}chat_conversations`,
     );
@@ -2285,12 +2289,42 @@ export class MongoChatRepository
     return contacts;
   }
 
+  async getConversationContextRevisions(
+    actor: ChatActor,
+    conversationIds: readonly string[],
+  ): Promise<Map<string, number>> {
+    const revisions = new Map<string, number>();
+    if (!Types.ObjectId.isValid(actor.organizationId)) {
+      return revisions;
+    }
+    const uniqueIds = [...new Set(conversationIds)].filter((convId) =>
+      Types.ObjectId.isValid(convId),
+    );
+    if (uniqueIds.length === 0) {
+      return revisions;
+    }
+    const rows = await this.conversations
+      .find(
+        {
+          _id: { $in: uniqueIds.map((convId) => new Types.ObjectId(convId)) },
+          organizationId: new Types.ObjectId(actor.organizationId),
+        },
+        { _id: 1, contextRevision: 1 },
+      )
+      .lean()
+      .exec();
+    for (const row of rows) {
+      revisions.set(String(row._id), Number(row.contextRevision ?? 0));
+    }
+    return revisions;
+  }
+
   async reconcileCachedMessages(
     actor: ChatActor,
     conversationId: string | undefined,
     messages: ChatMessage[],
   ): Promise<ChatMessage[]> {
-    if (!pageNeedsAssistantReEnrichment(messages)) {
+    if (messages.length === 0) {
       return messages;
     }
 
@@ -2318,6 +2352,20 @@ export class MongoChatRepository
       ),
     ].map((msgId) => new Types.ObjectId(msgId));
 
+    const humanIdList = [
+      ...new Set(
+        messages.flatMap((msg) =>
+          msg.authorType !== 'ASSISTANT' &&
+          msg.senderId !== CONTINUUM_AI_SENDER_ID &&
+          Types.ObjectId.isValid(msg.id)
+            ? [msg.id]
+            : [],
+        ),
+      ),
+    ];
+    const humanIdSet = new Set(humanIdList);
+    const humanIds = humanIdList.map((msgId) => new Types.ObjectId(msgId));
+
     const activeTriggerIds = [
       ...new Set(
         messages.flatMap((msg) =>
@@ -2330,7 +2378,7 @@ export class MongoChatRepository
       ),
     ].map((msgId) => new Types.ObjectId(msgId));
 
-    const [storedAssistants, liveTriggers, liveJobs] = await Promise.all([
+    const [storedAssistants, liveHumans, liveJobs] = await Promise.all([
       assistantIds.length > 0
         ? this.messages
             .find({
@@ -2346,16 +2394,27 @@ export class MongoChatRepository
               '_id' | 'conversationId' | 'sourceReferences'
             >[]
           >([]),
-      activeTriggerIds.length > 0
+      humanIds.length > 0
         ? this.messages
             .find({
               ...scopeFilter,
-              _id: { $in: activeTriggerIds },
+              _id: { $in: humanIds },
             })
-            .select({ _id: 1, deletedAt: 1 })
+            .select({
+              _id: 1,
+              content: 1,
+              editedAt: 1,
+              deletedAt: 1,
+              contentVersion: 1,
+            })
             .lean()
             .exec()
-        : Promise.resolve<Pick<MessageDocument, '_id' | 'deletedAt'>[]>([]),
+        : Promise.resolve<
+            Pick<
+              MessageDocument,
+              '_id' | 'content' | 'editedAt' | 'deletedAt' | 'contentVersion'
+            >[]
+          >([]),
       activeTriggerIds.length > 0
         ? this.assistantJobs
             .find({
@@ -2370,8 +2429,8 @@ export class MongoChatRepository
     const storedAssistantById = new Map(
       storedAssistants.map((doc) => [String(doc._id), doc]),
     );
-    const liveTriggerById = new Map(
-      liveTriggers.map((doc) => [String(doc._id), doc]),
+    const liveHumanById = new Map(
+      liveHumans.map((doc) => [String(doc._id), doc]),
     );
     const liveJobByTriggerId = new Map(
       liveJobs.map((job) => [String(job.triggerMessageId), job]),
@@ -2421,6 +2480,27 @@ export class MongoChatRepository
       convMap.set(String(source._id), source);
     }
 
+    const reconcileReplyPreview = (
+      replyTo: ChatMessage['replyTo'],
+    ): ChatMessage['replyTo'] => {
+      if (!replyTo || !humanIdSet.has(replyTo.id)) {
+        return replyTo;
+      }
+      const liveTarget = liveHumanById.get(replyTo.id);
+      if (!liveTarget || liveTarget.deletedAt != null) {
+        return {
+          ...replyTo,
+          preview: '',
+          deleted: true,
+        };
+      }
+      return {
+        ...replyTo,
+        preview: (liveTarget.content || replyTo.preview).slice(0, 160),
+        deleted: false,
+      };
+    };
+
     return messages.map((msg) => {
       const isAssistantWithRefs =
         (msg.authorType === 'ASSISTANT' ||
@@ -2444,6 +2524,7 @@ export class MongoChatRepository
         const sourceState = computeSourceAggregateState(freshRefs);
         return {
           ...msg,
+          replyTo: reconcileReplyPreview(msg.replyTo),
           sourceReferences: freshRefs,
           assistantMeta: msg.assistantMeta
             ? {
@@ -2460,29 +2541,58 @@ export class MongoChatRepository
         };
       }
 
-      if (
-        msg.assistantState?.status === 'PENDING' ||
-        msg.assistantState?.status === 'PROCESSING'
-      ) {
-        const liveTrigger = liveTriggerById.get(msg.id);
-        if (!liveTrigger || liveTrigger.deletedAt != null) {
+      if (humanIdSet.has(msg.id)) {
+        const liveHuman = liveHumanById.get(msg.id);
+        if (!liveHuman || liveHuman.deletedAt != null) {
           return {
             ...msg,
-            content: liveTrigger?.deletedAt ? '' : msg.content,
-            deletedAt: liveTrigger?.deletedAt
-              ? liveTrigger.deletedAt.toISOString()
+            content: '',
+            editedAt: liveHuman?.editedAt
+              ? liveHuman.editedAt.toISOString()
+              : msg.editedAt,
+            deletedAt: liveHuman?.deletedAt
+              ? liveHuman.deletedAt.toISOString()
               : msg.deletedAt,
-            assistantState: null,
+            reactions: [],
+            attachments: [],
+            mentionUserIds: [],
+            isPinned: false,
+            forwardedFrom: null,
+            replyTo: reconcileReplyPreview(msg.replyTo),
+            ...(msg.assistantState !== undefined
+              ? { assistantState: null }
+              : {}),
           };
         }
-        const liveJob = liveJobByTriggerId.get(msg.id);
-        return {
+
+        const refreshed: ChatMessage = {
           ...msg,
-          assistantState: liveJob ? toAssistantJobState(liveJob) : null,
+          content: liveHuman.content,
+          editedAt: liveHuman.editedAt
+            ? liveHuman.editedAt.toISOString()
+            : null,
+          deletedAt: null,
+          replyTo: reconcileReplyPreview(msg.replyTo),
         };
+
+        if (
+          msg.assistantState?.status === 'PENDING' ||
+          msg.assistantState?.status === 'PROCESSING'
+        ) {
+          const liveJob = liveJobByTriggerId.get(msg.id);
+          return {
+            ...refreshed,
+            assistantState: liveJob ? toAssistantJobState(liveJob) : null,
+          };
+        }
+
+        return refreshed;
       }
 
-      return msg;
+      return {
+        ...msg,
+        replyTo: reconcileReplyPreview(msg.replyTo),
+      };
     });
   }
 

@@ -16,6 +16,7 @@ import { S3Storage } from './storage/s3.storage';
 import { CHAT_PERSISTENCE, CHAT_QUEUES } from './persistence';
 import { DEFAULT_JOB_OPTIONS } from './queues/queue.policy';
 import { CHAT_REPOSITORY } from '../application/chat.repository';
+import { MongoChatOrgMembershipChecker } from './mongodb/mongo-chat-org-membership.checker';
 import { MongoChatRepository } from './mongodb/mongo-chat.repository';
 import { UnavailableChatRepository } from './mongodb/unavailable-chat.repository';
 import { getOwnedServiceDatabaseName } from '../../../common/mongodb/service-database';
@@ -41,7 +42,10 @@ export class ChatInfrastructureModule {
                 config: ConfigService,
               ) =>
                 cachedChatRepository(
-                  new MongoChatRepository(connection),
+                  new MongoChatRepository(
+                    connection,
+                    new MongoChatOrgMembershipChecker(connection),
+                  ),
                   redis,
                   config.get<string>('BULLMQ_PREFIX') ?? 'continuum',
                 ),

@@ -31,9 +31,15 @@ import {
 import { MongoChatOrgMembershipChecker } from '../infrastructure/mongodb/mongo-chat-org-membership.checker';
 import { cachedChatRepository } from '../infrastructure/redis/chat-cache.repository';
 import type { RedisService } from '../infrastructure/redis/redis.service';
+import { WebSocket } from 'ws';
 import { ChatHistoryCacheInvalidator } from './chat-history-cache';
-import type { ChatRealtimeService } from './chat-realtime.service';
+import type { ChatIamClient } from './chat-iam.client';
+import { ChatRealtimeService } from './chat-realtime.service';
+import { ChatApplicationService } from './chat.service';
 import type { ChatActor, ChatCandidate } from './chat.repository';
+import type { R2Storage } from '../infrastructure/storage/r2.storage';
+import type { S3Storage } from '../infrastructure/storage/s3.storage';
+import type { NotificationService } from '../../notification/notification.service';
 import type {
   SagDmAssistantAnswerRequest,
   SagDmAssistantAnswerResponse,
@@ -204,8 +210,8 @@ describe('Chat DM @continuumAI — Real MongoMemoryReplSet E2E Integration (ACL,
       await model.syncIndexes();
     }
 
-    nativeRepo = new MongoChatRepository(connection);
     orgChecker = new MongoChatOrgMembershipChecker(connection);
+    nativeRepo = new MongoChatRepository(connection, orgChecker);
     retrieval = new DmAssistantRetrievalService(connection);
 
     await Promise.all([
@@ -2392,5 +2398,248 @@ describe('Chat DM @continuumAI — Real MongoMemoryReplSet E2E Integration (ACL,
         'Newer-ID AI reply MUST update same-ms preview',
       );
     }
+  });
+
+  it('delivers ZERO message.created, ZERO assistant.status: PENDING, and ZERO notifications to IAM-revoked or suspended peer B on initial @continuumAI sendMessage (R2-P1 MongoMemoryReplSet)', async () => {
+    const iamDb = connection.useDb(SERVICE_DATABASES.iam, {
+      useCache: true,
+    }).db!;
+
+    const runScenario = async (revokeKind: 'MEMBERSHIP' | 'USER_STATUS') => {
+      const peerB = makeActor(`Peer-${revokeKind}`, org1Id);
+      await seedIamActiveUser(org1Id, peerB.id, 'MEMBER');
+      const dmId = await createFreshDirectDm(userA, peerB);
+
+      const { redis } = createInMemoryRedis();
+      const redisWithLimits = {
+        ...redis,
+        consumeRateLimit: jest.fn().mockResolvedValue(true),
+        subscribe: jest.fn().mockResolvedValue(() => undefined),
+        publish: jest.fn().mockResolvedValue(undefined),
+        touchPresenceSession: jest.fn().mockResolvedValue(false),
+        removePresenceSession: jest.fn().mockResolvedValue(false),
+      } as unknown as RedisService;
+
+      const config = makeConfig({
+        INFRA_ENABLED: 'false',
+        SAG_API_BASE_URL: 'http://127.0.0.1:8000',
+        SAG_BFF_SERVICE_TOKEN: 's'.repeat(40),
+      });
+      const historyCache = new ChatHistoryCacheInvalidator(
+        redisWithLimits,
+        config,
+      );
+      const iam = {
+        getActor: jest.fn().mockResolvedValue(userA),
+      } as unknown as ChatIamClient;
+      const notifyChatMention = jest.fn().mockResolvedValue(undefined);
+      const notificationService = {
+        notifyChatMention,
+      } as unknown as NotificationService;
+
+      const realtime = new ChatRealtimeService(
+        redisWithLimits,
+        iam,
+        config,
+        undefined,
+        orgChecker,
+      );
+
+      const makeMockWs = () => {
+        const send = jest.fn();
+        const close = jest.fn();
+        const socket = {
+          readyState: WebSocket.OPEN,
+          bufferedAmount: 0,
+          on: jest.fn(),
+          send,
+          close,
+          ping: jest.fn(),
+          terminate: jest.fn(),
+        } as unknown as WebSocket;
+        return { socket, send, close };
+      };
+      const wsA = makeMockWs();
+      const wsB = makeMockWs();
+
+      await realtime.register(
+        wsA.socket,
+        userA,
+        {},
+        'tok-a',
+        Date.now() + 60_000,
+      );
+      await realtime.register(
+        wsB.socket,
+        peerB,
+        {},
+        'tok-b',
+        Date.now() + 60_000,
+      );
+
+      const chatService = new ChatApplicationService(
+        nativeRepo,
+        iam,
+        redisWithLimits,
+        realtime,
+        {} as R2Storage,
+        {} as S3Storage,
+        config,
+        notificationService,
+        historyCache,
+        orgChecker,
+      );
+
+      // Revoke peer B in continuum_iam while chat_members.status remains ACTIVE and WS socket is still open!
+      if (revokeKind === 'MEMBERSHIP') {
+        await iamDb.collection('organization_memberships').updateOne(
+          {
+            organizationId: new Types.ObjectId(org1Id),
+            userId: new Types.ObjectId(peerB.id),
+          },
+          { $set: { status: 'REMOVED' } },
+        );
+      } else {
+        await iamDb
+          .collection('users')
+          .updateOne(
+            { _id: new Types.ObjectId(peerB.id) },
+            { $set: { status: 'SUSPENDED' } },
+          );
+      }
+
+      const sent = await chatService.sendMessage({}, dmId, {
+        clientMessageId: randomUUID(),
+        content: '@continuumAI PAY-950 có gì mới?',
+        mentionUserIds: [peerB.id],
+        assistantMention: { handle: CONTINUUM_AI_HANDLE },
+      });
+
+      // Active User A receives BOTH message.created AND assistant.status: PENDING
+      const eventsA = wsA.send.mock.calls.map(
+        ([raw]: [string]) =>
+          JSON.parse(raw) as { event: string; data: { status?: string } },
+      );
+      expect(eventsA.map((e) => e.event)).toEqual([
+        'message.created',
+        'assistant.status',
+      ]);
+      expect(eventsA[1].data.status).toBe('PENDING');
+
+      // Revoked/Suspended User B receives ZERO WS frames and its open socket is evicted/closed!
+      expect(wsB.send).not.toHaveBeenCalled();
+      expect(wsB.close).toHaveBeenCalledWith(1008, 'Session revoked');
+
+      // ZERO mention notifications AND ZERO MongoDB chat_notifications for revoked User B!
+      expect(notifyChatMention).not.toHaveBeenCalled();
+      const dbNotifsForB = await connection
+        .db!.collection('chat_notifications')
+        .countDocuments({
+          organizationId: new Types.ObjectId(org1Id),
+          conversationId: new Types.ObjectId(dmId),
+          userId: peerB.id,
+          messageId: new Types.ObjectId(sent.id),
+        });
+      expect(dbNotifsForB).toBe(0);
+
+      // Clean up pending job
+      await connection
+        .db!.collection(CHAT_ASSISTANT_JOBS_COLLECTION)
+        .deleteMany({ conversationId: new Types.ObjectId(dmId) });
+      realtime.onModuleDestroy();
+    };
+
+    await runScenario('MEMBERSHIP');
+    await runScenario('USER_STATUS');
+  });
+
+  it('returns authoritative edited/deleted human messages on messagesAround & listMessages cache hits when Redis invalidation fails (R2-P2 MongoMemoryReplSet)', async () => {
+    const dmId = await createFreshDirectDm();
+    const { redis } = createInMemoryRedis();
+    const cachedRepo = cachedChatRepository(nativeRepo, redis, 'test-dm-r2p2');
+
+    const msg1 = await nativeRepo.sendMessage(
+      userA,
+      dmId,
+      randomUUID(),
+      'Human secret before edit and delete',
+    );
+    await nativeRepo.sendMessage(
+      userB,
+      dmId,
+      randomUUID(),
+      'Neighbor message after secret',
+    );
+
+    // Prime BOTH listMessages and messagesAround (targeting msg1!) in Redis
+    const primedList = await cachedRepo.listMessages(userA, dmId, 20);
+    const primedAround = await cachedRepo.messagesAround(
+      userA,
+      dmId,
+      msg1.message.id,
+      20,
+    );
+    expect(primedList.data.find((m) => m.id === msg1.message.id)?.content).toBe(
+      'Human secret before edit and delete',
+    );
+    expect(
+      primedAround.data.find((m) => m.id === msg1.message.id)?.content,
+    ).toBe('Human secret before edit and delete');
+
+    // Edit msg1 directly in MongoDB WITHOUT bumping Redis (simulating Redis invalidation outage)
+    await nativeRepo.editMessage(
+      userA,
+      dmId,
+      msg1.message.id,
+      'Human message after edit',
+    );
+
+    const editedAround = await cachedRepo.messagesAround(
+      userA,
+      dmId,
+      msg1.message.id,
+      20,
+    );
+    const editedList = await cachedRepo.listMessages(userA, dmId, 20);
+    expect(
+      editedAround.data.find((m) => m.id === msg1.message.id)?.content,
+    ).toBe('Human message after edit');
+    expect(
+      editedAround.data.find((m) => m.id === msg1.message.id)?.editedAt,
+    ).not.toBeNull();
+    expect(editedList.data.find((m) => m.id === msg1.message.id)?.content).toBe(
+      'Human message after edit',
+    );
+
+    // Delete msg1 directly in MongoDB WITHOUT bumping Redis
+    await nativeRepo.deleteMessage(userA, dmId, msg1.message.id);
+
+    const deletedAround = await cachedRepo.messagesAround(
+      userA,
+      dmId,
+      msg1.message.id,
+      20,
+    );
+    const deletedList = await cachedRepo.listMessages(userA, dmId, 20);
+    const aroundTarget = deletedAround.data.find(
+      (m) => m.id === msg1.message.id,
+    )!;
+    const listTarget = deletedList.data.find((m) => m.id === msg1.message.id)!;
+    expect(aroundTarget.content).toBe('');
+    expect(aroundTarget.deletedAt).not.toBeNull();
+    expect(listTarget.content).toBe('');
+    expect(listTarget.deletedAt).not.toBeNull();
+
+    // Defense-in-depth: reconcileCachedMessages also refreshes stale cached human message directly
+    const reconciledDirect = await nativeRepo.reconcileCachedMessages(
+      userA,
+      dmId,
+      primedAround.data,
+    );
+    const reconciledTarget = reconciledDirect.find(
+      (m) => m.id === msg1.message.id,
+    )!;
+    expect(reconciledTarget.content).toBe('');
+    expect(reconciledTarget.deletedAt).not.toBeNull();
   });
 });

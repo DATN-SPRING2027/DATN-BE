@@ -32,10 +32,12 @@ import { ChatHistoryCacheInvalidator } from './chat-history-cache';
 import { ChatRealtimeService } from './chat-realtime.service';
 import type { ChatMessage } from './chat.repository';
 import {
+  buildSagDmAssistantPayload,
   CHAT_ORG_MEMBERSHIP_CHECKER,
   computeSourceAggregateState,
   DM_ASSISTANT_SAG_ANSWER_PATH,
   isDmAssistantWorkerEnabled,
+  MAX_SAG_REQUEST_JSON_BYTES,
   readBoundedInt,
   type AssistantStatusEvent,
   type ChatAssistantFailureCode,
@@ -624,7 +626,7 @@ export class ChatDmAssistantWorkerService
         accessCheck.conversation.contextRevision ?? 0;
 
       const retrievalStartedAt = Date.now();
-      const retrievalResult = await this.retrieval.retrieveContext(
+      const rawRetrievalResult = await this.retrieval.retrieveContext(
         {
           organizationId: orgObjId,
           conversationId: convObjId,
@@ -634,6 +636,7 @@ export class ChatDmAssistantWorkerService
           timezone: job.timezone,
           maxMessages: this.maxContextMessages,
           maxChars: this.maxContextChars,
+          maxJsonBytes: MAX_SAG_REQUEST_JSON_BYTES,
         },
         this.messagesModel,
       );
@@ -642,26 +645,79 @@ export class ChatDmAssistantWorkerService
         Math.round(Date.now() - retrievalStartedAt),
       );
 
+      // 5. Build exact SAG JSON payload and enforce hard UTF-8 byte ceiling (<= 112 KiB < SAG 128 KiB cap)
+      const referenceNowIso = triggerDoc.createdAt.toISOString();
+      let effectiveMessages = rawRetrievalResult.messages;
+      let effectivePartialCoverage = rawRetrievalResult.partialCoverage;
+      let effectiveCoverageHint = rawRetrievalResult.coverageHint;
+      let sagPayload: SagDmAssistantAnswerRequest = buildSagDmAssistantPayload({
+        question: job.query,
+        timezone: job.timezone,
+        referenceNowIso,
+        queryMode: rawRetrievalResult.queryMode,
+        partialCoverage: effectivePartialCoverage,
+        coverageHint: effectiveCoverageHint,
+        messages: effectiveMessages,
+      });
+
+      if (
+        Buffer.byteLength(JSON.stringify(sagPayload), 'utf8') >
+        MAX_SAG_REQUEST_JSON_BYTES
+      ) {
+        effectivePartialCoverage = true;
+        effectiveCoverageHint =
+          effectiveCoverageHint ??
+          'Ngữ cảnh truy xuất vượt giới hạn kích thước dữ liệu; kết quả chỉ bao quát phần tin nhắn gần nhất trong giới hạn xử lý.';
+        const trimmed = [...effectiveMessages];
+        while (trimmed.length > 0) {
+          const reindexed = trimmed.map((snap, idx) => ({
+            ...snap,
+            refId: `M${idx + 1}`,
+          }));
+          const candidatePayload = buildSagDmAssistantPayload({
+            question: job.query,
+            timezone: job.timezone,
+            referenceNowIso,
+            queryMode: rawRetrievalResult.queryMode,
+            partialCoverage: true,
+            coverageHint: effectiveCoverageHint,
+            messages: reindexed,
+          });
+          if (
+            Buffer.byteLength(JSON.stringify(candidatePayload), 'utf8') <=
+            MAX_SAG_REQUEST_JSON_BYTES
+          ) {
+            effectiveMessages = reindexed;
+            sagPayload = candidatePayload;
+            break;
+          }
+          // Drop oldest context message first while keeping newest messages intact
+          trimmed.shift();
+          if (trimmed.length === 0) {
+            effectiveMessages = [];
+            sagPayload = buildSagDmAssistantPayload({
+              question: job.query,
+              timezone: job.timezone,
+              referenceNowIso,
+              queryMode: rawRetrievalResult.queryMode,
+              partialCoverage: true,
+              coverageHint: effectiveCoverageHint,
+              messages: [],
+            });
+          }
+        }
+      }
+
+      const retrievalResult: DmAssistantRetrievalResult = {
+        ...rawRetrievalResult,
+        partialCoverage: effectivePartialCoverage,
+        coverageHint: effectiveCoverageHint,
+        messages: effectiveMessages,
+      };
       const snapshotByRefId = new Map<string, RetrievedMessageSnapshot>(
         retrievalResult.messages.map((snap) => [snap.refId, snap]),
       );
       const validRefIds = new Set<string>(snapshotByRefId.keys());
-
-      // 5. Call SAG stateless grounded synthesizer endpoint
-      const sagPayload: SagDmAssistantAnswerRequest = {
-        question: job.query,
-        timezone: job.timezone,
-        referenceNowIso: triggerDoc.createdAt.toISOString(),
-        queryMode: retrievalResult.queryMode,
-        partialCoverage: retrievalResult.partialCoverage,
-        coverageHint: retrievalResult.coverageHint,
-        messages: retrievalResult.messages.map((snap) => ({
-          refId: snap.refId,
-          senderLabel: snap.senderName,
-          sentAtIso: snap.createdAt.toISOString(),
-          text: snap.textForSag,
-        })),
-      };
 
       const sagStartedAt = Date.now();
       const sagHttpResponse =

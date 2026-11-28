@@ -171,4 +171,8 @@ export class UnavailableChatRepository implements ChatRepository {
   reconcileCachedMessages(): Promise<ChatMessage[]> {
     return this.unavailable();
   }
+
+  getConversationContextRevisions(): Promise<Map<string, number>> {
+    return this.unavailable();
+  }
 }

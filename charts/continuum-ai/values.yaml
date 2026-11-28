@@ -61,9 +61,11 @@ chat:
   # Origins are checked on the direct WebSocket endpoint; set the actual FE origins at install time.
   allowedOrigins: "https://api.continuum.local,http://localhost:3000"
   # 1-1 Direct Chat @continuumAI grounded assistant (disabled by default).
+  # Leave workerEnabled as null to inherit dmAssistant.enabled in single-process deployments;
+  # set workerEnabled: false explicitly on HTTP/WS pods in split-pod deployments.
   dmAssistant:
     enabled: false
-    workerEnabled: false
+    workerEnabled: null
     sagTimeoutMs: 45000
   # Documents use Cloudflare R2; image objects use AWS S3.
   r2:
